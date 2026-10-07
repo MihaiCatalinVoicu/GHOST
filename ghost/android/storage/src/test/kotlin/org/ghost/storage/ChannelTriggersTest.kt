@@ -128,6 +128,8 @@ class ChannelTriggersTest {
         for ((column, value) in listOf(
             "generation" to 1L, "namespace_id" to chBytes(32, 9), "g_env" to chBytes(60, 9),
             "jk_env" to chBytes(60, 9), "r_join" to chBytes(32, 9),
+            // Slice S4 (§19.37 F-S4-7): the epoch that opened the generation is part of its bootstrap, fixed with it.
+            "open_epoch" to 3L,
         )) {
             f.refuses("ch_generation_identity", "keeps its namespace", "UPDATE ch_generation SET $column = ?", value)
         }
@@ -598,6 +600,14 @@ class ChannelTriggersTest {
         for ((column, value) in listOf("kp_ref" to chBytes(32, 9), "invite_id" to chBytes(16, 9), "generation" to 3L, "channel_id" to other)) {
             f.refuses("ch_join_fixed", message, "UPDATE ch_join SET $column = ?", value)
         }
+        // Slice S4 (§19.35 F-8, §19.37): the invite's state is the join's — its namespace, its JK_g, R_join and the
+        // committers digest the Welcome is anchored to — and none of it is rewritten, NULL included.
+        for ((column, value) in listOf(
+            "ns" to chBytes(32, 9), "jk_env" to chBytes(60, 9), "r_join" to chBytes(32, 9), "committers_digest" to chBytes(32, 9),
+        )) {
+            f.refuses("ch_join_fixed", message, "UPDATE ch_join SET $column = ?", value)
+            f.refuses("ch_join_fixed", message, "UPDATE ch_join SET $column = NULL")
+        }
         f.refuses("ch_join_fixed", message, "UPDATE ch_join SET type = 'restore'")
         assertEquals(1, f.upd("UPDATE ch_join SET expiry_day = 20007"))
         assertEquals(1, f.upd("UPDATE ch_join SET expiry_day = 20003"))
@@ -658,6 +668,24 @@ class ChannelTriggersTest {
         f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET delete_after_day = 20006 WHERE k = ?", undated)
     }
 
+    /**
+     * `mls_self` (slice S4, §10.4 "State key", §19.35 F-9): the one row of the wrapped channel state key is written
+     * once and never rewritten — a second key would orphan every envelope the first one sealed — and the table holds
+     * one row (`id = 1`), which its REPLACE guard and its CHECK keep.
+     */
+    @Test
+    fun theChannelStateKeyIsWrittenOnceAndNeverRewritten() = ChannelFixture().use { f ->
+        f.put("mls_self")
+        val message = "the channel state key is written once"
+        f.refuses("mls_self_fixed", message, "UPDATE mls_self SET state_key_wrapped = ?", chBytes(48, 9))
+        f.refuses("mls_self_fixed", message, "UPDATE mls_self SET id = 1")
+        f.db.rejects("CHECK constraint failed", "INSERT INTO mls_self(id, state_key_wrapped) VALUES (2, ?)", chBytes(48, 9))
+        assertEquals(1L, f.count("mls_self"))
+        // the key goes with the database: a delete is the wipe's, and a new key may follow it
+        assertEquals(1, f.upd("DELETE FROM mls_self"))
+        f.put("mls_self", "state_key_wrapped" to chBytes(48, 10))
+    }
+
     // ------------------------------------------------------------------ all of them
 
     /**
@@ -695,8 +723,9 @@ class ChannelTriggersTest {
         aJoinKeepsItsKeyPackageAndItsInviteAndItsExpiryOnlyMovesEarlier()
         anOwnInviteIsErasedNeverRewrittenAndAPasswordInviteNeverGetsALink()
         aGlobalRowKeepsItsKeyAndItsChannelAndItsDayOnlyMovesEarlier()
+        theChannelStateKeyIsWrittenOnceAndNeverRewritten()
         assertEquals("rules never provoked", emptySet<String>(), ChannelSchema.rules - fired)
         assertEquals("a refusal recorded for a trigger that is not in the schema", emptySet<String>(), fired - ChannelSchema.rules)
-        assertTrue(fired.size == 36)
+        assertTrue(fired.size == 37)
     }
 }

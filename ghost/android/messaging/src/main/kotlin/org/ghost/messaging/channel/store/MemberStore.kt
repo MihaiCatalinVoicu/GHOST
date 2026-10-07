@@ -209,6 +209,13 @@ internal class MemberStore {
         )
     }
 
+    /**
+     * Every box key of the channel (slice S4): a join that expired without a Welcome (§6.2.2 step 4) leaves no leaf, so
+     * the box key of its KeyPackage — the only key such a channel holds — goes with the KeyPackage's private keys.
+     */
+    fun deleteBoxKeys(tx: SyncTransaction, channelId: ByteArray): Int =
+        tx.sql.execUpdate("DELETE FROM ch_box_key WHERE channel_id = ?", listOf(channelId))
+
     private fun readBox(r: SqlExecutor.Row) = BoxKeyRow(r.blob(0), r.blob(1), r.blob(2), if (r.isNull(3)) null else r.long(3))
 
     companion object {

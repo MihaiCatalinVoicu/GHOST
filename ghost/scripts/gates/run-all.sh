@@ -39,7 +39,9 @@ rc=0
 # clauses of rust-client-allowlist.sh (G-R1) and rust-feature-policy.sh (G-R2), media-rust-no-logging
 # (G-R4) and media-vendored-clock-log (G-R8) in rust-gates.sh and the CI rust job, and the licence scan
 # (G-R5) with the client-net graph of licenses/graphs.txt.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity; do
+# ch-enqueue-callers is G-M5 (Phase 10 design §13.1, §7.7; slice S4), the channel engine's G-DM2: each
+# channel step makes only the relay-visible calls of its row, CH-RECV and CH-JOIN none. It reads sources only.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

@@ -36,6 +36,12 @@ internal class ChannelStore {
         val myPseudonym: ByteArray,
         val nameEnv: ByteArray?,
         val lastCommitterCommitDay: Long?,
+        /**
+         * The digest of the committers of the member's current context, as the last native call that returned it gave it
+         * (amended by slice S4, §19.37, F-S4-2): `inviteBuild` at the member's own invite, the invite's anchor at its
+         * join. `null` while the member has not learnt it; a committer admits nothing then (§6.2.4 (B), fail closed).
+         */
+        val committersDigest: ByteArray? = null,
     ) {
         override fun toString(): String = "ChannelRow(state=${state.sql})"
     }
@@ -195,6 +201,18 @@ internal class ChannelStore {
         ) == 1
     }
 
+    /**
+     * The committers digest of the current context (slice S4, §19.37): written by `CH-INVITE` from `inviteBuild` and by
+     * `CH-JOIN` from the anchor the Welcome passed; `null` forgets it (a settle that changes the committers, S5).
+     */
+    fun setCommittersDigest(tx: SyncTransaction, channelId: ByteArray, digest: ByteArray?): Boolean {
+        Fields.bytesOrNull("ch_channel.committers_digest", digest, 32)
+        return tx.sql.execUpdate(
+            "UPDATE ch_channel SET committers_digest = ? WHERE channel_id = ?",
+            listOf(digest, channelId),
+        ) == 1
+    }
+
     /** Deletes the channel and, by cascade, every row of every channel table that belongs to it (the wipe). */
     fun delete(tx: SyncTransaction, channelId: ByteArray): Boolean =
         tx.sql.execUpdate("DELETE FROM ch_channel WHERE channel_id = ?", listOf(channelId)) == 1
@@ -214,6 +232,7 @@ internal class ChannelStore {
         myPseudonym = r.blob(11),
         nameEnv = if (r.isNull(12)) null else r.blob(12),
         lastCommitterCommitDay = if (r.isNull(13)) null else r.long(13),
+        committersDigest = if (r.isNull(14)) null else r.blob(14),
     )
 
     // ------------------------------------------------------------------------------- ch_liveness
@@ -329,7 +348,7 @@ internal class ChannelStore {
     companion object {
         private const val CHANNEL_COLUMNS =
             "channel_id, state, split_suspected, partition_suspected, stale_suspected, pw_required, generation, " +
-                "epoch, joined_epoch, size_class, timer_code, my_pseudonym, name_env, last_committer_commit_day"
+                "epoch, joined_epoch, size_class, timer_code, my_pseudonym, name_env, last_committer_commit_day, committers_digest"
 
         const val CHANNEL_BY_ID: String = "SELECT $CHANNEL_COLUMNS FROM ch_channel WHERE channel_id = ?"
         const val ALL_CHANNELS: String = "SELECT $CHANNEL_COLUMNS FROM ch_channel ORDER BY channel_id"

@@ -21,20 +21,39 @@ class JoinInviteMemberStoreTest {
 
     private fun inv(i: Int) = chBytes(16, 0x20 + i)
     private fun key(i: Int) = chBytes(32, 0x30 + i)
+    private fun ns(i: Int) = chBytes(32, 0x50 + i)
+
+    /** A join or a restore with its invite's state (slice S4, §19.35 F-8): namespace, `JK_g`, `R_join`, digest. */
+    private fun JoinStore.joinWithState(
+        tx: org.ghost.sync.api.SyncTransaction, ch: ByteArray, kpRef: ByteArray, type: JoinType, invite: ByteArray,
+        generation: Long, expiryDay: Long, n: Int,
+    ) = insertJoin(
+        tx, ch, kpRef, type, invite, generation, expiryDay,
+        ns = ns(n), jkEnv = chBytes(60, 0x60 + n), rJoin = chBytes(32, 0x70 + n), committersDigest = chBytes(32, 0x80 + n),
+    )
 
     // ----------------------------------------------------------------------------------- joins
 
     @Test
     fun aJoinIsReadByItsKeyPackageRefUntilItsDayAndItsRowsGoWhenTheWelcomeComes() = StoreWorld().use { w ->
         w.channel()
-        w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007) }
+        w.tx { w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 1) }
         w.tx { w.stores.joins.insertJoin(it, w.ch, key(2), JoinType.REJOIN, null, 1, 20_007) }
-        w.tx { w.stores.joins.insertJoin(it, w.ch, key(3), JoinType.RESTORE, inv(3), 0, 19_999) }
+        w.tx { w.stores.joins.joinWithState(it, w.ch, key(3), JoinType.RESTORE, inv(3), 0, 19_999, 3) }
         assertEquals(listOf(JoinType.JOIN, JoinType.REJOIN), w.stores.joins.joins(w.db, w.ch, today).map { it.type }.sortedBy { it.ordinal })
         val join = w.stores.joins.join(w.db, w.ch, key(1), today)!!
         assertArrayEquals(inv(1), join.inviteId)
         assertEquals(20_007L, join.expiryDay)
         assertNull(w.stores.joins.join(w.db, w.ch, key(2), today)!!.inviteId)
+        // Slice S4: the invite's state reads back, and a blob of the joining channel's namespace routes to its join.
+        assertArrayEquals(ns(1), join.ns)
+        assertArrayEquals(chBytes(60, 0x61), join.jkEnv)
+        assertArrayEquals(chBytes(32, 0x71), join.rJoin)
+        assertArrayEquals(chBytes(32, 0x81), join.committersDigest)
+        assertArrayEquals(key(1), w.stores.joins.joinByNamespace(w.db, ns(1), today)!!.kpRef)
+        assertNull("a rejoin carries no invite state", w.stores.joins.join(w.db, w.ch, key(2), today)!!.ns)
+        assertNull("an expired join routes nothing", w.stores.joins.joinByNamespace(w.db, ns(3), today))
+        assertNull(w.stores.joins.joinByNamespace(w.db, ns(9), today))
         assertNull("an expired join is not offered even before the sweep", w.stores.joins.join(w.db, w.ch, key(3), today))
         assertEquals(listOf(key(3).toList()), w.stores.joins.expiredJoins(w.db, today, 10).map { it.kpRef.toList() })
         assertTrue(w.tx { w.stores.joins.deleteJoin(it, w.ch, key(1)) })
@@ -49,15 +68,34 @@ class JoinInviteMemberStoreTest {
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.REJOIN, inv(1), 0, 20_007) } }
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, null, 0, 20_007) } }
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.RESTORE, null, 0, 20_007) } }
+        // Slice S4 (§19.35 F-8): the invite's state comes whole with a join or a restore and never with a rejoin.
+        refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007) } }
+        refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, ns = ns(1)) } }
+        refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.REJOIN, null, 0, 20_007, ns = ns(1)) } }
+        refused {
+            w.tx {
+                w.stores.joins.insertJoin(
+                    it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007,
+                    ns = ns(1), jkEnv = chBytes(59, 1), rJoin = chBytes(32, 1), committersDigest = chBytes(32, 1),
+                )
+            }
+        }
         refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.REJOIN, inv(1), chBytes(500, 1), 20_007) } }
         refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.JOIN, null, chBytes(500, 1), 20_007) } }
         assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) {
             w.tx {
-                w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007)
-                w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007)
+                w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 1)
+                w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 2)
             }
         }.error)
         assertEquals("the transaction that met the error wrote nothing", 0L, w.count("ch_join"))
+        // Slice S4: a second join of another KeyPackage in the same namespace is refused (the namespace routes one join).
+        assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) {
+            w.tx {
+                w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 1)
+                w.stores.joins.joinWithState(it, w.ch, key(2), JoinType.JOIN, inv(2), 0, 20_007, 1)
+            }
+        }.error)
     }
 
     @Test
@@ -72,6 +110,11 @@ class JoinInviteMemberStoreTest {
         assertNull(w.stores.joins.request(w.db, w.ch, key(4), today))
         assertEquals(JoinType.REJOIN, w.stores.joins.request(w.db, w.ch, key(2), today)!!.type)
         assertEquals(listOf(key(4).toList()), w.stores.joins.expiredRequests(w.db, today, 10).map { it.hash.toList() })
+        // Slice S4: the request that names an invite (§6.2.4: a second request for one invite is ignored); an expired
+        // one names nothing.
+        assertArrayEquals(key(1), w.stores.joins.requestOfInvite(w.db, w.ch, inv(1), today)!!.hash)
+        assertNull(w.stores.joins.requestOfInvite(w.db, w.ch, inv(4), today))
+        assertNull(w.stores.joins.requestOfInvite(w.db, w.ch, inv(9), today))
         // an invite consumed: every other request that names it is dropped
         w.tx { w.stores.joins.insertRequest(it, w.ch, key(5), 0, JoinType.RESTORE, inv(1), chBytes(500, 5), 20_008) }
         assertEquals(2, w.tx { w.stores.joins.deleteRequestsOfInvite(it, w.ch, inv(1)) })

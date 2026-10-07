@@ -84,6 +84,9 @@ object ChannelExpiredRowLint {
     fun id(n: Int): ByteArray = chBytes(16, n)
     fun key(n: Int): ByteArray = chBytes(32, n)
 
+    /** The namespace of the fixture's join [n] (slice S4: `ch_join.ns` is UNIQUE, §19.35 F-8). */
+    fun joinNs(n: Int): ByteArray = chBytes(32, (n + 0x30) and 0xff)
+
     /** What a query is judged by. */
     enum class Mode { READ, HIDES, BOUND, SWEEP }
 
@@ -221,8 +224,8 @@ object ChannelExpiredRowLint {
         fun tag(n: Int) = chBytes(16, n)
         for ((n, day, expired) in listOf(Triple(0xE1, TODAY - 1, true), Triple(0x11, TODAY, false), Triple(0x12, TODAY + 7, false))) {
             row(expired, "ch_seen", "tag" to tag(n), "until_day" to day - day % 7)
-            row(expired, "ch_join", "kp_ref" to key(n), "expiry_day" to day)
-            row(expired, "ch_join_request", "hash" to key(n), "until_day" to day)
+            row(expired, "ch_join", "kp_ref" to key(n), "expiry_day" to day, "ns" to joinNs(n))
+            row(expired, "ch_join_request", "hash" to key(n), "until_day" to day, "invite_id" to id(n))
             row(expired, "ch_invite_issued", "invite_id" to id(n), "expiry_day" to day)
             row(expired, "ch_invite_own", "invite_id" to id(n), "expiry_day" to day, "invite_env" to if (n == 0x12) null else chBytes(363, n))
             row(expired, "ch_request", "kind" to if (n == 0x12) "remove" else "leave", "subject" to key(n), "until_day" to day)
@@ -330,7 +333,15 @@ object ChannelDaoQueries {
             "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)) ORDER BY s.epoch, s.hash"
 
     private const val GEN_COLUMNS =
-        "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day FROM ch_generation "
+        "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
+            "open_epoch FROM ch_generation "
+
+    private const val JOIN_COLUMNS =
+        "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest FROM ch_join "
+
+    private const val REQUEST_OF_INVITE =
+        "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
 
     private const val EPOCH_COLUMNS =
         "SELECT channel_id, epoch, state, k_env, r_ep, winner_hash, own_seq, anchor_minute, final_day, keep_until_day FROM ch_epoch "
@@ -478,21 +489,24 @@ object ChannelDaoQueries {
         // ---- JoinStore
         read(
             "theJoinsOfAChannel",
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join " +
-                "WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref",
+            JOIN_COLUMNS + "WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref",
             listOf(CH, TODAY), rows = 2,
         ),
         read(
             "oneJoin",
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join " +
-                "WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?",
+            JOIN_COLUMNS + "WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?",
             listOf(CH, L.key(0x11), TODAY), rows = 1,
         ),
         hides(
             "anExpiredJoin",
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join " +
-                "WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?",
+            JOIN_COLUMNS + "WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?",
             listOf(CH, L.key(0xE1), TODAY), "ch_join", "kp_ref = ?", listOf(L.key(0xE1)),
+        ),
+        // Slice S4 (§19.35 F-8): a blob of a joining channel's namespace is routed by its join.
+        read("aJoinByItsNamespace", JOIN_COLUMNS + "WHERE ns = ? AND expiry_day >= ?", listOf(L.joinNs(0x11), TODAY), rows = 1),
+        hides(
+            "anExpiredJoinByItsNamespace", JOIN_COLUMNS + "WHERE ns = ? AND expiry_day >= ?",
+            listOf(L.joinNs(0xE1), TODAY), "ch_join", "ns = ?", listOf(L.joinNs(0xE1)),
         ),
         read(
             "theJoinRequests",
@@ -511,6 +525,12 @@ object ChannelDaoQueries {
             "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?",
             listOf(CH, L.key(0xE1), TODAY), "ch_join_request", "hash = ?", listOf(L.key(0xE1)),
+        ),
+        // Slice S4: the request that names an invite (§6.2.4: a second request for one invite is ignored).
+        read("theRequestOfAnInvite", REQUEST_OF_INVITE, listOf(CH, L.id(0x11), TODAY), rows = 1),
+        hides(
+            "theRequestOfAnInviteWhoseRequestExpired", REQUEST_OF_INVITE, listOf(CH, L.id(0xE1), TODAY),
+            "ch_join_request", "invite_id = ?", listOf(L.id(0xE1)),
         ),
         read("aKeyPackageTagWithinItsDay", "SELECT 1 FROM ch_kp_seen WHERE channel_id = ? AND tag = ? AND until_day >= ?", listOf(CH, chBytes(16, 0x11), TODAY), rows = 1),
         hides(
@@ -667,8 +687,8 @@ object ChannelSweepQueries {
         ),
         sweep(
             "oneBatchOfExpiredJoins",
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join WHERE expiry_day < ? " +
-                "ORDER BY expiry_day, channel_id, kp_ref LIMIT ?",
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
+                "FROM ch_join WHERE expiry_day < ? ORDER BY expiry_day, channel_id, kp_ref LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),
         sweep(

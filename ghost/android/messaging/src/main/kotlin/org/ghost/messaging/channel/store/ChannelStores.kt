@@ -19,6 +19,7 @@ package org.ghost.messaging.channel.store
  * | [invites] | `ch_invite_issued`, `ch_invite_own`, `ch_sponsor` |
  * | [members] | `ch_member_seen`, `ch_member_refresh`, `ch_request`, `ch_box_key` |
  * | [mls] | `mls_kv`, `mls_global_kv` |
+ * | [self] | `mls_self` (slice S4: the wrapped channel state key) |
  */
 internal class ChannelStores {
     val channels = ChannelStore()
@@ -30,6 +31,7 @@ internal class ChannelStores {
     val invites = InviteStore()
     val members = MemberStore()
     val mls = MlsKvStore()
+    val self = MlsSelfStore()
 
     override fun toString(): String = "ChannelStores"
 }

@@ -4,6 +4,15 @@ import org.ghost.identity.RootEntropy
 import org.ghost.messaging.api.ActivationOutcome
 import org.ghost.messaging.api.MediaPort
 import org.ghost.messaging.api.Messaging
+import org.ghost.messaging.channel.engine.ChannelActor
+import org.ghost.messaging.channel.engine.ChannelContexts
+import org.ghost.messaging.channel.engine.ChannelCounters
+import org.ghost.messaging.channel.engine.ChannelEngine
+import org.ghost.messaging.channel.engine.ChannelEnv
+import org.ghost.messaging.channel.engine.ChannelSyncPorts
+import org.ghost.messaging.channel.engine.SelfChannelKeys
+import org.ghost.messaging.channel.store.ChannelStores
+import org.ghost.messaging.port.ChannelPorts
 import org.ghost.messaging.port.DmCheckpoint
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.port.DmRandom
@@ -66,6 +75,8 @@ class MessagingRuntime(
     /** `Checkpoint.truncate` over the database's executor (§10.7), which `:messaging` cannot reach. */
     checkpoint: DmCheckpoint,
     media: MediaPort = MediaPort.NONE,
+    /** The channel engine's own ports (Phase 10, slice S4); null builds the DM stack alone, as every Phase 9 caller does. */
+    channelPorts: ChannelPorts? = null,
 ) : AutoCloseable {
 
     private val database = stores.database
@@ -133,6 +144,33 @@ class MessagingRuntime(
         scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
     )
 
+    /**
+     * The channel engine (Phase 10 design §10.1; slice S4) on the same actor, database and content key as the DM layer
+     * (D16): its user actions post to the actor, and its pass runs at the end of every actor pass. Null without
+     * [channelPorts].
+     */
+    internal val channelEngine: ChannelEngine? = channelPorts?.let { ports ->
+        val channelStores = ChannelStores()
+        ChannelEngine(
+            env = ChannelEnv(
+                database = database,
+                stores = channelStores,
+                contexts = ChannelContexts(database, channelStores, ports.stateKeys, random, ports.seeds),
+                keys = SelfChannelKeys(contexts),
+                clock = clock,
+                random = random,
+                esSlots = esSlots,
+                counters = ChannelCounters(),
+            ),
+            sync = ChannelSyncPorts(
+                stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, stores.inbox, stores.funding,
+            ),
+            actor = object : ChannelActor {
+                override fun <T> call(body: () -> T): T = actor.call(body)
+            },
+        )
+    }
+
     private val actor = DmActor(
         database = database,
         sync = sync,
@@ -160,6 +198,7 @@ class MessagingRuntime(
         material = material,
         clock = clock,
         contexts = contexts,
+        channels = channelEngine,
     )
 
     init {
@@ -252,6 +291,8 @@ class MessagingRuntime(
         keys.close()
         forgetCachedKeys()
         peekOrder.clear()
+        // The channel context closes with the DM's (§10.4 "State key": held in native memory while unlocked).
+        channelEngine?.clear()
     }
 
     private fun forgetCachedKeys() {

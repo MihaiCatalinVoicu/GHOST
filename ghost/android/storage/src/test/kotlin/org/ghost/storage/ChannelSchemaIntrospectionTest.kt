@@ -54,9 +54,10 @@ class ChannelSchemaIntrospectionTest {
     // ------------------------------------------------------------------ R-M1: what the tables hold
 
     @Test
-    fun theTablesAreExactlyTheTwentySixOfSectionNineAndTheOldOnesAreGone() = migrated().use { db ->
+    fun theTablesAreExactlyTheTwentySixOfSectionNineAndTheStateKeyAndTheOldOnesAreGone() = migrated().use { db ->
         assertEquals(ChannelSchema.tables, channelTables(db).toSet())
-        assertEquals(26, ChannelSchema.tables.size)
+        // §9's 26 and `mls_self`, which slice S4 amended into migration 7 (§19.35 F-9, §19.37).
+        assertEquals(27, ChannelSchema.tables.size)
         val all = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { all += it.string(0) }
         for (gone in ChannelSchema.v1Tables) assertFalse("$gone is dropped by migration 7", gone in all)
@@ -188,6 +189,7 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_channel.epoch", 5), Typed("ch_channel.joined_epoch", 5), Typed("ch_epoch.epoch", 5),
         Typed("ch_epoch_log.epoch", 5), Typed("ch_candidate.epoch", 5), Typed("ch_fork_signal.epoch", 5),
         Typed("ch_post.epoch", 5), Typed("ch_member_seen.last_epoch", 5), Typed("ch_box_key.last_epoch", 5),
+        Typed("ch_generation.open_epoch", 5),
         // ---- the bounded counters and codes
         Typed("ch_channel.generation", 5, outside = listOf(4_294_967_296L)),
         Typed("ch_generation.generation", 5, outside = listOf(4_294_967_296L)),
@@ -306,7 +308,8 @@ class ChannelSchemaIntrospectionTest {
             assertEquals("$table", table in ChannelSchema.withoutRowidTables, withoutRowid)
         }
         assertEquals(setOf("mls_kv", "ch_join_request"), ChannelSchema.rowidTables)
-        assertEquals(24, ChannelSchema.withoutRowidTables.size)
+        // §9's 24 and `mls_self` (slice S4).
+        assertEquals(25, ChannelSchema.withoutRowidTables.size)
         for (table in ChannelSchema.tables) {
             val answers = try {
                 db.queryLong("SELECT count(rowid) FROM $table")
@@ -333,7 +336,8 @@ class ChannelSchemaIntrospectionTest {
         }
         for (table in ChannelSchema.tables) {
             val expected = when (table) {
-                "ch_channel" -> emptyList()
+                // `mls_self` (slice S4) belongs to no channel: one state key for all of them (§10.4).
+                "ch_channel", "mls_self" -> emptyList()
                 "ch_reaction" -> listOf(
                     "channel_id -> ch_channel.channel_id on delete CASCADE",
                     "target -> ch_post.op_id on delete CASCADE",

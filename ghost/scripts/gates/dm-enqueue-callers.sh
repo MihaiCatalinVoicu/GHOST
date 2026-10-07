@@ -153,6 +153,29 @@
 # it writes the re-offer time of local rows and makes no relay call (design §7.5 item 6), which
 # `ChannelSyncNoTrafficTest` pins — it can only delay a GET while the fetched cap binds.
 #
+# **Phase 10, slice S4 (2026-10-04): both, and the split.** S4 builds G-M5 (`ch-enqueue-callers.sh`) and
+# answers the S1a review's question with both of its options (design §19.37, the review's F-7 option (c)):
+#  - **`Funding.set` has a file list of its own here, and it is empty** ([FUNDING_FILES]): no DM file funds a
+#    namespace, the four allowed ones included, so the shared allowlist can no longer let an enqueueing step
+#    fund. `negative-dm-enqueue-funding`'s allowed `OwnerSteps.kt` that funds is now refused too (3 → 4).
+#  - **The restricted and the removal rules of the channel engine's files** (`…/messaging/channel/engine/`) are
+#    G-M5's, which lists each channel step's calls one by one (CH-SETTLE may enqueue its own Welcomes and must
+#    never fund — a shared list could not say it). This gate keeps its **facade and step rules** for those files
+#    (a channel step that drove `sendControl` or `runOwnerMaintenance` is refused here), and keeps every rule for
+#    the channel **stores** (`…/channel/store/`, which make no port call: `negative-dm-enqueue-channel`).
+#    `negative-dm-enqueue-channel-engine` pins the boundary. A channel engine file does not count towards the
+#    vacuity floor, which stays the DM steps'.
+#
+# **The review of S4 (2026-10-05, design §19.38).** Three holes, each now closed and pinned by
+# `negative-dm-enqueue-placement`: (a) the boundary above matched `*/messaging/channel/engine/` anywhere, so an `:app`
+# file under such a package path enqueued unseen by both gates (G-M5 read `:messaging` alone) — it is now the channel
+# engine's own directory in `:messaging` and nothing else; (b) only `src/main` and `src/release` were read, so a file of
+# the `debug` or `gate` build type passed — every source set but the test ones is read now (the `gate` set ships on the
+# gate devices, `debug` on every debug build); (c) an allowed file was allowed by its name wherever it sat, so an
+# `OwnerSteps.kt` in a new directory could enqueue — `ALLOWED_FILES`, `REMOVE_ONLY` and `STEP_ALLOWED` name files of the
+# DM engine's directory (`android/messaging/src/<set>/kotlin/org/ghost/messaging/engine/`) now. `TRIGGER_ALLOWED` still
+# goes by name: its files sit in four directories of two modules (declared).
+#
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -172,6 +195,10 @@ RECEIVERS='outbox|registrations|namespaces|capabilities|funding'
 # one production file that takes a port as a bare constructor property rather than through `sync.`,
 # so the evading shape is the shape that file already uses.
 RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities|Funding'
+# The funding port alone, by name and by type (Phase 10, slice S4): the funding rule must tell `funding.set(…)`
+# from the `set` or `put` of another port in a file that may make those.
+FUNDING_RECEIVER='funding'
+FUNDING_TYPE='Funding'
 # The scope functions that turn a port into `this`, so a call inside can be bare.
 SCOPES='run|apply'
 # The scope functions that bind the port to a lambda **parameter** instead: the call inside is
@@ -187,6 +214,9 @@ SendStep.kt            SEND, RESEND (slice S7)
 EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7; BUNDLE is BundleStep.kt, not here)
 ContactKeeper.kt       KEEPER, the contact half of §7.2 KEEPER row (slice S7)
 '
+# Files that may call `Funding.set` (Phase 10 slice S4): none. The check applies to the files of ALLOWED_FILES,
+# which the restricted rule would otherwise let fund; every other file is refused the call by that rule already.
+FUNDING_FILES=''
 # Files that may call `Namespaces.remove` and nothing else. `Sweeper.kt` is deliberately **not** in
 # ALLOWED_FILES: §21.12 point 3 gives SWEEP the removal of an orphaned namespace and nothing more,
 # and an entry in both lists would have made the rule this comment states unenforceable (found by
@@ -248,8 +278,19 @@ STEP_TRIGGERS='sendControl|flushPending|resend|estStart|estReady|estEnd'
 # establishment passes, the facade's user actions, OUTCOME's resend, and the due scheduled control.
 STEP_ALLOWED='SendStep.kt EstablishmentSteps.kt DmActor.kt MessagingEngine.kt OutcomeStep.kt ScheduledSteps.kt'
 
-allowed_file() { # $1 = basename
+# The DM engine's own directory (relative to GHOST_ROOT; the source set is any): the files the allowlists below name
+# are files of it, and of no other directory (the review of S4, §19.38).
+DM_ENGINE_GLOB='android/messaging/src/*/org/ghost/messaging/engine/*'
+
+in_dm_engine() { # $1 = path relative to GHOST_ROOT
+  # shellcheck disable=SC2254
+  case "$1" in $DM_ENGINE_GLOB) return 0 ;; esac
+  return 1
+}
+
+allowed_file() { # $1 = basename, $2 = path relative to GHOST_ROOT
   local name
+  in_dm_engine "$2" || return 1
   while read -r name _; do
     [ -n "$name" ] || continue
     [ "$name" = "$1" ] && return 0
@@ -257,8 +298,16 @@ allowed_file() { # $1 = basename
   return 1
 }
 
-remove_allowed() { # $1 = basename
-  allowed_file "$1" && return 0
+funding_allowed() { # $1 = basename
+  case " $FUNDING_FILES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+remove_allowed() { # $1 = basename, $2 = path relative to GHOST_ROOT
+  allowed_file "$1" "$2" && return 0
+  in_dm_engine "$2" || return 1
   case " $REMOVE_ONLY " in
     *" $1 "*) return 0 ;;
   esac
@@ -272,7 +321,8 @@ trigger_allowed() { # $1 = basename
   return 1
 }
 
-step_allowed() { # $1 = basename
+step_allowed() { # $1 = basename, $2 = path relative to GHOST_ROOT
+  in_dm_engine "$2" || return 1
   case " $STEP_ALLOWED " in
     *" $1 "*) return 0 ;;
   esac
@@ -281,11 +331,13 @@ step_allowed() { # $1 = basename
 
 # The production sources of the two modules that drive the DM engine. `find` at any depth, like
 # dm-no-fts.sh: a nested module must not go unscanned while the others satisfy the vacuity floor.
-# `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2).
+# `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2); and since the review of S4 (§19.38) every
+# other source set but the test ones — `debug`, `gate`, a build type or flavour added later.
 dm_caller_files() {
   find "$GHOST_ROOT/android/messaging" "$GHOST_ROOT/android/app" \
-    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
-    \( -path '*/src/main/*' -o -path '*/src/release/*' \) -print 2>/dev/null || true
+    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/*' \
+    ! -path '*/src/test/*' ! -path '*/src/test[A-Z]*' ! -path '*/src/androidTest*' ! -path '*/src/testFixtures*' \
+    -print 2>/dev/null || true
 }
 
 # `<first line number>:<text>`, with every continuation line (one that begins with `.`) folded into
@@ -318,6 +370,12 @@ while IFS= read -r file; do
   rel="${file#"$GHOST_ROOT"/}"
   base="${file##*/}"
   SCANNED=$((SCANNED + 1))
+  # A channel engine file: its restricted and removal calls are G-M5's (see the S4 note above); the facade
+  # and step rules below still read it. The channel engine's own directory in `:messaging`, and no other (§19.38).
+  channel_engine=0
+  case "$rel" in
+    android/messaging/src/*/org/ghost/messaging/channel/engine/*) channel_engine=1 ;;
+  esac
 
   # Each hit is read from a variable and matched with a here-string, never `producer | grep -q`:
   # under `set -o pipefail` such a pipeline fails whenever grep stops reading early (EPIPE), the
@@ -328,10 +386,34 @@ while IFS= read -r file; do
   # `sync.outbox.run { … }`), both of which let a call site drop the receiver.
   alias_alt=""
   scoped=0
+  # The same two lists for the funding port alone, which the funding rule reads (Phase 10, slice S4).
+  funding_alt=""
+  funding_scoped=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     if [[ "$line" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=[^=]*($RECEIVERS) ]]; then
       alias_alt="${alias_alt:+$alias_alt|}${BASH_REMATCH[2]}"
+    fi
+    if [[ "$line" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=[^=]*($FUNDING_RECEIVER) ]]; then
+      funding_alt="${funding_alt:+$funding_alt|}${BASH_REMATCH[2]}"
+    fi
+    rest="$line"
+    while [[ "$rest" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*($FUNDING_TYPE)([^A-Za-z0-9_]|$) ]]; do
+      funding_alt="${funding_alt:+$funding_alt|}${BASH_REMATCH[2]}"
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+    done
+    if [[ "$line" =~ with[[:space:]]*\([^\)]*($FUNDING_RECEIVER) ]] ||
+       [[ "$line" =~ ($FUNDING_RECEIVER)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
+      funding_scoped=1
+    fi
+    if [[ "$line" =~ ($FUNDING_RECEIVER)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($LAMBDA_SCOPES)[[:space:]]*[\{\(] ]]; then
+      funding_alt="${funding_alt:+$funding_alt|}it"
+      if [[ "$line" =~ \{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+        funding_alt="$funding_alt|${BASH_REMATCH[1]}"
+      fi
+    fi
+    if [ -n "$funding_alt" ] && [[ "$line" =~ ^[[:space:]]*\{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+      funding_alt="$funding_alt|${BASH_REMATCH[1]}"
     fi
     # The same property declared by its **type** and with no initialiser: a constructor parameter
     # (`private val ops: Outbox,`) or a field assigned elsewhere. The name is then free, so only the
@@ -386,14 +468,27 @@ while IFS= read -r file; do
     return 1
   }
 
+  # The funding rule's recognizer (Phase 10, slice S4): `is_call_site` for the one call `set`, with the funding
+  # port as the only receiver and its own aliases and scopes. Bash scopes `local` dynamically, so the call below
+  # reads these three values in place of the file's, every shape above included (a line break, an alias, a typed
+  # port, a scope function, a safe call, a callable reference, a parenthesized receiver).
+  is_funding_call() {
+    local RECEIVERS="$FUNDING_RECEIVER" alias_alt="$funding_alt" scoped="$funding_scoped"
+    is_call_site "$1" 'set'
+  }
+
   restricted_hits=""
   remove_hits=""
+  funding_hits=""
   trigger_hits=""
   step_hits=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    if is_call_site "$line" "$RESTRICTED"; then restricted_hits+="$line"$'\n'; fi
-    if is_call_site "$line" "$REMOVE"; then remove_hits+="$line"$'\n'; fi
+    if [ "$channel_engine" = 0 ]; then
+      if is_call_site "$line" "$RESTRICTED"; then restricted_hits+="$line"$'\n'; fi
+      if is_call_site "$line" "$REMOVE"; then remove_hits+="$line"$'\n'; fi
+      if is_funding_call "$line"; then funding_hits+="$line"$'\n'; fi
+    fi
     # The facade's entry points are matched by name, with or without a receiver: they are unique to
     # this facade, so a line that writes one either declares it or calls it.
     if [[ "$line" =~ (^|[^A-Za-z0-9_])($TRIGGERS)[[:space:]]*\( ]]; then trigger_hits+="$line"$'\n'; fi
@@ -405,13 +500,21 @@ while IFS= read -r file; do
     WITH_CALL=$((WITH_CALL + 1))
   fi
 
-  if [ -n "$restricted_hits" ] && ! allowed_file "$base"; then
+  if [ -n "$restricted_hits" ] && ! allowed_file "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen, install or fund)"
     done <<< "$restricted_hits"
   fi
-  if [ -n "$remove_hits" ] && ! remove_allowed "$base"; then
+  # A file the rule above lets enqueue may still not fund: `Funding.set` has a list of its own (FUNDING_FILES).
+  # Every other file is refused the call by the rule above already, and is not reported twice.
+  if [ -n "$funding_hits" ] && allowed_file "$base" "$rel" && ! funding_allowed "$base"; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      fail "$rel:$line (G-DM2: no DM step funds a namespace; Funding.set has a file list of its own, and it is empty)"
+    done <<< "$funding_hits"
+  fi
+  if [ -n "$remove_hits" ] && ! remove_allowed "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: only those steps and SWEEP may call Namespaces.remove)"
@@ -423,7 +526,7 @@ while IFS= read -r file; do
       fail "$rel:$line (G-DM2: an owner pass starts from the actor timer, a database open, a relay session start or the K20 hook, and from nothing else)"
     done <<< "$trigger_hits"
   fi
-  if [ -n "$step_hits" ] && ! step_allowed "$base"; then
+  if [ -n "$step_hits" ] && ! step_allowed "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: a send, a resend, a control or an establishment step is driven by the actor, the facade, OUTCOME or the due scheduled control, and by nothing else)"

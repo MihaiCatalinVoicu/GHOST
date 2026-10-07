@@ -6,6 +6,16 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS="$(cd "$DIR/../../test-harness/gates" && pwd)"
 rc=0
+# A case that calls a command this shell does not have is a case that never ran (the review of S4, Phase 10 design
+# §19.38: eight G-M5 cases called `evasion_count` and `evasion_named` before their definition, printed "command not
+# found" and counted nothing). Bash runs this handler in a subshell, so it records the name in a file, and the end of
+# the script turns every record into a failure. A gate's own commands run in its own `bash`, which does not inherit it.
+NOT_FOUND_LOG="$(mktemp)"
+command_not_found_handle() {
+  printf '%s\n' "$1" >> "$NOT_FOUND_LOG"
+  echo "SELF-TEST FAIL: command not found in the self-test: $1" >&2
+  return 127
+}
 # Output checks use here-strings (grep ... <<<"$out"), never `printf '%s\n' "$out" | grep -q`: under
 # pipefail that pipeline fails whenever grep -q stops reading before printf has flushed everything
 # (EPIPE; the static-gates self-test of run 35473735223 reported a present message as missing).
@@ -15,6 +25,33 @@ expect_fail() {
     echo "SELF-TEST FAIL: $gate passed on fixture $(basename "$root")" >&2; rc=1
   else
     echo "self-test ok: $gate rejects fixture $(basename "$root")"
+  fi
+}
+# The evasion helpers (Phase 9 design §22.33 item 16), defined before any case uses them (§19.38).
+EVASION_OUT=""
+evasion_count() { # $1 = gate, $2 = fixture under test-harness/gates, $3 = expected violation count
+  local hits
+  EVASION_OUT="$(GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$EVASION_OUT" || true)"
+  if [ "$hits" = "$3" ]; then
+    echo "self-test ok: $1 reports exactly $3 violation(s) in $2"
+  else
+    echo "SELF-TEST FAIL: $1 reported $hits of $3 violations in $2" >&2
+    printf '%s\n' "$EVASION_OUT" | tail -5 >&2; rc=1
+  fi
+}
+evasion_named() { # $1 = gate, $2 = expected text of one violation, $3 = description (reads EVASION_OUT)
+  if grep -qF -- "$2" <<<"$EVASION_OUT"; then
+    echo "self-test ok: $1 $3"
+  else
+    echo "SELF-TEST FAIL: $1 $3: no violation reads '$2'" >&2; rc=1
+  fi
+}
+near_misses() { # $1 = gate, $2 = fixture under test-harness/gates
+  if GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" >/dev/null 2>&1; then
+    echo "self-test ok: $1 accepts the near misses of $2"
+  else
+    echo "SELF-TEST FAIL: $1 rejects the near misses of $2" >&2; rc=1
   fi
 }
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
@@ -1522,15 +1559,42 @@ dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
   "refuses a tree whose DM sources make no restricted call"
 # Phase 10, slice S1a: `Funding.set` joins the restricted calls (design §7.5 item 1, item 7; T40).
 # One fixture, three call sites in a RECV step — the port by its name, a local alias, a port injected
-# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds (an
-# allowed file may) and a RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call).
+# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds and a
+# RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call). Slice S4 gave `Funding.set`
+# a file list of its own, and it is empty: the allowed OwnerSteps that funds is the fourth violation (3 → 4).
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding"
-dmenq_case funding 3 "ReceiveStep.kt:13" \
+dmenq_case funding 4 "ReceiveStep.kt:13" \
   "refuses a RECV step that funds a namespace by name, through an alias and through a typed port (and lets reofferDeferred pass)"
+dmenq_case funding 4 "OwnerSteps.kt:14:        sync.funding.set(tx, ns, true) (G-DM2: no DM step funds a namespace" \
+  "refuses an allowed step that funds a namespace (Funding.set's own list, slice S4)"
+# Phase 10, slice S4: the funding rule reads every shape the restricted rule reads, in a file that may enqueue —
+# an alias, a typed port, a scope function, a callable reference, a parenthesized receiver, a line break with a safe
+# call — and leaves the install, a map's `set` and another port's `setRelays` beside them alone.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding-shapes"
+dmenq_case funding-shapes 6 "OwnerSteps.kt:23:            set(tx, ns, true)" \
+  "sees a funding call in an allowed step through an alias, a typed port, a scope, a reference, parentheses and a line break"
+dmenq_case funding-shapes 6 "OwnerSteps.kt:27:        sync.funding?.set(tx, ns, true)" \
+  "sees a funding call written across a line break with a safe call"
 # Phase 10, slice S3: the channel stores (org.ghost.messaging.channel.store) make no port call (design 10.4); the
 # gate reads them like the rest of :messaging, so a store that funds a namespace is refused.
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-channel"
 dmenq_case channel 1 "channel/store/MirrorStore.kt:11" "refuses a channel store that funds a namespace"
+# Phase 10, slice S4: the restricted and the removal calls of the channel engine's files are G-M5's (ch-enqueue-callers,
+# below, which lists them per step); this gate's facade and step rules still read those files. One fixture: a channel
+# step's enqueue, not reported here, and a DM send driven from the same step, reported.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-channel-engine"
+dmenq_case channel-engine 1 "channel/engine/ChannelPostStep.kt:11:        sendStep.flushPending()" \
+  "leaves a channel step's enqueue to G-M5 and refuses a channel step that drives a DM send"
+# Phase 10, the review of S4 (design §19.38): where a file sits. An allowed name outside the DM engine's directory, an
+# `:app` file under a channel engine package path (G-DM2 left any such path to G-M5, which read `:messaging` alone),
+# and files of the `debug` and `gate` source sets: four violations, beside an allowed OwnerSteps that enqueues.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-placement"
+dmenq_case placement 4 "messaging/other/OwnerSteps.kt:6:        sync.outbox.enqueue(tx, blob)" \
+  "refuses an allowed step's name outside the DM engine's directory"
+dmenq_case placement 4 "app/messaging/channel/engine/ChannelReflexStep.kt:9:" \
+  "refuses an :app file under a channel engine package path (the boundary is :messaging's channel engine)"
+dmenq_case placement 4 "android/app/src/debug/kotlin/org/ghost/app/Reflex.kt:6:" "reads the debug source set"
+dmenq_case placement 4 "android/app/src/gate/kotlin/org/ghost/app/gate/Reflex.kt:6:" "reads the gate source set"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1539,6 +1603,95 @@ if bash "$DIR/dm-enqueue-callers.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-enqueue-callers accepts the real DM engine"
 else
   echo "SELF-TEST FAIL: dm-enqueue-callers rejects the real DM engine" >&2; rc=1
+fi
+
+# G-M5 (Phase 10 design faza10-forum.md §13.1, §14 S4; T40): the channel engine's relay-visible calls, step by step.
+# CH-RECV and CH-JOIN make none; every other channel step makes only the calls of its own row (CH-SETTLE enqueues its
+# Welcomes and never funds, the join sweep removes or stops listening and never enqueues); and a channel step that
+# enqueues, admits, settles or sweeps is driven by the channel engine and by nothing else. Five single-purpose
+# fixtures (a CH-RECV that enqueues and registers, two steps that make a call outside their row, a CH-JOIN and a DM
+# RECV that drive channel steps, G-DM2's evasions in CH-RECV, a tree whose channel files make no restricted call),
+# an empty tree, and the real tree.
+chenq_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-ch-enqueue-$1" bash "$DIR/ch-enqueue-callers.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF -- "$3" <<<"$out"; then
+    echo "self-test ok: ch-enqueue-callers $4"
+  else
+    echo "SELF-TEST FAIL: ch-enqueue-callers $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-recv"
+chenq_case recv 2 "ChannelReceiveStep.kt:9:        sync.outbox.enqueue(tx, blob) (G-M5: ChannelReceiveStep.kt may make no relay-visible call" \
+  "refuses a CH-RECV that enqueues (and lets CH-CREATE register)"
+chenq_case recv 2 "ChannelReceiveStep.kt:10:        sync.namespaces.register(tx, ns)" "refuses a CH-RECV that registers"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-wrongcall"
+chenq_case wrongcall 2 "ChannelSettleStep.kt:10:        sync.funding.set(tx, ns, true) (G-M5: set is not one of ChannelSettleStep.kt's calls (enqueue))" \
+  "refuses a CH-SETTLE that funds, though it may enqueue its Welcomes"
+chenq_case wrongcall 2 "ChannelSweepStep.kt:11:        ob.enqueue(tx, blob) (G-M5: enqueue is not one of ChannelSweepStep.kt's calls (remove setListening))" \
+  "refuses a join sweep that enqueues through a typed port, though it may remove"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-step"
+# The review of S4 (§19.38) added the third rule, which also reads the two constructors that name step classes (3 → 5).
+chenq_case step 5 "ChannelJoinStep.kt:9:        postStep.compose(tx) (G-M5: a channel step that enqueues" "refuses a CH-JOIN that drives a post"
+chenq_case step 5 "ChannelJoinStep.kt:10:        passStep.admit(channel)" "refuses a CH-JOIN that drives an admission"
+chenq_case step 5 "messaging/engine/ReceiveStep.kt:9:        settle.settleDue()" "refuses a DM RECV that drives a channel settle"
+chenq_case step 5 "messaging/engine/ReceiveStep.kt:7:internal class ReceiveStep(private val settle: ChannelSettleStep) { (G-M5: ReceiveStep.kt names a step" \
+  "refuses a DM RECV that holds a channel step"
+# The review of S4 (§19.38): the third rule — who may hold a step — over the entry points the second rule does not list
+# (a post, a settle, an accept, the engine's post), a companion constant left alone, and `:app` importing the engine.
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-holders"
+chenq_case holders 6 "ChannelReceiveStep.kt:10:    private val posts: ChannelPostStep," "refuses a CH-RECV that holds the post step"
+chenq_case holders 6 "ChannelReceiveStep.kt:11:    private val engine: ChannelEngine," "refuses a CH-RECV that holds the engine"
+chenq_case holders 6 "ChannelReceiveStep.kt:20:        settleStep.settle(c)" "refuses a CH-RECV that writes a settle step's name"
+chenq_case holders 6 "android/app/src/main/kotlin/org/ghost/app/Reflex.kt:3:import org.ghost.messaging.channel.engine.ChannelEngine" \
+  "refuses an :app file that imports the channel engine"
+# The recognizer's widening (§19.38): a block comment, backticks, a trailing dot, an unbound reference of the port type,
+# a qualified parameter type, a type alias of the port type, a destructuring declaration — seven violations in CH-RECV.
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-shapes"
+CHSH="android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/ChannelReceiveStep.kt"
+chenq_case shapes 7 "$CHSH:14:" "sees a call behind a block comment"
+chenq_case shapes 7 "$CHSH:15:        sync.outbox.enqueue(tx, blob)" "sees backticked names"
+chenq_case shapes 7 "$CHSH:16:        sync.outbox.enqueue(tx, blob)" "sees a receiver whose line ends with the dot"
+chenq_case shapes 7 "$CHSH:18:        (org.ghost.sync.api.Outbox::enqueue)" "sees an unbound callable reference of the port type"
+chenq_case shapes 7 "$CHSH:21:" "sees a port passed as a qualified parameter"
+chenq_case shapes 7 "$CHSH:23:" "sees a port passed as a type alias of the port type"
+chenq_case shapes 7 "$CHSH:27:        a.enqueue(tx, blob)" "sees a port bound by a destructuring declaration"
+# Where a channel file sits (§19.38): the debug and gate source sets, and an allowed step's name outside the channel
+# engine's directory (in :app) — three violations beside an allowed CH-CREATE.
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-placement"
+chenq_case placement 3 "android/messaging/src/debug/kotlin/org/ghost/messaging/channel/engine/ChannelReflexStep.kt:6:" \
+  "reads the debug source set"
+chenq_case placement 3 "android/messaging/src/gate/kotlin/org/ghost/messaging/channel/engine/ChannelReflexStep.kt:6:" \
+  "reads the gate source set"
+chenq_case placement 3 "app/messaging/channel/engine/ChannelPostStep.kt:9:        sync.outbox.enqueue(tx, blob) (G-M5: ChannelPostStep.kt may make no relay-visible call" \
+  "gives an allowed step's name no entry outside the channel engine's directory"
+# A port renamed in the ports holder is a port by its type (§19.38): CH-SETTLE funding through `sync.fund`.
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-renamed-port"
+chenq_case renamed-port 1 "ChannelSettleStep.kt:10:        sync.fund.set(tx, ns, true) (G-M5: set is not one of ChannelSettleStep.kt's calls" \
+  "sees a funding call through a port property renamed in ChannelSyncPorts"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-evasion"
+CHEV="android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/ChannelReceiveStep.kt"
+evasion_count ch-enqueue-callers negative-ch-enqueue-evasion 7
+evasion_named ch-enqueue-callers "$CHEV:10:        sync.outbox.enqueue(tx, blob)" "sees a receiver on the line above its call"
+evasion_named ch-enqueue-callers "$CHEV:13:        o.enqueue(tx, blob)" "sees a call through a local alias"
+evasion_named ch-enqueue-callers "$CHEV:14:        with(sync.namespaces) { register(tx, ns) }" "sees a bare call in a scope function"
+evasion_named ch-enqueue-callers "$CHEV:15:        sync.capabilities?.put(tx, ns)" "sees a safe call"
+evasion_named ch-enqueue-callers "$CHEV:16:        ledger.set(tx, ns, true)" "sees a port injected as its type"
+evasion_named ch-enqueue-callers "$CHEV:17:        val fund = sync.funding::set" "sees a callable reference"
+evasion_named ch-enqueue-callers "$CHEV:18:        (sync.registrations).keep(tx, ns)" "sees a parenthesized receiver"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-vacuous"
+chenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously)" \
+  "refuses a tree whose channel sources make no restricted call"
+chenq_empty="$(mktemp -d)"
+expect_fail_msg "ch-enqueue-callers refuses a tree with no channel production sources at all" \
+  "no channel production sources found" env GHOST_ROOT="$chenq_empty" bash "$DIR/ch-enqueue-callers.sh"
+rmdir "$chenq_empty"
+if bash "$DIR/ch-enqueue-callers.sh" >/dev/null 2>&1; then
+  echo "self-test ok: ch-enqueue-callers accepts the real channel engine"
+else
+  echo "SELF-TEST FAIL: ch-enqueue-callers rejects the real channel engine" >&2; rc=1
 fi
 
 # The S0′ gate slice (Phase 9 design §16.1, §22.33). Each fixture holds one kind of violation and
@@ -1660,32 +1813,7 @@ fi
 # per file, the violations the line-by-line gates passed, each on the line its README names; each
 # near-miss fixture holds what the whole-file reading must still accept. One case per evasion, so a
 # gate that stops seeing one is named, and the exact total, so a gate that reports too much is too.
-EVASION_OUT=""
-evasion_count() { # $1 = gate, $2 = fixture under test-harness/gates, $3 = expected violation count
-  local hits
-  EVASION_OUT="$(GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" 2>&1 || true)"
-  hits="$(grep -c '^GATE-FAIL' <<<"$EVASION_OUT" || true)"
-  if [ "$hits" = "$3" ]; then
-    echo "self-test ok: $1 reports exactly $3 violation(s) in $2"
-  else
-    echo "SELF-TEST FAIL: $1 reported $hits of $3 violations in $2" >&2
-    printf '%s\n' "$EVASION_OUT" | tail -5 >&2; rc=1
-  fi
-}
-evasion_named() { # $1 = gate, $2 = expected text of one violation, $3 = description (reads EVASION_OUT)
-  if grep -qF -- "$2" <<<"$EVASION_OUT"; then
-    echo "self-test ok: $1 $3"
-  else
-    echo "SELF-TEST FAIL: $1 $3: no violation reads '$2'" >&2; rc=1
-  fi
-}
-near_misses() { # $1 = gate, $2 = fixture under test-harness/gates
-  if GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" >/dev/null 2>&1; then
-    echo "self-test ok: $1 accepts the near misses of $2"
-  else
-    echo "SELF-TEST FAIL: $1 rejects the near misses of $2" >&2; rc=1
-  fi
-}
+# (`evasion_count`, `evasion_named` and `near_misses` are defined at the top: G-M5's cases above use them.)
 # G-DM1: the coroutine modifier in every shape, and package names across lines, comments and quotes.
 EV_KT="android/messaging/src/main/kotlin/org/ghost/messaging/evasion"
 evasion_count messaging-no-network negative-dm-network-evasions 8
@@ -1765,6 +1893,26 @@ evasion_count dm-no-replace $CHP 1
 evasion_named dm-no-replace "$CHS:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel stores"
 evasion_count dm-no-fts $CHP 2
 evasion_named dm-no-fts "$CHS:25:" "reads the package of the channel stores (the virtual table and the token)"
+# The same scopes over the package of the channel engine (org.ghost.messaging.channel.engine; slice S4, which adds
+# it): one violation of each in one file. The channel crate of this fixture is clean (S3's fixture above holds its
+# violations), so anti-placeholder and no-logging report one each here, not two.
+CHE=negative-channel-engine
+CHF="android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/LeakyChannelStep.kt"
+evasion_count anti-placeholder $CHE 1
+evasion_named anti-placeholder "$CHF:11:" "reads the package of the channel engine"
+evasion_count no-logging $CHE 1
+evasion_named no-logging "$CHF:14:" "reads the package of the channel engine"
+evasion_count sync-no-catch-all $CHE 1
+evasion_named sync-no-catch-all "$CHF:19: catch (e: Exception)" "reads the package of the channel engine against the allowlist"
+evasion_count kotlin-clearnet $CHE 1
+evasion_named kotlin-clearnet "$CHF:3:import java.net.Socket" "reads the package of the channel engine"
+evasion_count messaging-no-network $CHE 2
+evasion_named messaging-no-network "$CHF:3:import java.net.Socket (G-DM1: a DM module names a network package" "reads the package of the channel engine (the package)"
+evasion_named messaging-no-network "$CHF:3:import java.net.Socket (G-DM1: a DM module names a socket, address or HTTP class" "reads the package of the channel engine (the class)"
+evasion_count dm-no-replace $CHE 1
+evasion_named dm-no-replace "$CHF:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel engine"
+evasion_count dm-no-fts $CHE 2
+evasion_named dm-no-fts "$CHF:25:" "reads the package of the channel engine (the virtual table and the token)"
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
@@ -1798,6 +1946,10 @@ evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:6: malformed entr
 evasion_count dm-derivation-inputs dm-derivation/negative-channel-package 1
 evasion_named dm-derivation-inputs "channel/store/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
   "reports a MAC keyed by a channel identifier in the channel store package"
+# Phase 10, slice S4: and the package of the channel engine, whose one listed site is the dedup tags' MAC (ChannelTags.kt).
+evasion_count dm-derivation-inputs dm-derivation/negative-channel-engine 1
+evasion_named dm-derivation-inputs "channel/engine/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
+  "reports a MAC keyed by a channel identifier in the channel engine package"
 if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else
@@ -2754,4 +2906,10 @@ elif [ -n "${CI:-}" ]; then
 else
   echo "self-test skipped: Rust gates (cargo not installed)"
 fi
+# Every command the self-test itself called and did not have (see command_not_found_handle at the top) is a failure.
+if [ -s "$NOT_FOUND_LOG" ]; then
+  echo "SELF-TEST FAIL: $(wc -l < "$NOT_FOUND_LOG" | tr -d ' ') call(s) of a command the self-test does not have: $(sort -u "$NOT_FOUND_LOG" | tr '\n' ' ')" >&2
+  rc=1
+fi
+rm -f "$NOT_FOUND_LOG"
 exit $rc

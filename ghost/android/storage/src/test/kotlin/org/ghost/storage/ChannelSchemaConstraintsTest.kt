@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The CHECK and foreign-key constraints of the 26 channel tables (Phase 10 design §9), **executed**: every
+ * The CHECK and foreign-key constraints of the 27 channel tables (Phase 10 design §9 and slice S4's `mls_self`), **executed**: every
  * length, closed list, range and coupling a table declares refuses the value just outside it and accepts
  * the value just inside it (slice S3). The `typeof` and grid checks of the integer columns are
  * [ChannelSchemaIntrospectionTest]'s; the triggers are [ChannelTriggersTest]'s.
@@ -59,6 +59,9 @@ class ChannelSchemaConstraintsTest {
         add(accepted("ch_channel", "timer_code = 0", "timer_code" to 0L))
         add(accepted("ch_channel", "timer_code = 5", "timer_code" to 5L))
         addAll(between("ch_channel", "name_env", 29, 76))
+        // Slice S4 (§19.37 F-S4-2): the committers digest of the current context, unknown until a native call returns it.
+        addAll(exact("ch_channel", "committers_digest", 32))
+        add(accepted("ch_channel", "no committers digest yet", "committers_digest" to null))
         // ---- ch_liveness
         addAll(between("ch_liveness", "progress_env", 28, 256))
         add(refused("ch_liveness", "a counted blob without the window's start", "unopenable_count" to 1L))
@@ -82,6 +85,9 @@ class ChannelSchemaConstraintsTest {
         add(refused("ch_generation", "a draining generation without a drain day", "state" to "draining"))
         add(refused("ch_generation", "a current generation with a drain day", "state" to "current", "drain_until_day" to 20_014L))
         add(refused("ch_generation", "a pending generation with a drain day", "state" to "pending_switch", "drain_until_day" to 20_014L))
+        // Slice S4 (§19.37 F-S4-7): every generation knows the epoch that opened it (§5.4's bootstrap).
+        add(Case("ch_generation", mapOf("open_epoch" to null), "a generation without its open epoch", "NOT NULL constraint failed"))
+        add(accepted("ch_generation", "a generation opened at epoch 9", "open_epoch" to 9L))
         // ---- ch_epoch
         addAll(exact("ch_epoch", "k_env", 68))
         addAll(exact("ch_epoch", "r_ep", 32))
@@ -113,6 +119,10 @@ class ChannelSchemaConstraintsTest {
         add(refused("ch_candidate", "an own box key of 59 bytes", "own" to 1L, "box_env" to chBytes(59, 1)))
         add(refused("ch_candidate", "an own box key of 61 bytes", "own" to 1L, "box_env" to chBytes(61, 1)))
         add(refused("ch_candidate", "Welcomes of 28 bytes", "own" to 1L, "welcome_env" to chBytes(28, 1)))
+        // Slice S4 (§19.35 F-1): the removal mark of CO-13, a 0/1 flag on any candidate.
+        add(refused("ch_candidate", "removes = 2", "removes" to 2L))
+        add(accepted("ch_candidate", "a foreign candidate that removes a pseudonym", "removes" to 1L))
+        add(accepted("ch_candidate", "an own commit that removes a pseudonym", "own" to 1L, "removes" to 1L))
         // ---- ch_fork_signal
         addAll(exact("ch_fork_signal", "hash", 32))
         // ---- mls_kv and mls_global_kv: the keys are label NUL json, the values are envelopes (28 bytes of overhead)
@@ -179,7 +189,18 @@ class ChannelSchemaConstraintsTest {
         // ---- ch_join and ch_join_request
         addAll(exact("ch_join", "kp_ref", 32))
         addAll(oneOf("ch_join", "type", listOf("join", "restore"), "invite_id" to chBytes(16, 27)))
-        add(accepted("ch_join", "a rejoin without an invite", "type" to "rejoin", "invite_id" to null))
+        // A rejoin has no invite, so none of the invite's state either (slice S4, §19.35 F-8).
+        val noInviteState = arrayOf("ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null)
+        add(accepted("ch_join", "a rejoin without an invite", "type" to "rejoin", "invite_id" to null, *noInviteState))
+        add(refused("ch_join", "a rejoin with an invite's namespace", "type" to "rejoin", "invite_id" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null))
+        add(refused("ch_join", "a join without its invite's state", *noInviteState))
+        for (column in listOf("ns", "jk_env", "r_join", "committers_digest")) {
+            add(refused("ch_join", "a join whose invite state lacks $column", column to null))
+        }
+        addAll(exact("ch_join", "ns", 32))
+        addAll(exact("ch_join", "jk_env", 60))
+        addAll(exact("ch_join", "r_join", 32))
+        addAll(exact("ch_join", "committers_digest", 32))
         add(refused("ch_join", "a rejoin with an invite", "type" to "rejoin"))
         add(refused("ch_join", "a join without an invite", "invite_id" to null))
         add(refused("ch_join", "a restore without an invite", "type" to "restore", "invite_id" to null))
@@ -218,6 +239,10 @@ class ChannelSchemaConstraintsTest {
         // ---- ch_box_key
         addAll(exact("ch_box_key", "box_pk", 32))
         addAll(exact("ch_box_key", "sk_env", 60))
+        // ---- mls_self (slice S4, §10.4 "State key"): one row, a wrapped key of 40 … 256 bytes
+        addAll(between("mls_self", "state_key_wrapped", 40, 256))
+        add(refused("mls_self", "a second row", "id" to 2L))
+        add(refused("mls_self", "row 0", "id" to 0L))
     }
 
     @Test
@@ -247,7 +272,7 @@ class ChannelSchemaConstraintsTest {
         for (table in ChannelSchema.tables) assertEquals(table, 1L, f.count(table))
         assertEquals(null, f.db.queryLong("PRAGMA foreign_key_check"))
         // A child of a channel that is not there is refused, for every channel-scoped table.
-        for (table in ChannelSchema.tables - setOf("ch_channel", "ch_reaction")) ChannelFixture().use { g ->
+        for (table in ChannelSchema.tables - setOf("ch_channel", "ch_reaction", "mls_self")) ChannelFixture().use { g ->
             val (sql, args) = g.sql(table, mapOf("channel_id" to chBytes(32, 0x77)))
             g.db.rejects(FOREIGN_KEY_FAILED, sql, *args.toTypedArray())
         }

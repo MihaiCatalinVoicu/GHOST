@@ -29,6 +29,12 @@ internal class GenerationStore {
         val jkEnv: ByteArray,
         /** The recognition key `R_join(g)` Kotlin matches the join traffic's hints with (CS-S6). */
         val rJoin: ByteArray,
+        /**
+         * `E_g`, the epoch that opened the generation (§5.4's bootstrap carries it, §6.5: "joiners learn `(g, G_g, E_g)` from
+         * the bootstrap"): every commit that admits needs it for its Welcomes' bootstrap (`commit`, §10.2 fn 9), and
+         * `generation` (fn 13) takes it. Amended by slice S4 (§19.37, F-S4-7): §9 has no column for it.
+         */
+        val openEpoch: Long,
         /** Set on a pending row only; `null` there means "at the next session start" (§19.8, a joiner's). */
         val switchHour: Long?,
         /** Set on a draining row only. */
@@ -94,6 +100,7 @@ internal class GenerationStore {
         gEnv: ByteArray,
         jkEnv: ByteArray,
         rJoin: ByteArray,
+        openEpoch: Long,
         switchHour: Long? = null,
         drainUntilDay: Long? = null,
     ) {
@@ -102,6 +109,7 @@ internal class GenerationStore {
         Fields.bytes("ch_generation.g_env", gEnv, 60)
         Fields.bytes("ch_generation.jk_env", jkEnv, 60)
         Fields.bytes("ch_generation.r_join", rJoin, 32)
+        Fields.nonNegative("ch_generation.open_epoch", openEpoch)
         Fields.hourOrNull("ch_generation.switch_hour", switchHour)
         Fields.nonNegativeOrNull("ch_generation.drain_until_day", drainUntilDay)
         if (switchHour != null && state != GenerationState.PENDING_SWITCH) {
@@ -111,11 +119,11 @@ internal class GenerationStore {
             throw ChannelStoreException(ChannelStoreError.BAD_VALUE, "ch_generation.drain_until_day")
         }
         val changed = tx.sql.execUpdate(
-            "INSERT INTO ch_generation(channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, " +
-                "drain_until_day) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
+            "INSERT INTO ch_generation(channel_id, generation, namespace_id, state, g_env, jk_env, r_join, open_epoch, " +
+                "switch_hour, drain_until_day) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
                 "(SELECT 1 FROM ch_generation WHERE (channel_id = ? AND generation = ?) OR namespace_id = ?)",
             listOf(
-                channelId, generation, namespaceId, state.sql, gEnv, jkEnv, rJoin, switchHour, drainUntilDay,
+                channelId, generation, namespaceId, state.sql, gEnv, jkEnv, rJoin, openEpoch, switchHour, drainUntilDay,
                 channelId, generation, namespaceId,
             ),
         )
@@ -166,26 +174,31 @@ internal class GenerationStore {
         rJoin = r.blob(6),
         switchHour = if (r.isNull(7)) null else r.long(7),
         drainUntilDay = if (r.isNull(8)) null else r.long(8),
+        openEpoch = r.long(9),
     )
 
     companion object {
         const val GENERATION: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
+                "open_epoch " +
                 "FROM ch_generation WHERE channel_id = ? AND generation = ? " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
 
         const val LIVE: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
+                "open_epoch " +
                 "FROM ch_generation WHERE channel_id = ? AND (drain_until_day IS NULL OR drain_until_day >= ?) " +
                 "ORDER BY generation"
 
         const val CURRENT: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
+                "open_epoch " +
                 "FROM ch_generation WHERE channel_id = ? AND state = 'current' " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
 
         const val DUE_PENDING: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
+                "open_epoch " +
                 "FROM ch_generation WHERE channel_id = ? AND state = 'pending_switch' " +
                 "AND (switch_hour IS NULL OR switch_hour <= ?) AND (drain_until_day IS NULL OR drain_until_day >= ?) " +
                 "ORDER BY generation"

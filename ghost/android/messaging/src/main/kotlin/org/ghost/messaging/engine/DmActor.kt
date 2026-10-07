@@ -1,5 +1,6 @@
 package org.ghost.messaging.engine
 
+import org.ghost.messaging.channel.engine.ChannelPassSteps
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.HeldStore
@@ -109,6 +110,12 @@ internal class DmActor(
      * reading of which pass is a relay session start had drifted from the wiring's).
      */
     turns: ExecutorService? = null,
+    /**
+     * The channel engine's pass (Phase 10 design §7.7, D16: the one actor drains `Consumer.CHANNEL` as it drains
+     * `Consumer.DM`), run at the end of every pass with the pass's own trigger, and its next wake among the timer's terms
+     * ([nextReadySeconds]). Null where no channel engine is wired (every Phase 9 world).
+     */
+    private val channels: ChannelPassSteps? = null,
 ) : AutoCloseable {
 
     private val contacts = ContactStore()
@@ -168,13 +175,17 @@ internal class DmActor(
      * or one whose contact stopped fetching — wakes the actor once and never turns into a wake loop.
      */
     fun nextReadySeconds(): Long? {
-        if (candidateSince.isEmpty()) return null
+        // The channel engine's next wake (a settle point, a scheduled pass, a gap hold) is a term of the same minimum:
+        // the timer's, never the alarm's (§10.7: the alarm exists for deletion).
+        val channelWake = channels?.nextWakeSeconds()
+        if (candidateSince.isEmpty()) return channelWake
         val now = clock.nowEpochSeconds()
-        return candidateSince.values
+        val ready = candidateSince.values
             .map { it + EstablishmentSteps.READY_DELAY_SECONDS }
             .filter { due -> due > now || due > lastTimeTriggeredSecond }
             .map { due -> maxOf(0L, due - now) }
             .minOrNull()
+        return listOfNotNull(ready, channelWake).minOrNull()
     }
 
     /**
@@ -489,6 +500,9 @@ internal class DmActor(
             scheduledSteps.runDue()
         }
         consumeInbox(deadlineMonotonicMillis)
+        // D16: the channel engine's pass, with this pass's trigger (its time-triggered steps run on a time-triggered pass
+        // only, as the DM's do), after the DM steps: it needs the same content key, which the check above proved open.
+        channels?.runPass(timeTriggered, deadlineMonotonicMillis, sessionStart)
     }
 
     /**
