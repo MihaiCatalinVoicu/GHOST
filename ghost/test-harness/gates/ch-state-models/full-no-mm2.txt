@@ -6,85 +6,85 @@ EM-3 arithmetic honest 28-day self-updates satisfy CO-14 for 2..=100 members: 99
 EM-3 arithmetic 9-day flags exceed the PCS cadence; stale_suspected comes inside the drain: 3 cases, smallest margin 1
 EM-3 arithmetic a moderator never races an active owner on fresh work: 7 cases, smallest margin 23
 EM-3 arithmetic: 7 checks hold
-EM-3 SC-CONC concurrent honest commits: 4224040 states, 20451579 transitions, 7091251 decisions, 1119 terminal, depth 38, reach 4/4, live P-CONC 50/1119 P-LATE-HARMLESS 100/1119 P-STRANDED 81/1119, bounds epochs 2/2, commits 2,2,1,0,0 of 2,2,1,1,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 80.5 s
-EM-3 SC-LATE late better commit, returning member: 8731748 states, 55384215 transitions, 23802911 decisions, 1741 terminal, depth 40, reach 4/4, live P-LATE-HARMLESS 466/1741 P-STRANDED 546/1741, bounds epochs 2/2, commits 1,2,0,0,0 of 1,2,0,0,0, posts 0,0,1,0,0 of 0,0,1,0,0, days 0/0, 189.8 s
-EM-3 SC-GRIND ground self-update below a settled winner: 5813581 states, 36407789 transitions, 16672344 decisions, 304 terminal, depth 36, reach 3/3, live P-LATE-HARMLESS 28/304, bounds epochs 2/2, commits 1,0,1,1,0 of 1,0,1,1,0, posts 1,0,0,0,0 of 1,0,0,0,0, days 0/0, 136.5 s
-EM-3 SC-JOIN admission, Welcome after the win: 6291679 states, 34768719 transitions, 9444740 decisions, 539 terminal, depth 44, reach 4/4, live P-LATE-HARMLESS 50/539 P-STRANDED 48/539 P-JOINED 402/539, bounds epochs 2/2, commits 1,1,1,0,0 of 1,1,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 103.9 s
-EM-3 SC-REMOVE removal hold and rotation: 360375 states, 1659959 transitions, 610414 decisions, 85 terminal, depth 35, reach 3/3, live P-LATE-HARMLESS 49/85 P-STRANDED 75/85 P-LIVENESS 85/85, bounds epochs 2/2, commits 1,2,0,0,0 of 1,2,0,0,0, posts 0,0,2,0,0 of 0,0,2,0,0, days 0/0, 4.7 s
-EM-3 SC-GOV transfer, resignation and leave of the owner: 3927 states, 15882 transitions, 6339 decisions, 1 terminal, depth 36, reach 4/4, live P-LATE-HARMLESS 1/1 P-GOVERNANCE 1/1, bounds epochs 3/3, commits 2,1,0,0,0 of 2,1,0,0,0, posts 1,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.0 s
-EM-3 SC-FLOOD self-update flood: 1413342 states, 6874009 transitions, 2281651 decisions, 324 terminal, depth 43, reach 3/3, live P-LATE-HARMLESS 84/324 P-LIVENESS 324/324, bounds epochs 3/3, commits 2,0,0,3,0 of 2,0,0,3,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 20.8 s
-EM-3 SC-INDET own commit closed INDETERMINATE: 171131 states, 765420 transitions, 297964 decisions, 139 terminal, depth 25, reach 3/3, live P-LATE-HARMLESS 54/139 P-STRANDED 65/139, bounds epochs 2/2, commits 1,1,0,0,0 of 1,1,0,0,0, posts 0,0,1,0,0 of 0,0,1,0,0, days 0/0, 2.0 s
-EM-3 SC-JUNK non-canonical lifetime commit: 19746 states, 82392 transitions, 32683 decisions, 14 terminal, depth 27, reach 1/1, live P-LATE-HARMLESS 11/14 P-LIVENESS 14/14, bounds epochs 2/2, commits 2,0,0,1,0 of 2,0,0,1,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.3 s
-EM-3 SC-CLOCKS members with different clocks: 126347 states, 613081 transitions, 181048 decisions, 24 terminal, depth 35, reach 1/1, live P-LATE-HARMLESS 8/24 P-JOINED 16/24, bounds epochs 2/2, commits 1,0,1,0,0 of 1,0,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 1.6 s
+EM-3 SC-CONC concurrent honest commits: 135009 states, 655840 transitions, 315830 decisions, 50 terminal, depth 32, reach 4/4, live P-CONC 50/50 P-LATE-HARMLESS 30/50 P-STRANDED 50/50, bounds epochs 2/2, commits 1,2,1,0,0 of 2,2,1,1,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 4.6 s
+EM-3 SC-LATE late better commit, returning member: 6326276 states, 40755295 transitions, 18467437 decisions, 1185 terminal, depth 39, reach 4/4, live P-LATE-HARMLESS 350/1185 P-STRANDED 468/1185, bounds epochs 2/2, commits 1,2,0,0,0 of 1,2,0,0,0, posts 0,0,1,0,0 of 0,0,1,0,0, days 0/0, 227.1 s
+EM-3 SC-GRIND ground self-update below a settled winner: 3030209 states, 19395430 transitions, 9664343 decisions, 108 terminal, depth 36, reach 3/3, live P-LATE-HARMLESS 16/108, bounds epochs 2/2, commits 1,0,1,1,0 of 1,0,1,1,0, posts 1,0,0,0,0 of 1,0,0,0,0, days 0/0, 134.3 s
+EM-3 SC-JOIN admission, Welcome after the win: 1163209 states, 6729697 transitions, 2180732 decisions, 30 terminal, depth 44, reach 4/4, live P-LATE-HARMLESS 18/30 P-STRANDED 30/30 P-JOINED 30/30, bounds epochs 2/2, commits 1,1,1,0,0 of 1,1,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 56.6 s
+EM-3 SC-REMOVE removal hold and rotation: 360375 states, 1692600 transitions, 643055 decisions, 85 terminal, depth 34, reach 3/3, live P-LATE-HARMLESS 49/85 P-STRANDED 75/85 P-LIVENESS 85/85, bounds epochs 2/2, commits 1,2,0,0,0 of 1,2,0,0,0, posts 0,0,2,0,0 of 0,0,2,0,0, days 0/0, 15.8 s
+EM-3 SC-GOV transfer, resignation and leave of the owner: 3927 states, 16206 transitions, 6663 decisions, 1 terminal, depth 36, reach 4/4, live P-LATE-HARMLESS 1/1 P-GOVERNANCE 1/1, bounds epochs 3/3, commits 2,1,0,0,0 of 2,1,0,0,0, posts 1,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.1 s
+EM-3 SC-FLOOD self-update flood: 592920 states, 2891548 transitions, 1119866 decisions, 94 terminal, depth 43, reach 3/3, live P-LATE-HARMLESS 51/94 P-LIVENESS 94/94, bounds epochs 3/3, commits 2,0,0,3,0 of 2,0,0,3,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 25.9 s
+EM-3 SC-INDET own commit closed INDETERMINATE: 120801 states, 558649 transitions, 227270 decisions, 46 terminal, depth 24, reach 2/2, live P-LATE-HARMLESS 34/46 P-STRANDED 46/46, bounds epochs 2/2, commits 1,1,0,0,0 of 1,1,0,0,0, posts 0,0,1,0,0 of 0,0,1,0,0, days 0/0, 3.8 s
+EM-3 SC-JUNK non-canonical lifetime commit: 19746 states, 82980 transitions, 33271 decisions, 14 terminal, depth 27, reach 1/1, live P-LATE-HARMLESS 11/14 P-LIVENESS 14/14, bounds epochs 2/2, commits 2,0,0,1,0 of 2,0,0,1,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.6 s
+EM-3 SC-CLOCKS members with different clocks: 74510 states, 370665 transitions, 118901 decisions, 5 terminal, depth 35, reach 1/1, live P-LATE-HARMLESS 4/5 P-JOINED 5/5, bounds epochs 2/2, commits 1,0,1,0,0 of 1,0,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 3.1 s
 EM-3 SC-ADV rank-255 proposals and a new signer: 2807 states, 10044 transitions, 3724 decisions, 7 terminal, depth 16, reach 1/1, live P-LATE-HARMLESS 5/7, bounds epochs 1/1, commits 1,0,0,1,0 of 1,0,0,2,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.0 s
-EM-3 SC-CATCHUP returning member across epochs: 3568 states, 16150 transitions, 5050 decisions, 1 terminal, depth 35, reach 2/2, live P-LATE-HARMLESS 1/1, bounds epochs 4/4, commits 4,0,0,0,0 of 4,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.0 s
-EM-3 SC-FORK dead branch, resync and rejoin: 24458759 states, 93590984 transitions, 4058751 decisions, 29601 terminal, depth 48, reach 2/2, live P-DETECT/resync 0/29601, bounds epochs 2/2, commits 1,1,1,0,0 of 1,2,1,0,0, posts 1,1,0,1,0 of 1,1,0,1,0, days 4/4, 286.4 s
-EM-3 SC-MISSED missed commit past its TTL: 154318 states, 668019 transitions, 1196 decisions, 24 terminal, depth 42, reach 2/2, live P-DETECT/resync 0/24, bounds epochs 2/2, commits 2,0,0,0,0 of 2,0,0,0,0, posts 1,2,0,2,0 of 1,2,0,2,0, days 3/3, 1.8 s
+EM-3 SC-CATCHUP returning member across epochs: 3568 states, 16150 transitions, 5050 decisions, 1 terminal, depth 35, reach 2/2, live P-LATE-HARMLESS 1/1, bounds epochs 4/4, commits 4,0,0,0,0 of 4,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.1 s
+EM-3 SC-FORK dead branch, resync and rejoin: 24458759 states, 93590984 transitions, 4058751 decisions, 29601 terminal, depth 48, reach 2/2, live P-DETECT/resync 0/29601, bounds epochs 2/2, commits 1,1,1,0,0 of 1,2,1,0,0, posts 1,1,0,1,0 of 1,1,0,1,0, days 4/4, 496.0 s
+EM-3 SC-MISSED missed commit past its TTL: 154318 states, 668019 transitions, 1196 decisions, 24 terminal, depth 42, reach 2/2, live P-DETECT/resync 0/24, bounds epochs 2/2, commits 2,0,0,0,0 of 2,0,0,0,0, posts 1,2,0,2,0 of 1,2,0,2,0, days 3/3, 4.6 s
 EM-3 SC-OWNER the owner on a dead branch is readmitted: 464 states, 1472 transitions, 312 decisions, 1 terminal, depth 19, reach 1/1, live P-OWNER-BACK 1/1, bounds epochs 2/2, commits 1,2,0,0,0 of 1,2,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 0.0 s
-EM-3 SC-SILENT silent orphan: 189386 states, 618503 transitions, 44159 decisions, 803 terminal, depth 35, reach 2/2, live P-DETECT/stale 110/803, bounds epochs 2/2, commits 2,0,0,0,0 of 2,0,0,0,0, posts 2,2,0,0,0 of 2,2,0,0,0, days 10/10, 1.7 s
-EM-3 SC-PARTITION committers cut off: 277365 states, 811282 transitions, 0 decisions, 1725 terminal, depth 22, reach 1/1, live P-DETECT/partition 1725/1725, bounds epochs 1/1, commits 1,0,0,0,0 of 0,0,0,0,0, posts 0,0,1,1,1 of 0,0,1,1,1, days 10/10, 2.1 s
-EM-3 SC-SPAM-DRAIN spam in the draining namespace: 595 states, 2066 transitions, 0 decisions, 3 terminal, depth 14, reach 1/1, live P-NO-FALSE-RESYNC 3/3, bounds epochs 1/1, commits 1,0,0,0,0 of 0,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 4/4, 0.0 s
-EM-3 SC-REPLAY replayed and re-wrapped KeyPackages: 698239 states, 3088542 transitions, 406768 decisions, 22 terminal, depth 35, reach 2/2, live none, bounds epochs 2/3, commits 1,3,1,0,0 of 2,3,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 9.3 s
-EM-3 SC-SPAM-CURRENT spam in the current namespace: 14615329 states, 44106607 transitions, 11441308 decisions, 536150 terminal, depth 30, reach 3/3, live none, bounds epochs 1/1, commits 1,0,0,0,0 of 1,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 4/4, 130.3 s
-EM-3 controls (full): 20 scenarios, 67556746 states, 299936714 transitions, 76382613 decisions, 572627 terminal
+EM-3 SC-SILENT silent orphan: 207891 states, 674874 transitions, 47138 decisions, 1008 terminal, depth 35, reach 2/2, live P-DETECT/stale 264/1008, bounds epochs 2/2, commits 2,0,0,0,0 of 2,0,0,0,0, posts 2,2,0,0,0 of 2,2,0,0,0, days 10/10, 4.2 s
+EM-3 SC-PARTITION committers cut off: 277365 states, 811282 transitions, 0 decisions, 1725 terminal, depth 22, reach 1/1, live P-DETECT/partition 1725/1725, bounds epochs 1/1, commits 1,0,0,0,0 of 0,0,0,0,0, posts 0,0,1,1,1 of 0,0,1,1,1, days 10/10, 4.9 s
+EM-3 SC-SPAM-DRAIN spam in the draining namespace: 7621 states, 19119 transitions, 0 decisions, 384 terminal, depth 15, reach 1/1, live P-NO-FALSE-RESYNC 384/384, bounds epochs 1/1, commits 1,0,0,0,0 of 0,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 4/4, 0.1 s
+EM-3 SC-REPLAY replayed and re-wrapped KeyPackages: 698239 states, 3088542 transitions, 406768 decisions, 22 terminal, depth 35, reach 2/2, live none, bounds epochs 2/3, commits 1,3,1,0,0 of 2,3,1,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 0/0, 20.3 s
+EM-3 SC-SPAM-CURRENT spam in the current namespace: 14615329 states, 44106607 transitions, 11441308 decisions, 536150 terminal, depth 30, reach 3/3, live none, bounds epochs 1/1, commits 1,0,0,0,0 of 1,0,0,0,0, posts 0,0,0,0,0 of 0,0,0,0,0, days 4/4, 234.9 s
+EM-3 controls (full): 20 scenarios, 52253343 states, 216136003 transitions, 48741615 decisions, 570541 terminal
 EM-3 bounds (full): at most 4 epoch transitions (reached by SC-CATCHUP), 4 commits and 2 posts per actor, 10 days
-EM-3 sites: 35 check sites, 28 first broken by a mutant, 5 by a finding probe, 2 by a hand-built world, 0 by none
-EM-3 mutant Rank255Proposals [CO-1 (MM-5)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.03 s)
+EM-3 sites: 35 check sites, 25 first broken by a mutant, 5 by a finding probe, 2 by a hand-built world, 3 by a pre-S5 run, 0 by none
+EM-3 mutant Rank255Proposals [CO-1 (MM-5)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.04 s)
 EM-3 mutant PostCommitRank [CO-1 (rank basis, §19.13)]: killed by P-GOVERNANCE in SC-GOV transfer, resignation and leave of the owner (1 steps, 0.00 s)
 EM-3 mutant Rank255NeverCandidate [CO-1 (rank-255 candidates)]: killed by P-CONC in SC-CONC concurrent honest commits (26 steps, 0.02 s)
 EM-3 mutant SwapWithoutEvidence [CO-2 (MM-21)]: killed by P-NO-INVALID-MERGE in SC-REPLAY replayed and re-wrapped KeyPackages (27 steps, 0.00 s)
 EM-3 mutant LocalHistory [CO-2 (MM-23)]: killed by P-VALID-SAME in SC-JOIN admission, Welcome after the win (20 steps, 0.00 s)
 EM-3 mutant NoSwapOfLowerRank [CO-2 (MM-33)]: killed by P-OWNER-BACK in SC-OWNER the owner on a dead branch is readmitted (5 steps, 0.00 s)
-EM-3 mutant NewSigner [CO-2 (MM-31)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.03 s)
+EM-3 mutant NewSigner [CO-2 (MM-31)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.04 s)
 EM-3 mutant LifetimeByClock [CO-2 (S0-12 / round 10d, Q42 (b))]: killed by P-VALID-SAME in SC-CLOCKS members with different clocks (20 steps, 0.00 s)
-EM-3 mutant LifetimePending [CO-2, CO-4 (MM-46)]: killed by P-LIFETIME in SC-JUNK non-canonical lifetime commit (5 steps, 0.01 s)
-EM-3 mutant HashOnly [CO-3 (MM-4)]: killed by P-RANK in SC-CONC concurrent honest commits (22 steps, 0.00 s)
-EM-3 mutant NoSuccessors [CO-3 (MM-24)]: killed by P-FOLLOW in SC-LATE late better commit, returning member (19 steps, 0.48 s)
+EM-3 mutant LifetimePending [CO-2, CO-4 (MM-46)]: killed by P-LIFETIME in SC-JUNK non-canonical lifetime commit (5 steps, 0.02 s)
+EM-3 mutant HashOnly [CO-3 (MM-4)]: killed by P-RANK in SC-CONC concurrent honest commits (18 steps, 0.00 s)
+EM-3 mutant NoSuccessors [CO-3 (MM-24)]: killed by P-FOLLOW in SC-LATE late better commit, returning member (19 steps, 32.27 s)
 EM-3 mutant NoWindow [CO-4 (MM-3)]: killed by P-FRESH in SC-CONC concurrent honest commits (14 steps, 0.00 s)
-EM-3 mutant OwnUnverified [CO-4 (MM-2)]: killed by P-VERIFIED in SC-INDET own commit closed INDETERMINATE (15 steps, 0.01 s)
-EM-3 mutant NoStoreHourAnchor [CO-4 (MM-25)]: killed by P-CATCHUP in SC-CATCHUP returning member across epochs (7 steps, 0.03 s)
-EM-3 mutant ClearIndeterminate [CO-4 (MM-32)]: killed by P-CUSTODY/clear in SC-INDET own commit closed INDETERMINATE (23 steps, 0.01 s)
-EM-3 mutant NoListingPass [CO-4 (ii)]: killed by P-FRESH in SC-CONC concurrent honest commits (22 steps, 0.00 s)
-EM-3 mutant OwnAnchorAtPass [CO-4 (i) (own commit's anchor)]: killed by P-FRESH in SC-LATE late better commit, returning member (11 steps, 33.06 s)
-EM-3 mutant UnverifiedOwnNoCandidate [CO-3, CO-4 (a) (round 10b's custody)]: killed by P-CUSTODY/settle in SC-INDET own commit closed INDETERMINATE (17 steps, 0.45 s)
-EM-3 mutant WelcomeAtPass [CO-5 (MM-19)]: killed by P-WELCOME in SC-JOIN admission, Welcome after the win (28 steps, 0.01 s)
-EM-3 mutant NotSticky [CO-6 (MM-16)]: killed by P-STICKY in SC-LATE late better commit, returning member (16 steps, 0.46 s)
-EM-3 mutant Rank255Blocks [CO-7 (MM-26)]: killed by P-PASS in SC-FLOOD self-update flood (5 steps, 0.02 s)
+EM-3 mutant OwnUnverified [CO-4 (MM-2, equivalent by D-5)]: EQUIVALENT, survives SC-INDET own commit closed INDETERMINATE (120801 states) (D-5: withdrawn as equivalent)
+EM-3 mutant NoStoreHourAnchor [CO-4 (MM-25)]: killed by P-CATCHUP in SC-CATCHUP returning member across epochs (7 steps, 0.05 s)
+EM-3 mutant ClearIndeterminate [CO-4 (MM-32)]: killed by P-CUSTODY/clear in SC-INDET own commit closed INDETERMINATE (22 steps, 0.02 s)
+EM-3 mutant NoListingPass [CO-4 (ii)]: killed by P-FRESH in SC-CONC concurrent honest commits (18 steps, 0.00 s)
+EM-3 mutant OwnAnchorAtPass [CO-4 (i) (own commit's anchor)]: killed by P-FRESH in SC-LATE late better commit, returning member (11 steps, 42.00 s)
+EM-3 mutant UnverifiedOwnNoCandidate [CO-3, CO-4 (a) (round 10b's custody, equivalent under the adopted corrections)]: EQUIVALENT, survives SC-INDET own commit closed INDETERMINATE (120801 states) (D-5: withdrawn as equivalent)
+EM-3 mutant WelcomeAtPass [CO-5 (MM-19)]: killed by P-WELCOME in SC-JOIN admission, Welcome after the win (28 steps, 0.00 s)
+EM-3 mutant NotSticky [CO-6 (MM-16)]: killed by P-STICKY in SC-LATE late better commit, returning member (16 steps, 32.47 s)
+EM-3 mutant Rank255Blocks [CO-7 (MM-26, equivalent under the adopted corrections)]: EQUIVALENT, survives SC-FLOOD self-update flood (592920 states) (D-5: withdrawn as equivalent)
 EM-3 mutant FreshWork [CO-8 (MM-34)]: killed by P-WORKAGE in SC-JOIN admission, Welcome after the win (14 steps, 0.00 s)
 EM-3 mutant NoSkip [CO-9]: killed by P-OWN-VALID in SC-CONC concurrent honest commits (1 steps, 0.00 s)
-EM-3 mutant DropLoserWork [CO-10]: killed by P-LIVENESS/remove in SC-REMOVE removal hold and rotation (27 steps, 0.52 s)
-EM-3 mutant CountDraining [CO-11 (MM-37)]: killed by P-NO-FALSE-RESYNC in SC-SPAM-DRAIN spam in the draining namespace (14 steps, 0.03 s)
-EM-3 mutant NoBranchDeath [CO-11]: killed by P-DETECT/resync in SC-FORK dead branch, resync and rejoin (29 steps, 71.48 s)
-EM-3 mutant RecountProgress [CO-11 (b) (EM-3's first count)]: killed by P-DETECT/resync in SC-MISSED missed commit past its TTL (42 steps, 0.84 s)
-EM-3 mutant NoStale [CO-12 (MM-36)]: killed by P-DETECT/stale in SC-SILENT silent orphan (16 steps, 0.00 s)
+EM-3 mutant DropLoserWork [CO-10]: killed by P-LIVENESS/remove in SC-REMOVE removal hold and rotation (27 steps, 0.91 s)
+EM-3 mutant CountDraining [CO-11 (MM-37)]: killed by P-NO-FALSE-RESYNC in SC-SPAM-DRAIN spam in the draining namespace (14 steps, 0.04 s)
+EM-3 mutant NoBranchDeath [CO-11]: killed by P-DETECT/resync in SC-FORK dead branch, resync and rejoin (29 steps, 105.07 s)
+EM-3 mutant RecountProgress [CO-11 (b) (EM-3's first count)]: killed by P-DETECT/resync in SC-MISSED missed commit past its TTL (42 steps, 1.94 s)
+EM-3 mutant NoStale [CO-12 (MM-36)]: killed by P-DETECT/stale in SC-SILENT silent orphan (21 steps, 0.00 s)
 EM-3 mutant NoPartition [CO-12]: killed by P-DETECT/partition in SC-PARTITION committers cut off (22 steps, 0.00 s)
-EM-3 mutant RecountStale [CO-12 (EM-3's first stale clock)]: killed by P-DETECT/stale in SC-SILENT silent orphan (16 steps, 0.00 s)
+EM-3 mutant RecountStale [CO-12 (EM-3's first stale clock)]: killed by P-DETECT/stale in SC-SILENT silent orphan (21 steps, 0.00 s)
 EM-3 mutant NoHold [CO-13 (PC-14)]: killed by P-HOLD in SC-REMOVE removal hold and rotation (17 steps, 0.00 s)
-EM-3 mutant NoRate [CO-14 (MM-26)]: killed by P-NO-INVALID-MERGE in SC-FLOOD self-update flood (15 steps, 0.03 s)
+EM-3 mutant NoRate [CO-14 (MM-26)]: killed by P-NO-INVALID-MERGE in SC-FLOOD self-update flood (15 steps, 0.08 s)
 EM-3 mutant NoRotation [§6.5 (MM-7)]: killed by P-ROTATION in SC-REMOVE removal hold and rotation (15 steps, 0.00 s)
 EM-3 mutant PreCommitGeneration [§6.5 (MM-8)]: killed by P-ROTATION in SC-REMOVE removal hold and rotation (15 steps, 0.00 s)
 EM-3 mutant RejoinRotates [§6.5 (rejoin swap)]: killed by P-REJOIN-SAFE/rotates in SC-OWNER the owner on a dead branch is readmitted (10 steps, 0.00 s)
 EM-3 mutant NoAdmission [§6.2.4 (B)]: killed by P-JOINED in SC-JOIN admission, Welcome after the win (18 steps, 0.00 s)
-EM-3 mutant RejoinNoFreshness [§6.7 (MM-20)]: killed by P-REJOIN-SAFE/live-leaf in SC-REPLAY replayed and re-wrapped KeyPackages (22 steps, 0.00 s)
-EM-3 mutants (full): 37 run, 37 killed
-EM-3 finding F-1 (a) reproduced (design rules):
-EM-3 finding F-1 (b) reproduced (design rules):
+EM-3 mutant RejoinNoFreshness [§6.7 (MM-20)]: killed by P-REJOIN-SAFE/live-leaf in SC-REPLAY replayed and re-wrapped KeyPackages (25 steps, 0.23 s)
+EM-3 mutants (full): 37 run, 34 killed, 3 equivalent
+EM-3 finding F-1 (a) reproduced (pre-S5 design rules):
+EM-3 finding F-1 (b) reproduced (pre-S5 design rules):
 EM-3 finding F-1 (c) reproduced (CO-7's half of the correction alone):
-EM-3 finding F-1 corrected (SettleBeforePass, SelfUpdateAfterSettle): (a) 135009 states, no fork; (b) 26404 states, no stranded committer; (c) 2464745 states, no fork; every flow reached
-EM-3 finding F-2 (a) reproduced (design rules):
-EM-3 finding F-2 (b) reproduced (design rules with F-1's correction):
-EM-3 finding F-2 (c) reproduced (SC-GRIND with its post; design rules):
+EM-3 finding F-1 corrected (SettleBeforePass, SelfUpdateAfterSettle, adopted as D-1): (a) 135009 states, no fork; (b) 26404 states, no stranded committer; (c) 2464745 states, no fork; every flow reached
+EM-3 finding F-2 (a) reproduced (pre-S5 design rules):
+EM-3 finding F-2 (b) reproduced (pre-S5 design rules with F-1's correction):
+EM-3 finding F-2 (c) reproduced (SC-GRIND with its post; pre-S5 design rules):
 EM-3 finding F-2 (a) closed by settle beacons in the scripted probe (SettleBeacon): 984 states, no fork
 EM-3 finding F-2 (b) remains with settle beacons (declared residual):
 EM-3 finding F-2 (c) remains with settle beacons:
-EM-3 finding F-3 (a) reproduced (design rules, F-3 (b) corrected):
-EM-3 finding F-3 (b) reproduced (design rules, F-3 (a) corrected):
+EM-3 finding F-3 (a) reproduced (pre-S5 design rules, F-3 (b) corrected):
+EM-3 finding F-3 (b) reproduced (pre-S5 design rules, F-3 (a) corrected):
 EM-3 finding F-3 (a) as first worded fails ("while progress continues"):
 EM-3 finding F-3 corrected (PartitionOneOther, SplitCountsDraining): 2935125 states, both flags raised
 EM-3 finding F-4 reproduced (the pass-time reading of CO-4 (i)):
 EM-3 finding F-4 consequence (P-FRESH off, the moderator's process may die):
-EM-3 finding F-4 fetched-copy reading clean in the same run: 388122 states
-EM-3 finding F-5 reproduced (design rules):
+EM-3 finding F-4 fetched-copy reading clean in the same run: 298586 states
+EM-3 finding F-5 reproduced (pre-S5 design rules):
 EM-3 finding F-5 corrected (FetchedOwnCopy, with F-1's correction): 67889 states, no stranded committer
 EM-3 corrected SC-CONC concurrent honest commits: 135009 states, 655840 transitions, reach 4/4
 EM-3 corrected SC-LATE late better commit, returning member: 6326276 states, 40755295 transitions, reach 4/4
@@ -126,4 +126,4 @@ EM-3 beacons SC-PARTITION committers cut off: 1414062 states, 4477774 transition
 EM-3 beacons SC-SPAM-DRAIN spam in the draining namespace: 38016 states, 88480 transitions, reach 1/1
 EM-3 beacons SC-REPLAY replayed and re-wrapped KeyPackages: 334115 states, 1436094 transitions, reach 2/2
 EM-3 corrections: 20 controls rerun with F-1's, F-3's and F-5's corrections (full), 19 with F-2's beacons too (pr), 0 failures among them, 0 failures
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 863.03s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1069.09s

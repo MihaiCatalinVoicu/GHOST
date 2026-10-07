@@ -243,19 +243,14 @@ internal object ChannelAd {
 }
 
 /**
- * The committers digest of a channel's current context (S0-15), **learnt from a throwaway open invite**: `roster` does not
- * return it (§19.37 F-S4-2) and `inviteBuild` computes it over the context it loads, writing nothing (§10.2 fn 14 returns
- * no change-set). The invite it builds is erased at once and goes nowhere. Null for a **password** channel — an invite
- * there needs the password, which the engine never holds; its committers learn the digest at their own next invite —
- * and when the call is refused (the member may not invite, the state does not load).
+ * The committers digest of a channel's current context (S0-15), **returned by `roster`** (§19.37 F-S4-2, closed
+ * in S5a: fn 18 outputs the context's digest, so the engine no longer learns it from a throwaway open `inviteBuild` —
+ * which a password channel could never call, leaving its committers unable to admit until their own next invite).
+ * Null only when the call is refused (the state does not load).
  */
 internal object ChannelDigest {
-    fun learn(crypto: org.ghost.crypto.bridge.ChannelCrypto, channelId: ByteArray, rows: List<MlsRow>, gEnv: ByteArray, generation: Long, day: Long): ByteArray? {
-        val built = crypto.inviteBuild(channelId, rows, gEnv, generation.toInt(), day.toInt(), null, false, day.toInt()).valueOrNull()
-            ?: return null
-        built.invite.fill(0)
-        return built.committersDigest
-    }
+    fun learn(crypto: org.ghost.crypto.bridge.ChannelCrypto, channelId: ByteArray, rows: List<MlsRow>, day: Long): ByteArray? =
+        crypto.roster(channelId, rows, day.toInt()).valueOrNull()?.committersDigest
 }
 
 /** The bridge between the store's rows and the facade's (§3.4: Kotlin moves bytes and interprets none). */

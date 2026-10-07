@@ -947,6 +947,9 @@ class ChannelCrypto private constructor(private val handle: Long) {
         val context: ChannelPolicy,
         /** The own leaf. */
         val ownLeaf: Long,
+        /** The digest of the context's `committers` (S0-15): the invite anchor and CO-2 (A)'s equality
+         *  input (§19.37 F-S4-2, S5a: `roster` returns it, so Kotlin needs no throwaway `inviteBuild`). */
+        val committersDigest: ByteArray,
     ) {
         override fun toString(): String = "Roster(epoch=$epoch, members=${members.size})"
     }
@@ -964,6 +967,7 @@ class ChannelCrypto private constructor(private val handle: Long) {
                         it.bytes(MlsField.TREE_HASH),
                         ChannelPolicy.of(it.record(MlsField.CONTEXT)),
                         it.u32(MlsField.LEAF),
+                        it.bytes(MlsField.COMMITTERS_DIGEST),
                     )
                 },
             )

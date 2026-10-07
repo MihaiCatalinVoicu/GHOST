@@ -31,8 +31,8 @@ import java.nio.ByteBuffer
  * consumed nor void, its sponsor is a current member who may invite (CO-2 (A)'s own rule, checked before the native call
  * refuses it, §19.38), its `committers_digest` equals the digest of the committer's
  * current committers (`ch_channel.committers_digest`; **unknown means no admission**, fail closed — finding F-S4-2 of
- * §19.37: `roster` does not return the digest, so the engine knows it only from its own `inviteBuild` or its join anchor),
- * the KeyPackage is canonical with `GhostKpBind.day` in `[day − 7, day + 3]` (`joinVerify` checks the form, purpose,
+ * §19.37, closed in S5a: `roster` returns the digest, so the engine learns it from the roster, not a throwaway
+ * `inviteBuild` its password channel could never call), the KeyPackage is canonical with `GhostKpBind.day` in `[day − 7, day + 3]` (`joinVerify` checks the form, purpose,
  * binding and both signatures natively; the window is checked here), its keyed tag was never seen in the channel
  * (`ch_kp_seen`, over `kp_ref` alone — F-S4-4: the init key is not exposed), in a password channel the invite's
  * `pw_version` equals the context's, the pseudonym is not a current member, no two Adds share an invite, and the member
@@ -184,14 +184,10 @@ internal class ChannelPassStep(
         val committerSet = roster.context.committers.map { it.toList() }.toSet()
         val membersMayInvite = roster.context.flags and ChannelEnv.FLAG_MEMBERS_MAY_INVITE != 0 && !passwordChannel
         // The digest of the committer's current committers (S0-15): kept, or — forgotten by a settle that changed the
-        // committers, or never learnt — learnt again from a throwaway open invite; a password channel's stays unknown
-        // until its committer's next invite, and then nothing is admitted (fail closed, §19.37 F-S4-2).
-        val digest = snapshot.channel.committersDigest ?: if (passwordChannel) {
-            null
-        } else {
-            ChannelDigest.learn(opened.crypto, channelId, rows, snapshot.generation.gEnv, snapshot.generation.generation, day)?.also { d ->
-                env.database.transaction { tx -> stores.channels.setCommittersDigest(tx, channelId, d) }
-            }
+        // committers, or never learnt — taken from `roster`'s output and persisted; a password channel learns it too
+        // (§19.37 F-S4-2, closed in S5a: the throwaway `inviteBuild` it needed the password for is gone).
+        val digest = snapshot.channel.committersDigest ?: ChannelDigest.learn(opened.crypto, channelId, rows, day)?.also { d ->
+            env.database.transaction { tx -> stores.channels.setCommittersDigest(tx, channelId, d) }
         }
         val refused = ArrayList<Refusal>()
         val admissions = ArrayList<Admission>()

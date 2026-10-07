@@ -95,6 +95,17 @@ interface Inbox {
     fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int
 
     /**
+     * The last completed listing pass per relay of [namespace] (Phase 10 design §6.3.1 (a) and §6.4
+     * CO-4 (ii); finding F-S4-1 of §19.37, built in S5a): relay → the monotonic millisecond time
+     * this process last finished listing the namespace from that relay to its tail. Relays never
+     * listed to the tail in this process are absent — a consumer that needs "one listing pass over
+     * every relay of the current generation's set" treats an absent relay as "no pass yet"
+     * (conservative after a process start; the map is in-memory by design, no schema change).
+     * Read-only and wait-free; safe to call outside a transaction.
+     */
+    fun listingTails(namespace: NamespaceId): Map<RelayId, Long>
+
+    /**
      * Forgets the consumed-blob tombstones of a [Consumer.PREKEYS] namespace (Phase 9 design §21.7
      * point 2): a bundle consumed during an earlier establishment must be fetchable again after a
      * reset, a key change or a re-added contact, and re-consuming a bundle is idempotent. Refused

@@ -281,9 +281,9 @@ const MUTANTS: &[(Mutant, &str, Build, &str)] = &[
     (Mutant::NoWindow, "CO-4 (MM-3)", concurrency, "P-FRESH"),
     (
         Mutant::OwnUnverified,
-        "CO-4 (MM-2)",
+        "CO-4 (MM-2, equivalent by D-5)",
         indeterminate,
-        "P-VERIFIED",
+        "EQUIVALENT",
     ),
     (
         Mutant::NoStoreHourAnchor,
@@ -306,13 +306,18 @@ const MUTANTS: &[(Mutant, &str, Build, &str)] = &[
     ),
     (
         Mutant::UnverifiedOwnNoCandidate,
-        "CO-3, CO-4 (a) (round 10b's custody)",
+        "CO-3, CO-4 (a) (round 10b's custody, equivalent under the adopted corrections)",
         indeterminate,
-        "P-CUSTODY/settle",
+        "EQUIVALENT",
     ),
     (Mutant::WelcomeAtPass, "CO-5 (MM-19)", join, "P-WELCOME"),
     (Mutant::NotSticky, "CO-6 (MM-16)", late, "P-STICKY"),
-    (Mutant::Rank255Blocks, "CO-7 (MM-26)", flood, "P-PASS"),
+    (
+        Mutant::Rank255Blocks,
+        "CO-7 (MM-26, equivalent under the adopted corrections)",
+        flood,
+        "EQUIVALENT",
+    ),
     (Mutant::FreshWork, "CO-8 (MM-34)", join, "P-WORKAGE"),
     (Mutant::NoSkip, "CO-9", concurrency, "P-OWN-VALID"),
     (Mutant::DropLoserWork, "CO-10", remove, "P-LIVENESS/remove"),
@@ -366,8 +371,22 @@ const MUTANTS: &[(Mutant, &str, Build, &str)] = &[
     ),
 ];
 
+/// Mutants registered as **equivalent** over the adopted design: expected to **survive** their
+/// scenario. `OwnUnverified` was withdrawn by the owner's D-5 (2026-10-05); the S5a run found
+/// `UnverifiedOwnNoCandidate` (D-5's corrected CO-4 subsumes the demotion it removes) and
+/// `Rank255Blocks` (D-1's corrected CO-7 settles first, so blocking equals the design's delay)
+/// equivalent the same way — each explores exactly its control's state graph. Kept in the registry
+/// (the report check counts 37 mutants); the sites they used to cover are kept covered by the
+/// pre-S5 runs below (`LEGACY_KILL_RUNS`).
+const EQUIVALENT: &[Mutant] = &[
+    Mutant::OwnUnverified,
+    Mutant::UnverifiedOwnNoCandidate,
+    Mutant::Rank255Blocks,
+];
+
 /// Every mutant breaks the check site its row names, as the first violation of a real exhaustive
-/// run (a budget overflow, another property or another site of the same property is not a kill).
+/// run (a budget overflow, another property or another site of the same property is not a kill);
+/// the withdrawn-as-equivalent rows survive, as D-5 records.
 #[test]
 fn em3_every_mutant_is_killed_by_its_named_property() {
     // The report's lines start at column 0 (libtest prints "test <name> ... " first).
@@ -380,8 +399,29 @@ fn em3_every_mutant_is_killed_by_its_named_property() {
         (m, rule, killer, s.cfg.name, r, t.elapsed())
     });
     let mut killed = 0;
+    let mut equivalent = 0;
     let mut failures = Vec::new();
     for (m, rule, killer, name, r, took) in &results {
+        if EQUIVALENT.contains(m) {
+            match r {
+                Ok(o) => {
+                    equivalent += 1;
+                    println!(
+                        "EM-3 mutant {m:?} [{rule}]: EQUIVALENT, survives {name} ({} states) \
+                         (D-5: withdrawn as equivalent)",
+                        o.states
+                    );
+                }
+                Err(stop) => {
+                    println!(
+                        "EM-3 mutant {m:?} [{rule}]: NOT equivalent after all\n{}",
+                        stop.render()
+                    );
+                    failures.push(format!("{m:?}: expected equivalent, got {}", stop.render()));
+                }
+            }
+            continue;
+        }
         match r {
             Err(Stop::Property { violation, trace }) if violation.site == *killer => {
                 killed += 1;
@@ -408,10 +448,11 @@ fn em3_every_mutant_is_killed_by_its_named_property() {
         }
     }
     println!(
-        "EM-3 mutants ({}): {} run, {} killed",
+        "EM-3 mutants ({}): {} run, {} killed, {} equivalent",
         scale_name(),
         results.len(),
-        killed
+        killed,
+        equivalent
     );
     assert!(
         failures.is_empty(),
@@ -517,7 +558,7 @@ fn probes(v: Vec<Probe>) -> Vec<Probed> {
 
 /// F-1's correction, both halves (CO-7's pass, CO-9's self-update).
 fn f1() -> Rules {
-    Rules::DESIGN
+    Rules::LEGACY
         .with_fix(Fix::SettleBeforePass)
         .with_fix(Fix::SelfUpdateAfterSettle)
 }
@@ -535,15 +576,15 @@ fn f1() -> Rules {
 fn em3_finding_f1_a_pass_over_a_held_candidate_forks_the_channel() {
     // The report's lines start at column 0 (libtest prints "test <name> ... " first).
     println!();
-    let mut a = concurrency(Rules::DESIGN, scale());
+    let mut a = concurrency(Rules::LEGACY, scale());
     a.cfg.terminal |= T_HONEST_ONE_BRANCH;
-    let mut fixed = concurrency(f1(), scale());
+    let mut fixed = concurrency(Rules::DESIGN, scale());
     fixed.cfg.terminal |= T_HONEST_ONE_BRANCH;
     let r = probes(vec![
         Probe::Violation(a, "P-ONE-BRANCH"),
-        Probe::Violation(remove_over_held(Rules::DESIGN, scale()), "P-STRANDED"),
+        Probe::Violation(remove_over_held(Rules::LEGACY, scale()), "P-STRANDED"),
         Probe::Violation(
-            concurrency_eligible(Rules::DESIGN.with_fix(Fix::SettleBeforePass), scale()),
+            concurrency_eligible(Rules::LEGACY.with_fix(Fix::SettleBeforePass), scale()),
             "P-ONE-BRANCH",
         ),
         Probe::Clean(fixed),
@@ -551,11 +592,11 @@ fn em3_finding_f1_a_pass_over_a_held_candidate_forks_the_channel() {
         Probe::Clean(concurrency_eligible(f1(), scale())),
     ]);
     println!(
-        "EM-3 finding F-1 (a) reproduced (design rules):\n{}",
+        "EM-3 finding F-1 (a) reproduced (pre-S5 design rules):\n{}",
         r[0].trace()
     );
     println!(
-        "EM-3 finding F-1 (b) reproduced (design rules):\n{}",
+        "EM-3 finding F-1 (b) reproduced (pre-S5 design rules):\n{}",
         r[1].trace()
     );
     println!(
@@ -563,7 +604,7 @@ fn em3_finding_f1_a_pass_over_a_held_candidate_forks_the_channel() {
         r[2].trace()
     );
     println!(
-        "EM-3 finding F-1 corrected (SettleBeforePass, SelfUpdateAfterSettle): (a) {} states, no \
+        "EM-3 finding F-1 corrected (SettleBeforePass, SelfUpdateAfterSettle, adopted as D-1): (a) {} states, no \
          fork; (b) {} states, no stranded committer; (c) {} states, no fork; every flow reached",
         r[3].states(),
         r[4].states(),
@@ -587,11 +628,11 @@ fn em3_finding_f1_a_pass_over_a_held_candidate_forks_the_channel() {
 fn em3_finding_f2_a_late_or_ground_commit_diverts_members_in_a_quiet_channel() {
     // The report's lines start at column 0 (libtest prints "test <name> ... " first).
     println!();
-    let beacons = Rules::DESIGN.with_fix(Fix::SettleBeacon);
+    let beacons = Rules::LEGACY.with_fix(Fix::SettleBeacon);
     let r = probes(vec![
-        Probe::Violation(grind(Rules::DESIGN, scale(), true), "P-ONE-BRANCH"),
+        Probe::Violation(grind(Rules::LEGACY, scale(), true), "P-ONE-BRANCH"),
         Probe::Violation(late_quiet(f1(), scale()), "P-ONE-BRANCH"),
-        Probe::Violation(grind_unanchored(Rules::DESIGN, scale()), "P-ONE-BRANCH"),
+        Probe::Violation(grind_unanchored(Rules::LEGACY, scale()), "P-ONE-BRANCH"),
         Probe::Clean(grind(beacons, scale(), true)),
         Probe::Violation(
             late_quiet(f1().with_fix(Fix::SettleBeacon), scale()),
@@ -600,15 +641,15 @@ fn em3_finding_f2_a_late_or_ground_commit_diverts_members_in_a_quiet_channel() {
         Probe::Violation(grind_unanchored(beacons, scale()), "P-ONE-BRANCH"),
     ]);
     println!(
-        "EM-3 finding F-2 (a) reproduced (design rules):\n{}",
+        "EM-3 finding F-2 (a) reproduced (pre-S5 design rules):\n{}",
         r[0].trace()
     );
     println!(
-        "EM-3 finding F-2 (b) reproduced (design rules with F-1's correction):\n{}",
+        "EM-3 finding F-2 (b) reproduced (pre-S5 design rules with F-1's correction):\n{}",
         r[1].trace()
     );
     println!(
-        "EM-3 finding F-2 (c) reproduced (SC-GRIND with its post; design rules):\n{}",
+        "EM-3 finding F-2 (c) reproduced (SC-GRIND with its post; pre-S5 design rules):\n{}",
         r[2].trace()
     );
     println!(
@@ -639,16 +680,16 @@ fn em3_finding_f2_a_late_or_ground_commit_diverts_members_in_a_quiet_channel() {
 fn em3_finding_f3_scn_cl_detection_claims_fail_as_written() {
     // The report's lines start at column 0 (libtest prints "test <name> ... " first).
     println!();
-    let both = Rules::DESIGN
+    let both = Rules::LEGACY
         .with_fix(Fix::PartitionOneOther)
         .with_fix(Fix::SplitCountsDraining);
     let r = probes(vec![
         Probe::Violation(
-            withheld_removal(Rules::DESIGN.with_fix(Fix::PartitionOneOther), scale()),
+            withheld_removal(Rules::LEGACY.with_fix(Fix::PartitionOneOther), scale()),
             "P-SCN-CL-SPLIT",
         ),
         Probe::Violation(
-            withheld_removal(Rules::DESIGN.with_fix(Fix::SplitCountsDraining), scale()),
+            withheld_removal(Rules::LEGACY.with_fix(Fix::SplitCountsDraining), scale()),
             "P-SCN-CL-PARTITION",
         ),
         Probe::Violation(
@@ -658,11 +699,11 @@ fn em3_finding_f3_scn_cl_detection_claims_fail_as_written() {
         Probe::Clean(withheld_removal(both, scale())),
     ]);
     println!(
-        "EM-3 finding F-3 (a) reproduced (design rules, F-3 (b) corrected):\n{}",
+        "EM-3 finding F-3 (a) reproduced (pre-S5 design rules, F-3 (b) corrected):\n{}",
         r[0].trace()
     );
     println!(
-        "EM-3 finding F-3 (b) reproduced (design rules, F-3 (a) corrected):\n{}",
+        "EM-3 finding F-3 (b) reproduced (pre-S5 design rules, F-3 (a) corrected):\n{}",
         r[1].trace()
     );
     println!(
@@ -724,11 +765,11 @@ fn em3_finding_f5_an_indeterminate_copy_others_hold_strands_its_committer() {
     // The report's lines start at column 0 (libtest prints "test <name> ... " first).
     println!();
     let r = probes(vec![
-        Probe::Violation(indet_competing(Rules::DESIGN, scale()), "P-STRANDED"),
+        Probe::Violation(indet_competing(Rules::LEGACY, scale()), "P-STRANDED"),
         Probe::Clean(indet_competing(f1().with_fix(Fix::FetchedOwnCopy), scale())),
     ]);
     println!(
-        "EM-3 finding F-5 reproduced (design rules):\n{}",
+        "EM-3 finding F-5 reproduced (pre-S5 design rules):\n{}",
         r[0].trace()
     );
     println!(
@@ -740,10 +781,7 @@ fn em3_finding_f5_an_indeterminate_copy_others_hold_strands_its_committer() {
         return;
     }
     // MM-2 under the corrections, at the PR bound's scenarios.
-    let corrected = Rules {
-        mutant: Some(Mutant::OwnUnverified),
-        ..corrections()
-    };
+    let corrected = Rules::mutant(Mutant::OwnUnverified);
     let mut runs = controls(corrected, Scale::Pr);
     runs.push(indet_competing(corrected, Scale::Pr));
     runs.push(remove_over_held(corrected, Scale::Pr));
@@ -770,7 +808,8 @@ fn em3_finding_f5_an_indeterminate_copy_others_hold_strands_its_committer() {
     );
 }
 
-/// F-1's, F-3's and F-5's corrections together (F-2's beacons are an option, not a correction).
+/// F-1's, F-3's and F-5's corrections together over the pre-S5 design — the adopted rule set
+/// (`Rules::DESIGN`), kept as a named helper for the rerun below.
 fn corrections() -> Rules {
     f1().with_fix(Fix::PartitionOneOther)
         .with_fix(Fix::SplitCountsDraining)
@@ -885,8 +924,57 @@ const HAND_BUILT: &[(&str, HandBuilt)] = &[
     ("P-LIVENESS/third-pass", hand_built_third_pass),
 ];
 
+/// The sites the equivalent mutants used to cover are kept covered by the **pre-S5** runs: the
+/// same scenario and mutant over `Rules::LEGACY` (no correction), where the violation fires first
+/// as registered before the switch. Under the adopted design these sites hold by construction
+/// (the corrections made the mutants equivalent), so an uncorrected run is their only breaker —
+/// and deleting the site check must still fail a test.
+fn legacy_kill(build: Build, m: Mutant, site: &str) -> Result<(), props::Violation> {
+    let s = build(
+        Rules {
+            mutant: Some(m),
+            fixes: 0,
+        },
+        Scale::Pr,
+    );
+    match explore(&s.cfg, s.start, budget()) {
+        Err(Stop::Property { violation, .. }) if violation.site == site => Err(violation),
+        Err(stop) => panic!(
+            "the pre-S5 run for {site} broke something else: {}",
+            stop.render()
+        ),
+        Ok(o) => panic!(
+            "the pre-S5 run for {site} was clean after all ({} states)",
+            o.states
+        ),
+    }
+}
+
+fn legacy_verified() -> Result<(), props::Violation> {
+    legacy_kill(indeterminate, Mutant::OwnUnverified, "P-VERIFIED")
+}
+
+fn legacy_custody_settle() -> Result<(), props::Violation> {
+    legacy_kill(
+        indeterminate,
+        Mutant::UnverifiedOwnNoCandidate,
+        "P-CUSTODY/settle",
+    )
+}
+
+fn legacy_pass() -> Result<(), props::Violation> {
+    legacy_kill(flood, Mutant::Rank255Blocks, "P-PASS")
+}
+
+const LEGACY_KILL_RUNS: &[(&str, HandBuilt)] = &[
+    ("P-VERIFIED", legacy_verified),
+    ("P-CUSTODY/settle", legacy_custody_settle),
+    ("P-PASS", legacy_pass),
+];
+
 /// Every check site of `props::SITES` is the expected first violation of a registered run — a
-/// mutant's row, a finding probe, or a hand-built world (run here) — so deleting any check fails a
+/// mutant's row, a finding probe, a hand-built world, or a pre-S5 run for the sites the adopted
+/// corrections made unreachable (run here) — so deleting any check fails a
 /// test (§19.34.1 item 12; the review found five sites and P-JOINED that no run could fire).
 #[test]
 fn em3_every_check_site_fires_in_a_registered_run() {
@@ -899,8 +987,15 @@ fn em3_every_check_site_fires_in_a_registered_run() {
             Ok(()) => panic!("hand-built world for {site} broke nothing"),
         }
     }
+    for &(site, run) in LEGACY_KILL_RUNS {
+        match run() {
+            Err(v) if v.site == site => {}
+            Err(v) => panic!("pre-S5 run for {site} broke {} instead", v.site),
+            Ok(()) => panic!("pre-S5 run for {site} broke nothing"),
+        }
+    }
     let mut uncovered = Vec::new();
-    let mut by = [0usize; 3];
+    let mut by = [0usize; 4];
     for &site in SITES {
         if MUTANTS.iter().any(|row| row.3 == site) {
             by[0] += 1;
@@ -908,11 +1003,18 @@ fn em3_every_check_site_fires_in_a_registered_run() {
             by[1] += 1;
         } else if HAND_BUILT.iter().any(|h| h.0 == site) {
             by[2] += 1;
+        } else if LEGACY_KILL_RUNS.iter().any(|h| h.0 == site) {
+            by[3] += 1;
         } else {
             uncovered.push(site);
         }
     }
     for row in MUTANTS {
+        // The withdrawn-as-equivalent rows (D-5) name no site: they are expected to survive.
+        if EQUIVALENT.contains(&row.0) {
+            assert_eq!(row.3, "EQUIVALENT", "{:?} must name EQUIVALENT", row.0);
+            continue;
+        }
         assert!(
             SITES.contains(&row.3),
             "{:?} names no site: {}",
@@ -925,11 +1027,12 @@ fn em3_every_check_site_fires_in_a_registered_run() {
     }
     println!(
         "EM-3 sites: {} check sites, {} first broken by a mutant, {} by a finding probe, {} by a \
-         hand-built world, {} by none",
+         hand-built world, {} by a pre-S5 run, {} by none",
         SITES.len(),
         by[0],
         by[1],
         by[2],
+        by[3],
         uncovered.len()
     );
     assert!(uncovered.is_empty(), "uncovered check sites: {uncovered:?}");

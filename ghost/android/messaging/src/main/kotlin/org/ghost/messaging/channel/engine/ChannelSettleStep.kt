@@ -317,8 +317,8 @@ internal class ChannelSettleStep(
 
     /**
      * The `ch_channel` mirror of the context (timer, class, password flag, name) and the committers digest, when the
-     * winner changed them. The digest is forgotten, not recomputed: `roster` does not return it (§19.37 F-S4-2), and a
-     * committer with no digest admits nothing until its next `inviteBuild` returns the new one.
+     * winner changed them. The digest is forgotten, not recomputed here: the digest is a Rust derivation (G-DM3), and the
+     * next pass reads it from `roster`'s output (§19.37 F-S4-2, closed in S5a) and persists it.
      */
     private fun mirrorPolicy(tx: SyncTransaction, c: ByteArray, nameEnv: ByteArray?, merge: Merge, content: ContentCipher) {
         val after = merge.after ?: return

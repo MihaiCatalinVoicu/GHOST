@@ -26,6 +26,15 @@ object MlsVectors {
     const val LINK: Int = 11
     const val PANIC_IN_CONTEXT: Int = 12
 
+    /** `[state_key, channel_id, pseudonym_seed, rows, day] → [proposal]`: a real MLS Proposal by
+     *  the member (F-S4-6, MM-30's test entry; `MlsContext::test_proposal`). */
+    const val PROPOSAL: Int = 13
+
+    /** `[state_key, channel_id, pseudonym_seed, not_before(u64), not_after(u64), rows, day] →
+     *  [key_package, commit]`: a commit adding a finite-lifetime (non-canonical) KeyPackage
+     *  (MM-46 / SCN-CM's lifetime cases; `MlsContext::test_finite_lifetime_commit`). */
+    const val FINITE_KP_COMMIT: Int = 14
+
     /** The case runner (the library is loaded by [MlsNative]). */
     @JvmStatic
     external fun run(kind: Int, input: ByteArray): ByteArray?

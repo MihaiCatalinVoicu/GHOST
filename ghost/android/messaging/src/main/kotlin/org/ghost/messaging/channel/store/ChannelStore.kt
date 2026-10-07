@@ -38,8 +38,9 @@ internal class ChannelStore {
         val lastCommitterCommitDay: Long?,
         /**
          * The digest of the committers of the member's current context, as the last native call that returned it gave it
-         * (amended by slice S4, §19.37, F-S4-2): `inviteBuild` at the member's own invite, the invite's anchor at its
-         * join. `null` while the member has not learnt it; a committer admits nothing then (§6.2.4 (B), fail closed).
+         * (amended by slice S4, §19.37, F-S4-2; closed in S5a): `roster` returns it (fn 18), the invite's anchor at the
+         * member's join. `null` while the member has not learnt it; a committer admits nothing then (§6.2.4 (B), fail
+         * closed).
          */
         val committersDigest: ByteArray? = null,
     ) {
@@ -202,8 +203,9 @@ internal class ChannelStore {
     }
 
     /**
-     * The committers digest of the current context (slice S4, §19.37): written by `CH-INVITE` from `inviteBuild` and by
-     * `CH-JOIN` from the anchor the Welcome passed; `null` forgets it (a settle that changes the committers, S5).
+     * The committers digest of the current context (slice S4, §19.37; closed in S5a): written from `roster`'s output by
+     * `CH-CREATE` and the pass, by `CH-INVITE` from `inviteBuild` and by `CH-JOIN` from the anchor the Welcome passed;
+     * `null` forgets it (a settle that changes the committers, S5).
      */
     fun setCommittersDigest(tx: SyncTransaction, channelId: ByteArray, digest: ByteArray?): Boolean {
         Fields.bytesOrNull("ch_channel.committers_digest", digest, 32)

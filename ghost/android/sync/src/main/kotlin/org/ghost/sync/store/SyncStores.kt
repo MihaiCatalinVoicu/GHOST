@@ -55,6 +55,7 @@ class SyncStores(
     internal val fundingStore = FundingStore()
     internal val statusStore = StatusStore(capabilityStore, registrationStore)
     internal val gc = Gc(outboxStore, capabilityStore, registrationStore)
+    internal val listingTailStore = ListingTailStore()
 
     private fun SyncTransaction.checked(): SyncTransaction {
         requireActive(database)
@@ -101,6 +102,9 @@ class SyncStores(
 
         override fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int =
             inboxStore.reofferDeferred(tx.checked(), namespace, clock.epochSeconds())
+
+        override fun listingTails(namespace: NamespaceId): Map<RelayId, Long> =
+            listingTailStore.of(namespace)
 
         override fun forgetConsumed(tx: SyncTransaction, namespace: NamespaceId): Int =
             inboxStore.forgetConsumed(tx.checked(), namespace)
