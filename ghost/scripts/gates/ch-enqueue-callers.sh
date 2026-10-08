@@ -24,7 +24,7 @@
 # of the same name anywhere else has no entry.
 #
 # **A second rule, one frame lower** (the S8 review's `STEP_TRIGGERS` of G-DM2, for the channel steps): the entry
-# points that reach those calls — `ChannelPostStep.compose`/`encryptPending`/`retryPost`, `ChannelPassStep.admit`/
+# points that reach those calls — `ChannelPostStep.compose`/`encryptPending`/`retryPost`, `ChannelPassStep.admit`/`removeMember`/
 # `runScheduledPasses`/`scheduleAtSessionStart`, `ChannelSettleStep.settleDue`, `ChannelSweepStep.sweepJoins` — are
 # written only in the files that declare them, in `ChannelEngine.kt` (the user actions and the actor's pass, whose
 # time-triggered steps it gates) and in `ChannelInviteStep.kt` (CH-INVITE's post). A receive or join step that held a
@@ -99,7 +99,7 @@ NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
 ENGINE_DIR_GLOB='android/messaging/src/*/org/ghost/messaging/channel/engine/*'
 
 # The second rule's entry points and the files that may write them.
-CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins'
+CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins'
 CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt'
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.

@@ -347,6 +347,27 @@ internal class ChannelStore {
         return out
     }
 
+    /** Every schedule row (CO-8, CO-9): the session-start scheduler's view; these tables carry no expiry filter. */
+    fun schedules(sql: SqlExecutor): List<ScheduleRow> {
+        val out = ArrayList<ScheduleRow>()
+        sql.query(SCHEDULES) { r -> out += readSchedule(r) }
+        return out
+    }
+
+    /** The earliest minute a scheduled pass is due at (the actor's next wake), or null when nothing is scheduled. */
+    fun nextPassDue(sql: SqlExecutor): Long? {
+        var due: Long? = null
+        sql.query(NEXT_PASS_DUE) { r -> due = r.long(0) }
+        return due
+    }
+
+    private fun readSchedule(r: SqlExecutor.Row) = ScheduleRow(
+        channelId = r.blob(0),
+        nextSelfupdateDay = r.long(1),
+        lastOwnCommitDay = if (r.isNull(2)) null else r.long(2),
+        nextPassMinute = if (r.isNull(3)) null else r.long(3),
+    )
+
     companion object {
         private const val CHANNEL_COLUMNS =
             "channel_id, state, split_suspected, partition_suspected, stale_suspected, pw_required, generation, " +
@@ -366,5 +387,13 @@ internal class ChannelStore {
         const val DUE_PASSES: String =
             "SELECT channel_id FROM ch_schedule WHERE next_pass_minute IS NOT NULL AND next_pass_minute <= ? " +
                 "ORDER BY next_pass_minute, channel_id LIMIT ?"
+
+        private const val SCHEDULE_COLUMNS: String =
+            "channel_id, next_selfupdate_day, last_own_commit_day, next_pass_minute"
+
+        const val SCHEDULES: String = "SELECT $SCHEDULE_COLUMNS FROM ch_schedule ORDER BY channel_id"
+
+        const val NEXT_PASS_DUE: String =
+            "SELECT min(next_pass_minute) FROM ch_schedule WHERE next_pass_minute IS NOT NULL"
     }
 }

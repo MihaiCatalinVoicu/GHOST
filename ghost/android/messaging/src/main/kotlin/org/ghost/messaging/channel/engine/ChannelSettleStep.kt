@@ -133,6 +133,9 @@ internal class ChannelSettleStep(
         val after: ChannelPolicy?,
         val afterDigest: ByteArray?,
         val committer: Boolean,
+        /** The own candidate of the epoch, when one was held: its rank (CO-9's retry) and the new leaf's box key. */
+        val own: CandidateStore.CandidateRow?,
+        val ownBoxPk: ByteArray?,
     )
 
     /** One admission the winner made: what the settle records about it. */
@@ -306,10 +309,16 @@ internal class ChannelSettleStep(
         // candidate cannot be abandoned: its committer's own blobs are never fetched back).
         val viable = candidates.filter { it.sender.toList() !in movedOn }
         if (viable.isEmpty()) return null
+        // CO-3: the winner maximises the successor senders, then minimises `(rank, hash)`. `maxWith`
+        // carries the comparison, so more successors must compare greater (`sa - sb`) and the
+        // ascending `(rank, hash)` order must be inverted in the fallback (S5b2: both halves were
+        // backwards — a plain two-candidate tie settled on the worst rank at every member, and two
+        // foreign candidates with different successor counts settled on the fewer — SCN-CD's shapes;
+        // S5b1's suites never held those cases, the demotion and adoption rules compare explicitly).
         val byCo3 = Comparator<CandidateStore.CandidateRow> { a, b ->
             val sa = counts[a.hash.toList()] ?: 0
             val sb = counts[b.hash.toList()] ?: 0
-            if (sa != sb) sb - sa else ChannelReceiveStep.CANDIDATE_ORDER.compare(a, b)
+            if (sa != sb) sa - sb else ChannelReceiveStep.CANDIDATE_ORDER.compare(b, a)
         }
         val foreignViable = viable.filter { !it.own }
         val bestForeign = foreignViable.maxWithOrNull(byCo3)
@@ -380,7 +389,8 @@ internal class ChannelSettleStep(
         } else {
             null
         }
-        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer)
+        val ownBoxPk = afterRoster?.members?.firstOrNull { it.pseudonym.contentEquals(opened.pseudonym) }?.boxPk
+        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk)
     }
 
     /** Lexicographic byte order: the deterministic order of the held blobs and the trial keys. */
@@ -466,13 +476,23 @@ internal class ChannelSettleStep(
                     )
                     stores.posts.insertOp(tx, operationId, c, OpPurpose.WELCOME, w.kpRef)
                 }
-                // The update path's fresh leaf key replaces the current one (§19.17).
-                val boxEnv = winner.boxEnv
-                if (boxEnv != null) {
-                    stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
-                    stores.members.insertBoxKey(tx, c, framed.boxPk, boxEnv)
-                }
             }
+            // The update path's fresh leaf key replaces the current one (§19.17) — on every own winning
+            // commit, Welcomes or none: a PCS, Remove or self-update commit refreshes the leaf too (§6.8's
+            // force_self_update). The new leaf's box public key comes from the merged state (a welcome-less
+            // commit keeps no `welcome_env` framing to read it from).
+            val boxEnv = winner.boxEnv
+            if (boxEnv != null && merge.ownBoxPk != null) {
+                stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
+                stores.members.insertBoxKey(tx, c, merge.ownBoxPk, boxEnv)
+            }
+        } else if (!winner.own && merge.own != null && merge.own.rank == NOT_A_COMMITTER) {
+            // CO-9: the self-update lost the tie-break — the retry fires at the next session after 24 h
+            // (day-granular, what `ch_schedule.next_selfupdate_day` can say). A FAILED op (no copy could
+            // exist) never reaches here: the candidate was cleared by custody, and the pass already armed
+            // the next period's slot.
+            val row = stores.channels.schedule(tx.sql, c)
+            stores.channels.putSchedule(tx, c, day + 1, row?.lastOwnCommitDay ?: day, row?.nextPassMinute)
         }
         stores.candidates.deleteEpoch(tx, c, e)
         for (g in stores.generations.live(tx.sql, c, day)) sync.inbox.reofferDeferred(tx, NamespaceId(g.namespaceId))

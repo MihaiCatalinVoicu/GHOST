@@ -214,6 +214,13 @@ internal object ChannelTime {
     fun retentionDays(timerCode: Int): Long = if (timerCode in 1..3) 1 else 2
 
     /**
+     * The PCS cadence of CO-8 and §6.8: a committer's empty PCS commit when its last commit is at least this many
+     * days old — 7 days, or 1 day in channels with timers ≤ 1 d (timer codes 1 … 3; Q36, §19.19: the daily cadence
+     * of short-timer channels is rank 0's alone).
+     */
+    fun pcsDays(timerCode: Int): Long = if (timerCode in 1..3) 1 else 7
+
+    /**
      * The shorter of two timers (§5.5 "a receiver deletes a post after min(its timer_code, the channel timer of the post's
      * epoch)"): the codes grow with the duration, and 0 is "off", the longest of all.
      */
@@ -279,6 +286,24 @@ internal object MlsRows {
     }
 
     private fun key(scope: Int, key: ByteArray): String = "$scope:" + key.joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * Seeds `ch_schedule` for a channel that has just become `active` (`CH-CREATE`, `CH-JOIN`): the PCS clock's
+ * `last_own_commit_day` is [day] (the member's leaf is fresh), the self-update slot is [day]'s period's
+ * ([ChannelSchedule]). False when the seen key is unavailable (the caller's transaction is unaffected; the
+ * session-start scheduler seeds lazily then).
+ */
+internal fun seedSchedule(env: ChannelEnv, tx: org.ghost.sync.api.SyncTransaction, channelId: ByteArray, day: Long): Boolean {
+    val seenKey = env.keys.seenKey() ?: return false
+    try {
+        env.stores.channels.putSchedule(
+            tx, channelId, ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), seenKey), day, null,
+        )
+        return true
+    } finally {
+        seenKey.fill(0)
+    }
 }
 
 /**

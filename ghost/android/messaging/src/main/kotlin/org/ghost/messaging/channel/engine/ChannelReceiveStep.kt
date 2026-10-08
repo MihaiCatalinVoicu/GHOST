@@ -899,7 +899,7 @@ internal class ChannelReceiveStep(
                     val hash = blob.hash.toByteArray()
                     stores.joins.insertRequest(
                         tx, channel.channelId, hash, generation.generation, type, invite.inviteId,
-                        env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body), invite.expiryDay,
+                        env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body), invite.expiryDay, day,
                     )
                     sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 }

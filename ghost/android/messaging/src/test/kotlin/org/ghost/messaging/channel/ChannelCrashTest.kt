@@ -390,4 +390,118 @@ class ChannelCrashTest {
         }
         assertEquals(events, crashed)
     }
+
+    /** The world just before the owner's user-action Remove of a committer (slice S5b2's `CH-PASS`): bob is rank 1, the channel is current, no candidate held. */
+    private fun beforeRemove(): Frozen {
+        val w = ChannelWorld()
+        try {
+            val ownerFile = folder.newFile("owner-before-remove.db").also { it.delete() }
+            val bobFile = folder.newFile("bob-before-remove.db").also { it.delete() }
+            val owner = w.client("owner", path = ownerFile.absolutePath)
+            val bob = w.client("bob", path = bobFile.absolutePath)
+            val id = ChannelScenes.channelOf(w, owner, bob)
+            // bob at rank 1 (a context change, epoch 2), so the Remove drops a committer key.
+            val before = ChannelAdversary.policy(owner, id)
+            val ownerP = owner.contexts.open(id.toByteArray())!!.pseudonym
+            val bobP = bob.contexts.open(id.toByteArray())!!.pseudonym
+            val after = org.ghost.crypto.bridge.ChannelPolicy(
+                before.channelId, before.sizeClass, before.timerCode, before.timerVersion, before.historyPolicy,
+                before.flags, before.idleEvictDays, before.pwVersion, before.name, listOf(ownerP, bobP), before.funders,
+            )
+            val change = ChannelAdversary.commit(owner, id, after)
+            w.relay.holdAt = { name, s -> s.purpose == "committers" && name == "owner" }
+            ChannelAdversary.stageOwn(owner, id, change, rank = 0)
+            ChannelAdversary.inject(w, owner, id, change, "committers")
+            w.quiesce()
+            w.advance(21 * DmWorld.MINUTE)
+            w.pump()
+            for (c in w.clients) c.timePass()
+            w.quiesce()
+            assertEquals(2L, owner.channel(id)!!.epoch)
+            val relay = w.relay.copy()
+            val now = w.now
+            w.close()
+            return Frozen(ownerFile, bobFile, relay, now, id, bobP)
+        } finally {
+            w.close()
+        }
+    }
+
+    /**
+     * **The Remove pass's crash singles** (Phase 10 design §12.4, CS-C1/CS-C2; slice S5b2): a process death at
+     * every event of the user-action `CH-PASS` that removes a committer — the settle-first check, the native
+     * commit, the candidate, the op, the schedule — then a reboot and the pass again. After every crash:
+     * integrity; the channel is as it was (no own candidate, bob a committer) or the commit is whole (the own
+     * candidate, the op, the schedule's last-own-commit day); the retried pass removes bob, the settle merges the
+     * removal everywhere, and the epoch is final.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheRemovePassLeavesNoCommitOrAWholeOneAndBobIsRemoved() {
+        val frozen = beforeRemove()
+        val bobP = frozen.link
+        val events = thawOwner(frozen, 1).let { t ->
+            try {
+                t.crash.reset()
+                assertEquals(org.ghost.messaging.channel.engine.ChannelEngine.RemoveResult.REMOVED, t.owner.engine.remove(frozen.channel, bobP))
+                val seen = t.crash.count
+                assertEquals(1L, t.owner.count("ch_candidate", "own = 1"))
+                seen
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertTrue("the Remove pass raised $events events", events >= 10)
+        println("SCN-CD crash singles: the Remove pass (CH-PASS) raises $events events")
+        var crashed = 0
+        for (k in 1..events) {
+            val t = thawOwner(frozen, 1)
+            try {
+                t.crash.reset()
+                t.crash.armAt = k
+                try {
+                    t.owner.engine.remove(frozen.channel, bobP)
+                    fail("no crash at event $k of $events")
+                } catch (e: SimulatedCrash) {
+                    crashed++
+                }
+                val owner = t.reboot(2)
+                assertEquals("after a crash at $k: ${owner.integrity()}", emptyList<String>(), owner.integrity())
+                val whole = owner.count("ch_candidate", "own = 1") == 1L
+                if (!whole) {
+                    assertEquals("crash at $k", 0L, owner.count("ch_outbound_op", "purpose = 'commit'"))
+                    assertEquals("crash at $k", 2, ChannelAdversary.policy(owner, frozen.channel).committers.size)
+                } else {
+                    assertEquals("crash at $k", 1L, owner.count("ch_outbound_op", "purpose = 'commit'"))
+                    assertEquals("crash at $k", org.ghost.messaging.engine.DmTime.day(t.world.now), ownerScheduleDay(owner, frozen.channel))
+                }
+                // A whole commit finishes itself: the op's outcome verifies the candidate (CO-4) and the
+                // settle merges the removal. A partial one retries the user action.
+                if (!whole) {
+                    assertEquals("crash at $k", org.ghost.messaging.channel.engine.ChannelEngine.RemoveResult.REMOVED, owner.engine.remove(frozen.channel, bobP))
+                }
+                t.world.quiesce()
+                t.world.advance(21 * DmWorld.MINUTE)
+                t.world.pump()
+                owner.timePass()
+                t.bob.timePass()
+                t.world.quiesce()
+                assertEquals("crash at $k", ChannelState.REMOVED, t.bob.channel(frozen.channel)!!.state)
+                assertEquals("crash at $k", 3L, owner.channel(frozen.channel)!!.epoch)
+                assertEquals("crash at $k", 1, ChannelAdversary.policy(owner, frozen.channel).committers.size)
+                assertEquals(emptyList<String>(), owner.integrity())
+                assertEquals(emptyList<String>(), t.bob.integrity())
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertEquals(events, crashed)
+    }
+
+    /** The schedule row's `last_own_commit_day` (what a whole Remove pass wrote). */
+    private fun ownerScheduleDay(owner: ChannelClient, id: ChannelId): Long =
+        owner.database.transaction { tx -> owner.channelStores.channels.schedule(tx.sql, id.toByteArray()) }!!.lastOwnCommitDay!!
 }

@@ -88,11 +88,11 @@ class ChannelResidueTest {
                 tx, w.ch, key(0x91), JoinType.JOIN, id(0x31), 0, today - 1,
                 ns = key(0x92), jkEnv = chBytes(60, 0x93), rJoin = key(0x94), committersDigest = key(0x95),
             )
-            s.joins.insertRequest(tx, w.ch, key(0x92), 0, JoinType.JOIN, id(0x31), chBytes(500, 1), today - 1)
+            s.joins.insertRequest(tx, w.ch, key(0x92), 0, JoinType.JOIN, id(0x31), chBytes(500, 1), today - 1, today - 2)
             s.joins.markKpSeen(tx, w.ch, chBytes(16, 7), today - 1)
             s.invites.insertIssued(tx, w.ch, id(0x31), key(0x93), key(0x94), chBytes(64, 1), chBytes(32, 2), null, today - 1)
             s.invites.insertOwn(tx, id(0x31), w.ch, chBytes(363, 1), today - 1)
-            s.members.record(tx, w.ch, RequestKind.LEAVE, key(0x95), null, today - 1)
+            s.members.record(tx, w.ch, RequestKind.LEAVE, key(0x95), null, today - 1, today - 2)
             // membership metadata that outlives them
             s.invites.putSponsor(tx, w.ch, key(0x82), key(0x94), id(0x31), today - 20)
             s.members.putRefresh(tx, w.ch, key(0x82), today - 2)

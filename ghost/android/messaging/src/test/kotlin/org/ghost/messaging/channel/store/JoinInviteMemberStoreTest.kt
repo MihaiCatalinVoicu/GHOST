@@ -80,8 +80,8 @@ class JoinInviteMemberStoreTest {
                 )
             }
         }
-        refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.REJOIN, inv(1), chBytes(500, 1), 20_007) } }
-        refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.JOIN, null, chBytes(500, 1), 20_007) } }
+        refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.REJOIN, inv(1), chBytes(500, 1), 20_007, 20_000) } }
+        refused { w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.JOIN, null, chBytes(500, 1), 20_007, 20_000) } }
         assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) {
             w.tx {
                 w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 1)
@@ -101,10 +101,10 @@ class JoinInviteMemberStoreTest {
     @Test
     fun theRequestsOfAChannelAreInArrivalOrderUntilTheirDayAndAtMostSixtyFour() = StoreWorld().use { w ->
         w.channel()
-        w.tx { w.stores.joins.insertRequest(it, w.ch, key(3), 0, JoinType.JOIN, inv(3), chBytes(500, 3), 20_009) }
-        w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007) }
-        w.tx { w.stores.joins.insertRequest(it, w.ch, key(2), 0, JoinType.REJOIN, null, chBytes(500, 2), 20_007) }
-        w.tx { w.stores.joins.insertRequest(it, w.ch, key(4), 0, JoinType.JOIN, inv(4), chBytes(500, 4), 19_999) }
+        w.tx { w.stores.joins.insertRequest(it, w.ch, key(3), 0, JoinType.JOIN, inv(3), chBytes(500, 3), 20_009, 20_000) }
+        w.tx { w.stores.joins.insertRequest(it, w.ch, key(1), 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007, 20_000) }
+        w.tx { w.stores.joins.insertRequest(it, w.ch, key(2), 0, JoinType.REJOIN, null, chBytes(500, 2), 20_007, 20_000) }
+        w.tx { w.stores.joins.insertRequest(it, w.ch, key(4), 0, JoinType.JOIN, inv(4), chBytes(500, 4), 19_999, 19_990) }
         // §6.2.3's "in arrival order": the order of insertion, whatever the hashes and the days (3, 1, 2 here)
         assertEquals(listOf(key(3), key(1), key(2)).map { it.toList() }, w.stores.joins.requests(w.db, w.ch, today).map { it.hash.toList() })
         assertNull(w.stores.joins.request(w.db, w.ch, key(4), today))
@@ -116,17 +116,17 @@ class JoinInviteMemberStoreTest {
         assertNull(w.stores.joins.requestOfInvite(w.db, w.ch, inv(4), today))
         assertNull(w.stores.joins.requestOfInvite(w.db, w.ch, inv(9), today))
         // an invite consumed: every other request that names it is dropped
-        w.tx { w.stores.joins.insertRequest(it, w.ch, key(5), 0, JoinType.RESTORE, inv(1), chBytes(500, 5), 20_008) }
+        w.tx { w.stores.joins.insertRequest(it, w.ch, key(5), 0, JoinType.RESTORE, inv(1), chBytes(500, 5), 20_008, 20_000) }
         assertEquals(2, w.tx { w.stores.joins.deleteRequestsOfInvite(it, w.ch, inv(1)) })
         assertTrue(w.tx { w.stores.joins.deleteRequest(it, w.ch, key(2)) })
         assertFalse(w.tx { w.stores.joins.deleteRequest(it, w.ch, key(2)) })
         // two rows are left (one of them expired and not yet swept: the bound counts it, as the trigger does)
         for (i in 0 until 62) {
-            w.tx { w.stores.joins.insertRequest(it, w.ch, ByteArray(32).also { b -> b[0] = 0x55; b[1] = i.toByte() }, 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007) }
+            w.tx { w.stores.joins.insertRequest(it, w.ch, ByteArray(32).also { b -> b[0] = 0x55; b[1] = i.toByte() }, 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007, 20_000) }
         }
         assertEquals(64L, w.count("ch_join_request"))
         assertEquals(ChannelStoreError.LIMIT, assertThrows(ChannelStoreException::class.java) {
-            w.tx { w.stores.joins.insertRequest(it, w.ch, key(9), 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007) }
+            w.tx { w.stores.joins.insertRequest(it, w.ch, key(9), 0, JoinType.JOIN, inv(1), chBytes(500, 1), 20_007, 20_000) }
         }.error)
     }
 
@@ -271,18 +271,18 @@ class JoinInviteMemberStoreTest {
     @Test
     fun aCommittersPendingWorkIsRecordedOnceReadUntilItsDayAndDroppedAfterIt() = StoreWorld().use { w ->
         w.channel()
-        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_007) })
-        assertFalse("the first record stands (what CO-8's work-age rule measures is F-11, not this day)", w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_050) })
+        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_007, 20_000) })
+        assertFalse("the first record stands (what CO-8's work-age rule measures is F-11, not this day)", w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_050, 20_040) })
         assertEquals(20_007L, w.stores.members.request(w.db, w.ch, RequestKind.LEAVE, key(1), today)!!.untilDay)
-        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.POLICY, byteArrayOf(0), chBytes(100, 2), 20_010) })
-        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.REMOVE, key(2), null, 19_999) })
+        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.POLICY, byteArrayOf(0), chBytes(100, 2), 20_010, 20_000) })
+        assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.REMOVE, key(2), null, 19_999, 19_990) })
         assertEquals(listOf(RequestKind.LEAVE, RequestKind.POLICY), w.stores.members.requests(w.db, w.ch, today).map { it.kind })
         assertNull(w.stores.members.request(w.db, w.ch, RequestKind.REMOVE, key(2), today))
         assertEquals(listOf(RequestKind.REMOVE), w.stores.members.expiredRequests(w.db, today, 10).map { it.kind })
         assertTrue(w.tx { w.stores.members.deleteRequest(it, w.ch, RequestKind.LEAVE, key(1)) })
         assertFalse(w.tx { w.stores.members.deleteRequest(it, w.ch, RequestKind.LEAVE, key(1)) })
         assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) {
-            w.tx { w.stores.members.record(it, w.ch, RequestKind.POLICY, ByteArray(0), null, 20_010) }
+            w.tx { w.stores.members.record(it, w.ch, RequestKind.POLICY, ByteArray(0), null, 20_010, 20_000) }
         }.error)
     }
 

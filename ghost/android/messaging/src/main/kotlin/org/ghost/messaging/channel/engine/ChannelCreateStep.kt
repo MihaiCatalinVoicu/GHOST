@@ -112,6 +112,9 @@ internal class ChannelCreateStep(
                 stores.mls.apply(tx, channelId, MlsRows.changes(created.changes))
                 digest?.let { stores.channels.setCommittersDigest(tx, channelId, it) }
                 stores.members.insertBoxKey(tx, channelId, created.boxPk, created.boxEnv)
+                // CO-8, CO-9's schedule: the PCS clock starts at the creation day, the self-update slot is the
+                // current period's (a later rank-255 member — a resigned committer — keeps its slots from here).
+                seedSchedule(env, tx, channelId, day)
                 val ns = NamespaceId(g.ns)
                 sync.namespaces.register(
                     tx = tx,

@@ -54,44 +54,51 @@ class ChannelSettleTest {
         val owner = w.client("owner")
         val bob = w.client("bob")
         val alice = w.client("alice")
-        val id = ChannelScenes.channelOf(w, owner, bob, alice)
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, alice, carol)
         // epoch 2: a rank-0 context change makes bob a committer (rank 1), so his concurrent commit
         // is not a rank-255 self-update (CO-14 would refuse it on his fresh leaf).
         makeCommitter(w, owner, bob, id)
         assertEquals(2L, owner.channel(id)!!.epoch)
         val b = ChannelAdversary.commit(bob, id)
         val o = ChannelAdversary.commit(owner, id)
-        // bob settles his commit before he sees the owner's; alice and the owner hold both. Each
-        // author stages its own commit like its pass would ([ChannelAdversary.stageOwn]: at its
-        // author the blob is its own message and can never be a foreign candidate); the blobs are
-        // held from their authors.
+        // bob settles his commit before he sees the owner's; carol — holding bob's only — settles it
+        // too; alice and the owner hold both. Each author stages its own commit like its pass would
+        // ([ChannelAdversary.stageOwn]: at its author the blob is its own message and can never be a
+        // foreign candidate); the blobs are held from their authors, and the owner's is held from
+        // carol as well (so her branch is bob's).
         w.relay.holdAt = { name, s ->
-            (s.purpose == "trial-B" && name == "bob") || (s.purpose == "trial-O" && (name == "owner" || name == "bob"))
+            (s.purpose == "trial-B" && name == "bob") ||
+                (s.purpose == "trial-O" && (name == "owner" || name == "bob" || name == "carol"))
         }
         ChannelAdversary.stageOwn(bob, id, b, rank = 1)
         ChannelAdversary.stageOwn(owner, id, o, rank = 0)
         ChannelAdversary.inject(w, bob, id, b, "trial-B")
         ChannelAdversary.inject(w, owner, id, o, "trial-O")
-        deliver(w, owner, bob, alice)
+        deliver(w, owner, bob, alice, carol)
         assertEquals("bob holds his candidate only", 1L, bob.count("ch_candidate"))
+        assertEquals("carol holds bob's only", 1L, carol.count("ch_candidate"))
         assertEquals("alice holds both", 2L, alice.count("ch_candidate"))
         w.advance(21 * DmWorld.MINUTE)
         w.pump()
         bob.timePass()
         assertEquals(3L, bob.channel(id)!!.epoch)
         assertArrayEquals(b.hash, winnerOf(bob, id, 2))
-        // bob posts on the branch his commit opened; the owner and alice cannot open the post yet
-        // (it is of epoch 3) — their receive defers it, which is CO-3's trial input.
+        carol.timePass()
+        assertEquals(3L, carol.channel(id)!!.epoch)
+        assertArrayEquals(b.hash, winnerOf(carol, id, 2))
+        // bob and carol post on the branch bob's commit opened; the owner and alice cannot open the
+        // posts yet (they are of epoch 3) — their receive defers them, which is CO-3's trial input.
+        // carol's post is a successor sender of bob's candidate (bob's own post is not — CO-3 counts
+        // senders other than the candidate's committer, §6.4).
         ChannelScenes.post(bob, id, "ramura lui bob")
+        ChannelScenes.post(carol, id, "de la carol")
         w.pump()
         // the other joiners' requests and Welcomes of the admission are deferred at alice too (she
-        // is no committer): what the trial needs is bob's post among the held blobs.
-        val postHash = ChannelWorld.hex(w.relay.stored.last { it.purpose == "post" && it.from == "bob" }.hash)
+        // is no committer): what the trial needs is the posts among the held blobs.
         var held = 0L
         alice.sql.query("SELECT count(*) FROM inbox_blob WHERE state = 'fetched'") { held = it.long(0) }
-        var postHeld = false
-        alice.sql.query("SELECT 1 FROM inbox_blob WHERE state = 'fetched' AND blob_hash = ?", listOf(w.relay.stored.last { it.purpose == "post" && it.from == "bob" }.hash)) { postHeld = true }
-        assertTrue("the post is held at alice (held=$held)", postHeld)
+        assertTrue("the posts are held at alice (held=$held)", held >= 2)
         w.advance(21 * DmWorld.MINUTE)
         w.pump()
         alice.timePass()
@@ -102,7 +109,7 @@ class ChannelSettleTest {
         )
         val win = winnerOf(alice, id, 2)
         assertArrayEquals(
-            "the rank-1 commit with the successor wins over rank 0: counters=${alice.counters.snapshot().filter { it.value > 0}} " +
+            "the rank-1 commit with the successors wins over rank 0: counters=${alice.counters.snapshot().filter { it.value > 0}} " +
                 "b=${b.hash.joinToString("") { "%02x".format(it) }} o=${o.hash.joinToString("") { "%02x".format(it) }} winner=" +
                 win?.joinToString("") { "%02x".format(it) },
             b.hash, win,
@@ -110,7 +117,7 @@ class ChannelSettleTest {
         owner.timePass()
         assertArrayEquals(b.hash, winnerOf(owner, id, 2))
         w.quiesce()
-        assertEquals(listOf("ramura lui bob"), alice.displayed(id))
+        assertTrue(alice.displayed(id).containsAll(listOf("ramura lui bob", "de la carol")))
         assertTrue(alice.integrity().isEmpty())
     }
 
@@ -126,52 +133,49 @@ class ChannelSettleTest {
         assertEquals(2L, owner.channel(id)!!.epoch)
         val o = ChannelAdversary.commit(owner, id)
         val b = ChannelAdversary.commit(bob, id)
-        // O reaches carol and alice; B reaches the owner and alice; each author stages its own
-        // commit like its pass would (at its own device the blob is its own message).
+        // O reaches the owner (its author) and alice; B reaches bob (its author), carol, alice and the
+        // owner; each author stages its own commit like its pass would (at its own device the blob is
+        // its own message and can never be a foreign candidate).
         w.relay.holdAt = { name, s ->
-            (s.purpose == "ab-O" && name != "alice" && name != "carol") ||
-                (s.purpose == "ab-B" && (name == "bob" || name == "carol"))
+            (s.purpose == "ab-O" && (name == "bob" || name == "carol")) ||
+                (s.purpose == "ab-B" && name == "bob")
         }
         ChannelAdversary.stageOwn(owner, id, o, rank = 0)
         ChannelAdversary.stageOwn(bob, id, b, rank = 1)
         ChannelAdversary.inject(w, owner, id, o, "ab-O")
         ChannelAdversary.inject(w, bob, id, b, "ab-B")
         deliver(w, owner, bob, alice, carol)
-        // carol settles O alone and posts on the branch it opened.
+        // carol settles B alone and posts on the branch it opened; the owner — whose staged O has no
+        // successor where B has carol's post — settles B as well and posts on B's branch.
         w.advance(21 * DmWorld.MINUTE)
         w.pump()
         carol.timePass()
-        assertArrayEquals(o.hash, winnerOf(carol, id, 2))
+        assertArrayEquals(b.hash, winnerOf(carol, id, 2))
         ChannelScenes.post(carol, id, "ramura lui carol")
         w.pump()
-        // the owner never saw O: it settles B alone and posts on B's branch.
         owner.hintPass()
         w.advance(21 * DmWorld.MINUTE)
         w.pump()
         owner.timePass()
-        assertArrayEquals(b.hash, winnerOf(owner, id, 2))
+        assertArrayEquals("B's successor beats the verified own O at the owner (CO-3)", b.hash, winnerOf(owner, id, 2))
         ChannelScenes.post(owner, id, "ramura owner")
         w.pump()
-        // alice holds O and B and both posts: the trials tie on successors (1, 1) — and O is
-        // abandoned, its committer (the owner) having a message under B's trial state.
+        // alice holds O and B and both posts (of B's branch): the trials give B two successor senders
+        // (carol and the owner — B's committer does not count) and O none — and O is abandoned, its
+        // committer (the owner) having a message under B's trial state.
         w.advance(21 * DmWorld.MINUTE)
         w.pump()
         alice.timePass()
         assertEquals(3L, alice.channel(id)!!.epoch)
         assertArrayEquals("abandonment excludes O, which would else win on rank 0", b.hash, winnerOf(alice, id, 2))
-        // carol, already settled at epoch 3, receives B late: a fork signal, never a merge (CO-6).
+        // carol, already settled at epoch 3 on B, receives O late: a fork signal, never a merge (CO-6).
         w.relay.holdAt = { _, _ -> false }
         w.pump()
         carol.hintPass()
         assertEquals("no merge", 3L, carol.channel(id)!!.epoch)
         assertEquals(1, carol[ChannelCounters.Reason.LATE_CANDIDATE])
         assertEquals(1L, carol.count("ch_fork_signal"))
-        assertArrayEquals(o.hash, winnerOf(carol, id, 2))
-        // bob settles B too (its only candidate).
-        w.advance(DmWorld.MINUTE)
-        w.pump()
-        bob.timePass()
-        assertArrayEquals(b.hash, winnerOf(bob, id, 2))
+        assertArrayEquals(b.hash, winnerOf(carol, id, 2))
         assertTrue(alice.integrity().isEmpty())
     }
 

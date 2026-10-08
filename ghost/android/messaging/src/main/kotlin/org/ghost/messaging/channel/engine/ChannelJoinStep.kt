@@ -112,6 +112,8 @@ internal class ChannelJoinStep(
                 stores.epochs.insert(tx, c, joined.epoch.epoch, joined.epoch.kEnv, joined.epoch.rEp)
                 stores.channels.setCommittersDigest(tx, c, digest)
                 stores.joins.deleteJoins(tx, c)
+                // CO-8, CO-9's schedule, seeded like CH-CREATE's (the PCS clock starts at the join day).
+                seedSchedule(env, tx, c, day)
                 sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 sync.inbox.reofferDeferred(tx, NamespaceId(ns))
                 Outcome.JOINED

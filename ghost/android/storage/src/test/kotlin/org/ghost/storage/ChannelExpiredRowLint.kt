@@ -340,7 +340,7 @@ object ChannelDaoQueries {
         "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest FROM ch_join "
 
     private const val REQUEST_OF_INVITE =
-        "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+        "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
             "WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
 
     private const val EPOCH_COLUMNS =
@@ -510,19 +510,19 @@ object ChannelDaoQueries {
         ),
         read(
             "theJoinRequests",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND until_day >= ? ORDER BY rowid",
             listOf(CH, TODAY), rows = 2,
         ),
         read(
             "oneJoinRequest",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?",
             listOf(CH, L.key(0x12), TODAY), rows = 1,
         ),
         hides(
             "anExpiredJoinRequest",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?",
             listOf(CH, L.key(0xE1), TODAY), "ch_join_request", "hash = ?", listOf(L.key(0xE1)),
         ),
@@ -575,19 +575,19 @@ object ChannelDaoQueries {
         // ---- MemberStore
         read(
             "theRequestsOfAChannel",
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request WHERE channel_id = ? AND until_day >= ? " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request WHERE channel_id = ? AND until_day >= ? " +
                 "ORDER BY until_day, kind, subject",
             listOf(CH, TODAY), rows = 2,
         ),
         read(
             "oneRequest",
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request " +
                 "WHERE channel_id = ? AND kind = ? AND subject = ? AND until_day >= ?",
             listOf(CH, "leave", L.key(0x11), TODAY), rows = 1,
         ),
         hides(
             "anExpiredRequest",
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request " +
                 "WHERE channel_id = ? AND kind = ? AND subject = ? AND until_day >= ?",
             listOf(CH, "leave", L.key(0xE1), TODAY), "ch_request", "subject = ?", listOf(L.key(0xE1)),
         ),
@@ -693,7 +693,7 @@ object ChannelSweepQueries {
         ),
         sweep(
             "oneBatchOfExpiredJoinRequests",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE until_day < ? ORDER BY until_day, channel_id, hash LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),
@@ -711,7 +711,7 @@ object ChannelSweepQueries {
         ),
         sweep(
             "oneBatchOfExpiredRequests",
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request WHERE until_day < ? " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request WHERE until_day < ? " +
                 "ORDER BY until_day, channel_id, kind, subject LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),

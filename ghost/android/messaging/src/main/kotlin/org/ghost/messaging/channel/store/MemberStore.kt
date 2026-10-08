@@ -22,7 +22,15 @@ import org.ghost.sync.api.SyncTransaction
  */
 internal class MemberStore {
 
-    class RequestRow(val channelId: ByteArray, val kind: RequestKind, val subject: ByteArray, val payloadEnv: ByteArray?, val untilDay: Long) {
+    class RequestRow(
+        val channelId: ByteArray,
+        val kind: RequestKind,
+        val subject: ByteArray,
+        val payloadEnv: ByteArray?,
+        val untilDay: Long,
+        /** The day the work was first recorded (§19.35 F-11 (a)): CO-8's work-age rule measures the work's age from it. */
+        val recordedDay: Long,
+    ) {
         override fun toString(): String = "RequestRow(kind=${kind.sql})"
     }
 
@@ -110,24 +118,23 @@ internal class MemberStore {
 
     /**
      * Records a committer's pending work. The work is **recorded once**: a second record of the same (kind,
-     * subject) keeps the first one and returns false. A `policy` or `class` request names no pseudonym; its
-     * subject is the one byte `0x00`.
+     * subject) keeps the first one — including its [recordedDay] — and returns false. A `policy` or `class` request
+     * names no pseudonym; its subject is the one byte `0x00`.
      *
-     * **What the row does not say is when the work was first recorded.** `until_day` is the day the request
-     * *expires*; CO-8's work-age rule (a committer of rank r ≥ 1 includes in a scheduled pass only work it first
-     * recorded at least `r × 48 h` earlier, §19.13 item 4) needs the age of the work, and §9 stores no such day.
-     * If `until_day` is defined as the recorded day plus a constant the age can be derived; otherwise the table
-     * needs a `recorded_day`. Recorded for S5/S7 in §19.35 (F-11); the first version of this comment said the day
-     * *is* what the rule measures, which §9 does not give.
+     * **[recordedDay] is what CO-8's work-age rule measures** (a committer of rank r ≥ 1 includes in a scheduled
+     * pass only work it first recorded at least `r × 48 h` earlier, §19.13 item 4): the day this row was first
+     * recorded, kept by the record-once rule. `until_day` is the expiry, not the age (§19.35 F-11 (a), amended
+     * by slice S5: §9 gained the column; the first version of this comment said the age had no column at all).
      */
-    fun record(tx: SyncTransaction, channelId: ByteArray, kind: RequestKind, subject: ByteArray, payloadEnv: ByteArray?, untilDay: Long): Boolean {
+    fun record(tx: SyncTransaction, channelId: ByteArray, kind: RequestKind, subject: ByteArray, payloadEnv: ByteArray?, untilDay: Long, recordedDay: Long): Boolean {
         Fields.bytesBetween("ch_request.subject", subject, 1, 32)
         Fields.bytesBetweenOrNull("ch_request.payload_env", payloadEnv, 29, 4096)
         Fields.nonNegative("ch_request.until_day", untilDay)
+        Fields.nonNegative("ch_request.recorded_day", recordedDay)
         return tx.sql.execUpdate(
-            "INSERT INTO ch_request(channel_id, kind, subject, payload_env, until_day) SELECT ?, ?, ?, ?, ? " +
+            "INSERT INTO ch_request(channel_id, kind, subject, payload_env, until_day, recorded_day) SELECT ?, ?, ?, ?, ?, ? " +
                 "WHERE NOT EXISTS (SELECT 1 FROM ch_request WHERE channel_id = ? AND kind = ? AND subject = ?)",
-            listOf(channelId, kind.sql, subject, payloadEnv, untilDay, channelId, kind.sql, subject),
+            listOf(channelId, kind.sql, subject, payloadEnv, untilDay, recordedDay, channelId, kind.sql, subject),
         ) == 1
     }
 
@@ -145,7 +152,9 @@ internal class MemberStore {
     }
 
     private fun readRequest(r: SqlExecutor.Row) =
-        RequestRow(r.blob(0), RequestKind.of(r.string(1)), r.blob(2), if (r.isNull(3)) null else r.blob(3), r.long(4))
+        RequestRow(
+            r.blob(0), RequestKind.of(r.string(1)), r.blob(2), if (r.isNull(3)) null else r.blob(3), r.long(4), r.long(5),
+        )
 
     // ----------------------------------------------------------------------------------- ch_box_key
 
@@ -228,15 +237,15 @@ internal class MemberStore {
             "SELECT member FROM ch_member_refresh WHERE channel_id = ? AND refresh_day < ? ORDER BY refresh_day, member LIMIT ?"
 
         const val REQUESTS: String =
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request WHERE channel_id = ? AND until_day >= ? " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request WHERE channel_id = ? AND until_day >= ? " +
                 "ORDER BY until_day, kind, subject"
 
         const val REQUEST: String =
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request " +
                 "WHERE channel_id = ? AND kind = ? AND subject = ? AND until_day >= ?"
 
         const val EXPIRED_REQUESTS: String =
-            "SELECT channel_id, kind, subject, payload_env, until_day FROM ch_request WHERE until_day < ? " +
+            "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request WHERE until_day < ? " +
                 "ORDER BY until_day, channel_id, kind, subject LIMIT ?"
 
         const val CURRENT_BOX_KEY: String =
