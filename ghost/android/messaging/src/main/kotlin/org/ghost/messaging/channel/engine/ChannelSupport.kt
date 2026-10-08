@@ -89,6 +89,12 @@ internal class ChannelCounters {
         /** A commit that fails CO-2. */
         INVALID_COMMIT,
 
+        /** A commit refused with `LifetimeError`: a non-canonical KeyPackage — invalid for every member (§19.29.1). */
+        INVALID_LIFETIME,
+
+        /** An unconsumed invite the winner's context voided (its committers changed or its pw_version is older). */
+        INVITE_VOIDED,
+
         /** A commit of a settled epoch with another hash: a fork signal (CO-6). */
         LATE_CANDIDATE,
 
@@ -208,6 +214,13 @@ internal object ChannelTime {
     fun retentionDays(timerCode: Int): Long = if (timerCode in 1..3) 1 else 2
 
     /**
+     * The PCS cadence of CO-8 and §6.8: a committer's empty PCS commit when its last commit is at least this many
+     * days old — 7 days, or 1 day in channels with timers ≤ 1 d (timer codes 1 … 3; Q36, §19.19: the daily cadence
+     * of short-timer channels is rank 0's alone).
+     */
+    fun pcsDays(timerCode: Int): Long = if (timerCode in 1..3) 1 else 7
+
+    /**
      * The shorter of two timers (§5.5 "a receiver deletes a post after min(its timer_code, the channel timer of the post's
      * epoch)"): the codes grow with the duration, and 0 is "off", the longest of all.
      */
@@ -238,24 +251,20 @@ internal object ChannelAd {
     fun ownInvite(inviteId: ByteArray): ByteArray = of(6, inviteId)
     fun joinRequest(channelId: ByteArray, hash: ByteArray): ByteArray = of(7, channelId, hash)
     fun grapheme(target: ByteArray, author: ByteArray): ByteArray = of(8, target, author)
+    fun liveness(channelId: ByteArray): ByteArray = of(9, channelId)
 
     fun u64(value: Long): ByteArray = ByteArray(8) { i -> (value ushr (56 - 8 * i)).toByte() }
 }
 
 /**
- * The committers digest of a channel's current context (S0-15), **learnt from a throwaway open invite**: `roster` does not
- * return it (§19.37 F-S4-2) and `inviteBuild` computes it over the context it loads, writing nothing (§10.2 fn 14 returns
- * no change-set). The invite it builds is erased at once and goes nowhere. Null for a **password** channel — an invite
- * there needs the password, which the engine never holds; its committers learn the digest at their own next invite —
- * and when the call is refused (the member may not invite, the state does not load).
+ * The committers digest of a channel's current context (S0-15), **returned by `roster`** (§19.37 F-S4-2, closed
+ * in S5a: fn 18 outputs the context's digest, so the engine no longer learns it from a throwaway open `inviteBuild` —
+ * which a password channel could never call, leaving its committers unable to admit until their own next invite).
+ * Null only when the call is refused (the state does not load).
  */
 internal object ChannelDigest {
-    fun learn(crypto: org.ghost.crypto.bridge.ChannelCrypto, channelId: ByteArray, rows: List<MlsRow>, gEnv: ByteArray, generation: Long, day: Long): ByteArray? {
-        val built = crypto.inviteBuild(channelId, rows, gEnv, generation.toInt(), day.toInt(), null, false, day.toInt()).valueOrNull()
-            ?: return null
-        built.invite.fill(0)
-        return built.committersDigest
-    }
+    fun learn(crypto: org.ghost.crypto.bridge.ChannelCrypto, channelId: ByteArray, rows: List<MlsRow>, day: Long): ByteArray? =
+        crypto.roster(channelId, rows, day.toInt()).valueOrNull()?.committersDigest
 }
 
 /** The bridge between the store's rows and the facade's (§3.4: Kotlin moves bytes and interprets none). */
@@ -278,6 +287,24 @@ internal object MlsRows {
     }
 
     private fun key(scope: Int, key: ByteArray): String = "$scope:" + key.joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * Seeds `ch_schedule` for a channel that has just become `active` (`CH-CREATE`, `CH-JOIN`): the PCS clock's
+ * `last_own_commit_day` is [day] (the member's leaf is fresh), the self-update slot is [day]'s period's
+ * ([ChannelSchedule]). False when the seen key is unavailable (the caller's transaction is unaffected; the
+ * session-start scheduler seeds lazily then).
+ */
+internal fun seedSchedule(env: ChannelEnv, tx: org.ghost.sync.api.SyncTransaction, channelId: ByteArray, day: Long): Boolean {
+    val seenKey = env.keys.seenKey() ?: return false
+    try {
+        env.stores.channels.putSchedule(
+            tx, channelId, ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), seenKey), day, null,
+        )
+        return true
+    } finally {
+        seenKey.fill(0)
+    }
 }
 
 /**

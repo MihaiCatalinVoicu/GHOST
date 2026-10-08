@@ -102,7 +102,7 @@ class ChannelSchemaIntrospectionTest {
         assertEquals("declared time columns that no table has", ChannelSchema.timeColumns, foundTimes)
         assertEquals("declared epoch counters that no table has", ChannelSchema.epochColumns, foundEpochs)
         assertEquals("exemptions that match nothing", ChannelSchema.notTimes.keys, usedExemptions)
-        assertEquals(30, ChannelSchema.timeColumns.size)
+        assertEquals(32, ChannelSchema.timeColumns.size)
     }
 
     /** The suffix names the grid, and the grid and the type are in the column's own CHECK (T20, §21.14). */
@@ -179,12 +179,14 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_reveal.delete_at_minute", 600),
         Typed("ch_join.expiry_day", 20_007),
         Typed("ch_join_request.until_day", 20_007),
+        Typed("ch_join_request.recorded_day", 20_000),
         Typed("ch_invite_issued.expiry_day", 20_007),
         Typed("ch_kp_seen.until_day", 20_011),
         Typed("ch_invite_own.expiry_day", 20_007),
         Typed("ch_sponsor.admitted_day", 20_000),
         Typed("ch_member_refresh.refresh_day", 20_000),
         Typed("ch_request.until_day", 20_007),
+        Typed("ch_request.recorded_day", 20_000),
         // ---- the epoch counters
         Typed("ch_channel.epoch", 5), Typed("ch_channel.joined_epoch", 5), Typed("ch_epoch.epoch", 5),
         Typed("ch_epoch_log.epoch", 5), Typed("ch_candidate.epoch", 5), Typed("ch_fork_signal.epoch", 5),

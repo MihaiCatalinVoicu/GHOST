@@ -38,11 +38,12 @@ internal interface ChannelActor {
  *     returning member settles each missed epoch right after the receive that brought its blobs (CO-4's catch-up), up to
  *     [CATCH_UP_ROUNDS] rounds a pass;
  *  3. the pending posts of the channels that are current now (`CH-POST`'s encrypt-at-session, §6.3.1);
- *  4. on a **time-triggered** pass only (§21.9 rule 1 of Phase 9, T40): the scheduled admission passes (`CH-PASS`, CO-8;
- *     a relay session start schedules them) and the join expiry (`CH-SWEEP`'s join half). A pass a listener hint ran —
- *     something arrived — never commits, never enqueues a Welcome's op of its own accord and never removes a namespace:
- *     only an outcome of the user's own earlier action (the own winning commit's Welcomes at its settle) and the user's
- *     own pending posts can cause an enqueue in it.
+ *  4. on a **time-triggered** pass only (§21.9 rule 1 of Phase 9, T40): the scheduled passes (`CH-PASS`, CO-8 and
+ *     CO-9: admissions by any committer under the work-age rule, the PCS cadence, the rank-255 self-update slots;
+ *     a relay session start schedules them into `ch_schedule`) and the join expiry (`CH-SWEEP`'s join half). A pass
+ *     a listener hint ran — something arrived — never commits, never enqueues a Welcome's op of its own accord and
+ *     never removes a namespace: only an outcome of the user's own earlier action (the own winning commit's Welcomes
+ *     at its settle) and the user's own pending posts can cause an enqueue in it.
  *
  * **Typed results, no logging, no network or coroutine class** (gates G-DM1, no-logging); the only exceptions caught are
  * the typed ones of `:sync` and `:storage` (`InsufficientReplicasException`, `StorageFullException`) and the facade's
@@ -63,9 +64,10 @@ internal class ChannelEngine(
     val inviteStep = ChannelInviteStep(env, postStep)
     val acceptStep = ChannelAcceptStep(env, sync)
     val joinStep = ChannelJoinStep(env, sync)
-    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap)
+    val livenessStep = ChannelLivenessStep(env)
+    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap, livenessStep)
     val passStep = ChannelPassStep(env, sync, postStep)
-    val settleStep = ChannelSettleStep(env, sync)
+    val settleStep = ChannelSettleStep(env, sync, livenessStep)
     val outcomeStep = ChannelOutcomeStep(env, sync)
     val sweepStep = ChannelSweepStep(env, sync)
 
@@ -98,6 +100,22 @@ internal class ChannelEngine(
             postStep.post(channel.toByteArray(), ChannelPostStep.KIND_POST, text, replyTo?.toByteArray(), null, null)
         }
 
+    /**
+     * `CH-PASS` at a user action: [member] removed from [channel], at once, whatever the committer's rank
+     * (§6.6, §19.13 item 4: a moderator's Remove does not wait for the owner). CO-7 (D-1) settles first — in the
+     * same actor step the pass then works in e + 1 where the channel is current; when the settle point has not
+     * come the pass waits and answers [RemoveResult.NOTHING].
+     */
+    fun remove(channel: ChannelId, member: ByteArray): RemoveResult =
+        actor.call {
+            settleStep.settle(channel.toByteArray())
+            when (passStep.removeMember(channel.toByteArray(), member)) {
+                ChannelPassStep.Result.COMMITTED -> RemoveResult.REMOVED
+                ChannelPassStep.Result.UNAVAILABLE -> RemoveResult.UNAVAILABLE
+                ChannelPassStep.Result.REFUSED_ONLY, ChannelPassStep.Result.NOTHING -> RemoveResult.NOTHING
+            }
+        }
+
     /** `CH-POST` of a reaction (§5.5): an empty [grapheme] withdraws it. */
     fun react(channel: ChannelId, target: PostId, grapheme: ByteArray): PostResult =
         actor.call {
@@ -120,6 +138,7 @@ internal class ChannelEngine(
             receiveStep.consume(deadlineMonotonicMillis)
             if (settleStep.settleDue() == 0) break
         }
+        livenessStep.evaluate()
         postStep.encryptPending()
         if (timeTriggered) {
             if (sessionStart) passStep.scheduleAtSessionStart()
@@ -146,12 +165,23 @@ internal class ChannelEngine(
     override fun clear() {
         env.contexts.close()
         peekOrder.clear()
-        passStep.clear()
         receiveStep.clear()
         lastTimeTriggered = Long.MIN_VALUE
     }
 
     override fun toString(): String = "ChannelEngine"
+
+    /** What [remove] did (§10.3's `Result` shape; the facade maps it in Phase 13). */
+    enum class RemoveResult {
+        /** The Remove commit was built, enqueued and the own candidate recorded. */
+        REMOVED,
+
+        /** Nothing removed: a CO-7 precondition, an unknown target, or the native CO-2 rank rule refused. */
+        NOTHING,
+
+        /** The context or the content key is not available. */
+        UNAVAILABLE,
+    }
 
     companion object {
         /** CO-4's catch-up: receive and settle rounds per pass (a returning member's missed epochs, one per round). */

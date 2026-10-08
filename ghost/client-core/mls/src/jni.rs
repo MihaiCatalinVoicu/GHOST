@@ -2465,6 +2465,7 @@ pub fn roster(
     r.put(Field::TreeHash, &out.tree_hash);
     r.record(Field::Context, context_out(&out.context));
     r.u32(Field::Leaf, out.own_leaf);
+    r.put(Field::CommittersDigest, &out.committers_digest);
     Ok(r.into_bytes())
 }
 

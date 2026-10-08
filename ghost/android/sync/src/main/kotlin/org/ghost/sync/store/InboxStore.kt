@@ -340,6 +340,26 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
         }
     }
 
+    /**
+     * The rows of [namespace] that are fetched but not due for an offer: their re-offer time lies
+     * ahead within its clamp (a [defer] within §11.2's 7-day clamp, or the poison guard's backoff
+     * within its 24-hour one) — the complement of [dueOffers] among fetched rows, Phase 10 CO-3's
+     * "held blobs". Read-only; at most [limit] rows in hash order.
+     */
+    fun held(tx: SyncTransaction, namespace: NamespaceId, now: Long, limit: Int): List<InboundBlob> {
+        require(limit > 0) { "limit must be positive" }
+        return tx.sql.rows(
+            "SELECT b.blob_hash, b.ciphertext, b.relay_expiry_hour, b.offers FROM inbox_blob b " +
+                "WHERE b.namespace_id = ?1 AND b.state = 'fetched' AND b.relay_expiry_hour IS NOT NULL " +
+                "AND (b.offer_after_minute > ?2 AND b.offer_after_minute <= ?2 + " +
+                "CASE WHEN b.offers >= ${StoreLimits.BACKOFF_OFFERS} THEN $OFFER_BACKOFF_CLAMP_SECONDS ELSE $DEFER_CLAMP_SECONDS END) " +
+                "ORDER BY b.blob_hash LIMIT ?3",
+            listOf(namespace.raw, now, limit),
+        ) {
+            InboundBlob(namespace, BlobHash(it.blob(0)), it.blob(1), it.long(2), it.int(3))
+        }
+    }
+
     /** Fetched rows due for an offer, oldest hand-off number first; with [ns] and [hash] set, that row alone. */
     private fun dueOffers(tx: SyncTransaction, consumerCode: String, limit: Int, now: Long, ns: NamespaceId?, hash: BlobHash?): List<Offer> {
         require((ns == null) == (hash == null)) { "a row filter needs the namespace and the hash" }

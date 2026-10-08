@@ -1,6 +1,10 @@
-//! The rule set a run uses: the design's (normative) rules, one mutant, or the design with the
-//! corrections EM-3 proposes for its findings (§19.34). A mutant changes exactly one rule; the
-//! killers are named in `MUTANTS` and proven by `tests/state_models.rs`.
+//! The rule set a run uses. Since slice S5a (owner decision D-1 … D-6 of 2026-10-05) the default
+//! [`Rules::DESIGN`] **is** the design with the adopted corrections; [`Rules::LEGACY`] is the
+//! pre-S5 design, kept for the findings' reproduction lines (§19.34 records the EM-3 build against
+//! it). A mutant is the adopted design with exactly one rule changed; the killers are named in
+//! `MUTANTS` and proven by `tests/state_models.rs`, and `Mutant::OwnUnverified` (MM-2) is the
+//! registry's equivalent-mutant record (withdrawn as equivalent by D-5, not deleted: the check
+//! counts it).
 
 /// One deliberate defect per rule, each the rule's mutation of §12.9 or the round that withdrew it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -36,7 +40,11 @@ pub enum Mutant {
     // ---- CO-4 -----------------------------------------------------------------------------------
     /// MM-3: no settle window (a member settles at its first sighting).
     NoWindow,
-    /// MM-2: an own commit is merged without a verified copy or a successor.
+    /// MM-2: an own commit is merged without a verified copy or a successor. **Withdrawn as
+    /// equivalent by the owner's D-5 (2026-10-05, §19.34):** over the corrected CO-4 (D-1, D-4,
+    /// D-5) it changes no decision — a window runs from a fetched copy, which is a verified one —
+    /// and it survives every control and probe. It stays in the registry (the report check counts
+    /// 37 mutants) as the equivalent-mutant record, run and expected to survive.
     OwnUnverified,
     /// MM-25: the anchor is the local first sighting only (no store-hour anchor).
     NoStoreHourAnchor,
@@ -49,7 +57,9 @@ pub enum Mutant {
     OwnAnchorAtPass,
     /// CO-3 / CO-4 (a) (round 10b's custody): an own commit without a verified copy is no candidate
     /// at its committer's settle, so a foreign candidate wins even when the own commit has more
-    /// successor senders.
+    /// successor senders. **Equivalent under the adopted corrections (the S5a run):** with D-5's
+    /// fetched-copy verification and D-1's settle-first rule the mutant explores exactly the
+    /// control's state graph (SC-INDET), so it is registered as equivalent like MM-2.
     UnverifiedOwnNoCandidate,
     // ---- CO-5 -----------------------------------------------------------------------------------
     /// MM-19: Welcomes are enqueued at the pass, not at the settle of a won commit.
@@ -59,7 +69,10 @@ pub enum Mutant {
     /// commit (round 10a's "fork evidence, better").
     NotSticky,
     // ---- CO-7 -----------------------------------------------------------------------------------
-    /// MM-26 (second half): a committer's pass is blocked by a rank-255 candidate.
+    /// MM-26 (second half): a committer's pass is blocked by a rank-255 candidate. **Equivalent
+    /// under the adopted corrections (the S5a run):** D-1's CO-7 settles the held candidate first
+    /// and then passes, so blocking is indistinguishable from the design's delay — the mutant
+    /// explores exactly the control's state graph (SC-FLOOD).
     Rank255Blocks,
     // ---- CO-8 -----------------------------------------------------------------------------------
     /// MM-34: a moderator's scheduled pass includes work younger than `r × 48 h`.
@@ -109,8 +122,13 @@ pub enum Mutant {
     RejoinNoFreshness,
 }
 
-/// Corrections EM-3 proposes for its findings (§19.34, §19.34.1); never part of the design's rule set
-/// until the owner adopts them. Bits of [`Rules::fixes`].
+/// Corrections EM-3 proposed for its findings (§19.34, §19.34.1). Bits of [`Rules::fixes`].
+/// **The owner's D-1 … D-6 (2026-10-05) adopted `SettleBeforePass`, `SelfUpdateAfterSettle`,
+/// `PartitionOneOther`, `SplitCountsDraining` and `FetchedOwnCopy`: they are `Rules::DESIGN` since
+/// slice S5a** (`Rules::LEGACY` keeps the uncorrected design for the findings' reproduction lines).
+/// `SettleBeacon` (F-2's measured option: the owner declared the residual instead, D-2) and
+/// `SplitNeedsProgress` (F-3 (a)'s first wording, kept as the evidence that it fails) were not
+/// adopted and stay evidence-only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fix {
     /// F-1, CO-7's half: a committer that holds a valid candidate for its current epoch does not
@@ -126,7 +144,8 @@ pub enum Fix {
     /// F-2: a member that settles an epoch on a winner it did not author sends one empty
     /// authenticated message in the new epoch (a settle beacon): the winner gains a successor
     /// sender everywhere, and any own candidate of a committer that settled another winner is
-    /// abandoned.
+    /// abandoned. **Not adopted (D-2: the residual is declared; beacons close the scripted ground
+    /// probe only).**
     SettleBeacon = 8,
     /// F-5: the committer's own copy fetched by one of its listing passes (recognised by its hash)
     /// is a verified copy for CO-3 and CO-4, whatever the op's outcome.
@@ -137,9 +156,16 @@ pub enum Fix {
     SelfUpdateAfterSettle = 32,
     /// Evidence only (§19.34.1 item 4): F-3 (a)'s correction as §19.34 first worded it,
     /// "`split_suspected`: CO-11 (a) holds over both namespaces **while progress continues**";
-    /// with it the majority still raises nothing (it has no progress).
+    /// with it the majority still raises nothing (it has no progress). **Not adopted (D-3).**
     SplitNeedsProgress = 64,
 }
+
+/// The adopted corrections (D-1, D-3, D-5): the design's rule set since slice S5a.
+pub const ADOPTED: u8 = Fix::SettleBeforePass as u8
+    | Fix::SelfUpdateAfterSettle as u8
+    | Fix::PartitionOneOther as u8
+    | Fix::SplitCountsDraining as u8
+    | Fix::FetchedOwnCopy as u8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Rules {
@@ -148,15 +174,26 @@ pub struct Rules {
 }
 
 impl Rules {
+    /// The design's rule set: CO-1 … CO-14 and §6.5 … §6.7 **as corrected by D-1 … D-6** (owner
+    /// 2026-10-05; the `Fix` bits above). Slice S5a switched EM-3's default to it.
     pub const DESIGN: Rules = Rules {
+        mutant: None,
+        fixes: ADOPTED,
+    };
+
+    /// The pre-S5 design (no correction): the uncorrected rule set the findings F-1 … F-5
+    /// reproduce against, kept for the reproduction lines (§19.34's record of the EM-3 build).
+    pub const LEGACY: Rules = Rules {
         mutant: None,
         fixes: 0,
     };
 
+    /// One deliberate defect over the **adopted** design (the current [`Rules::DESIGN`] with one
+    /// rule mutated), §12.9's method applied to the corrected rules.
     pub fn mutant(m: Mutant) -> Rules {
         Rules {
             mutant: Some(m),
-            fixes: 0,
+            fixes: ADOPTED,
         }
     }
 

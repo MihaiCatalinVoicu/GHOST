@@ -2,12 +2,14 @@ package org.ghost.messaging.channel.engine
 
 import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.crypto.bridge.ChannelPolicy
+import org.ghost.crypto.bridge.HeldBlob
 import org.ghost.crypto.bridge.MlsChange
 import org.ghost.crypto.bridge.MlsCode
 import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
 import org.ghost.messaging.channel.store.ChannelState
+import org.ghost.messaging.channel.store.ChannelStore
 import org.ghost.messaging.channel.store.EpochStore
 import org.ghost.messaging.channel.store.GenerationState
 import org.ghost.messaging.channel.store.OpPurpose
@@ -21,38 +23,71 @@ import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.SyncTransaction
 
 /**
- * **`CH-SETTLE`** as slice S4 needs it (Phase 10 design §6.4 CO-3 … CO-5, §10.4), **one transaction**: the member settles
+ * **`CH-SETTLE`** (Phase 10 design §6.4 CO-3 … CO-6, §10.4), **one transaction**: the member settles
  * its current epoch at the settle point and merges the winner.
  *
- * **The settle point (CO-4 (i)).** `now ≥ anchor(e) + 20 min`, the anchor being the earliest, over the candidates held,
- * of the first sighting and the copy's relay store hour + 60 min (`ch_epoch.anchor_minute`, kept by `CH-RECV` and
- * `CH-PASS`). **CO-4 (ii) is not implemented** — "after (i) held, the member completed one listing pass over every relay
- * of the current generation's set" — because `:sync` gives its consumer no listing-pass signal (finding F-S4-1 of
- * §19.37); the full settle is slice S5's.
+ * **The settle point (CO-4).** (i) `now ≥ anchor(e) + 20 min`, the anchor being the earliest, over
+ * the held candidates, of the member's first sighting of the candidate and the copy's relay store
+ * hour + 60 min (`ch_epoch.anchor_minute`, kept by `CH-RECV`, `CH-OUTCOME` and the fetched-copy
+ * branch of `CH-RECV`). For the member's **own** commit the creation pass is its first sighting of
+ * the candidate, and the anchor only moves **earlier** from there — when a stored copy is
+ * evidenced: the op's SENT/DEGRADED outcome, or a fetched copy recognised by its hash (D-4/D-5,
+ * owner 2026-10-05) with its relay store hour + 60 min (D-4). (ii) after (i) held, one completed
+ * listing pass over
+ * **every** relay of the current generation's set since the window opened: `Inbox.listingTails`
+ * (F-S4-1, S5a) must name every relay of `env.relaySet(ns, week)` with a tail at or after the
+ * window's opening moment. The opening moment is read on the monotonic clock —
+ * `monotonicNow − (now − windowOpen) × 1000` — the same elapsed-realtime source `:sync`'s read lane
+ * records tails on (`DmClock.monotonicMillis` is wired to `SyncClock` in `:app`), so in the worlds,
+ * whose two clocks advance in lockstep, the comparison says exactly "the pass completed at or
+ * after the window opened" and is monotone in virtual time; a wall-clock step only re-asks the
+ * question, conservatively after a forward step.
  *
- * **The winner (CO-3 without trial settles).** Among the valid candidates held, the lowest `(rank, SHA-256(commit))`;
- * the committer's **own** commit takes part only once a copy of it was verified at a relay (`ch_candidate.verified`, set
- * by `CH-OUTCOME`): an unverified own commit ranks below every foreign candidate, and alone it waits for its outcome. The
- * successor-sender count and the abandonment rule (`trialCount`, S0-17) are slice S5's: in this slice every count is 0,
- * which is CO-3's own rule when no held blob fails to open under the member's keys.
+ * **The winner (CO-3).** Among the valid candidates held, excluding the **abandoned** ones (the
+ * candidate's own committer has an authenticated message among the held blobs that open under
+ * another candidate's trial state), the winner **maximises the successor senders**, then minimises
+ * `(rank, SHA-256(commit))`. Successor senders come from **trial settles**: when more than one
+ * valid candidate is held and some held blob does not open under the member's current keys (the
+ * inbox rows `CH-RECV` deferred — `Inbox.held`, S5's read), each candidate is tried in memory with
+ * **one** `MlsNative.trialCount` call over the ≤ 32 held blobs (≤ 8 foreign candidates, plus the
+ * one own-custody trial of CO-4 (a); nothing is written). Otherwise every count is 0 and CO-3 is
+ * the plain `(rank, hash)` rule. The member's **own** candidate without a verified copy ranks
+ * below every held foreign candidate unless it has **more** successor senders than that candidate
+ * (§19.13); an own candidate with successor evidence but no verified copy is **adopted** (CO-4 (a),
+ * MM-32's shape: others merged it and continued, which proves a copy existed).
  *
- * **The merge (CO-5).** A foreign winner is first run again for its validation summary (the `GhostCommitAad` evidence of
- * its Adds, which the stored candidate does not keep), the own pending commit — if any — is cleared (`clearOwn`), and the
- * winner is merged (`settle`, which re-runs CO-2 natively); an own winner is merged from the pending commit. In the same
- * transaction: the change-set; the epoch final (`winner_hash` is the commit that ended it, §19.35 F-5), logged, and the
- * next epoch's keys; the position; a rotation's next generation as `pending_switch` (its switch is `CH-SWITCH`'s, S6); the
- * invites the winner's Adds consumed, their pending requests, the sponsor records and — for a committer — the
- * KeyPackages' tags; for an **own** winner its WELCOME blobs enqueued (§19.2) and its new leaf's box key; the policy
- * mirror; the committers digest forgotten when the winner changed `committers` (S0-15's voiding of invites needs the new
- * digest, which `roster` does not return: §19.37 F-S4-2, S5's); every candidate of the epoch deleted; the namespaces'
- * deferred blobs re-offered. A member the winner removes (`standing` 2) or replaces (3) records the state and the final
- * epoch; the rest of its departure is slice S6's.
+ * **Own-commit custody (CO-4 (a)–(c)).** At each settle point: (a) an own commit that wins with a
+ * verified copy (op SENT/DEGRADED or a fetched copy, D-5) or with at least one successor sender in
+ * its trial settle is merged (for an unverified own commit the trial runs whenever a held blob does
+ * not open, even if it is the only candidate); (b) when another candidate wins, the pending commit
+ * is cleared (`clearOwn`) before the winner merges; (c) when no copy can remain on any relay — the
+ * op's deadline plus the handshake TTL has passed (`first_seen + 7 d + handshakeTTL`, §5.8's
+ * deadline is the author minute + 7 d) — the pending commit is cleared and counted
+ * (`OWN_COMMIT_CLEARED`); until then it stays pending.
+ *
+ * **The merge (CO-5).** A foreign winner is first run again for its validation summary (the
+ * `GhostCommitAad` evidence of its Adds, which the stored candidate does not keep), the own pending
+ * commit — if any — is cleared, and the winner is merged (`settle`, which re-runs CO-2); an own
+ * winner merges from the pending commit. In the same transaction: the change-set; the epoch final
+ * (`winner_hash` is the commit that ended it, §19.35 F-5), logged, and the next epoch's keys; a
+ * rotation's next generation as `pending_switch` (its switch is `CH-SWITCH`'s, S6); the invites the
+ * winner's Adds consumed, their pending requests, the sponsor records and — for a committer — the
+ * KeyPackages' tags; for an **own** winner its WELCOME blobs enqueued (§19.2) and its new leaf's
+ * box key; the policy mirror; when the winner changed `committers`, the new digest `roster` returns
+ * (S5a) is persisted and **every unconsumed invite whose `committers_digest` no longer matches is
+ * voided** (S0-15), and when it bumped `pw_version`, **every unconsumed invite of the older
+ * version** (§19.29.3) — both counted (`INVITE_VOIDED`; the sponsor's UI reads the row's `void`);
+ * every candidate of the epoch deleted; the namespaces' deferred blobs re-offered. A member the
+ * winner removes (`standing` 2) or replaces (3) records the state and the final epoch; the rest of
+ * its departure is slice S6's.
  *
  * Gate G-M5 lists this file for `Outbox.enqueue` (the own winner's Welcomes).
  */
 internal class ChannelSettleStep(
     private val env: ChannelEnv,
     private val sync: ChannelSyncPorts,
+    /** CO-11 (b): a foreign winner's merge is progress (the liveness window reads it). */
+    private val liveness: ChannelLivenessStep? = null,
 ) {
     private val stores = env.stores
 
@@ -67,10 +102,12 @@ internal class ChannelSettleStep(
     }
 
     /**
-     * The second the earliest settle point of an epoch with candidates comes (the actor's next wake), or null. An epoch
-     * whose only candidate is the member's **own commit with no verified copy** is no wake (§19.38): CO-4 waits for that
-     * commit's outcome, which arrives as a hint and runs the settle in that pass; a wake at its settle point could only
-     * find it waiting still.
+     * The second the earliest settle point of an epoch with candidates comes (the actor's next wake),
+     * or null. An epoch whose only candidate is the member's **own commit with no verified copy** is
+     * no wake (§19.38): CO-4 waits for that commit's copy evidence, which arrives as an outcome hint
+     * or a fetched copy and runs the settle in that pass; a wake at its settle point could only find
+     * it waiting still. The (ii) listing-pass check needs no term of its own: the relay sessions list
+     * continuously, and every pass re-runs [settleDue].
      */
     fun nextDue(): Long? {
         val day = DmTime.day(env.now())
@@ -96,7 +133,11 @@ internal class ChannelSettleStep(
         val welcomes: ChannelWelcomes.Framed?,
         val before: ChannelPolicy,
         val after: ChannelPolicy?,
+        val afterDigest: ByteArray?,
         val committer: Boolean,
+        /** The own candidate of the epoch, when one was held: its rank (CO-9's retry) and the new leaf's box key. */
+        val own: CandidateStore.CandidateRow?,
+        val ownBoxPk: ByteArray?,
     )
 
     /** One admission the winner made: what the settle records about it. */
@@ -109,6 +150,16 @@ internal class ChannelSettleStep(
     ) {
         override fun toString(): String = "Admitted(redacted)"
     }
+
+    /** The snapshot one settle works from: taken in one transaction, the native half runs outside it. */
+    private class Snapshot(
+        val channel: ChannelStore.ChannelRow,
+        val epoch: EpochStore.EpochRow,
+        val candidates: List<CandidateStore.CandidateRow>,
+        val generation: Long,
+        val rows: List<org.ghost.crypto.bridge.MlsRow>,
+        val liveNamespaces: List<ByteArray>,
+    )
 
     /** Settles [channelId]'s current epoch if its settle point has come; true when it did. */
     fun settle(channelId: ByteArray): Boolean {
@@ -130,23 +181,47 @@ internal class ChannelSettleStep(
             if (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING) return@transaction null
             val epoch = stores.epochs.open(tx.sql, channelId, day) ?: return@transaction null
             if (epoch.epoch != channel.epoch) return@transaction null
-            val anchor = epoch.anchorMinute ?: return@transaction null
-            if (now < anchor + ChannelTime.SETTLE_WINDOW_SECONDS) return@transaction null
-            val candidates = stores.candidates.candidates(tx.sql, channelId, epoch.epoch)
+            // CO-4 (c): an own commit whose op's deadline plus the handshake TTL has passed with no
+            // verified copy can exist on no relay any more: its pending commit is cleared here, at
+            // the channel's settle check, before the candidates are read.
+            custodyClear(tx, channelId, channel.timerCode, epoch.epoch, opened, now)
+            val freshEpoch = stores.epochs.open(tx.sql, channelId, day) ?: return@transaction null
+            val candidates = stores.candidates.candidates(tx.sql, channelId, freshEpoch.epoch)
             if (candidates.isEmpty()) {
                 // The candidates went (an own commit cleared, CO-4): no settle point any more.
-                stores.epochs.setAnchor(tx, channelId, epoch.epoch, null)
+                if (freshEpoch.anchorMinute != null) stores.epochs.setAnchor(tx, channelId, freshEpoch.epoch, null)
                 return@transaction null
             }
-            val generation = stores.generations.current(tx.sql, channelId, day)
-            Triple(channel to epoch, candidates, (generation?.generation ?: channel.generation) to stores.mls.rows(tx.sql, channelId, day))
+            val anchor = freshEpoch.anchorMinute ?: return@transaction null
+            if (now < anchor + ChannelTime.SETTLE_WINDOW_SECONDS) return@transaction null
+            // CO-4 (ii): one listing pass over every relay of the current generation's set since the
+            // window opened (listingTails, F-S4-1/S5a). The window's opening moment is read on the
+            // monotonic clock, the one the read lane records tails on.
+            val generation = stores.generations.current(tx.sql, channelId, day) ?: return@transaction null
+            val set = env.relaySet(generation.namespaceId, DmTime.week(now)) ?: return@transaction null
+            val windowOpenMono = env.clock.monotonicMillis() - (now - anchor - ChannelTime.SETTLE_WINDOW_SECONDS) * 1000
+            val tails = sync.inbox.listingTails(NamespaceId(generation.namespaceId))
+            for (slot in set) {
+                if ((tails[slot.relay] ?: Long.MIN_VALUE) < windowOpenMono) return@transaction null
+            }
+            Snapshot(
+                channel = channel,
+                epoch = freshEpoch,
+                candidates = candidates,
+                generation = generation.generation,
+                rows = MlsRows.of(stores.mls.rows(tx.sql, channelId, day)),
+                liveNamespaces = stores.generations.live(tx.sql, channelId, day).map { it.namespaceId },
+            )
         } ?: return false
-        val (channelAndEpoch, candidates, generationAndRows) = snapshot
-        val (channel, epoch) = channelAndEpoch
-        val (generation, kvRows) = generationAndRows
-        val merge = merge(channelId, opened, content, epoch, candidates, generation, MlsRows.of(kvRows), day) ?: return false
+        // CO-3's held blobs: what the receive step deferred (nothing opens them under the member's
+        // current keys), at most 32, one deterministic set at every member.
+        val held = snapshot.liveNamespaces
+            .flatMap { ns -> sync.inbox.held(NamespaceId(ns), now, HELD_BLOBS).map { h -> HeldBlob(ns, h.ciphertext) } }
+            .sortedWith { a, b -> compareBytes(a.ns, b.ns).takeIf { it != 0 } ?: compareBytes(a.blob, b.blob) }
+            .take(HELD_BLOBS)
+        val merge = merge(channelId, opened, content, snapshot, held, day) ?: return false
         return try {
-            env.database.transaction { tx -> write(tx, channelId, channel.timerCode, epoch, merge, content, seenKey, now, day) }
+            env.database.transaction { tx -> write(tx, channelId, snapshot.channel.timerCode, snapshot.epoch, merge, content, seenKey, now, day) }
         } catch (e: InsufficientReplicasException) {
             // The own winner's Welcomes cannot be enqueued this week: nothing is written; the settle is tried again.
             false
@@ -155,30 +230,98 @@ internal class ChannelSettleStep(
         }
     }
 
-    /** The native half: the winner chosen, run and merged in memory; null when there is nothing to settle yet. */
+    /**
+     * CO-4 (c): the own commit of [epoch], if it is still unverified and its op's deadline plus the
+     * handshake TTL has passed (its `first_seen_minute` is the op's author minute; §5.8's handshake
+     * deadline is the author minute + 7 d), is cleared: no copy can remain on any relay. The
+     * transaction is the caller's; the native change-set applies only on `OK` (D5).
+     */
+    private fun custodyClear(
+        tx: SyncTransaction,
+        channelId: ByteArray,
+        timerCode: Int,
+        epoch: Long,
+        opened: ChannelContexts.Opened,
+        now: Long,
+    ) {
+        val day = DmTime.day(now)
+        val own = stores.candidates.own(tx.sql, channelId, epoch) ?: return
+        if (own.verified) return
+        val clearAt = own.firstSeenMinute + CUSTODY_DEADLINE_SECONDS + ChannelTime.handshakeTtl(timerCode).seconds
+        if (now < clearAt) return
+        val rows = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
+        when (val r = opened.crypto.clearOwn(channelId, rows, day.toInt())) {
+            is MlsOutcome.Ok -> stores.mls.apply(tx, channelId, MlsRows.changes(r.value))
+            is MlsOutcome.Refused -> throw IllegalStateException("channel clearOwn refused: ${r.refusal.code}")
+        }
+        stores.candidates.delete(tx, channelId, epoch, own.hash)
+        if (stores.candidates.candidates(tx.sql, channelId, epoch).isEmpty()) {
+            stores.epochs.setAnchor(tx, channelId, epoch, null)
+        }
+        env.counters.count(ChannelCounters.Reason.OWN_COMMIT_CLEARED)
+    }
+
+    /** The native half: the winner chosen (CO-3, with the trial settles), run and merged in memory; null when there is nothing to settle yet. */
     private fun merge(
         channelId: ByteArray,
         opened: ChannelContexts.Opened,
         content: ContentCipher,
-        epoch: EpochStore.EpochRow,
-        candidates: List<CandidateStore.CandidateRow>,
-        generation: Long,
-        stored: List<org.ghost.crypto.bridge.MlsRow>,
+        snapshot: Snapshot,
+        held: List<HeldBlob>,
         day: Long,
     ): Merge? {
+        val epoch = snapshot.epoch
         val e = epoch.epoch
+        val candidates = snapshot.candidates
+        val stored = snapshot.rows
         val own = candidates.firstOrNull { it.own }
         val foreign = candidates.filter { !it.own }.sortedWith(ChannelReceiveStep.CANDIDATE_ORDER)
-        val winner = when {
-            foreign.isNotEmpty() ->
-                if (own != null && own.verified && ChannelReceiveStep.CANDIDATE_ORDER.compare(own, foreign.first()) < 0) own else foreign.first()
-            own != null && own.verified -> own
-            // CO-4: an own commit with no verified copy waits for its outcome.
-            else -> return null
+
+        // CO-3: the trial settles. They run only when more than one valid candidate is held and some
+        // held blob does not open under the member's current keys (every held row is one the receive
+        // step deferred: nothing opens it under the current keys); and, for the own-custody verdict,
+        // whenever an unverified own commit is held and a held blob does not open — even as the only
+        // candidate. One trialCount call per candidate (≤ 8 foreign ones plus the own one), ≤ 32 held
+        // blobs each; nothing is written.
+        val counts = HashMap<List<Byte>, Int>()
+        val movedOn = HashSet<List<Byte>>()
+        if (held.isNotEmpty() && (candidates.size > 1 || (own != null && !own.verified))) {
+            for (cand in foreign + listOfNotNull(own)) {
+                val body = content.open(cand.bodyEnv, ChannelAd.candidate(channelId, e, cand.hash)) ?: return refuseWinner(channelId, e, cand)
+                val arg = if (cand.own) ChannelCrypto.Winner.Own(body) else ChannelCrypto.Winner.Foreign(body)
+                when (val t = opened.crypto.trialCount(channelId, stored, arg, held, day.toInt())) {
+                    is MlsOutcome.Ok -> {
+                        // CO-3: the successor senders exclude the candidate's own committer (the
+                        // native side excludes the member itself); a committer's message under its
+                        // own trial state is no abandonment — only under ANOTHER candidate's.
+                        val successors = t.value.senders.filter { !it.contentEquals(cand.sender) }
+                        counts[cand.hash.toList()] = successors.size
+                        movedOn += successors.map { it.toList() }
+                    }
+                    is MlsOutcome.Refused -> return when (t.refusal.code) {
+                        MlsCode.CRYPTO_UNAVAILABLE, MlsCode.STATE_CORRUPT -> null
+                        else -> refuseWinner(channelId, e, cand)
+                    }
+                }
+            }
         }
+
+        // CO-3: abandoned candidates — their own committer has an authenticated message among the
+        // held blobs that open under another candidate's trial state — are excluded (the member's own
+        // candidate cannot be abandoned: its committer's own blobs are never fetched back).
+        val viable = candidates.filter { it.sender.toList() !in movedOn }
+        if (viable.isEmpty()) return null
+        // CO-3: the winner maximises the successor senders, then minimises `(rank, hash)`; the
+        // unverified-own demotion and the adoption rule sit between (EM-3's `better`, the rule the
+        // conformance probe replays — S5c).
+        val views = viable.map { Co3View(it.rank, it.hash.toList(), it.own, it.verified) }
+        val picked = co3Pick(views, counts) ?: return null
+        val winner = viable.first { it.hash.toList() == picked.hash }
+
         val body = content.open(winner.bodyEnv, ChannelAd.candidate(channelId, e, winner.hash)) ?: return refuseWinner(channelId, e, winner)
-        val before = opened.crypto.roster(channelId, stored, day.toInt()).valueOrNull() ?: return null
-        val committer = before.context.committers.any { it.contentEquals(opened.pseudonym) }
+        val beforeRoster = opened.crypto.roster(channelId, stored, day.toInt()).valueOrNull() ?: return null
+        val before = beforeRoster.context
+        val committer = before.committers.any { it.contentEquals(opened.pseudonym) }
         var rows = stored
         val changes = ArrayList<MlsChange>()
         val admitted: List<Admitted>
@@ -189,7 +332,7 @@ internal class ChannelSettleStep(
             framed = if (welcomeEnv == null) null else content.open(welcomeEnv, ChannelAd.welcomes(channelId, e, winner.hash))?.let(ChannelWelcomes::decode)
             if (welcomeEnv != null && framed == null) return refuseWinner(channelId, e, winner)
             admitted = framed?.entries?.map { Admitted(it.inviteId, it.member, it.sponsor, it.kpRef, it.kpDay) } ?: emptyList()
-            settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Own(body), generation.toInt(), day.toInt())) {
+            settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Own(body), snapshot.generation.toInt(), day.toInt())) {
                 is MlsOutcome.Ok -> s.value
                 is MlsOutcome.Refused -> return if (s.code == MlsCode.CRYPTO_UNAVAILABLE || s.code == MlsCode.STATE_CORRUPT) null else refuseWinner(channelId, e, winner)
             }
@@ -211,23 +354,35 @@ internal class ChannelSettleStep(
                 )
             } ?: emptyList()
             if (own != null) {
-                // CO-4: another candidate wins, so the own pending commit is cleared before the winner is merged.
+                // CO-4 (b): another candidate wins at a settle point, so the own pending commit is
+                // cleared before the winner is merged.
                 val cleared = opened.crypto.clearOwn(channelId, rows, day.toInt()).valueOrNull() ?: return null
                 changes += cleared
                 rows = MlsRows.applied(rows, cleared)
             }
-            settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Foreign(body), generation.toInt(), day.toInt())) {
+            settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Foreign(body), snapshot.generation.toInt(), day.toInt())) {
                 is MlsOutcome.Ok -> s.value
                 is MlsOutcome.Refused -> return if (s.code == MlsCode.CRYPTO_UNAVAILABLE || s.code == MlsCode.STATE_CORRUPT) null else refuseWinner(channelId, e, winner)
             }
         }
         changes += settled.changes
-        val after = if (settled.standing == STANDING_MEMBER) {
-            opened.crypto.roster(channelId, MlsRows.applied(rows, settled.changes), day.toInt()).valueOrNull()?.context
+        val afterRoster = if (settled.standing == STANDING_MEMBER) {
+            opened.crypto.roster(channelId, MlsRows.applied(rows, settled.changes), day.toInt()).valueOrNull()
         } else {
             null
         }
-        return Merge(winner, changes, settled, admitted, framed, before.context, after, committer)
+        val ownBoxPk = afterRoster?.members?.firstOrNull { it.pseudonym.contentEquals(opened.pseudonym) }?.boxPk
+        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk)
+    }
+
+    /** Lexicographic byte order: the deterministic order of the held blobs and the trial keys. */
+    private fun compareBytes(a: ByteArray, b: ByteArray): Int {
+        val n = minOf(a.size, b.size)
+        for (i in 0 until n) {
+            val c = a[i].compareTo(b[i])
+            if (c != 0) return c
+        }
+        return a.size.compareTo(b.size)
     }
 
     /** A winner the native side refuses at the settle (CO-2 re-run) or whose stored rows do not open: dropped, counted. */
@@ -277,7 +432,10 @@ internal class ChannelSettleStep(
                 )
             }
             if (winner.rank < NOT_A_COMMITTER) stores.channels.setLastCommitterCommitDay(tx, c, day)
+            // CO-11 (b): a foreign winner's merge is progress for every member that merged it.
+            if (!winner.own && settled.standing == STANDING_MEMBER) liveness?.noteMerged(tx, c, content, day)
             mirrorPolicy(tx, c, fresh.nameEnv, merge, content)
+            voidInvites(tx, c, merge)
         }
         for (a in merge.admitted) {
             stores.invites.markConsumed(tx, c, a.inviteId)
@@ -302,13 +460,23 @@ internal class ChannelSettleStep(
                     )
                     stores.posts.insertOp(tx, operationId, c, OpPurpose.WELCOME, w.kpRef)
                 }
-                // The update path's fresh leaf key replaces the current one (§19.17).
-                val boxEnv = winner.boxEnv
-                if (boxEnv != null) {
-                    stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
-                    stores.members.insertBoxKey(tx, c, framed.boxPk, boxEnv)
-                }
             }
+            // The update path's fresh leaf key replaces the current one (§19.17) — on every own winning
+            // commit, Welcomes or none: a PCS, Remove or self-update commit refreshes the leaf too (§6.8's
+            // force_self_update). The new leaf's box public key comes from the merged state (a welcome-less
+            // commit keeps no `welcome_env` framing to read it from).
+            val boxEnv = winner.boxEnv
+            if (boxEnv != null && merge.ownBoxPk != null) {
+                stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
+                stores.members.insertBoxKey(tx, c, merge.ownBoxPk, boxEnv)
+            }
+        } else if (!winner.own && merge.own != null && merge.own.rank == NOT_A_COMMITTER) {
+            // CO-9: the self-update lost the tie-break — the retry fires at the next session after 24 h
+            // (day-granular, what `ch_schedule.next_selfupdate_day` can say). A FAILED op (no copy could
+            // exist) never reaches here: the candidate was cleared by custody, and the pass already armed
+            // the next period's slot.
+            val row = stores.channels.schedule(tx.sql, c)
+            stores.channels.putSchedule(tx, c, day + 1, row?.lastOwnCommitDay ?: day, row?.nextPassMinute)
         }
         stores.candidates.deleteEpoch(tx, c, e)
         for (g in stores.generations.live(tx.sql, c, day)) sync.inbox.reofferDeferred(tx, NamespaceId(g.namespaceId))
@@ -316,9 +484,9 @@ internal class ChannelSettleStep(
     }
 
     /**
-     * The `ch_channel` mirror of the context (timer, class, password flag, name) and the committers digest, when the
-     * winner changed them. The digest is forgotten, not recomputed: `roster` does not return it (§19.37 F-S4-2), and a
-     * committer with no digest admits nothing until its next `inviteBuild` returns the new one.
+     * The `ch_channel` mirror of the context (timer, class, password flag, name) the winner changed.
+     * The committers digest and the invite voiding are [voidInvites]'s: the digest is a Rust
+     * derivation (G-DM3), read from `roster`'s output (§19.37 F-S4-2, closed in S5a).
      */
     private fun mirrorPolicy(tx: SyncTransaction, c: ByteArray, nameEnv: ByteArray?, merge: Merge, content: ContentCipher) {
         val after = merge.after ?: return
@@ -328,9 +496,30 @@ internal class ChannelSettleStep(
             val env2 = if (!nameChanged) nameEnv else if (after.name.isEmpty()) null else env.seal(content, ChannelAd.name(c), after.name)
             stores.channels.setPolicy(tx, c, after.timerCode, after.sizeClass, after.flags and ChannelEnv.FLAG_PASSWORD != 0, env2)
         }
+    }
+
+    /**
+     * CO-5 (S0-15, §19.29.3): the winner's context is the member's new one — when it changed
+     * `committers`, the new digest `roster` returned is persisted and every unconsumed invite whose
+     * digest no longer matches is void (the sponsor's UI tells its user and offers a new one,
+     * §19.29.2); when it bumped `pw_version`, every unconsumed invite of the older version is void
+     * (a newly set password voids the open invites too). Counts only; the row's `void` is the
+     * sponsor-visible state.
+     */
+    private fun voidInvites(tx: SyncTransaction, c: ByteArray, merge: Merge) {
+        val after = merge.after ?: return
+        val before = merge.before
+        val digest = merge.afterDigest
         val sameCommitters = after.committers.size == before.committers.size &&
             after.committers.indices.all { after.committers[it].contentEquals(before.committers[it]) }
-        if (!sameCommitters) stores.channels.setCommittersDigest(tx, c, null)
+        if (!sameCommitters && digest != null) {
+            stores.channels.setCommittersDigest(tx, c, digest)
+            repeat(stores.invites.voidByDigest(tx, c, digest)) { env.counters.count(ChannelCounters.Reason.INVITE_VOIDED) }
+        }
+        if (after.pwVersion > before.pwVersion) {
+            val includeOpen = before.pwVersion == 0
+            repeat(stores.invites.voidByPassword(tx, c, after.pwVersion, includeOpen)) { env.counters.count(ChannelCounters.Reason.INVITE_VOIDED) }
+        }
     }
 
     /**
@@ -355,10 +544,58 @@ internal class ChannelSettleStep(
 
     override fun toString(): String = "ChannelSettleStep"
 
+    /** A plain view of a viable candidate for [co3Pick] (the EM-3 conformance probe builds these directly). */
+    internal class Co3View(
+        val rank: Int,
+        /** SHA-256 of the commit's bytes, as a list (the map's key). */
+        val hash: List<Byte>,
+        val own: Boolean,
+        val verified: Boolean,
+    ) {
+        override fun toString(): String = "Co3View(rank=$rank, own=$own, verified=$verified)"
+    }
+
     companion object {
+        /** CO-3's `(rank, hash)` ascending order over the plain views (the fallback, inverted in [co3Pick]). */
+        private val BY_RANK_HASH: Comparator<Co3View> =
+            compareBy<Co3View> { it.rank }.thenComparator { a, b ->
+                ChannelReceiveStep.compareUnsigned(a.hash.toByteArray(), b.hash.toByteArray())
+            }
+
         /** `settle`'s standing (§6.6): 1 member, 2 removed, 3 replaced. */
         const val STANDING_MEMBER: Int = 1
         const val STANDING_REPLACED: Int = 3
+
+        /**
+         * CO-3's decision over the viable candidates (abandonment already applied), as the EM-3
+         * model's `better` semantics run it (§19.34: maximise the successor senders, then minimise
+         * `(rank, hash)`; S5b2's fix): the foreign best by that order; an own candidate with a
+         * verified copy competes on the order; an **unverified** own candidate ranks below every
+         * held foreign one unless it has strictly more successor senders (§19.13), and is adopted
+         * as the only viable candidate on at least one successor sender (CO-4 (a)). The engine and
+         * the model agree by construction — the conformance probe replays scripted sets over this
+         * function (S5c).
+         */
+        fun co3Pick(viable: List<Co3View>, counts: Map<List<Byte>, Int>): Co3View? {
+            fun successors(v: Co3View): Int = counts[v.hash] ?: 0
+            // maxWith carries the comparison: more successors compare greater, the ascending
+            // `(rank, hash)` order is inverted in the fallback.
+            val byCo3 = Comparator<Co3View> { a, b ->
+                val sa = successors(a)
+                val sb = successors(b)
+                if (sa != sb) sa - sb else BY_RANK_HASH.compare(b, a)
+            }
+            val own = viable.firstOrNull { it.own }
+            val bestForeign = viable.filter { !it.own }.maxWithOrNull(byCo3)
+            return when {
+                own == null -> bestForeign
+                bestForeign == null ->
+                    if (own.verified || successors(own) >= 1) own else null
+                !own.verified ->
+                    if (successors(own) > successors(bestForeign)) own else bestForeign
+                else -> listOf(own, bestForeign).maxWith(byCo3)
+            }
+        }
 
         /** CO-1: the rank of a member that is no committer. */
         const val NOT_A_COMMITTER: Int = 255
@@ -366,5 +603,11 @@ internal class ChannelSettleStep(
         /** §6.5: `switch_hour = ceil_hour(commit_minute + 30 min)`, clamped to at most the settle + 2 h. */
         const val SWITCH_DELAY_SECONDS: Long = 30 * DmTime.MINUTE
         const val SWITCH_CLAMP_SECONDS: Long = 2 * DmTime.HOUR
+
+        /** CO-3: at most 32 held blobs per trial settle (§6.3.5). */
+        const val HELD_BLOBS: Int = 32
+
+        /** CO-4 (c): §5.8's handshake op deadline is the author minute + 7 days; the copy can live one TTL past it. */
+        const val CUSTODY_DEADLINE_SECONDS: Long = 7 * DmTime.DAY
     }
 }

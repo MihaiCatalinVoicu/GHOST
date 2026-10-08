@@ -156,12 +156,33 @@ internal class CandidateStore {
         return held
     }
 
-    /** The own commit's copy was verified at a relay (CO-4): once true it stays true. */
-    fun markVerified(tx: SyncTransaction, channelId: ByteArray, epoch: Long, hash: ByteArray): Boolean =
-        tx.sql.execUpdate(
-            "UPDATE ch_candidate SET verified = 1 WHERE channel_id = ? AND epoch = ? AND hash = ? AND own = 1",
-            listOf(channelId, epoch, hash),
+    /**
+     * The own commit's copy was verified (CO-4): the op's outcome SENT/DEGRADED (the copy reached a
+     * quorum, F7's contract) or a copy one of the member's listing passes fetched, recognised by its
+     * hash (D-5). [seenMinute] is the sighting the copy evidences — the minute the outcome released
+     * or the pass fetched it — and it only moves the sighting **earlier** (D-4, S5: for the member's
+     * own commit the anchor sighting is the pass that evidenced the stored copy, never the creation
+     * pass); [storeHour], when the fetched row carries a relay expiry, only moves earlier too.
+     * Once true, `verified` stays true.
+     */
+    fun markVerified(
+        tx: SyncTransaction,
+        channelId: ByteArray,
+        epoch: Long,
+        hash: ByteArray,
+        seenMinute: Long,
+        storeHour: Long? = null,
+    ): Boolean {
+        Fields.minute("ch_candidate.first_seen_minute", seenMinute)
+        if (storeHour != null) Fields.hour("ch_candidate.store_hour", storeHour)
+        return tx.sql.execUpdate(
+            "UPDATE ch_candidate SET verified = 1, " +
+                "first_seen_minute = CASE WHEN ?4 < first_seen_minute THEN ?4 ELSE first_seen_minute END, " +
+                "store_hour = CASE WHEN ?5 IS NOT NULL AND (store_hour IS NULL OR ?5 < store_hour) THEN ?5 ELSE store_hour END " +
+                "WHERE channel_id = ?1 AND epoch = ?2 AND hash = ?3 AND own = 1",
+            listOf(channelId, epoch, hash, seenMinute, storeHour),
         ) == 1
+    }
 
     /** Another relay's copy was stored earlier: the anchor only moves earlier (the schema refuses a later hour). */
     fun lowerStoreHour(tx: SyncTransaction, channelId: ByteArray, epoch: Long, hash: ByteArray, storeHour: Long): Boolean {

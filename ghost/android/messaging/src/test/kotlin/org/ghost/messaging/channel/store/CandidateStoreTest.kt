@@ -70,10 +70,15 @@ class CandidateStoreTest {
         assertArrayEquals(welcomes, own.welcomeEnv)
         assertArrayEquals(box, own.boxEnv)
         assertEquals(listOf(own.hash.toList()), w.stores.candidates.ownCommits(w.db, w.ch).map { it.hash.toList() })
-        // the op's outcome is SENT or DEGRADED: a copy was verified (CO-4); once true it stays true
-        assertTrue(w.tx { w.stores.candidates.markVerified(it, w.ch, 0, own.hash) })
-        assertFalse(w.tx { w.stores.candidates.markVerified(it, w.ch, 0, chBytes(32, 99)) })
+        // the op's outcome is SENT or DEGRADED: a copy was verified (CO-4); once true it stays
+        // true. The sighting is the minute the copy evidenced (D-4): it only moves earlier.
+        assertTrue(w.tx { w.stores.candidates.markVerified(it, w.ch, 0, own.hash, 60) })
+        assertFalse(w.tx { w.stores.candidates.markVerified(it, w.ch, 0, chBytes(32, 99), 60) })
         assertTrue(w.stores.candidates.own(w.db, w.ch, 0)!!.verified)
+        assertEquals(60L, w.stores.candidates.own(w.db, w.ch, 0)!!.firstSeenMinute)
+        // the sighting only moves earlier: a later evidence changes nothing, verified stays
+        assertTrue(w.tx { w.stores.candidates.markVerified(it, w.ch, 0, own.hash, 120) })
+        assertEquals(60L, w.stores.candidates.own(w.db, w.ch, 0)!!.firstSeenMinute)
         // another relay's copy was stored earlier: the anchor moves earlier, never later
         assertTrue(w.tx { w.stores.candidates.lowerStoreHour(it, w.ch, 0, own.hash, 3_600) })
         assertFalse(w.tx { w.stores.candidates.lowerStoreHour(it, w.ch, 0, own.hash, 7_200) })

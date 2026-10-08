@@ -58,6 +58,8 @@ internal class JoinStore {
         val inviteId: ByteArray?,
         val bodyEnv: ByteArray,
         val untilDay: Long,
+        /** The day the request was first recorded (§19.35 F-11 (a)): CO-8's work-age rule measures the work's age from it. */
+        val recordedDay: Long,
     ) {
         override fun toString(): String = "RequestRow(type=${type.sql})"
     }
@@ -186,20 +188,22 @@ internal class JoinStore {
         inviteId: ByteArray?,
         bodyEnv: ByteArray,
         untilDay: Long,
+        recordedDay: Long,
     ) {
         Fields.bytes("ch_join_request.hash", hash, 32)
         Fields.u32("ch_join_request.generation", generation)
         Fields.bytesOrNull("ch_join_request.invite_id", inviteId, 16)
         Fields.bytesBetween("ch_join_request.body_env", bodyEnv, 29, 4096)
         Fields.nonNegative("ch_join_request.until_day", untilDay)
+        Fields.nonNegative("ch_join_request.recorded_day", recordedDay)
         if (type.hasInvite != (inviteId != null)) throw ChannelStoreException(ChannelStoreError.BAD_VALUE, "ch_join_request.invite_id")
         var n = 0
         tx.sql.query(REQUEST_COUNT, listOf(channelId)) { r -> n = r.long(0).toInt() }
         if (n >= MAX_REQUESTS) throw ChannelStoreException(ChannelStoreError.LIMIT, "ch_join_request")
         val changed = tx.sql.execUpdate(
-            "INSERT INTO ch_join_request(channel_id, hash, generation, type, invite_id, body_env, until_day) " +
-                "SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ch_join_request WHERE channel_id = ? AND hash = ?)",
-            listOf(channelId, hash, generation, type.sql, inviteId, bodyEnv, untilDay, channelId, hash),
+            "INSERT INTO ch_join_request(channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day) " +
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ch_join_request WHERE channel_id = ? AND hash = ?)",
+            listOf(channelId, hash, generation, type.sql, inviteId, bodyEnv, untilDay, recordedDay, channelId, hash),
         )
         if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_join_request")
     }
@@ -226,6 +230,7 @@ internal class JoinStore {
         inviteId = if (r.isNull(4)) null else r.blob(4),
         bodyEnv = r.blob(5),
         untilDay = r.long(6),
+        recordedDay = r.long(7),
     )
 
     // ------------------------------------------------------------------------------------ ch_kp_seen
@@ -283,19 +288,19 @@ internal class JoinStore {
                 "FROM ch_join WHERE expiry_day < ? ORDER BY expiry_day, channel_id, kp_ref LIMIT ?"
 
         const val REQUEST_OF_INVITE: String =
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
 
         const val REQUESTS: String =
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND until_day >= ? ORDER BY rowid"
 
         const val REQUEST: String =
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?"
 
         const val EXPIRED_REQUESTS: String =
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
                 "WHERE until_day < ? ORDER BY until_day, channel_id, hash LIMIT ?"
 
         const val KP_SEEN: String = "SELECT 1 FROM ch_kp_seen WHERE channel_id = ? AND tag = ? AND until_day >= ?"

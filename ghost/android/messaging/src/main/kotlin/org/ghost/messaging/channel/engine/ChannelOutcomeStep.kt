@@ -7,6 +7,7 @@ import org.ghost.messaging.engine.DmTime
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.OutboundOutcome
 import org.ghost.sync.api.Outcome
+import org.ghost.sync.api.SyncTransaction
 
 /**
  * **`CH-OUTCOME`** (Phase 10 design §10.4, CO-4; the DM's OUTCOME of Phase 9 §7.5): the decided outcomes of the channel's
@@ -65,7 +66,13 @@ internal class ChannelOutcomeStep(
                     val own = op.ref?.let { hash -> stores.candidates.ownCommits(tx.sql, c).firstOrNull { it.hash.contentEquals(hash) } }
                     if (own != null) {
                         when (outcome.outcome) {
-                            Outcome.SENT, Outcome.DEGRADED -> stores.candidates.markVerified(tx, c, own.epoch, own.hash)
+                            Outcome.SENT, Outcome.DEGRADED -> {
+                                // CO-4 (D-4): the op outcome evidences the stored copy at this minute; it is the
+                                // sighting the own commit anchors at (the creation pass does not anchor it, S5).
+                                val seen = DmTime.floorMinute(env.now())
+                                stores.candidates.markVerified(tx, c, own.epoch, own.hash, seen)
+                                lowerAnchor(tx, c, own.epoch, seen, null)
+                            }
                             Outcome.FAILED -> {
                                 // CO-4: no copy can exist, so the pending commit is cleared and its requests stay pending.
                                 val opened = env.contexts.open(c) ?: throw IllegalStateException("channel context closed under an outcome")
@@ -89,6 +96,15 @@ internal class ChannelOutcomeStep(
             stores.posts.deleteOp(tx, operationId)
             true
         }
+    }
+
+    /** The epoch's anchor is the earliest sighting or store hour + 60 min over its candidates (CO-4 (i)). */
+    private fun lowerAnchor(tx: SyncTransaction, channelId: ByteArray, epoch: Long, firstSeen: Long, storeHour: Long?) {
+        val day = DmTime.day(env.now())
+        val row = stores.epochs.epoch(tx.sql, channelId, epoch, day) ?: return
+        val sighting = minOf(firstSeen, storeHour?.let { it + DmTime.HOUR } ?: Long.MAX_VALUE)
+        val anchor = DmTime.floorMinute(row.anchorMinute?.let { minOf(it, sighting) } ?: sighting)
+        if (anchor != row.anchorMinute) stores.epochs.setAnchor(tx, channelId, epoch, anchor)
     }
 
     override fun toString(): String = "ChannelOutcomeStep"

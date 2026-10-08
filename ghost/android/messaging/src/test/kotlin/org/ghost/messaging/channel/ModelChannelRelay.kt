@@ -1,6 +1,7 @@
 package org.ghost.messaging.channel
 
 import org.ghost.messaging.DmWorld
+import org.ghost.sync.api.NamespaceId
 import java.security.MessageDigest
 
 /**
@@ -28,14 +29,57 @@ import java.security.MessageDigest
  *    it holds) and [fetchedCap] (Phase 7's `FETCHED_CAP`: a client at the cap of a namespace is served nothing more of
  *    it until it consumes or defers rows, §19.38).
  *
+ * **The hostile modes of §12.1 that slice S5's commit-and-post suites need** (SCN-CM, SCN-CD, SCN-CL; each built by
+ * the first test that needs it):
+ *  - [Mode.FORK] — the relay serves different same-epoch commits to two subsets: [forkServing] names, per injected
+ *    blob, the client subset that receives it (every other listener never sees it: the partition);
+ *  - [Mode.WITHHOLD_COMMIT] — [hold]/[holdAt] keep one commit blob from all or a subset, for good or until the test
+ *    releases it ([withheld] counts the skips; SCN-CL's "for good" is S7's scenario);
+ *  - [Mode.REORDER_ACROSS_EPOCH] — [orderKey] serves an epoch e + 1 blob before epoch e's winner at chosen members
+ *    (a stable reorder of the round by the key the test assigns each blob);
+ *  - [Mode.RESURRECT_COMMIT] — [resurrect] stores a consumed candidate's bytes again (the engine's layer 2 refuses
+ *    the copy, counted `RESURRECTED_COMMIT`);
+ *  - [Mode.LATE_COMMIT] — a valid commit for an epoch, stored only after a chosen member settled it ([holdAt] until
+ *    the member's settle, then released): the settled members record a fork signal and never move (CO-6, MM-16);
+ *  - [Mode.GRIND] — a member that kept an old epoch's state stores a hash-ground self-update for a settled epoch
+ *    (built by [org.ghost.messaging.channel.ChannelAdversary], injected here; never moves anyone: CO-6, MM-16/MM-24);
+ *  - [Mode.SPAM_UNOPENABLE] — bulk junk a member seals under the current epoch's key id so the recognition matches
+ *    but no key opens it (built by the adversary, injected here; consumed and counted `FORGED_SEAL`, and CO-11's
+ *    window counts it toward `resync_needed`; the draining-namespace half is MM-37, S6/S7).
+ *
+ * Every fetched blob is also recorded in `inbox_source` for the client's whole relay set (what the real read lane
+ * writes at `InboxStore.list`: a store reaches every relay of its set), so the engine's CO-11 can attribute the blob
+ * to operators through `relay_directory`.
+ *
  * **Why the receipts are written on the raw rows.** The outcome is what Phase 7 would decide; writing it is the model's
  * whole job (the same two statements `ModelDmRelay.release` writes, in the order the triggers require).
  */
 internal class ModelChannelRelay {
 
-    enum class Mode { DROP_WELCOME, COPY_JOIN, FAKE_WELCOME, REPLACE_BOOTSTRAP, REPLAY_JOIN, SHUFFLE, REPEATS, COPY_NAMESPACE }
+    enum class Mode {
+        DROP_WELCOME, COPY_JOIN, FAKE_WELCOME, REPLACE_BOOTSTRAP, REPLAY_JOIN, SHUFFLE, REPEATS, COPY_NAMESPACE,
+        FORK, WITHHOLD_COMMIT, REORDER_ACROSS_EPOCH, RESURRECT_COMMIT, LATE_COMMIT, GRIND, SPAM_UNOPENABLE,
+    }
 
     var modes: Set<Mode> = emptySet()
+
+    /**
+     * Under [Mode.FORK], the subset of client names an injected blob is served to; null serves it to
+     * every listener like any other blob. Two injected commits with disjoint subsets are the
+     * relay-induced partition of §12.1 (SCN-CG's and SCN-M20's FORK variants are S7's/S10's).
+     */
+    var forkServing: (Stored) -> Set<String>? = { null }
+
+    /**
+     * Under [Mode.REORDER_ACROSS_EPOCH], the serving order of a round: a stable sort by this key
+     * (then store order) runs before the tombstone check, so an epoch e + 1 blob keyed ahead of
+     * epoch e's winner reaches the chosen members first (the deferral machinery must hold it).
+     */
+    var orderKey: (Stored) -> Int = { 0 }
+
+    /** Under [Mode.WITHHOLD_COMMIT]/[Mode.LATE_COMMIT], how many serves [hold]/[holdAt] skipped. */
+    var withheld = 0
+        private set
 
     /** Under [Mode.REPEATS], how many relays serve each blob (a store reaches every relay of its set). */
     var relayCount: Int = 2
@@ -64,6 +108,13 @@ internal class ModelChannelRelay {
      * the poison guard backed off, does not count) — and is otherwise left at the relay for a later round, unserved.
      */
     var fetchedCap: Int? = null
+
+    /**
+     * Called after [client] was served every blob its listening namespaces hold: one round served
+     * everything the relay has, which is a completed listing pass over every relay of the set
+     * (CO-4 (ii)'s signal in this world; the world records it in the client's [WorldInbox]).
+     */
+    var onListed: (ChannelClient, List<NamespaceId>) -> Unit = { _, _ -> }
 
     class Stored(
         val namespace: ByteArray,
@@ -105,11 +156,15 @@ internal class ModelChannelRelay {
         out.hold = hold
         out.holdAt = holdAt
         out.expiryFor = expiryFor
+        out.forkServing = forkServing
+        out.orderKey = orderKey
         out.fetchedCap = fetchedCap
+        out.onListed = onListed
         out.stored += stored
         out.collected += collected
         out.served += served
         out.sequence = sequence
+        out.withheld = withheld
         return out
     }
 
@@ -206,13 +261,20 @@ internal class ModelChannelRelay {
 
     private fun serve(client: ChannelClient, now: Long): Int {
         val listening = HashSet<String>()
+        val namespaces = ArrayList<NamespaceId>()
         client.sql.query("SELECT namespace_id FROM sync_namespace WHERE listening = 1 AND consumer = 'channel'") {
-            listening += hex(it.blob(0))
+            val raw = it.blob(0)
+            listening += hex(raw)
+            namespaces += NamespaceId(raw)
         }
         if (listening.isEmpty()) return 0
         var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
         // FAKE_WELCOME: the adversary's blobs first; otherwise in the order they were stored.
         candidates = if (Mode.FAKE_WELCOME in modes) candidates.sortedBy { !it.injected } else candidates
+        if (Mode.REORDER_ACROSS_EPOCH in modes) {
+            // A stable key sort: the same set reaches every client, in the test's order (§12.1).
+            candidates = candidates.sortedBy(orderKey)
+        }
         if (Mode.SHUFFLE in modes) {
             // Each blob's key is drawn once, then sorted: a selector that drew a new key at every comparison broke the
             // comparator's contract, and TimSort refused a round of 150 blobs (the review of S4).
@@ -221,7 +283,16 @@ internal class ModelChannelRelay {
         }
         var moved = 0
         for (blob in candidates) {
-            if (hold(blob) || holdAt(client.name, blob)) continue
+            if (hold(blob) || holdAt(client.name, blob)) {
+                withheld++
+                continue
+            }
+            if (Mode.FORK in modes) {
+                // A null subset serves the blob to every listener (the honest traffic); a named
+                // subset is the fork: only it ever sees the blob.
+                val subset = forkServing(blob)
+                if (subset != null && client.name !in subset) continue
+            }
             if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
             val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
             if (key !in served && atCap(client, blob.namespace, now)) continue
@@ -235,6 +306,7 @@ internal class ModelChannelRelay {
                 }
             }
         }
+        onListed(client, namespaces)
         return moved
     }
 
@@ -256,6 +328,8 @@ internal class ModelChannelRelay {
     /**
      * The two-step arrival the Phase 7 schema makes a fetch (`listed`, then `fetched` with the ciphertext and the relay
      * expiry), unless the client already holds the row: the inbox tombstone (§6.3.4 layer 1). False when refused.
+     * Also records `inbox_source` rows for every relay of the client's set (what `InboxStore.list` writes: a store
+     * reaches every relay of its set), so the engine can attribute the blob to operators (`relay_directory`).
      */
     private fun insert(client: ChannelClient, blob: Stored, now: Long): Boolean {
         var exists = false
@@ -274,6 +348,12 @@ internal class ModelChannelRelay {
                 "WHERE namespace_id = ? AND blob_hash = ?",
             listOf(blob.ciphertext, sequence++, DmWorld.ceilHour(expiryFor(blob)), blob.namespace, blob.hash),
         )
+        for (slot in client.slots) {
+            client.sql.exec(
+                "INSERT OR IGNORE INTO inbox_source(namespace_id, blob_hash, relay_id, state) VALUES (?, ?, ?, 'candidate')",
+                listOf(blob.namespace, blob.hash, slot.relay.value),
+            )
+        }
         return true
     }
 

@@ -1667,14 +1667,17 @@ object Schema {
         // exception to T33 (§19.35, F-7): committer side only, at most 64 rows per channel, each deleted at its
         // invite's expiry or 7 days after its day.
         """CREATE TABLE ch_join_request (
-                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
-                  hash       BLOB NOT NULL CHECK (length(hash) = 32),
-                  generation INTEGER NOT NULL
-                             CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
-                  type       TEXT NOT NULL CHECK (type IN ('join', 'rejoin', 'restore')),
-                  invite_id  BLOB CHECK (invite_id IS NULL OR length(invite_id) = 16),
-                  body_env   BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 4096),
-                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  hash         BLOB NOT NULL CHECK (length(hash) = 32),
+                  generation   INTEGER NOT NULL
+                               CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                  type         TEXT NOT NULL CHECK (type IN ('join', 'rejoin', 'restore')),
+                  invite_id    BLOB CHECK (invite_id IS NULL OR length(invite_id) = 16),
+                  body_env     BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 4096),
+                  until_day    INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  -- The day the request was first recorded (§19.35 F-11 (a), amended by slice S5): CO-8's work-age
+                  -- rule (§19.13 item 4) measures the age of the work from it; `until_day` is the expiry, not the age.
+                  recorded_day INTEGER NOT NULL CHECK (typeof(recorded_day) = 'integer' AND recorded_day >= 0),
                   CHECK ((type = 'rejoin') = (invite_id IS NULL)),
                   PRIMARY KEY (channel_id, hash)
                 )""",
@@ -1725,11 +1728,15 @@ object Schema {
                   PRIMARY KEY (channel_id, member)
                 ) WITHOUT ROWID""",
         """CREATE TABLE ch_request (
-                  channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
-                  kind        TEXT NOT NULL CHECK (kind IN ('leave', 'remove', 'policy', 'class')),
-                  subject     BLOB NOT NULL CHECK (length(subject) BETWEEN 1 AND 32),
-                  payload_env BLOB CHECK (payload_env IS NULL OR length(payload_env) BETWEEN 29 AND 4096),
-                  until_day   INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  kind         TEXT NOT NULL CHECK (kind IN ('leave', 'remove', 'policy', 'class')),
+                  subject      BLOB NOT NULL CHECK (length(subject) BETWEEN 1 AND 32),
+                  payload_env  BLOB CHECK (payload_env IS NULL OR length(payload_env) BETWEEN 29 AND 4096),
+                  until_day    INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  -- The day the work was first recorded (§19.35 F-11 (a), amended by slice S5): CO-8's work-age rule
+                  -- (§19.13 item 4) measures from it; `until_day` is the expiry, not the age. A row is recorded once
+                  -- (the store keeps the first), so the day is the first recording's.
+                  recorded_day INTEGER NOT NULL CHECK (typeof(recorded_day) = 'integer' AND recorded_day >= 0),
                   PRIMARY KEY (channel_id, kind, subject)
                 ) WITHOUT ROWID""",
         """CREATE TABLE ch_box_key (
@@ -1842,14 +1849,15 @@ object Schema {
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch OR NEW.hash IS NOT OLD.hash
                   OR NEW.sender IS NOT OLD.sender OR NEW.rank IS NOT OLD.rank OR NEW.own IS NOT OLD.own
                   OR NEW.removes IS NOT OLD.removes
-                  OR NEW.body_env IS NOT OLD.body_env OR NEW.first_seen_minute IS NOT OLD.first_seen_minute
+                  OR NEW.body_env IS NOT OLD.body_env
+                  OR NEW.first_seen_minute > OLD.first_seen_minute
                   OR NEW.verified < OLD.verified
                   OR (OLD.welcome_env IS NULL AND NEW.welcome_env IS NOT NULL)
                   OR (OLD.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT OLD.welcome_env)
                   OR (OLD.box_env IS NULL AND NEW.box_env IS NOT NULL)
                   OR (OLD.box_env IS NOT NULL AND NEW.box_env IS NOT NULL AND NEW.box_env IS NOT OLD.box_env)
                   OR (OLD.store_hour IS NOT NULL AND (NEW.store_hour IS NULL OR NEW.store_hour > OLD.store_hour))
-                BEGIN SELECT RAISE(ABORT, 'a candidate changes only by a verified copy, an earlier store hour and the erasure of its Welcomes'); END""",
+                BEGIN SELECT RAISE(ABORT, 'a candidate changes only by a verified copy, an earlier sighting or store hour and the erasure of its Welcomes'); END""",
         """CREATE TRIGGER ch_fork_signal_limit BEFORE INSERT ON ch_fork_signal
                 WHEN (SELECT count(*) FROM ch_fork_signal WHERE channel_id = NEW.channel_id) >= 16
                 BEGIN SELECT RAISE(ABORT, 'at most 16 fork signals per channel'); END""",

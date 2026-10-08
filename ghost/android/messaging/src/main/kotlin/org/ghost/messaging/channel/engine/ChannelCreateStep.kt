@@ -79,13 +79,10 @@ internal class ChannelCreateStep(
             }
         }
         val g = created.generation
-        // S0-15's digest of the creator's committers, the anchor of every invite of this context (§19.37 F-S4-2): learnt
-        // now for an open channel, where members invite too; a password channel's committer learns it at its first invite.
-        val digest = if (passwordRequired) {
-            null
-        } else {
-            ChannelDigest.learn(opened.crypto, channelId, MlsRows.applied(emptyList(), created.changes), g.gEnv, g.generation, day)
-        }
+        // S0-15's digest of the creator's committers, the anchor of every invite of this context (§19.37 F-S4-2,
+        // closed in S5a): read from `roster` over the created state — for an open and a password channel alike, so a
+        // password channel's committer no longer waits for its own next invite to admit.
+        val digest = ChannelDigest.learn(opened.crypto, channelId, MlsRows.applied(emptyList(), created.changes), day)
         val set = env.relaySet(g.ns, week) ?: return CreateResult(CreateResult.Status.NO_REPLICAS, null)
         val slots = ByteArray(set.size) { set[it].slot.toByte() }
         val credentials = opened.crypto.generation(channelId, g.gEnv, g.generation.toInt(), g.openEpoch, slots)
@@ -115,6 +112,9 @@ internal class ChannelCreateStep(
                 stores.mls.apply(tx, channelId, MlsRows.changes(created.changes))
                 digest?.let { stores.channels.setCommittersDigest(tx, channelId, it) }
                 stores.members.insertBoxKey(tx, channelId, created.boxPk, created.boxEnv)
+                // CO-8, CO-9's schedule: the PCS clock starts at the creation day, the self-update slot is the
+                // current period's (a later rank-255 member — a resigned committer — keeps its slots from here).
+                seedSchedule(env, tx, channelId, day)
                 val ns = NamespaceId(g.ns)
                 sync.namespaces.register(
                     tx = tx,

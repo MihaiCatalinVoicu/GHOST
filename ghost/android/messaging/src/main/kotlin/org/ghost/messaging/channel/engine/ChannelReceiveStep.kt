@@ -4,6 +4,7 @@ import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.crypto.bridge.ChannelRecognition
 import org.ghost.crypto.bridge.CommitSummary
 import org.ghost.crypto.bridge.MlsCode
+import org.ghost.crypto.bridge.MlsCommitReason
 import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
@@ -78,6 +79,8 @@ internal class ChannelReceiveStep(
     private val peekLimit: Int = PEEK_LIMIT,
     /** Phase 7's fetched cap of a namespace, whose reach puts the namespace under pressure (§19.38). */
     private val fetchedCap: Int = StoreLimits.FETCHED_CAP,
+    /** CO-11/CO-12's window: unopenable blobs and foreign senders are counted here. */
+    private val liveness: ChannelLivenessStep? = null,
 ) {
     private val stores = env.stores
 
@@ -425,7 +428,11 @@ internal class ChannelReceiveStep(
         val opened = env.contexts.open(channelId) ?: return 0
         val done = env.database.transaction { tx ->
             val channel = stores.channels.channel(tx.sql, channelId)
-            if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING)) {
+            // A resync_needed member keeps receiving (CO-11: progress — messages opened, a commit
+            // merged — returns it to active; §6.11); the departed and pre-join states do not read.
+            if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING &&
+                    channel.state != ChannelState.RESYNC_NEEDED)
+            ) {
                 for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.UNROUTED)
                 return@transaction claimed.size
             }
@@ -460,10 +467,16 @@ internal class ChannelReceiveStep(
             // Posts and records first, reactions second (§19.35 F-4): a reaction of a lower leaf to a post of a higher one
             // sits before its target in the peek order.
             val reactions = ArrayList<ChannelCrypto.Item.App>()
+            val foreignSenders = LinkedHashMap<String, ByteArray>()
             for ((index, item) in items.items.withIndex()) {
                 when (item) {
                     is ChannelCrypto.Item.App -> {
                         peekOrder.decrypted(channelId, epoch, item.senderLeaf, item.seq)
+                        // CO-11 (b)/CO-12: a foreign sender of the member's current epoch, first
+                        // opened in this batch (§19.34.1 item 1: counted once, when first opened).
+                        if (epoch == channel.epoch && !item.sender.contentEquals(opened.pseudonym)) {
+                            foreignSenders[item.sender.toList().toString()] = item.sender
+                        }
                         when (item.content.kind) {
                             ChannelPostStep.KIND_REACTION -> reactions += item
                             ChannelPostStep.KIND_POST ->
@@ -483,6 +496,7 @@ internal class ChannelReceiveStep(
             }
             for (item in reactions) applyReaction(tx, channel, item, content)
             for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
+            liveness?.noteOpened(tx, channelId, foreignSenders.values.toList(), content, day)
             // §19.38: the rows a gap had deferred under pressure come back once the `seq` they waited for decrypted.
             for (ns in peekOrder.reofferDue(channelId)) {
                 if (sync.inbox.reofferDeferred(tx, NamespaceId(ns.toByteArray())) > 0) reoffered = true
@@ -683,7 +697,8 @@ internal class ChannelReceiveStep(
         val opened = env.contexts.open(c) ?: return 0
         return env.database.transaction { tx ->
             val fresh = stores.channels.channel(tx.sql, c)
-            if (fresh == null || (fresh.state != ChannelState.ACTIVE && fresh.state != ChannelState.LEAVING) || o.epoch != fresh.epoch) {
+            if (fresh == null || (fresh.state != ChannelState.ACTIVE && fresh.state != ChannelState.LEAVING &&
+                    fresh.state != ChannelState.RESYNC_NEEDED) || o.epoch != fresh.epoch) {
                 // Settled meanwhile (the next copy is a late candidate), or not a member any more.
                 consume(tx, blob, ChannelCounters.Reason.LATE_CANDIDATE)
                 return@transaction 1
@@ -714,14 +729,37 @@ internal class ChannelReceiveStep(
                 is ChannelCrypto.Item.Commit -> {
                     if (item.summary.isValid && item.summary.epoch == o.epoch) {
                         recordCandidate(tx, fresh, o.epoch, item.summary, o.body, blob, content, now)
+                    } else if (item.summary.invalidReason == MlsCommitReason.LIFETIME) {
+                        // §19.29.1: a `LifetimeError` refusal is a non-canonical KeyPackage — the commit
+                        // is invalid for every member on both of OpenMLS's branches: dropped and counted,
+                        // never a candidate, never blocking.
+                        env.counters.count(ChannelCounters.Reason.INVALID_LIFETIME)
                     } else {
                         env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
                     }
                 }
-                // Phase 7 never fetches an own blob back: an own commit that arrives is a copy someone re-sealed (§19.13).
-                is ChannelCrypto.Item.Own -> env.counters.count(ChannelCounters.Reason.FORGED_OWN)
+                // The member's own message: a copy of the member's own commit that a listing pass
+                // fetched (D-5, owner 2026-10-05) verifies the pending commit, recognised by its hash,
+                // and ends the INDETERMINATE wait; any other "own" blob is a forgery (§19.13).
+                is ChannelCrypto.Item.Own -> {
+                    val hash = sha256(o.body)
+                    val ownCandidate = stores.candidates.own(tx.sql, c, o.epoch)
+                    if (ownCandidate != null && ownCandidate.hash.contentEquals(hash)) {
+                        val storeHour = (blob.relayExpiryHour - ChannelTime.handshakeTtl(fresh.timerCode).seconds).takeIf { it >= 0 }
+                        val seen = DmTime.floorMinute(now)
+                        stores.candidates.markVerified(tx, c, o.epoch, hash, seen, storeHour)
+                        lowerAnchor(tx, c, o.epoch, seen, storeHour)
+                    } else {
+                        env.counters.count(ChannelCounters.Reason.FORGED_OWN)
+                    }
+                }
                 is ChannelCrypto.Item.Proposal -> env.counters.count(ChannelCounters.Reason.PROPOSAL)
-                is ChannelCrypto.Item.Failed -> env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
+                is ChannelCrypto.Item.Failed ->
+                    if (item.refusal.reason == MlsCommitReason.LIFETIME) {
+                        env.counters.count(ChannelCounters.Reason.INVALID_LIFETIME)
+                    } else {
+                        env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
+                    }
                 is ChannelCrypto.Item.App, null -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
             }
             sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
@@ -875,7 +913,7 @@ internal class ChannelReceiveStep(
                     val hash = blob.hash.toByteArray()
                     stores.joins.insertRequest(
                         tx, channel.channelId, hash, generation.generation, type, invite.inviteId,
-                        env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body), invite.expiryDay,
+                        env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body), invite.expiryDay, day,
                     )
                     sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 }
@@ -966,7 +1004,24 @@ internal class ChannelReceiveStep(
         Claim.Poisoned -> true
         Claim.Gone -> false
         is Claim.Held -> {
-            env.database.transaction { tx -> sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash) }
+            env.database.transaction { tx ->
+                // CO-11 (a): a foreign blob whose recognition matched the current generation's
+                // epoch key but then failed — the AEAD refused (CS-S5) or the body is not a
+                // message — is junk a member sealed under a real key id: the window opens / counts.
+                // The no-key deferral's expiry (UNOPENABLE) is NOT counted: those blobs are the
+                // honest traffic a member is expected to defer and drop — a message of a future
+                // epoch (REORDER_ACROSS_EPOCH) or the pre-join epoch's posts and commits at a
+                // joiner (T39's "no content from before") —, never evidence of a dead branch
+                // (the model counts only epoch traffic too; §19.39 F-S5-11).
+                if (reason == ChannelCounters.Reason.FORGED_SEAL || reason == ChannelCounters.Reason.NON_CANONICAL) {
+                    val channel = c.channel
+                    val generation = c.generation
+                    if (channel != null && generation != null) {
+                        liveness?.noteUnopenable(tx, channel, generation, r.blob, env.now(), DmTime.day(env.now()))
+                    }
+                }
+                sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
+            }
             backoff.remove(c.key)
             reason?.let { env.counters.count(it) }
             true

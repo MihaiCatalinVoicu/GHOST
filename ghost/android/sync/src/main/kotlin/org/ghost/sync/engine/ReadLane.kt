@@ -298,6 +298,12 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
                             // Queued, not running: the pair stays free, and its next event drops the page (§11.5 #5).
                             continuations.addLast(Continuation(p.key, item.page + 1, item.pagesAllowed))
                         } else {
+                            // The event ended at the relay's tail (a short page, an empty next cursor or an
+                            // unchanged one — a page limit spent is not the tail): CO-4 (ii)'s listing-pass
+                            // signal (F-S4-1). A stale-cursor race still listed to the tail: it counts.
+                            if (atTail(item, outcome)) {
+                                context.stores.listingTailStore.record(p.key.relayId, p.key.namespace, now)
+                            }
                             bundle(p.key, now)
                         }
                     PageCommit.Disposition.DROPPED_BACKLOG -> bundle(p.key, now)
@@ -329,6 +335,10 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
         val next = outcome.nextCursor
         return next.isNotEmpty() && !next.contentEquals(item.cursor)
     }
+
+    /** The event's last page reached the relay's tail: the relay had no further rows to serve. */
+    private fun atTail(item: ReadItem, outcome: PageOutcome.Committed): Boolean =
+        outcome.hashes < item.limit || outcome.nextCursor.isEmpty() || outcome.nextCursor.contentEquals(item.cursor)
 
     private fun bundle(pair: PairKey, now: Long) {
         if (session.canUseNetwork(now)) session.work.postPairWork(pair, readPair = true, at = now)

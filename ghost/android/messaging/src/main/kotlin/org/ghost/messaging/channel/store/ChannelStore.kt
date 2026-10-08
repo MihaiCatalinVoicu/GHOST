@@ -38,8 +38,9 @@ internal class ChannelStore {
         val lastCommitterCommitDay: Long?,
         /**
          * The digest of the committers of the member's current context, as the last native call that returned it gave it
-         * (amended by slice S4, §19.37, F-S4-2): `inviteBuild` at the member's own invite, the invite's anchor at its
-         * join. `null` while the member has not learnt it; a committer admits nothing then (§6.2.4 (B), fail closed).
+         * (amended by slice S4, §19.37, F-S4-2; closed in S5a): `roster` returns it (fn 18), the invite's anchor at the
+         * member's join. `null` while the member has not learnt it; a committer admits nothing then (§6.2.4 (B), fail
+         * closed).
          */
         val committersDigest: ByteArray? = null,
     ) {
@@ -202,8 +203,9 @@ internal class ChannelStore {
     }
 
     /**
-     * The committers digest of the current context (slice S4, §19.37): written by `CH-INVITE` from `inviteBuild` and by
-     * `CH-JOIN` from the anchor the Welcome passed; `null` forgets it (a settle that changes the committers, S5).
+     * The committers digest of the current context (slice S4, §19.37; closed in S5a): written from `roster`'s output by
+     * `CH-CREATE` and the pass, by `CH-INVITE` from `inviteBuild` and by `CH-JOIN` from the anchor the Welcome passed;
+     * `null` forgets it (a settle that changes the committers, S5).
      */
     fun setCommittersDigest(tx: SyncTransaction, channelId: ByteArray, digest: ByteArray?): Boolean {
         Fields.bytesOrNull("ch_channel.committers_digest", digest, 32)
@@ -345,6 +347,27 @@ internal class ChannelStore {
         return out
     }
 
+    /** Every schedule row (CO-8, CO-9): the session-start scheduler's view; these tables carry no expiry filter. */
+    fun schedules(sql: SqlExecutor): List<ScheduleRow> {
+        val out = ArrayList<ScheduleRow>()
+        sql.query(SCHEDULES) { r -> out += readSchedule(r) }
+        return out
+    }
+
+    /** The earliest minute a scheduled pass is due at (the actor's next wake), or null when nothing is scheduled. */
+    fun nextPassDue(sql: SqlExecutor): Long? {
+        var due: Long? = null
+        sql.query(NEXT_PASS_DUE) { r -> due = r.long(0) }
+        return due
+    }
+
+    private fun readSchedule(r: SqlExecutor.Row) = ScheduleRow(
+        channelId = r.blob(0),
+        nextSelfupdateDay = r.long(1),
+        lastOwnCommitDay = if (r.isNull(2)) null else r.long(2),
+        nextPassMinute = if (r.isNull(3)) null else r.long(3),
+    )
+
     companion object {
         private const val CHANNEL_COLUMNS =
             "channel_id, state, split_suspected, partition_suspected, stale_suspected, pw_required, generation, " +
@@ -364,5 +387,13 @@ internal class ChannelStore {
         const val DUE_PASSES: String =
             "SELECT channel_id FROM ch_schedule WHERE next_pass_minute IS NOT NULL AND next_pass_minute <= ? " +
                 "ORDER BY next_pass_minute, channel_id LIMIT ?"
+
+        private const val SCHEDULE_COLUMNS: String =
+            "channel_id, next_selfupdate_day, last_own_commit_day, next_pass_minute"
+
+        const val SCHEDULES: String = "SELECT $SCHEDULE_COLUMNS FROM ch_schedule ORDER BY channel_id"
+
+        const val NEXT_PASS_DUE: String =
+            "SELECT min(next_pass_minute) FROM ch_schedule WHERE next_pass_minute IS NOT NULL"
     }
 }

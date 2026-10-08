@@ -111,7 +111,13 @@ internal class ChannelJoinStep(
                 stores.generations.insert(tx, c, g.generation, g.ns, state, g.gEnv, g.jkEnv, g.rJoin, g.openEpoch)
                 stores.epochs.insert(tx, c, joined.epoch.epoch, joined.epoch.kEnv, joined.epoch.rEp)
                 stores.channels.setCommittersDigest(tx, c, digest)
+                // CO-12's clock starts at the join day: the admission commit is the last
+                // committer commit the joiner's branch reflects (a joiner never settles it —
+                // CH-JOIN applies the Welcome), and the 9-day flags read this column.
+                stores.channels.setLastCommitterCommitDay(tx, c, day)
                 stores.joins.deleteJoins(tx, c)
+                // CO-8, CO-9's schedule, seeded like CH-CREATE's (the PCS clock starts at the join day).
+                seedSchedule(env, tx, c, day)
                 sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 sync.inbox.reofferDeferred(tx, NamespaceId(ns))
                 Outcome.JOINED

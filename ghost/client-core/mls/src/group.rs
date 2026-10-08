@@ -468,6 +468,10 @@ pub struct RosterOut {
     pub tree_hash: Vec<u8>,
     pub context: ChannelContext,
     pub own_leaf: u32,
+    /// The digest of the context's `committers` (S0-15): the invite anchor and CO-2 (A)'s equality
+    /// input, returned here so Kotlin stops learning it from a throwaway `inviteBuild` (§19.37
+    /// F-S4-2, closed in S5a).
+    pub committers_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1998,15 +2002,208 @@ impl MlsContext {
     ) -> MlsResult<RosterOut> {
         let l = self.load(&ch.channel_id, rows, day)?;
         let g = Self::group(&l)?;
+        let context = Self::context_of(&g)?;
+        let committers_digest = committers_digest(&ch.channel_id, &context.committers)
+            .ok_or(MlsError::new(Code::StateCorrupt))?;
         Ok(RosterOut {
             members: Self::roster_of(&g),
             epoch: g.epoch().as_u64(),
             epoch_authenticator: g.epoch_authenticator().as_slice().to_vec(),
             // `MlsGroup::tree_hash` is test-utils only at 0.9.0; the context carries the same hash.
             tree_hash: g.public_group().group_context().tree_hash().to_vec(),
-            context: Self::context_of(&g)?,
+            context,
             own_leaf: g.own_leaf_index().u32(),
+            committers_digest,
         })
+    }
+
+    // ---- test-only builders (MM-30 / MM-46; §19.37 F-S4-6, the Kotlin suites' test entries) -----
+
+    /// A real MLS **Proposal** built by this member (test libraries only; F-S4-6): GHOST never
+    /// proposes, so no `MlsNative` function builds one — but MM-30's killer needs a decryptable
+    /// proposal a mutant could store (the engine's drop is by the header, §6.3.2). A self-update
+    /// proposal (an Update of the member's own leaf, `propose_self_update`): signed and encrypted
+    /// like any handshake message, so a receiver classifies it `ContentType::Proposal`. The build
+    /// touches only the loaded state; nothing is persisted (value semantics, like every call).
+    #[cfg(any(test, feature = "test-vectors"))]
+    pub fn test_proposal(
+        &self,
+        ch: &ChannelHandle,
+        rows: &dyn RowSource,
+        day: u32,
+    ) -> MlsResult<Vec<u8>> {
+        let l = self.load(&ch.channel_id, rows, day)?;
+        let mut g = Self::group(&l)?;
+        let (box_pk, _) = self.box_key(&ch.channel_id)?;
+        let params = LeafNodeParameters::builder()
+            .with_capabilities(canonical::canonical_capabilities())
+            .with_extensions(canonical::leaf_extensions(&GhostLeaf {
+                box_pk,
+                refresh_epoch: g.epoch().as_u64(),
+            })?)
+            .build();
+        let (msg, _) = g
+            .propose_self_update(&l.p, &ch.signer, params)
+            .map_err(internal)?;
+        ser(&msg)
+    }
+
+    /// A **commit carrying a finite-lifetime (non-canonical) KeyPackage**, built by this member
+    /// (test libraries only; MM-46 and SCN-CM's lifetime cases, E-69/E-70): the KeyPackage is
+    /// canonical in every field but its lifetime — `[not_before, not_after]` as given. OpenMLS
+    /// validates the Add at commit-build time, so the lifetime must still hold **now**; the caller
+    /// seals and stores the commit and has it received once `not_after` has passed, when every
+    /// member with a correct clock refuses the Add (`LifetimeError` on OpenMLS's refusal branch,
+    /// `INVALID_COMMIT(lifetime)`, §19.29.1). Returns `(key_package bytes, commit bytes)`; nothing
+    /// is persisted, and the commit is not staged for the builder (it goes out as a foreign blob).
+    #[cfg(any(test, feature = "test-vectors"))]
+    pub fn test_finite_lifetime_commit(
+        &self,
+        ch: &ChannelHandle,
+        rows: &dyn RowSource,
+        day: u32,
+        not_before: u64,
+        not_after: u64,
+    ) -> MlsResult<(Vec<u8>, Vec<u8>)> {
+        if not_before >= not_after {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
+        let channel_id = ch.channel_id;
+        // The attacker's KeyPackage: a fresh pseudonym, canonical everywhere but the lifetime.
+        let seed = PseudonymSeed::from_bytes(self.random()?);
+        let signer = PseudonymSigner::from_seed(&seed);
+        let p = signer.public();
+        let l = self.load(&channel_id, rows, day)?;
+        let build = self.fresh(&channel_id, day);
+        let (box_pk, _) = self.box_key(&channel_id)?;
+        let bind = KpBind {
+            channel_id,
+            purpose: Purpose::Join,
+            day,
+        };
+        let bundle = KeyPackage::builder()
+            .key_package_lifetime(Lifetime::init(not_before, not_after))
+            .leaf_node_capabilities(canonical::canonical_capabilities())
+            .leaf_node_extensions(canonical::leaf_extensions(&GhostLeaf {
+                box_pk,
+                refresh_epoch: 0,
+            })?)
+            .key_package_extensions(
+                Extensions::single(Extension::Unknown(
+                    ext::EXT_KP_BIND,
+                    UnknownExtension(bind.encode()),
+                ))
+                .map_err(internal)?,
+            )
+            .build(
+                SUITE,
+                &build.p,
+                &signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(p.to_vec()).into(),
+                    signature_key: p.to_vec().into(),
+                },
+            )
+            .map_err(internal)?;
+        let kp = bundle.key_package().clone();
+        let kp_bytes = ser(&MlsMessageOut::from(kp.clone()))?;
+        // The commit adding it: built like `commit`'s plan, without the Welcome machinery (the
+        // commit is refused by every receiver on the lifetime; nothing is ever joined).
+        let mut g = Self::group(&l)?;
+        let aad = CommitAad {
+            commit_minute: day * 1440,
+            rotate: false,
+            admits: Vec::new(),
+            swaps: Vec::new(),
+        };
+        g.set_aad(aad.encode());
+        let (path_box_pk, _) = self.box_key(&channel_id)?;
+        let params = LeafNodeParameters::builder()
+            .with_capabilities(canonical::canonical_capabilities())
+            .with_extensions(canonical::leaf_extensions(&GhostLeaf {
+                box_pk: path_box_pk,
+                refresh_epoch: g.epoch().as_u64(),
+            })?)
+            .build();
+        let bundle = g
+            .commit_builder()
+            .consume_proposal_store(false)
+            .force_self_update(true)
+            .propose_adds([kp])
+            .leaf_node_parameters(params)
+            .load_psks(l.p.storage())
+            .map_err(corrupt)?
+            .create_group_info(false)
+            .build(l.p.rand(), l.p.crypto(), &ch.signer, |_| true)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?
+            .stage_commit(&l.p)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?;
+        let (c, _welcome, gi) = bundle.into_messages();
+        // A Welcome exists (the commit has Adds); it is dropped — the commit is refused on the
+        // lifetime before any joiner could use one. An exported GroupInfo never exists (S0-9).
+        if gi.is_some() {
+            return Err(MlsError::new(Code::Internal));
+        }
+        Ok((kp_bytes, ser(&c)?))
+    }
+
+    /// A **commit whose update-path leaf carries a mismatched credential** (test libraries only;
+    /// MM-31 / §19.14's NEW_SIGNER): the member's own empty commit with a path — signed with its
+    /// own key, so every MLS check passes and the leaf's self-signature verifies — but the new
+    /// leaf's `BasicCredential` identity is [wrong_identity], not the leaf's signature key. CO-2's
+    /// leaf-continuity check (`CommitReason::Continuity`) refuses it at every member. (§19.14's
+    /// changed-signature-key half needs `CommitBuilder::build_with_new_signer`, whose symbol the
+    /// G-M2 source scan refuses in any GHOST code — finding F-S5-9, §19.39; both halves fault at
+    /// the same native site, and the mismatched credential is the half a modified client can also
+    /// reach through `LeafNodeParameters` alone.) Nothing is persisted.
+    #[cfg(any(test, feature = "test-vectors"))]
+    pub fn test_new_signer(
+        &self,
+        ch: &ChannelHandle,
+        rows: &dyn RowSource,
+        day: u32,
+        wrong_identity: [u8; 32],
+    ) -> MlsResult<Vec<u8>> {
+        let channel_id = ch.channel_id;
+        let l = self.load(&channel_id, rows, day)?;
+        let mut g = Self::group(&l)?;
+        let aad = CommitAad {
+            commit_minute: day * 1440,
+            rotate: false,
+            admits: Vec::new(),
+            swaps: Vec::new(),
+        };
+        g.set_aad(aad.encode());
+        let (path_box_pk, _) = self.box_key(&channel_id)?;
+        let params = LeafNodeParameters::builder()
+            .with_credential_with_key(CredentialWithKey {
+                credential: BasicCredential::new(wrong_identity.to_vec()).into(),
+                signature_key: ch.signer.public().to_vec().into(),
+            })
+            .with_capabilities(canonical::canonical_capabilities())
+            .with_extensions(canonical::leaf_extensions(&GhostLeaf {
+                box_pk: path_box_pk,
+                refresh_epoch: g.epoch().as_u64(),
+            })?)
+            .build();
+        let bundle = g
+            .commit_builder()
+            .consume_proposal_store(false)
+            .force_self_update(true)
+            .leaf_node_parameters(params)
+            .load_psks(l.p.storage())
+            .map_err(corrupt)?
+            .create_group_info(false)
+            .build(l.p.rand(), l.p.crypto(), &ch.signer, |_| true)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?
+            .stage_commit(&l.p)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?;
+        let (c, welcome, gi) = bundle.into_messages();
+        // No Adds: no Welcome; an exported GroupInfo never exists (S0-9).
+        if welcome.is_some() || gi.is_some() {
+            return Err(MlsError::new(Code::Internal));
+        }
+        ser(&c)
     }
 
     // ---- fn 19: sweepPast -----------------------------------------------------------------------

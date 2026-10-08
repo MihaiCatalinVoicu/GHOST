@@ -22,10 +22,11 @@ use crate::derive::{
     derive_invite_signing_key, derive_join_key, derive_join_recognition, derive_join_seal_key,
     derive_namespace, derive_open_invite_seal_key, derive_read_base, derive_read_secret,
     CredentialKind, DepositBase, EpochExport, GenerationSecret, InvitePassword, InviteSeed,
-    JoinKey, OpenInviteSalt, ReadBase, StateKey,
+    JoinKey, OpenInviteSalt, PseudonymSeed, ReadBase, StateKey,
 };
-use crate::group::{KeyClass, MlsContext};
+use crate::group::{ChannelHandle, KeyClass, MlsContext};
 use crate::invite::{self, InviteFields};
+use crate::kv::{Scope, WrappedRow, WrappedRows};
 use crate::result::{Code, MlsError, MlsResult};
 use crate::seal::{self, Order, SealKeyInput};
 use zeroize::Zeroizing;
@@ -61,6 +62,43 @@ pub mod kind {
     /// a call would raise it (the lifecycle test: the reply is `INTERNAL`, and the handle, its
     /// channels and `ctxClose` keep working). A closed handle is `CRYPTO_UNAVAILABLE`, no panic.
     pub const PANIC_IN_CONTEXT: u8 = 12;
+    /// `[state_key, channel_id, pseudonym_seed, rows, day] → [proposal]`: a real MLS Proposal by
+    /// the member (F-S4-6, MM-30's test entry; `MlsContext::test_proposal`). `rows` is one item,
+    /// the concatenation of `(scope(1) ‖ u32be(key_len) ‖ key ‖ u32be(env_len) ‖ env)*`.
+    pub const PROPOSAL: u8 = 13;
+    /// `[state_key, channel_id, pseudonym_seed, not_before(u64), not_after(u64), rows, day] →
+    /// [key_package, commit]`: a commit by the member adding a finite-lifetime (non-canonical)
+    /// KeyPackage (MM-46 / SCN-CM's lifetime cases; `MlsContext::test_finite_lifetime_commit`).
+    /// `rows` is encoded as in [`PROPOSAL`].
+    pub const FINITE_KP_COMMIT: u8 = 14;
+    /// `[state_key, channel_id, pseudonym_seed, wrong_identity(32), rows, day] → [commit]`: the
+    /// member's own commit whose update-path leaf carries a mismatched credential (MM-31 /
+    /// §19.14's NEW_SIGNER; `MlsContext::test_new_signer`). `rows` is encoded as in [`PROPOSAL`].
+    pub const NEW_SIGNER_COMMIT: u8 = 15;
+}
+
+/// Decodes the `rows` item of [`kind::PROPOSAL`] and [`kind::FINITE_KP_COMMIT`]: the
+/// concatenation of `(scope(1) ‖ u32be(key_len) ‖ key ‖ u32be(env_len) ‖ env)*`, the wrapped
+/// `mls_kv`/global rows of §3.4 point 2.
+fn rows_of(b: &[u8]) -> MlsResult<Vec<WrappedRow>> {
+    let mut rest = b;
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let (&scope, tail) = rest.split_first().ok_or_else(nc)?;
+        let (len, tail) = tail.split_at_checked(4).ok_or_else(nc)?;
+        let klen = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+        let (key, tail) = tail.split_at_checked(klen).ok_or_else(nc)?;
+        let (len, tail) = tail.split_at_checked(4).ok_or_else(nc)?;
+        let elen = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+        let (env, tail) = tail.split_at_checked(elen).ok_or_else(nc)?;
+        out.push(WrappedRow {
+            scope: Scope::from_u8(scope).ok_or_else(nc)?,
+            key: key.to_vec(),
+            env: env.to_vec(),
+        });
+        rest = tail;
+    }
+    Ok(out)
 }
 
 fn nc() -> MlsError {
@@ -309,6 +347,51 @@ fn run_case(case: u8, input: &[u8]) -> MlsResult<Vec<u8>> {
             i.done()?;
             crate::jni::panic_inside_context(handle)?;
             reply(&[])
+        }
+        kind::PROPOSAL => {
+            let state_key = StateKey::from_bytes(i.fixed()?);
+            let channel_id: [u8; 32] = i.fixed()?;
+            let seed = PseudonymSeed::from_bytes(i.fixed()?);
+            let rows = rows_of(i.next()?)?;
+            let day = i.u32()?;
+            i.done()?;
+            let ctx = MlsContext::open(state_key)?;
+            let ch = ChannelHandle::open(channel_id, &seed);
+            let proposal = ctx.test_proposal(&ch, &WrappedRows(&rows), day)?;
+            reply(&[&proposal])
+        }
+        kind::FINITE_KP_COMMIT => {
+            let state_key = StateKey::from_bytes(i.fixed()?);
+            let channel_id: [u8; 32] = i.fixed()?;
+            let seed = PseudonymSeed::from_bytes(i.fixed()?);
+            let not_before = i.u64()?;
+            let not_after = i.u64()?;
+            let rows = rows_of(i.next()?)?;
+            let day = i.u32()?;
+            i.done()?;
+            let ctx = MlsContext::open(state_key)?;
+            let ch = ChannelHandle::open(channel_id, &seed);
+            let (kp, commit) = ctx.test_finite_lifetime_commit(
+                &ch,
+                &WrappedRows(&rows),
+                day,
+                not_before,
+                not_after,
+            )?;
+            reply(&[&kp, &commit])
+        }
+        kind::NEW_SIGNER_COMMIT => {
+            let state_key = StateKey::from_bytes(i.fixed()?);
+            let channel_id: [u8; 32] = i.fixed()?;
+            let seed = PseudonymSeed::from_bytes(i.fixed()?);
+            let wrong_identity: [u8; 32] = i.fixed()?;
+            let rows = rows_of(i.next()?)?;
+            let day = i.u32()?;
+            i.done()?;
+            let ctx = MlsContext::open(state_key)?;
+            let ch = ChannelHandle::open(channel_id, &seed);
+            let commit = ctx.test_new_signer(&ch, &WrappedRows(&rows), day, wrong_identity)?;
+            reply(&[&commit])
         }
         _ => return Err(nc()),
     };

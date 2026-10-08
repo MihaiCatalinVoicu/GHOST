@@ -2,6 +2,7 @@ package org.ghost.messaging.channel.engine
 
 import org.ghost.crypto.bridge.AdmitEvidence
 import org.ghost.crypto.bridge.ChannelCrypto
+import org.ghost.crypto.bridge.ChannelPolicy
 import org.ghost.crypto.bridge.CommitRequest
 import org.ghost.crypto.bridge.MlsCode
 import org.ghost.crypto.bridge.MlsField
@@ -19,39 +20,67 @@ import org.ghost.sync.api.OutboundBlob
 import java.nio.ByteBuffer
 
 /**
- * **`CH-PASS`** for admissions (Phase 10 design §6.2.3, §6.2.4, §6.4 CO-7 and CO-8, §10.4), **one transaction**: a
- * committer's pass over the pending join requests of its channel.
+ * **`CH-PASS`** (Phase 10 design §6.2.3, §6.2.4, §6.4 CO-7 … CO-9 and CO-14, §6.6, §6.8, §10.4), **one transaction**:
+ * a member's pass over its channel — the full committer pass of slice S5b2, where S4 ran only rank 0's admissions.
  *
- * **Preconditions (CO-7).** The channel is current ([ChannelPostStep.isCurrent]: active, no removal hold, no generation
- * waiting for its switch), the committer holds no pending commit, and no candidate of a rank at or below its own is held
- * for the current epoch.
+ * **Preconditions (CO-7, D-1).** The channel is current ([ChannelPostStep.isCurrent]: active, no removal hold, no
+ * generation waiting for its switch), the committer holds no pending commit, and it holds **no valid candidate for
+ * its current epoch, of any rank** — a rank-255 self-update candidate delays a pass to the settle point (at most
+ * 20 minutes and one listing pass, §19.5) and never blocks it. The engine settles before the scheduled passes run
+ * ([ChannelEngine.runPass]), so a pass after a settle works in e + 1 in the same actor step; a user action settles
+ * first the same way ([ChannelEngine.remove]). After a rotating winner at the generation switch the pass re-checks
+ * at the next step where the channel is current — the switch itself is `CH-SWITCH`'s (slice S6).
  *
- * **The admission policy (§6.2.4 (B)),** applied by the admitting committer only, to each request in arrival order: the
- * committer holds the `INVITE_ISSUED` (an unexpired `ch_invite_issued` row on its trusted day), the invite is neither
- * consumed nor void, its sponsor is a current member who may invite (CO-2 (A)'s own rule, checked before the native call
- * refuses it, §19.38), its `committers_digest` equals the digest of the committer's
- * current committers (`ch_channel.committers_digest`; **unknown means no admission**, fail closed — finding F-S4-2 of
- * §19.37: `roster` does not return the digest, so the engine knows it only from its own `inviteBuild` or its join anchor),
- * the KeyPackage is canonical with `GhostKpBind.day` in `[day − 7, day + 3]` (`joinVerify` checks the form, purpose,
- * binding and both signatures natively; the window is checked here), its keyed tag was never seen in the channel
- * (`ch_kp_seen`, over `kp_ref` alone — F-S4-4: the init key is not exposed), in a password channel the invite's
- * `pw_version` equals the context's, the pseudonym is not a current member, no two Adds share an invite, and the member
- * count after the commit stays within the class cap. A refused request is deleted and its KeyPackage's tag recorded; a
- * restore-purpose request is the restore's (slice S7) and is left pending.
+ * **What a pass commits, by rank (CO-8, §19.13 item 4).** Every committer's user actions are passes at once,
+ * whatever its rank; a scheduled pass (§6.8: every commit carries `force_self_update`, so any commit refreshes the
+ * leaf):
+ *  - **rank 0** admits the pending join requests (the policy of §6.2.4 (B) below) and refuses what it refuses; when
+ *    no admissions remain it commits the **PCS** commit (empty, with a path) only if its last own commit is at least
+ *    7 days old — at least 1 day in channels with timers ≤ 1 d (Q36, §19.19; [ChannelTime.pcsDays]);
+ *  - **rank r ≥ 1** admits only requests it first recorded at least `r × 48 h` earlier (`ch_join_request.recorded_day`,
+ *    §19.35 F-11 (a) amended by S5: a fresh request is the owner's to take first; the owner returning re-takes its
+ *    work, the race is CO-10's), and otherwise commits its own PCS commit when its last commit is ≥ 7 days old
+ *    (the daily cadence of short-timer channels is rank 0's alone);
+ *  - **rank 255** commits nothing here but CO-9's self-update: an empty commit at the first session after its PRF
+ *    slot ([ChannelSchedule]), retried at the next session after 24 h when it lost the tie-break (the settle arms
+ *    the retry, [ChannelSettleStep]), skipped — the slot consumed — when CO-14 would refuse it (the pass checks its
+ *    own leaf, [co14WouldRefuse], exactly the rule the native side applies to foreign rank-255 commits).
+ *
+ * **The admission policy (§6.2.4 (B)),** applied by the admitting committer only, to each aged request in arrival
+ * order: the committer holds the `INVITE_ISSUED` (an unexpired `ch_invite_issued` row on its trusted day), the
+ * invite is neither consumed nor void, its sponsor is a current member who may invite (CO-2 (A)'s own rule, checked
+ * before the native call refuses it, §19.38), its `committers_digest` equals the digest of the committer's current
+ * committers (`ch_channel.committers_digest`; unknown means no admission, fail closed — the digest comes from
+ * `roster`, §19.37 F-S4-2 closed in S5a), the KeyPackage is canonical with `GhostKpBind.day` in `[day − 7, day + 3]`
+ * (`joinVerify` checks the form, purpose, binding and both signatures natively; the window is checked here), its
+ * keyed tag was never seen in the channel (`ch_kp_seen`, over `kp_ref` alone — F-S4-4), in a password channel the
+ * invite's `pw_version` equals the context's, the pseudonym is not a current member, no two Adds share an invite,
+ * and the member count after the commit stays within the class cap. A refused request is deleted and its KeyPackage's
+ * tag recorded; a restore- or rejoin-purpose request is S7's (an invite-authorized swap) and is left pending.
+ *
+ * **The user-action Remove (§6.6, §19.13; SCN-CM's "committers still pass and remove the flooder").** A committer's
+ * `remove` runs a pass at once with the Remove proposals; the native side enforces CO-2's rank rule (a rank removes
+ * only higher ranks) and CO-1. When the removed member is a committer or a funder, the commit carries the context
+ * change that drops its key from `committers`/`funders` — the same context-change machinery a password
+ * set/change/remove uses (§19.29.3, Q45 (a): the rotation flag, the switch itself S6's). The removed member's
+ * departure at the merge is §6.6's (slice S6 records the rest).
  *
  * **The commit** (`commit`, §10.2 fn 9) carries the valid Adds by value with their evidence in its `GhostCommitAad`
- * (§19.2), the class floor, and the current generation's bootstrap (`(g, E_g, G_g)`, §5.4); the native side defers the
- * Adds that do not fit the floor (§5.7) and refuses a KeyPackage or evidence it does not accept by index, which this step
- * refuses and retries without. The commit is sealed in mode 0x11 under `K_ep(e)` into the current namespace and
- * **enqueued**; one WELCOME blob per joiner is sealed in mode 0x13 under the `JK_g` of the namespace its request came
- * from and **kept wrapped in the committer's own candidate row** (`welcome_env`, with what `CH-SETTLE` needs to enqueue
- * it and to record the admission), never enqueued here (§19.2: Welcomes only after a won commit).
+ * (§19.2), the Removes, the context change when one, the class floor, and the current generation's bootstrap
+ * ((g, E_g, G_g), §5.4); the native side defers the Adds that do not fit the floor (§5.7) and refuses a KeyPackage
+ * or evidence it does not accept by index, which this step refuses and retries without. The commit is sealed in
+ * mode 0x11 under `K_ep(e)` into the current namespace and **enqueued**; one WELCOME blob per joiner is sealed in
+ * mode 0x13 under the `JK_g` of the namespace its request came from and **kept wrapped in the committer's own
+ * candidate row** (`welcome_env`, with what `CH-SETTLE` needs to enqueue it and to record the admission), never
+ * enqueued here (§19.2: Welcomes only after a won commit). The losing committer's staged Welcome dies with its
+ * candidate row at the settle — SCN-CD's "the loser deletes its Welcome".
  *
- * **Scheduling (CO-8, the part this slice serves).** Rank 0 runs a pass when join work is pending, at the first
- * time-triggered pass at least `U[0, 5 min]` after a relay session start, at most once per 6 hours ([scheduleAtSessionStart], [runScheduledPasses]);
- * the schedule is in memory (a restart schedules again at the next session start), so `ch_schedule` stays CO-9's (S5).
- * A committer of rank ≥ 1 does not admit in this slice: CO-8's work-age rule needs the day a request was first recorded,
- * which §9 has no column for (§19.35 F-11 (a), S5's).
+ * **Scheduling (CO-8, CO-9), persisted in `ch_schedule`** (S4 kept it in memory, §19.37 row 26; closed here). A
+ * foreground session start schedules a due pass `U[0, 5 min]` later, at most once per 6 hours; after a scheduled
+ * pass runs, its next is re-armed 6 hours out in the same column, so a restart does not re-run a pass inside its
+ * window. A pass is scheduled when join work may pend, when a self-update slot is due, or when the PCS cadence may
+ * be due — the cheap checks; the pass itself decides with the roster loaded. The Android JobScheduler wiring of
+ * the background job (at most once per 24 h) is not this engine's; any time-triggered pass runs what is due.
  *
  * Gate G-M5 lists this file for `Outbox.enqueue`.
  */
@@ -62,13 +91,7 @@ internal class ChannelPassStep(
 ) {
     private val stores = env.stores
 
-    /** Channel → the second its next scheduled pass is due (CO-8; in memory, T33). */
-    private val nextPass = HashMap<List<Byte>, Long>()
-
-    /** Channel → the second its last pass ran (the 6-hour spacing of CO-8). */
-    private val lastPass = HashMap<List<Byte>, Long>()
-
-    /** What [admit] did. */
+    /** What [admit] and [remove] did. */
     enum class Result {
         /** A commit was built, its op enqueued and the own candidate recorded. */
         COMMITTED,
@@ -76,7 +99,7 @@ internal class ChannelPassStep(
         /** Requests were refused and deleted; no commit (nothing valid remained). */
         REFUSED_ONLY,
 
-        /** Nothing to do, or a precondition of CO-7 does not hold. */
+        /** Nothing to do, or a precondition of CO-7 does not hold (the pass waits for the settle point). */
         NOTHING,
 
         /** The context or the content key is not available. */
@@ -84,59 +107,75 @@ internal class ChannelPassStep(
     }
 
     /**
-     * A relay session start (CO-8): every channel this client commits for at rank 0, with join work pending and no pass
-     * in the last 6 hours, is scheduled `U[0, 5 min]` later.
+     * A relay session start (CO-8): every active channel whose work, self-update slot or PCS cadence may be due,
+     * with no pass scheduled and none inside its 6-hour spacing, is scheduled `U[0, 5 min]` later. The schedule is
+     * `ch_schedule` (a restart keeps it); a channel without a row — a committer added by a context change — gets one
+     * seeded here, its own-commit day being today as far as the schedule knows.
      */
     fun scheduleAtSessionStart() {
         val now = env.now()
         val day = DmTime.day(now)
-        val channels = env.database.transaction { tx -> stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) }
-        for (channel in channels) {
-            val key = channel.channelId.toList()
-            if (nextPass.containsKey(key)) continue
-            val last = lastPass[key]
-            if (last != null && now - last < PASS_SPACING_SECONDS) continue
-            val pending = env.database.transaction { tx -> stores.joins.requests(tx.sql, channel.channelId, day) }
-            if (pending.isEmpty()) continue
-            val jitter = (env.random.u32() % (MAX_JITTER_MINUTES + 1)) * DmTime.MINUTE
-            nextPass[key] = now + jitter
+        val seenKey = env.keys.seenKey() ?: return
+        try {
+            val channels = env.database.transaction { tx -> stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) }
+            for (channel in channels) {
+                val key = channel.channelId.toList()
+                val row = env.database.transaction { tx -> stores.channels.schedule(tx.sql, channel.channelId) }
+                if (row == null) {
+                    env.database.transaction { tx ->
+                        stores.channels.putSchedule(
+                            tx, channel.channelId,
+                            ChannelSchedule.slotDay(channel.channelId, ChannelSchedule.period(day), seenKey), day, null,
+                        )
+                    }
+                    continue
+                }
+                if (row.nextPassMinute != null) continue
+                val workMaybe = env.database.transaction { tx ->
+                    stores.joins.requests(tx.sql, channel.channelId, day).isNotEmpty() ||
+                        stores.members.requests(tx.sql, channel.channelId, day).isNotEmpty()
+                }
+                val slotDue = day >= row.nextSelfupdateDay
+                val pcsMaybe = row.lastOwnCommitDay != null &&
+                    day - row.lastOwnCommitDay >= ChannelTime.pcsDays(channel.timerCode)
+                if (!workMaybe && !slotDue && !pcsMaybe) continue
+                val jitter = (env.random.u32() % (MAX_JITTER_MINUTES + 1)) * DmTime.MINUTE
+                env.database.transaction { tx ->
+                    stores.channels.putSchedule(tx, channel.channelId, row.nextSelfupdateDay, row.lastOwnCommitDay, DmTime.floorMinute(now) + jitter)
+                }
+            }
+        } finally {
+            seenKey.fill(0)
         }
     }
 
     /** The scheduled passes that are due, each run once ([admit]); returns how many committed. */
     fun runScheduledPasses(): Int {
         val now = env.now()
+        val due = env.database.transaction { tx -> stores.channels.duePasses(tx.sql, DmTime.floorMinute(now), MAX_DUE_PASSES) }
         var committed = 0
-        for ((key, at) in nextPass.entries.sortedBy { it.value }.toList()) {
-            if (at > now) continue
-            nextPass.remove(key)
-            lastPass[key] = now
-            if (admit(key.toByteArray()) == Result.COMMITTED) committed++
+        for (channelId in due) {
+            if (admit(channelId) == Result.COMMITTED) committed++
+            // The spacing, persisted: after a scheduled pass the next may run 6 hours out, and a restart
+            // inside the window does not schedule again.
+            env.database.transaction { tx ->
+                val row = stores.channels.schedule(tx.sql, channelId)
+                if (row != null) {
+                    stores.channels.putSchedule(tx, channelId, row.nextSelfupdateDay, row.lastOwnCommitDay, DmTime.floorMinute(now) + PASS_SPACING_SECONDS)
+                }
+            }
         }
         return committed
     }
 
     /** The second the earliest scheduled pass is due (the actor's next wake), or null. */
-    fun nextDue(): Long? = nextPass.values.minOrNull()
+    fun nextDue(): Long? = env.database.transaction { tx -> stores.channels.nextPassDue(tx.sql) }
 
-    /** Forgets the schedule (lock, wipe). */
-    fun clear() {
-        nextPass.clear()
-        lastPass.clear()
-    }
+    /** One scheduled pass over [channelId]'s work (CO-8, CO-9). */
+    fun admit(channelId: ByteArray): Result = pass(channelId, null)
 
-    /** One pass over [channelId]'s pending join requests. */
-    fun admit(channelId: ByteArray): Result {
-        val now = env.now()
-        val day = DmTime.day(now)
-        val content = env.keys.content() ?: return Result.UNAVAILABLE
-        val seenKey = env.keys.seenKey() ?: return Result.UNAVAILABLE
-        try {
-            return passWith(channelId, content, seenKey, now, day)
-        } finally {
-            seenKey.fill(0)
-        }
-    }
+    /** `CH-PASS` at a user action: [member] removed, at once, whatever the committer's rank (§6.6, §19.13). */
+    fun removeMember(channelId: ByteArray, member: ByteArray): Result = pass(channelId, member)
 
     private class Admission(
         val request: JoinStore.RequestRow,
@@ -152,12 +191,25 @@ internal class ChannelPassStep(
         override fun toString(): String = "Refusal(redacted)"
     }
 
+    private fun pass(channelId: ByteArray, removeTarget: ByteArray?): Result {
+        val now = env.now()
+        val day = DmTime.day(now)
+        val content = env.keys.content() ?: return Result.UNAVAILABLE
+        val seenKey = env.keys.seenKey() ?: return Result.UNAVAILABLE
+        try {
+            return passWith(channelId, content, seenKey, now, day, removeTarget)
+        } finally {
+            seenKey.fill(0)
+        }
+    }
+
     private fun passWith(
         channelId: ByteArray,
         content: org.ghost.messaging.store.ContentCipher,
         seenKey: ByteArray,
         now: Long,
         day: Long,
+        removeTarget: ByteArray?,
     ): Result {
         val opened = env.contexts.open(channelId) ?: return Result.UNAVAILABLE
         val p = opened.pseudonym
@@ -168,38 +220,54 @@ internal class ChannelPassStep(
             if (epoch.epoch != channel.epoch) return@transaction null
             val generation = stores.generations.current(tx.sql, channelId, day) ?: return@transaction null
             val candidates = stores.candidates.candidates(tx.sql, channelId, epoch.epoch)
-            Snapshot(channel, epoch, generation, candidates, stores.joins.requests(tx.sql, channelId, day), stores.mls.rows(tx.sql, channelId, day))
+            Snapshot(
+                channel, epoch, generation, candidates,
+                stores.joins.requests(tx.sql, channelId, day),
+                stores.channels.schedule(tx.sql, channelId),
+                stores.mls.rows(tx.sql, channelId, day),
+            )
         } ?: return Result.NOTHING
-        if (snapshot.requests.isEmpty()) return Result.NOTHING
+        // CO-7 (D-1): never pass over any valid candidate of the current epoch, whatever its rank — the pass
+        // waits for the settle point (a rank-255 candidate delays, it never blocks; §19.5). The engine's pass
+        // runs the settles first, so after one this pass works in e + 1 in the same actor step.
+        if (snapshot.candidates.isNotEmpty()) return Result.NOTHING
         val rows = MlsRows.of(snapshot.rows)
         val roster = opened.crypto.roster(channelId, rows, day.toInt()).valueOrNull() ?: return Result.UNAVAILABLE
-        val rank = roster.context.committers.indexOfFirst { it.contentEquals(p) }
-        // CO-1: only a committer admits; CO-7: no own pending commit, no candidate of a rank at or below this one.
-        if (rank != 0) return Result.NOTHING
-        if (snapshot.candidates.any { it.own || it.rank <= rank }) return Result.NOTHING
+        // CO-1: the rank in the pre-commit context; `indexOfFirst` answers -1 for a non-committer, CO-1's 255.
+        val rank = roster.context.committers.indexOfFirst { it.contentEquals(p) }.let { if (it < 0) NOT_A_COMMITTER else it }
+        if (removeTarget != null && rank == NOT_A_COMMITTER) return Result.NOTHING // CO-1: only a committer Removes
         val members = roster.members.map { it.pseudonym.toList() }.toSet()
-        val passwordChannel = roster.context.flags and ChannelEnv.FLAG_PASSWORD != 0
-        // CO-2 (A)'s sponsor rule, applied before the native call refuses it (§19.38): a committer, or any member where
-        // members may invite and the channel has no password (Q46 (b)).
+        // CO-2 (A)'s sponsor rule, applied before the native call refuses it (§19.38): a committer, or any member
+        // where members may invite and the channel has no password (Q46 (b)).
         val committerSet = roster.context.committers.map { it.toList() }.toSet()
+        val passwordChannel = roster.context.flags and ChannelEnv.FLAG_PASSWORD != 0
         val membersMayInvite = roster.context.flags and ChannelEnv.FLAG_MEMBERS_MAY_INVITE != 0 && !passwordChannel
-        // The digest of the committer's current committers (S0-15): kept, or — forgotten by a settle that changed the
-        // committers, or never learnt — learnt again from a throwaway open invite; a password channel's stays unknown
-        // until its committer's next invite, and then nothing is admitted (fail closed, §19.37 F-S4-2).
-        val digest = snapshot.channel.committersDigest ?: if (passwordChannel) {
-            null
+        // The digest of the committer's current committers (S0-15): kept, or — forgotten by a settle that changed
+        // the committers, or never learnt — taken from `roster`'s output and persisted; a password channel learns
+        // it too (§19.37 F-S4-2, closed in S5a).
+        val digest = snapshot.channel.committersDigest ?: ChannelDigest.learn(opened.crypto, channelId, rows, day)?.also { d ->
+            env.database.transaction { tx -> stores.channels.setCommittersDigest(tx, channelId, d) }
+        }
+
+        if (rank == NOT_A_COMMITTER) {
+            // CO-9: the self-update is the only commit a rank-255 member makes.
+            return selfUpdate(opened, content, snapshot, rows, roster.ownRefreshEpoch(p), seenKey, now, day, roster.members.size)
+        }
+
+        // ---- the committer's pass: admissions, the user-action Remove, or the PCS commit.
+        val agedRequests = if (rank == 0) {
+            snapshot.requests
         } else {
-            ChannelDigest.learn(opened.crypto, channelId, rows, snapshot.generation.gEnv, snapshot.generation.generation, day)?.also { d ->
-                env.database.transaction { tx -> stores.channels.setCommittersDigest(tx, channelId, d) }
-            }
+            // The work-age rule (§19.13 item 4): only work first recorded at least r × 48 h earlier.
+            snapshot.requests.filter { it.recordedDay + 2L * rank <= day }
         }
         val refused = ArrayList<Refusal>()
         val admissions = ArrayList<Admission>()
         val invitesUsed = HashSet<List<Byte>>()
         val cap = ChannelTime.cap(snapshot.channel.sizeClass)
-        for (request in snapshot.requests) {
+        for (request in agedRequests) {
             if (admissions.size >= MAX_ADDS) break
-            if (request.type != JoinType.JOIN) continue // a restore is S7's (an invite-authorized swap, §6.12)
+            if (request.type != JoinType.JOIN) continue // a restore or rejoin is S7's (an invite-authorized swap, §6.12)
             val inviteId = request.inviteId ?: continue
             val body = content.open(request.bodyEnv, ChannelAd.joinRequest(channelId, request.hash))
             if (body == null) {
@@ -253,8 +321,90 @@ internal class ChannelPassStep(
                 tag = tag,
             )
         }
-        val built = buildCommit(opened, snapshot, rows, admissions, refused, now, day) ?: return writeRefusals(channelId, refused)
-        return writeCommit(channelId, opened, content, snapshot, built, refused, now, day)
+
+        if (removeTarget != null && removeTarget.toList() !in members) return writeRefusals(channelId, refused)
+        // One commit for the pass's work, when there is work: the admissions it admitted, and — at a user
+        // action — the Remove (§6.6: an immediate pass with the Remove proposals; the committers/funders
+        // update rides along when the target is a committer or a funder). With no admissions and no Remove
+        // the pass builds nothing here; the PCS commit below is a cadence decision, not a default.
+        val hasWork = admissions.isNotEmpty() || removeTarget != null
+        val built = if (hasWork) {
+            buildCommit(
+                opened, snapshot, rows, admissions, refused, now, day,
+                removes = if (removeTarget != null) listOf(removeTarget) else emptyList(),
+                context = if (removeTarget != null) removeContext(roster.context, removeTarget) else null,
+            )
+        } else {
+            null
+        }
+        if (built != null) {
+            return writeCommit(channelId, opened, content, snapshot, built, refused, now, day, rank, selfUpdate = false, seenKey)
+        }
+        if (refused.isNotEmpty()) return writeRefusals(channelId, refused)
+        // No admissions, a refused Remove, or nothing: the PCS commit (§6.8), only on the cadence.
+        val lastOwn = snapshot.schedule?.lastOwnCommitDay
+        val pcsDue = lastOwn != null && day - lastOwn >= ChannelTime.pcsDays(snapshot.channel.timerCode)
+        if (!pcsDue || removeTarget != null) return Result.NOTHING
+        val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), now, day, emptyList(), null)
+            ?: return Result.NOTHING
+        return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, seenKey)
+    }
+
+    /** CO-9: the rank-255 member's self-update at its slot — or the skip/NOTHING the rule dictates. */
+    private fun selfUpdate(
+        opened: ChannelContexts.Opened,
+        content: org.ghost.messaging.store.ContentCipher,
+        snapshot: Snapshot,
+        rows: List<org.ghost.crypto.bridge.MlsRow>,
+        ownRefreshEpoch: Long,
+        seenKey: ByteArray,
+        now: Long,
+        day: Long,
+        memberCount: Int,
+    ): Result {
+        val schedule = snapshot.schedule ?: return Result.NOTHING
+        if (day < schedule.nextSelfupdateDay) return Result.NOTHING
+        // CO-14 at the pass: refuse a rank-255 commit whose sender leaf has refresh_epoch > e − k — the same
+        // rule the native side applies to foreign commits, checked against the member's own would-be commit.
+        // A skip consumes the slot (the next period's is scheduled), it does not retry.
+        if (co14WouldRefuse(ownRefreshEpoch, snapshot.epoch.epoch, memberCount)) {
+            env.database.transaction { tx ->
+                stores.channels.putSchedule(
+                    tx, snapshot.channel.channelId,
+                    ChannelSchedule.nextSlotDay(snapshot.channel.channelId, day, seenKey), schedule.lastOwnCommitDay, schedule.nextPassMinute,
+                )
+            }
+            return Result.NOTHING
+        }
+        val built = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), now, day, emptyList(), null)
+            ?: return Result.NOTHING
+        return writeCommit(snapshot.channel.channelId, opened, content, snapshot, built, emptyList(), now, day, NOT_A_COMMITTER, selfUpdate = true, seenKey)
+    }
+
+    /** CO-14: `refresh_epoch > e − k`, `k = min(8, n)` — true when the rule would refuse the commit. */
+    private fun co14WouldRefuse(refreshEpoch: Long, epoch: Long, memberCount: Int): Boolean {
+        val k = minOf(CO14_K_MAX, memberCount)
+        return refreshEpoch > epoch - k
+    }
+
+    /** The context change that drops [removed] from `committers` and `funders`, or null when it names neither. */
+    private fun removeContext(context: ChannelPolicy, removed: ByteArray): ChannelPolicy? {
+        val inCommitters = context.committers.any { it.contentEquals(removed) }
+        val inFunders = context.funders.any { it.contentEquals(removed) }
+        if (!inCommitters && !inFunders) return null
+        return ChannelPolicy(
+            channelId = context.channelId,
+            sizeClass = context.sizeClass,
+            timerCode = context.timerCode,
+            timerVersion = context.timerVersion,
+            historyPolicy = context.historyPolicy,
+            flags = context.flags,
+            idleEvictDays = context.idleEvictDays,
+            pwVersion = context.pwVersion,
+            name = context.name,
+            committers = if (inCommitters) context.committers.filterNot { it.contentEquals(removed) } else context.committers,
+            funders = if (inFunders) context.funders.filterNot { it.contentEquals(removed) } else context.funders,
+        )
     }
 
     /** What the pass read in its first transaction. */
@@ -264,6 +414,7 @@ internal class ChannelPassStep(
         val generation: org.ghost.messaging.channel.store.GenerationStore.GenerationRow,
         val candidates: List<org.ghost.messaging.channel.store.CandidateStore.CandidateRow>,
         val requests: List<JoinStore.RequestRow>,
+        val schedule: org.ghost.messaging.channel.store.ChannelStore.ScheduleRow?,
         val rows: List<org.ghost.messaging.channel.store.MlsKvStore.KvRow>,
     )
 
@@ -275,8 +426,9 @@ internal class ChannelPassStep(
     )
 
     /**
-     * `commit` with the admissions; a KeyPackage or evidence the native side refuses by index is refused here and the
-     * commit is built again without it. Null when no admission remains.
+     * `commit` with the admissions, the Removes and the context change; a KeyPackage or evidence the native side
+     * refuses by index is refused here and the commit is built again without it. Null when a build is refused
+     * outright (a Remove the native CO-2 rank rule refuses, a floor that fits nothing) or no admission remains.
      */
     private fun buildCommit(
         opened: ChannelContexts.Opened,
@@ -286,12 +438,16 @@ internal class ChannelPassStep(
         refused: MutableList<Refusal>,
         now: Long,
         day: Long,
+        removes: List<ByteArray>,
+        context: ChannelPolicy?,
     ): Built? {
         val c = snapshot.channel.channelId
         val floor = ChannelTime.floor(snapshot.channel.sizeClass)
-        while (admissions.isNotEmpty()) {
+        while (true) {
             val request = CommitRequest(
                 adds = admissions.map { it.verified.keyPackage to it.evidence },
+                removes = removes,
+                context = context,
                 commitMinute = Math.floorDiv(now, DmTime.MINUTE),
                 floor = floor.toLong(),
                 generation = snapshot.generation.generation,
@@ -307,6 +463,7 @@ internal class ChannelPassStep(
                     ) {
                         val gone = admissions.removeAt(index)
                         refused += Refusal(gone.request, gone.tag, gone.kpDay + KP_SEEN_DAYS)
+                        if (admissions.isEmpty()) return null
                         continue
                     }
                     return null
@@ -341,7 +498,6 @@ internal class ChannelPassStep(
             }
             return Built(committed, sealed, entries)
         }
-        return null
     }
 
     private fun writeRefusals(channelId: ByteArray, refused: List<Refusal>): Result {
@@ -368,6 +524,9 @@ internal class ChannelPassStep(
         refused: List<Refusal>,
         now: Long,
         day: Long,
+        rank: Int,
+        selfUpdate: Boolean,
+        seenKey: ByteArray,
     ): Result {
         val committed = built.committed
         val epoch = snapshot.epoch.epoch
@@ -398,19 +557,35 @@ internal class ChannelPassStep(
                     epoch = epoch,
                     hash = hash,
                     sender = opened.pseudonym,
-                    rank = 0,
+                    rank = rank,
                     own = true,
                     bodyEnv = env.seal(content, ChannelAd.candidate(channelId, epoch, hash), committed.commit),
                     firstSeenMinute = DmTime.floorMinute(now),
-                    welcomeEnv = env.seal(content, ChannelAd.welcomes(channelId, epoch, hash), framed),
+                    welcomeEnv = if (built.welcomes.isEmpty()) null else env.seal(content, ChannelAd.welcomes(channelId, epoch, hash), framed),
                     boxEnv = committed.boxEnv,
                     removes = committed.summary.removes.isNotEmpty() || committed.summary.swaps.isNotEmpty(),
                 )
-                // CO-4: the own commit's first sighting is its pass.
+                // CO-4 (D-4, S5): the creation pass is the committer's first sighting of its own
+                // candidate; the anchor only moves earlier from here — when a stored copy is later
+                // evidenced (the op's outcome, or a fetched copy with its store hour).
                 val row = stores.epochs.epoch(tx.sql, channelId, epoch, day)
                 val sighting = DmTime.floorMinute(now)
                 val anchor = row?.anchorMinute?.let { minOf(it, sighting) } ?: sighting
                 stores.epochs.setAnchor(tx, channelId, epoch, anchor)
+                // The schedule (CO-8, CO-9): any own commit refreshes the leaf (§6.8's force_self_update),
+                // so it is the PCS clock's "last commit"; a self-update that got built schedules the next
+                // period's slot (a lost one is re-armed to day + 1 by the settle).
+                val schedule = stores.channels.schedule(tx.sql, channelId)
+                stores.channels.putSchedule(
+                    tx, channelId,
+                    nextSelfupdateDay = if (selfUpdate) {
+                        ChannelSchedule.nextSlotDay(channelId, day, seenKey)
+                    } else {
+                        schedule?.nextSelfupdateDay ?: ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), seenKey)
+                    },
+                    lastOwnCommitDay = day,
+                    nextPassMinute = schedule?.nextPassMinute,
+                )
                 refuse(tx, channelId, refused)
                 Result.COMMITTED
             }
@@ -442,8 +617,21 @@ internal class ChannelPassStep(
 
         /** §19.36 row 1: `commit` takes at most 64 Adds and swaps. */
         const val MAX_ADDS: Int = 64
+
+        /** CO-1: the rank of a member that is no committer. */
+        const val NOT_A_COMMITTER: Int = 255
+
+        /** CO-14: k = min(8, n). */
+        const val CO14_K_MAX: Int = 8
+
+        /** One pass per scheduled channel per run of [runScheduledPasses]: the due list's bound. */
+        const val MAX_DUE_PASSES: Int = 9
     }
 }
+
+/** `Roster`'s own leaf `refresh_epoch` (0 when the leaf carries none — a KeyPackage leaf's value). */
+private fun org.ghost.crypto.bridge.ChannelCrypto.Roster.ownRefreshEpoch(p: ByteArray): Long =
+    members.firstOrNull { it.pseudonym.contentEquals(p) }?.refreshEpoch ?: 0L
 
 /**
  * The plaintext of an own candidate's `welcome_env` (local, under the content key; never on the wire): the new leaf's box

@@ -331,7 +331,7 @@ class ChannelTriggersTest {
     }
 
     @Test
-    fun aCandidateChangesOnlyByAVerifiedCopyAnEarlierStoreHourAndTheErasureOfItsWelcomes() = ChannelFixture().use { f ->
+    fun aCandidateChangesOnlyByAVerifiedCopyAnEarlierSightingOrStoreHourAndTheErasureOfItsWelcomes() = ChannelFixture().use { f ->
         f.candidate(1, "own" to 1L, "welcome_env" to chBytes(100, 1), "box_env" to chBytes(60, 1), "store_hour" to 7_200L)
         for ((column, value) in listOf(
             "epoch" to 1L, "hash" to chBytes(32, 9), "sender" to chBytes(32, 9), "rank" to 3L, "own" to 0L,
@@ -340,18 +340,22 @@ class ChannelTriggersTest {
             f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET $column = ?", value)
         }
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET channel_id = ?", chBytes(32, 9))
-        // a verified copy stays verified
-        assertEquals(1, f.upd("UPDATE ch_candidate SET verified = 1"))
-        assertEquals(1, f.upd("UPDATE ch_candidate SET verified = 1"))
-        f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET verified = 0")
+        // the sighting only moves earlier (D-4, S5: the own commit's sighting is the pass that fetched its copy)
+        f.candidate(3, "first_seen_minute" to 7_200L)
+        assertEquals(1, f.upd("UPDATE ch_candidate SET first_seen_minute = 3600 WHERE hash = ?", chBytes(32, 103)))
+        f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET first_seen_minute = 7200 WHERE hash = ?", chBytes(32, 103))
+        // a verified copy stays verified (the own row: a foreign candidate can never be verified)
+        assertEquals(1, f.upd("UPDATE ch_candidate SET verified = 1 WHERE own = 1"))
+        assertEquals(1, f.upd("UPDATE ch_candidate SET verified = 1 WHERE own = 1"))
+        f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET verified = 0 WHERE own = 1")
         // the store hour only moves earlier; a copy seen at another relay can only lower the anchor
-        assertEquals(1, f.upd("UPDATE ch_candidate SET store_hour = 3600"))
+        assertEquals(1, f.upd("UPDATE ch_candidate SET store_hour = 3600 WHERE own = 1"))
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET store_hour = 7200")
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET store_hour = NULL")
         // the Welcomes and the box key are written with the row and may be erased, never replaced or added later
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET welcome_env = ?", chBytes(100, 2))
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET box_env = ?", chBytes(60, 2))
-        assertEquals(1, f.upd("UPDATE ch_candidate SET welcome_env = NULL, box_env = NULL"))
+        assertEquals(1, f.upd("UPDATE ch_candidate SET welcome_env = NULL, box_env = NULL WHERE own = 1"))
         f.refuses("ch_candidate_identity", "a candidate changes only", "UPDATE ch_candidate SET welcome_env = ?", chBytes(100, 1))
         // a foreign candidate learns its store hour once, from NULL
         f.candidate(2)
@@ -707,7 +711,7 @@ class ChannelTriggersTest {
         aFinalEpochIsStickyAndOnlyItsRetentionMovesAndOnlyEarlier()
         theEpochLogIsAppendOnlyAndBoundedAtOneThousandAndTwentyFourRows()
         anEpochHasAtMostEightForeignCandidatesAndOneOwnCommit()
-        aCandidateChangesOnlyByAVerifiedCopyAnEarlierStoreHourAndTheErasureOfItsWelcomes()
+        aCandidateChangesOnlyByAVerifiedCopyAnEarlierSightingOrStoreHourAndTheErasureOfItsWelcomes()
         aChannelHasAtMostSixteenForkSignalsAndTheyAreNeverRewritten()
         thePostMachineIsQueuedThenAnOutcomeOrUnreadThenReadAndAFailedPostCanBeRetried()
         aPostKeepsItsIdentityAndOnlyARetryReEncryptsIt()

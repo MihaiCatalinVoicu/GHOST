@@ -8,10 +8,13 @@ import org.ghost.crypto.bridge.MlsChange
 import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.crypto.bridge.MlsRow
+import org.ghost.messaging.FakeKeyWrapper
 import org.ghost.messaging.api.ChannelId
+import org.ghost.messaging.channel.engine.ChannelAd
 import org.ghost.messaging.channel.engine.ChannelTime
 import org.ghost.messaging.channel.engine.MlsRows
 import org.ghost.messaging.engine.DmTime
+import java.security.MessageDigest
 
 /**
  * What an insider of a channel can build with what a member holds (Phase 10 design §12.1's hostile modes that need more
@@ -98,6 +101,198 @@ internal object ChannelAdversary {
 
     /** The namespace of the channel's current generation at [member]. */
     fun namespace(member: ChannelClient, id: ChannelId): ByteArray = view(member, id).gNs
+
+    /** The context of the channel's current group state at [member] (`roster`'s output). */
+    fun policy(member: ChannelClient, id: ChannelId): ChannelPolicy {
+        val v = view(member, id)
+        val c = id.toByteArray()
+        val rows = member.database.transaction { tx -> MlsRows.of(member.channelStores.mls.rows(tx.sql, c, v.day)) }
+        return v.crypto.roster(c, rows, v.day.toInt()).ok().context
+    }
+
+    /**
+     * A commit [member] builds over its current group state with the facade (what a modified client
+     * can send): empty (a self-update with a path), or carrying a context change to [context] (a
+     * rank-0 policy change here). Nothing is staged or persisted on [member] — the bytes go to the
+     * relay ([ModelChannelRelay.inject]), which serves them to the other members like any commit.
+     */
+    class Built(
+        val commit: ByteArray,
+        val blob: ByteArray,
+        /** The change-set that stages the pending commit (what the pass would apply). */
+        internal val changes: List<MlsChange>,
+        /** The update path's fresh box key, wrapped (§19.17). */
+        internal val boxEnv: ByteArray?,
+        internal val boxPk: ByteArray,
+    ) {
+        /** SHA-256 of the commit's bytes: what the epoch log records when it wins. */
+        val hash: ByteArray = MessageDigest.getInstance("SHA-256").digest(commit)
+    }
+
+    fun commit(
+        member: ChannelClient,
+        id: ChannelId,
+        context: ChannelPolicy? = null,
+        /** The rotation flag (committers only, CO-2; GV's rank-255 refusal). */
+        rotate: Boolean = false,
+        /** Removes by pseudonym (a rank-255 Remove is refused, CO-1/CO-2). */
+        removes: List<ByteArray> = emptyList(),
+    ): Built {
+        val v = view(member, id)
+        val c = id.toByteArray()
+        val day = v.day
+        val channel = member.channel(id) ?: error("not a member")
+        val generation = member.database.transaction { tx -> member.channelStores.generations.current(tx.sql, c, day) }
+            ?: error("no generation")
+        val epoch = member.database.transaction { tx -> member.channelStores.epochs.epoch(tx.sql, c, channel.epoch, day) }
+            ?: error("no epoch")
+        val rows = MlsRows.of(member.database.transaction { tx -> member.channelStores.mls.rows(tx.sql, c, day) })
+        val committed = v.crypto.commit(
+            c, rows,
+            CommitRequest(
+                context = context,
+                rotate = rotate,
+                removes = removes,
+                commitMinute = Math.floorDiv(member.clock.now, DmTime.MINUTE),
+                floor = ChannelTime.floor(channel.sizeClass).toLong(),
+                generation = generation.generation,
+                openEpoch = generation.openEpoch,
+                gEnv = generation.gEnv,
+            ),
+            day.toInt(),
+        ).ok()
+        val bucket = ChannelTime.bucket(committed.commit.size, channel.sizeClass) ?: error("a commit larger than any bucket")
+        val blob = v.crypto.seal(
+            c, epoch.kEnv, ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket, ChannelCrypto.MODE_EPOCH,
+            ChannelCrypto.SealOrder(channel.epoch, 0, 0), committed.commit,
+        ).ok()
+        return Built(committed.commit, blob, committed.changes, committed.boxEnv, committed.boxPk)
+    }
+
+    /**
+     * Stages [built] at [member] as its **own** commit, the way the engine's pass would: the
+     * change-set that holds the pending commit applied, the own candidate recorded and verified
+     * (the test stands in for the op's SENT outcome), the anchor lowered to the sighting. This is
+     * the seam for commits the engine's pass cannot make yet (context changes and empty commits
+     * are S5b2's pass work): a member can never settle its own commit as a foreign winner — at its
+     * author the blob is its own message and `process_message` reports `OwnPrivateMessage`
+     * (§19.13), so the row must be `own = 1` with the pending commit staged. The same sealed blob
+     * goes to the relay, so every other member receives it as an ordinary foreign candidate; hold
+     * the blob from [member] at the relay (there it would only count FORGE_OWN). [rank] is the
+     * sender's rank in the current context (CO-1).
+     */
+    fun stageOwn(member: ChannelClient, id: ChannelId, built: Built, rank: Int, removes: Boolean = false) {
+        val c = id.toByteArray()
+        val epoch = member.channel(id)!!.epoch
+        member.database.transaction { tx ->
+            member.channelStores.mls.apply(tx, c, MlsRows.changes(built.changes))
+            val seen = DmTime.floorMinute(member.clock.now)
+            val framed = org.ghost.messaging.channel.engine.ChannelWelcomes.encode(built.boxPk, emptyList())
+            member.channelStores.candidates.insert(
+                tx, c, epoch, built.hash,
+                member.contexts.open(c)!!.pseudonym, rank, true,
+                member.env.seal(member.content, ChannelAd.candidate(c, epoch, built.hash), built.commit),
+                seen,
+                welcomeEnv = member.env.seal(member.content, ChannelAd.welcomes(c, epoch, built.hash), framed),
+                boxEnv = built.boxEnv,
+                verified = true,
+                removes = removes,
+            )
+            // the receive path's lowerAnchor (CO-4 (i)): the sighting opens the settle window.
+            val day = DmTime.day(member.clock.now)
+            val row = member.channelStores.epochs.epoch(tx.sql, c, epoch, day)
+            val anchor = minOf(row?.anchorMinute ?: Long.MAX_VALUE, seen)
+            member.channelStores.epochs.setAnchor(tx, c, epoch, anchor)
+        }
+    }
+
+    /**
+     * SPAM_UNOPENABLE (§12.1): [member] seals [junk] under its current epoch's key id — the
+     * recognition hint matches `R_ep(e)`, no key opens the AEAD — what a modified client stores
+     * in bulk (CO-11 counts the consumed blobs toward `resync_needed`). Any member can compute
+     * the epoch's seal key, so any member can spam.
+     */
+    fun sealJunk(member: ChannelClient, id: ChannelId, junk: ByteArray): ByteArray {
+        val v = view(member, id)
+        val bucket = ChannelTime.bucket(junk.size, 0) ?: error("a body larger than any bucket")
+        return v.crypto.seal(
+            id.toByteArray(), epochKey(member, id), ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket,
+            ChannelCrypto.MODE_EPOCH, ChannelCrypto.SealOrder(channelEpoch(member, id), 0, 0), junk,
+        ).ok()
+    }
+
+    /**
+     * NEW_SIGNER (MM-31, §19.14): the native test entry's commit — [member]'s own commit whose
+     * update-path leaf carries [wrongIdentity] where its credential identity should be. Every MLS
+     * check passes; CO-2's leaf continuity refuses it (`CommitReason::Continuity`) at every member.
+     */
+    fun newSignerCommit(member: ChannelClient, id: ChannelId, wrongIdentity: ByteArray): ByteArray {
+        val c = id.toByteArray()
+        val day = DmTime.day(member.clock.now)
+        val stateKey = stateKeyOf(member)
+        val seed = member.seeds.pseudonymSeed(c) ?: error("no seed")
+        val rows = MlsRows.of(member.database.transaction { tx -> member.channelStores.mls.rows(tx.sql, c, day) })
+        val out = org.ghost.crypto.bridge.MlsVectors.call(
+            org.ghost.crypto.bridge.MlsVectors.NEW_SIGNER_COMMIT,
+            stateKey, c, seed, wrongIdentity, org.ghost.crypto.bridge.MlsVectors.rows(rows), org.ghost.crypto.bridge.MlsVectors.u32(day),
+        )
+        stateKey.fill(0)
+        seed.fill(0)
+        return out.single()
+    }
+
+    /** The member's channel state key, unwrapped like `ChannelContexts.crypto` does. */
+    private fun stateKeyOf(member: ChannelClient): ByteArray {
+        val wrapped = member.database.transaction { tx -> member.channelStores.self.stateKeyWrapped(tx.sql) }
+            ?: error("no state key stored")
+        return FakeKeyWrapper().unwrap(wrapped)
+    }
+
+    /** The current epoch's `K_ep` envelope at [member]. */
+    private fun epochKey(member: ChannelClient, id: ChannelId): ByteArray {
+        val day = DmTime.day(member.clock.now)
+        return member.database.transaction { tx ->
+            val channel = member.channelStores.channels.channel(tx.sql, id.toByteArray()) ?: error("not a member")
+            member.channelStores.epochs.epoch(tx.sql, id.toByteArray(), channel.epoch, day) ?: error("no epoch")
+        }.kEnv
+    }
+
+    private fun channelEpoch(member: ChannelClient, id: ChannelId): Long {
+        return member.channel(id)?.epoch ?: error("not a member")
+    }
+
+    /**
+     * Burns one native draw (a discarded KeyPackage build): the seeded stream would else redraw
+     * the identical commit for the same inputs — the grind loop's successive attempts must differ.
+     */
+    fun burnDraw(member: ChannelClient, id: ChannelId) {
+        val v = view(member, id)
+        v.crypto.keyPackage(id.toByteArray(), 1, v.day.toInt())
+    }
+
+    /** Injects [built]'s sealed blob into the relay as [label], stored now. */
+    fun inject(w: ChannelWorld, member: ChannelClient, id: ChannelId, built: Built, label: String) {
+        w.relay.inject(namespace(member, id), built.blob, w.now, label)
+    }
+
+    /**
+     * Seals [mlsBytes] — a handshake message of [member]'s current epoch — into the generation's
+     * namespace with the order `(epoch, 0, 0)` a handshake carries: the wrapping an injected
+     * commit or proposal-sized blob needs.
+     */
+    fun sealHandshake(member: ChannelClient, id: ChannelId, mlsBytes: ByteArray): ByteArray {
+        val v = view(member, id)
+        val c = id.toByteArray()
+        val day = v.day
+        val channel = member.channel(id) ?: error("not a member")
+        val epoch = member.database.transaction { tx -> member.channelStores.epochs.epoch(tx.sql, c, channel.epoch, day) }
+            ?: error("no epoch")
+        val bucket = ChannelTime.bucket(mlsBytes.size, channel.sizeClass) ?: error("a body larger than any bucket")
+        return v.crypto.seal(
+            c, epoch.kEnv, ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket, ChannelCrypto.MODE_EPOCH,
+            ChannelCrypto.SealOrder(channel.epoch, 0, 0), mlsBytes,
+        ).ok()
+    }
 
     /**
      * A member posts content of its own choosing — any kind, any op id, any `INVITE_ISSUED` record — through its own

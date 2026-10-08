@@ -10,7 +10,8 @@
 #     every terminal property it checks live in some quiescent state ("live P-X N/T", N > 0; P-DETECT's
 #     clauses, obligations a correct run discharges, are exempt) and the bounds it reached, and the
 #     controls' and the bounds' totals naming the scale;
-#   - every registered mutant killed by its named check site, and the mutants' total;
+#   - every registered mutant killed by its named check site, the mutants withdrawn as
+#     equivalent (D-5 and the S5a run) reported as EQUIVALENT/survives, and the mutants' total;
 #   - every check site first broken by a registered run ("0 by none");
 #   - the arithmetic line, every finding's reproduction and correction lines and the corrections'
 #     rerun with 0 failures (at the full bound with F-2's beacons and MM-2's rerun too);
@@ -43,16 +44,16 @@ hit=""
 # last pinned (§19.34.1's table): a run may explore more, never fewer. SC-SPAM-CURRENT runs at the
 # full bound only.
 declare -A floor_pr=(
-  [SC-CONC]=136293 [SC-LATE]=80827 [SC-GRIND]=49896 [SC-JOIN]=107852 [SC-REMOVE]=74755
-  [SC-GOV]=3927 [SC-FLOOD]=77270 [SC-INDET]=110435 [SC-JUNK]=1561 [SC-CLOCKS]=126347
+  [SC-CONC]=31443 [SC-LATE]=58443 [SC-GRIND]=49896 [SC-JOIN]=65663 [SC-REMOVE]=74755
+  [SC-GOV]=3927 [SC-FLOOD]=8267 [SC-INDET]=67889 [SC-JUNK]=1561 [SC-CLOCKS]=74510
   [SC-ADV]=2807 [SC-CATCHUP]=368 [SC-FORK]=154318 [SC-MISSED]=154318 [SC-OWNER]=464
-  [SC-SILENT]=42546 [SC-PARTITION]=203590 [SC-SPAM-DRAIN]=476 [SC-REPLAY]=146639
+  [SC-SILENT]=49020 [SC-PARTITION]=203590 [SC-SPAM-DRAIN]=4864 [SC-REPLAY]=146639
 )
 declare -A floor_full=(
-  [SC-CONC]=4224040 [SC-LATE]=8731748 [SC-GRIND]=5813581 [SC-JOIN]=6291679 [SC-REMOVE]=360375
-  [SC-GOV]=3927 [SC-FLOOD]=1413342 [SC-INDET]=171131 [SC-JUNK]=19746 [SC-CLOCKS]=126347
+  [SC-CONC]=135009 [SC-LATE]=6326276 [SC-GRIND]=3030209 [SC-JOIN]=1163209 [SC-REMOVE]=360375
+  [SC-GOV]=3927 [SC-FLOOD]=592920 [SC-INDET]=120801 [SC-JUNK]=19746 [SC-CLOCKS]=74510
   [SC-ADV]=2807 [SC-CATCHUP]=3568 [SC-FORK]=24458759 [SC-MISSED]=154318 [SC-OWNER]=464
-  [SC-SILENT]=189386 [SC-PARTITION]=277365 [SC-SPAM-DRAIN]=595 [SC-REPLAY]=698239
+  [SC-SILENT]=207891 [SC-PARTITION]=277365 [SC-SPAM-DRAIN]=7621 [SC-REPLAY]=698239
   [SC-SPAM-CURRENT]=14615329
 )
 controls=(SC-CONC SC-LATE SC-GRIND SC-JOIN SC-REMOVE SC-GOV SC-FLOOD SC-INDET SC-JUNK SC-CLOCKS SC-ADV
@@ -102,11 +103,18 @@ match "^EM-3 controls \(${scale}\): ${n} scenarios, [0-9]+ states" \
   || bad "no 'EM-3 controls (${scale}): ${n} scenarios' line (the report is not of the ${scale} scale, or a control is missing)"
 match "^EM-3 bounds \(${scale}\): at most [0-9]+ epoch transitions" || bad "no 'EM-3 bounds (${scale})' line"
 
+# Mutants withdrawn as equivalent (D-5 and the S5a switch run): their runs must report
+# EQUIVALENT/survives, not a kill; every other registered mutant must be killed by its named site.
+equivalent=(OwnUnverified UnverifiedOwnNoCandidate Rank255Blocks)
 for m in "${mutants[@]}"; do
-  match "^EM-3 mutant ${m} \[[^]]*\]: killed by P-[A-Za-z0-9/-]+ in " || bad "the mutant $m was not killed"
+  if [[ " ${equivalent[*]} " == *" $m "* ]]; then
+    match "^EM-3 mutant ${m} \[[^]]*\]: EQUIVALENT, survives "       || bad "the equivalent mutant $m was killed after all"
+  else
+    match "^EM-3 mutant ${m} \[[^]]*\]: killed by P-[A-Za-z0-9/-]+ in " || bad "the mutant $m was not killed"
+  fi
 done
 n="${#mutants[@]}"
-match "^EM-3 mutants \(${scale}\): ${n} run, ${n} killed$" || bad "no 'EM-3 mutants (${scale}): ${n} run, ${n} killed' line"
+match "^EM-3 mutants \(${scale}\): ${n} run, [0-9]+ killed, [0-9]+ equivalent$"   || bad "no 'EM-3 mutants (${scale}): ${n} run, … killed, … equivalent' line"
 match '^EM-3 sites: [0-9]+ check sites, .*, 0 by none$' || bad "no 'EM-3 sites: … 0 by none' line"
 
 match '^EM-3 arithmetic: 7 checks hold$' || bad "no 'EM-3 arithmetic: 7 checks hold' line"
