@@ -1403,8 +1403,10 @@ object Schema {
     /**
      * Migration 7, **step 1**: the 26 tables of §9 and `mls_self`, amended by slice S4 (Phase 10 design §19.37: the
      * wrapped channel state key, §19.35 F-9; the invite state of `ch_join`, F-8; `ch_candidate.removes`, F-1;
-     * `ch_channel.committers_digest`, F-S4-2; `ch_generation.open_epoch`, F-S4-7 — migration 7 had not shipped, so it is
-     * amended in place, still one transaction). Conventions (v5, "following the v4/v5 split of F9
+     * `ch_channel.committers_digest`, F-S4-2; `ch_generation.open_epoch`, F-S4-7) and by slice S6 (§19.41:
+     * `ch_generation.own_rotation`, the marker of a generation the member's own commit opened — its funding is the
+     * rotating committer's at the switch — migration 7 had not shipped, so it is amended in place, still one
+     * transaction). Conventions (v5, "following the v4/v5 split of F9
      * §13.6"): **a table is WITHOUT ROWID** (T33 and F9 §13.6 step 5: "random WITHOUT ROWID keys"; the hidden
      * rowid of a rowid table is the order its rows arrived in, and the gaps between the rowids that survive
      * count the rows that were swept — of every channel, since the rowid space is the table's), **except two**:
@@ -1477,6 +1479,7 @@ object Schema {
                   jk_env          BLOB NOT NULL CHECK (length(jk_env) = 60),
                   r_join          BLOB NOT NULL CHECK (length(r_join) = 32),
                   open_epoch      INTEGER NOT NULL CHECK (typeof(open_epoch) = 'integer' AND open_epoch >= 0),
+                  own_rotation    INTEGER NOT NULL DEFAULT 0 CHECK (own_rotation IN (0, 1)),
                   switch_hour     INTEGER CHECK (switch_hour IS NULL
                                   OR (typeof(switch_hour) = 'integer' AND switch_hour % 3600 = 0)),
                   drain_until_day INTEGER CHECK (drain_until_day IS NULL
@@ -1780,7 +1783,7 @@ object Schema {
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.generation IS NOT OLD.generation
                   OR NEW.namespace_id IS NOT OLD.namespace_id OR NEW.g_env IS NOT OLD.g_env
                   OR NEW.jk_env IS NOT OLD.jk_env OR NEW.r_join IS NOT OLD.r_join
-                  OR NEW.open_epoch IS NOT OLD.open_epoch
+                  OR NEW.open_epoch IS NOT OLD.open_epoch OR NEW.own_rotation IS NOT OLD.own_rotation
                 BEGIN SELECT RAISE(ABORT, 'a generation keeps its namespace and its secrets'); END""",
         """CREATE TRIGGER ch_generation_state BEFORE UPDATE OF state ON ch_generation
                 WHEN NOT ((OLD.state = NEW.state)

@@ -138,6 +138,8 @@ internal class ChannelSettleStep(
         /** The own candidate of the epoch, when one was held: its rank (CO-9's retry) and the new leaf's box key. */
         val own: CandidateStore.CandidateRow?,
         val ownBoxPk: ByteArray?,
+        /** The members whose leaf the winner's update path refreshed (§6.6's `ch_member_refresh`): their pseudonyms. */
+        val refreshed: List<ByteArray>,
     )
 
     /** One admission the winner made: what the settle records about it. */
@@ -372,7 +374,10 @@ internal class ChannelSettleStep(
             null
         }
         val ownBoxPk = afterRoster?.members?.firstOrNull { it.pseudonym.contentEquals(opened.pseudonym) }?.boxPk
-        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk)
+        // §6.6: the winner's update path refreshes its committer's leaf with `refresh_epoch = e` (§6.8's
+        // force_self_update is native for every commit): the members to stamp in `ch_member_refresh`.
+        val refreshed = afterRoster?.members?.filter { it.refreshEpoch == e }?.map { it.pseudonym.copyOf() } ?: emptyList()
+        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk, refreshed)
     }
 
     /** Lexicographic byte order: the deterministic order of the held blobs and the trial keys. */
@@ -415,19 +420,46 @@ internal class ChannelSettleStep(
         stores.epochs.appendLog(tx, c, e, winner.hash, day)
         val next = settled.epoch
         if (settled.standing != STANDING_MEMBER || next == null) {
-            // §6.6: removed (or replaced by a restore of its own pseudonym): the state is recorded, the departure is S6's.
+            // §6.6: removed (or replaced by a restore of its own pseudonym): the state is recorded, the
+            // MLS state goes (§6.6 "deletes the MLS state"), and the departure keeps listening until the
+            // drain ends. The deletion is the merge's, not the leave op's outcome's: a leaver whose op
+            // resolved before the removing commit arrived must still merge it (recorded in §19.41).
             val to = if (settled.standing == STANDING_REPLACED && fresh.state == ChannelState.ACTIVE) ChannelState.REPLACED else ChannelState.REMOVED
             stores.channels.transition(tx, c, fresh.state, to)
+            stores.mls.deleteGroupRows(tx, c)
+            env.contexts.closeChannel(c)
+            // §6.5 "What a removed member keeps": a removal rotates, and the removed member keeps listing
+            // `ns_g` until the drain ends — `drain_until_day` is the day of the removing commit's switch hour
+            // plus 14 (computed here from the commit's minute, so a member that learns of its removal late
+            // ends the drain on the same day as everyone). The native side returns the rotation flag for a
+            // removed member but no generation values (it has no next epoch), so the flag is the check.
+            // A member removed while its previous generation still drains (a second rotation inside one
+            // drain) ends the older drain at once — at most one draining generation per channel — and the
+            // demotion of the current one waits for the sweep's removal of the older ([ChannelSweepStep],
+            // the corner needs an op of the old namespace still open here; recorded in §19.41).
+            if (settled.rotates) {
+                val commitSeconds = settled.commitMinute * DmTime.MINUTE
+                val switchHour = minOf(DmTime.ceilHour(commitSeconds + SWITCH_DELAY_SECONDS), DmTime.ceilHour(now + SWITCH_CLAMP_SECONDS))
+                val older = stores.generations.live(tx.sql, c, day).firstOrNull { it.state == GenerationState.DRAINING }
+                if (older == null) {
+                    stores.generations.demote(tx, c, fresh.generation, DmTime.day(switchHour) + DRAIN_DAYS)
+                } else {
+                    stores.generations.endDrainEarly(tx, c, older.generation, day)
+                    sync.namespaces.setListening(tx, NamespaceId(older.namespaceId), false)
+                }
+            }
         } else {
             makeRoom(tx, c, day)
             stores.epochs.insert(tx, c, next.epoch, next.kEnv, next.rEp)
             stores.channels.setPosition(tx, c, fresh.generation, next.epoch)
             settled.rotated?.let { g ->
-                // §6.5: the next generation waits for its switch hour (CH-SWITCH, slice S6).
+                // §6.5: the next generation waits for its switch hour (CH-SWITCH, slice S6). `own_rotation`
+                // marks a generation the member's own commit opened: that member funds it at its switch.
                 val commitSeconds = settled.commitMinute * DmTime.MINUTE
                 val switchHour = minOf(DmTime.ceilHour(commitSeconds + SWITCH_DELAY_SECONDS), DmTime.ceilHour(now + SWITCH_CLAMP_SECONDS))
                 stores.generations.insert(
                     tx, c, g.generation, g.ns, GenerationState.PENDING_SWITCH, g.gEnv, g.jkEnv, g.rJoin, g.openEpoch,
+                    ownRotation = winner.own,
                     switchHour = switchHour,
                 )
             }
@@ -436,11 +468,19 @@ internal class ChannelSettleStep(
             if (!winner.own && settled.standing == STANDING_MEMBER) liveness?.noteMerged(tx, c, content, day)
             mirrorPolicy(tx, c, fresh.nameEnv, merge, content)
             voidInvites(tx, c, merge)
+            // §6.6: the committer's per-member refresh days (a committer's rows only — nobody else reads them).
+            if (merge.committer) {
+                for (p in merge.refreshed) stores.members.putRefresh(tx, c, p, day)
+            }
         }
         for (a in merge.admitted) {
             stores.invites.markConsumed(tx, c, a.inviteId)
             stores.joins.deleteRequestsOfInvite(tx, c, a.inviteId)
-            a.member?.let { stores.invites.putSponsor(tx, c, it, a.sponsor, a.inviteId, day) }
+            a.member?.let {
+                stores.invites.putSponsor(tx, c, it, a.sponsor, a.inviteId, day)
+                // §6.6: a join is the joiner's last leaf refresh.
+                if (merge.committer) stores.members.putRefresh(tx, c, it, day)
+            }
             if (merge.committer && a.kpDay != null) {
                 stores.joins.markKpSeen(tx, c, ChannelTags.keyPackageTag(seenKey, c, a.kpRef), a.kpDay + ChannelPassStep.KP_SEEN_DAYS)
             }
@@ -603,6 +643,9 @@ internal class ChannelSettleStep(
         /** §6.5: `switch_hour = ceil_hour(commit_minute + 30 min)`, clamped to at most the settle + 2 h. */
         const val SWITCH_DELAY_SECONDS: Long = 30 * DmTime.MINUTE
         const val SWITCH_CLAMP_SECONDS: Long = 2 * DmTime.HOUR
+
+        /** §6.5 "Drain": 14 days — the 7-day store window plus 2σ of Phase 7's 3-day clock tolerance. */
+        const val DRAIN_DAYS: Long = 14
 
         /** CO-3: at most 32 held blobs per trial settle (§6.3.5). */
         const val HELD_BLOBS: Int = 32

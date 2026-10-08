@@ -333,8 +333,8 @@ object ChannelDaoQueries {
             "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)) ORDER BY s.epoch, s.hash"
 
     private const val GEN_COLUMNS =
-        "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
-            "open_epoch FROM ch_generation "
+        "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+            "drain_until_day, open_epoch FROM ch_generation "
 
     private const val JOIN_COLUMNS =
         "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest FROM ch_join "
@@ -676,7 +676,8 @@ object ChannelSweepQueries {
         ),
         sweep(
             "oneBatchOfDrainedGenerations",
-            "SELECT channel_id, generation, state FROM ch_generation WHERE drain_until_day < ? " +
+            // Slice S6 (§19.41): the sweep removes the namespace with the row — it selects the namespace too.
+            "SELECT channel_id, generation, namespace_id FROM ch_generation WHERE drain_until_day < ? " +
                 "ORDER BY drain_until_day, channel_id, generation LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),

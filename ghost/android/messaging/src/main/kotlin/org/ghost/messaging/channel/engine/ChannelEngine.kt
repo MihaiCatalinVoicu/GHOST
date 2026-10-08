@@ -39,11 +39,12 @@ internal interface ChannelActor {
  *     [CATCH_UP_ROUNDS] rounds a pass;
  *  3. the pending posts of the channels that are current now (`CH-POST`'s encrypt-at-session, §6.3.1);
  *  4. on a **time-triggered** pass only (§21.9 rule 1 of Phase 9, T40): the scheduled passes (`CH-PASS`, CO-8 and
- *     CO-9: admissions by any committer under the work-age rule, the PCS cadence, the rank-255 self-update slots;
- *     a relay session start schedules them into `ch_schedule`) and the join expiry (`CH-SWEEP`'s join half). A pass
- *     a listener hint ran — something arrived — never commits, never enqueues a Welcome's op of its own accord and
- *     never removes a namespace: only an outcome of the user's own earlier action (the own winning commit's Welcomes
- *     at its settle) and the user's own pending posts can cause an enqueue in it.
+ *     CO-9: admissions by any committer under the work-age rule, the PCS cadence, the rank-255 self-update slots,
+ *     §6.6's leave and eviction work; a relay session start schedules them into `ch_schedule`), the funder
+ *     renewal step (§7.5 item 7) and the sweep (`CH-SWEEP`: the join expiry, the drain end, the expired
+ *     requests). A pass a listener hint ran — something arrived — never commits, never enqueues a Welcome's op
+ *     of its own accord and never removes a namespace: only an outcome of the user's own earlier action (the
+ *     own winning commit's Welcomes at its settle) and the user's own pending posts can cause an enqueue in it.
  *
  * **Typed results, no logging, no network or coroutine class** (gates G-DM1, no-logging); the only exceptions caught are
  * the typed ones of `:sync` and `:storage` (`InsufficientReplicasException`, `StorageFullException`) and the facade's
@@ -70,6 +71,8 @@ internal class ChannelEngine(
     val settleStep = ChannelSettleStep(env, sync, livenessStep)
     val outcomeStep = ChannelOutcomeStep(env, sync)
     val sweepStep = ChannelSweepStep(env, sync)
+    val switchStep = ChannelSwitchStep(env, sync)
+    val funderStep = ChannelFunderStep(env, sync)
 
     /**
      * The second the last **time-triggered** pass began (§19.38, the DM actor's `lastTimeTriggeredSecond`): a wake term
@@ -126,12 +129,42 @@ internal class ChannelEngine(
     fun retry(channel: ChannelId, post: PostId): PostResult =
         actor.call { postStep.retryPost(channel.toByteArray(), post.toByteArray()) }
 
+    /**
+     * `CH-LEAVE` (§6.6): the member's leave — the LEAVE post out, the channel `leaving`, no more posts.
+     * A committer is refused until it resigned (rank ≥ 1) or transferred rank 0 (§19.13 item 3).
+     */
+    fun leave(channel: ChannelId): ChannelPostStep.LeaveResult =
+        actor.call { postStep.leave(channel.toByteArray()) }
+
+    /** §19.13 item 3: a committer of rank ≥ 1 drops its own key from `committers` and `funders` (a pass at once). */
+    fun resign(channel: ChannelId): RemoveResult =
+        actor.call {
+            when (passStep.resign(channel.toByteArray())) {
+                ChannelPassStep.Result.COMMITTED -> RemoveResult.REMOVED
+                ChannelPassStep.Result.UNAVAILABLE -> RemoveResult.UNAVAILABLE
+                ChannelPassStep.Result.REFUSED_ONLY, ChannelPassStep.Result.NOTHING -> RemoveResult.NOTHING
+            }
+        }
+
+    /** §19.13 item 3: rank 0 transfers rank 0 to [member] (a pass at once), then leaves as a member. */
+    fun transfer(channel: ChannelId, member: ByteArray): RemoveResult =
+        actor.call {
+            when (passStep.transfer(channel.toByteArray(), member)) {
+                ChannelPassStep.Result.COMMITTED -> RemoveResult.REMOVED
+                ChannelPassStep.Result.UNAVAILABLE -> RemoveResult.UNAVAILABLE
+                ChannelPassStep.Result.REFUSED_ONLY, ChannelPassStep.Result.NOTHING -> RemoveResult.NOTHING
+            }
+        }
+
     // ------------------------------------------------------------------------------------------- the pass
 
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
         if (env.keys.content() == null) return
         if (timeTriggered) lastTimeTriggered = env.now()
         outcomeStep.run()
+        // CH-SWITCH first: the pass works in the new generation once the commit's switch hour has come
+        // (§19.8 (a)); the receive then routes ns_{g+1} and the pending posts encrypt into it.
+        switchStep.switchDue(sessionStart)
         var rounds = 0
         while (rounds < CATCH_UP_ROUNDS) {
             rounds++
@@ -143,7 +176,10 @@ internal class ChannelEngine(
         if (timeTriggered) {
             if (sessionStart) passStep.scheduleAtSessionStart()
             passStep.runScheduledPasses()
+            funderStep.renewDue()
             sweepStep.sweepJoins()
+            sweepStep.sweepDrains()
+            sweepStep.sweepRequests()
         }
     }
 
@@ -156,7 +192,7 @@ internal class ChannelEngine(
      */
     override fun nextWakeSeconds(): Long? {
         val now = env.now()
-        return listOfNotNull(settleStep.nextDue(), passStep.nextDue(), peekOrder.holdEnds())
+        return listOfNotNull(settleStep.nextDue(), passStep.nextDue(), peekOrder.holdEnds(), switchStep.nextDue(), funderStep.nextDue(now))
             .filter { due -> due > now || due > lastTimeTriggered }
             .minOrNull()
             ?.let { maxOf(0L, it - now) }

@@ -177,6 +177,12 @@ internal class ChannelPassStep(
     /** `CH-PASS` at a user action: [member] removed, at once, whatever the committer's rank (§6.6, §19.13). */
     fun removeMember(channelId: ByteArray, member: ByteArray): Result = pass(channelId, member)
 
+    /** §19.13 item 3: a committer of rank ≥ 1 drops its own key from `committers` and `funders` (not the last committer). */
+    fun resign(channelId: ByteArray): Result = pass(channelId, null, resign = true)
+
+    /** §19.13 item 3: rank 0 reorders `committers` so [newRank0] leads (a transfer of rank 0, then a leave). */
+    fun transfer(channelId: ByteArray, newRank0: ByteArray): Result = pass(channelId, null, transferTo = newRank0)
+
     private class Admission(
         val request: JoinStore.RequestRow,
         val verified: ChannelCrypto.JoinVerified,
@@ -191,13 +197,13 @@ internal class ChannelPassStep(
         override fun toString(): String = "Refusal(redacted)"
     }
 
-    private fun pass(channelId: ByteArray, removeTarget: ByteArray?): Result {
+    private fun pass(channelId: ByteArray, removeTarget: ByteArray?, resign: Boolean = false, transferTo: ByteArray? = null): Result {
         val now = env.now()
         val day = DmTime.day(now)
         val content = env.keys.content() ?: return Result.UNAVAILABLE
         val seenKey = env.keys.seenKey() ?: return Result.UNAVAILABLE
         try {
-            return passWith(channelId, content, seenKey, now, day, removeTarget)
+            return passWith(channelId, content, seenKey, now, day, removeTarget, resign, transferTo)
         } finally {
             seenKey.fill(0)
         }
@@ -210,6 +216,8 @@ internal class ChannelPassStep(
         now: Long,
         day: Long,
         removeTarget: ByteArray?,
+        resign: Boolean,
+        transferTo: ByteArray?,
     ): Result {
         val opened = env.contexts.open(channelId) ?: return Result.UNAVAILABLE
         val p = opened.pseudonym
@@ -223,6 +231,7 @@ internal class ChannelPassStep(
             Snapshot(
                 channel, epoch, generation, candidates,
                 stores.joins.requests(tx.sql, channelId, day),
+                stores.members.requests(tx.sql, channelId, day),
                 stores.channels.schedule(tx.sql, channelId),
                 stores.mls.rows(tx.sql, channelId, day),
             )
@@ -323,16 +332,67 @@ internal class ChannelPassStep(
         }
 
         if (removeTarget != null && removeTarget.toList() !in members) return writeRefusals(channelId, refused)
-        // One commit for the pass's work, when there is work: the admissions it admitted, and — at a user
-        // action — the Remove (§6.6: an immediate pass with the Remove proposals; the committers/funders
-        // update rides along when the target is a committer or a funder). With no admissions and no Remove
-        // the pass builds nothing here; the PCS commit below is a cadence decision, not a default.
-        val hasWork = admissions.isNotEmpty() || removeTarget != null
+
+        // ---- §6.6's membership work: leave requests and idle evictions (a committer's pass, any rank).
+        // A leave is recorded work: the work-age rule ages it like a join request. An eviction is a scan,
+        // like the PCS cadence, lower-rank-only: CO-2's rank rule and the owner — whom no rank sits below —
+        // are never evicted (declared L8-C16).
+        val memberRank = { who: ByteArray ->
+            roster.context.committers.indexOfFirst { it.contentEquals(who) }.let { if (it < 0) NOT_A_COMMITTER else it }
+        }
+        val leaves = snapshot.memberRequests
+            .filter { it.kind == org.ghost.messaging.channel.store.RequestKind.LEAVE }
+            .filter { rank == 0 || it.recordedDay + 2L * rank <= day }
+            .map { it.subject }
+            .filter { it.toList() in members && !it.contentEquals(p) }
+        val evictions = if (rank != NOT_A_COMMITTER) {
+            env.database.transaction { tx ->
+                stores.members.idleBefore(tx.sql, channelId, day - roster.context.idleEvictDays, MAX_EVICTIONS)
+            }.filter { it.toList() in members && !it.contentEquals(p) && memberRank(it) > rank }
+        } else {
+            emptyList()
+        }
+
+        // The user-action context changes of §19.13 item 3: a resignation (rank ≥ 1, not the last
+        // committer — rank 0 refuses, it transfers first, §6.6) and a transfer of rank 0.
+        var context: ChannelPolicy? = null
+        if (resign) {
+            if (rank == NOT_A_COMMITTER || rank == 0 || roster.context.committers.size <= 1) return Result.NOTHING
+            context = removeContext(roster.context, listOf(p))
+        }
+        if (transferTo != null) {
+            if (rank != 0 || transferTo.toList() !in committerSet) return Result.NOTHING
+            context = ChannelPolicy(
+                channelId = roster.context.channelId,
+                sizeClass = roster.context.sizeClass,
+                timerCode = roster.context.timerCode,
+                timerVersion = roster.context.timerVersion,
+                historyPolicy = roster.context.historyPolicy,
+                flags = roster.context.flags,
+                idleEvictDays = roster.context.idleEvictDays,
+                pwVersion = roster.context.pwVersion,
+                name = roster.context.name,
+                committers = listOf(transferTo) + roster.context.committers.filterNot { it.contentEquals(transferTo) },
+                funders = roster.context.funders,
+            )
+        }
+
+        // One commit for the pass's work, when there is work: the admissions it admitted, the members a
+        // leave or an eviction removes (§6.6), and — at a user action — the Remove (an immediate pass;
+        // the committers/funders update rides along when a removed member is a committer or a funder) or
+        // the context change of a resignation or a transfer. With no work the pass builds nothing here;
+        // the PCS commit below is a cadence decision, not a default.
+        val removeWork = buildList {
+            removeTarget?.let { add(it) }
+            addAll(leaves)
+            addAll(evictions)
+        }.distinctBy { it.toList() }.filter { it.toList() in members }
+        val hasWork = admissions.isNotEmpty() || removeWork.isNotEmpty() || context != null
         val built = if (hasWork) {
             buildCommit(
                 opened, snapshot, rows, admissions, refused, now, day,
-                removes = if (removeTarget != null) listOf(removeTarget) else emptyList(),
-                context = if (removeTarget != null) removeContext(roster.context, removeTarget) else null,
+                removes = removeWork,
+                context = context ?: if (removeWork.isNotEmpty()) removeContext(roster.context, removeWork) else null,
             )
         } else {
             null
@@ -344,7 +404,7 @@ internal class ChannelPassStep(
         // No admissions, a refused Remove, or nothing: the PCS commit (§6.8), only on the cadence.
         val lastOwn = snapshot.schedule?.lastOwnCommitDay
         val pcsDue = lastOwn != null && day - lastOwn >= ChannelTime.pcsDays(snapshot.channel.timerCode)
-        if (!pcsDue || removeTarget != null) return Result.NOTHING
+        if (!pcsDue || removeTarget != null || resign || transferTo != null) return Result.NOTHING
         val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), now, day, emptyList(), null)
             ?: return Result.NOTHING
         return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, seenKey)
@@ -388,9 +448,9 @@ internal class ChannelPassStep(
     }
 
     /** The context change that drops [removed] from `committers` and `funders`, or null when it names neither. */
-    private fun removeContext(context: ChannelPolicy, removed: ByteArray): ChannelPolicy? {
-        val inCommitters = context.committers.any { it.contentEquals(removed) }
-        val inFunders = context.funders.any { it.contentEquals(removed) }
+    private fun removeContext(context: ChannelPolicy, removed: List<ByteArray>): ChannelPolicy? {
+        val inCommitters = context.committers.any { c -> removed.any { r -> r.contentEquals(c) } }
+        val inFunders = context.funders.any { c -> removed.any { r -> r.contentEquals(c) } }
         if (!inCommitters && !inFunders) return null
         return ChannelPolicy(
             channelId = context.channelId,
@@ -402,8 +462,8 @@ internal class ChannelPassStep(
             idleEvictDays = context.idleEvictDays,
             pwVersion = context.pwVersion,
             name = context.name,
-            committers = if (inCommitters) context.committers.filterNot { it.contentEquals(removed) } else context.committers,
-            funders = if (inFunders) context.funders.filterNot { it.contentEquals(removed) } else context.funders,
+            committers = if (inCommitters) context.committers.filterNot { c -> removed.any { r -> r.contentEquals(c) } } else context.committers,
+            funders = if (inFunders) context.funders.filterNot { c -> removed.any { r -> r.contentEquals(c) } } else context.funders,
         )
     }
 
@@ -414,6 +474,7 @@ internal class ChannelPassStep(
         val generation: org.ghost.messaging.channel.store.GenerationStore.GenerationRow,
         val candidates: List<org.ghost.messaging.channel.store.CandidateStore.CandidateRow>,
         val requests: List<JoinStore.RequestRow>,
+        val memberRequests: List<org.ghost.messaging.channel.store.MemberStore.RequestRow>,
         val schedule: org.ghost.messaging.channel.store.ChannelStore.ScheduleRow?,
         val rows: List<org.ghost.messaging.channel.store.MlsKvStore.KvRow>,
     )
@@ -626,6 +687,9 @@ internal class ChannelPassStep(
 
         /** One pass per scheduled channel per run of [runScheduledPasses]: the due list's bound. */
         const val MAX_DUE_PASSES: Int = 9
+
+        /** §6.6: at most this many idle members a pass evicts (one commit carries every Remove). */
+        const val MAX_EVICTIONS: Int = 8
     }
 }
 

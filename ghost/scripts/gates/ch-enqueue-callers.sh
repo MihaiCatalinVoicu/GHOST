@@ -4,23 +4,25 @@
 # cause them, each only the calls it needs.**
 #
 #   Outbox.enqueue          CH-ACCEPT (the join request), CH-POST (posts, reactions and CH-INVITE's INVITE_ISSUED,
-#                           through ChannelPostStep.compose), CH-PASS (the commit), CH-SETTLE (the Welcomes of the
-#                           member's own winning commit only, §19.2)
-#   Namespaces.register     CH-CREATE, CH-ACCEPT
-#   Capabilities.put        CH-CREATE, CH-ACCEPT (the READ and DEPOSIT credentials of every slot)
-#   Registrations.keep      CH-CREATE (the funder's READ and DEPOSIT registrations of the week)
-#   Funding.set             CH-CREATE (the creator is the default funder, §7.4)
+#                           through ChannelPostStep.compose, and CH-LEAVE's LEAVE post), CH-PASS (the commit),
+#                           CH-SETTLE (the Welcomes of the member's own winning commit only, §19.2)
+#   Namespaces.register     CH-CREATE, CH-ACCEPT, CH-SWITCH (§6.5, §19.8)
+#   Capabilities.put        CH-CREATE, CH-ACCEPT (the READ and DEPOSIT credentials of every slot), CH-SWITCH
+#   Registrations.keep      CH-CREATE (the funder's READ and DEPOSIT registrations of the week), CH-SWITCH
+#                           (the rotating committer's week rows), the funder renewal step (§7.5 item 7)
+#   Funding.set             CH-CREATE (the creator is the default funder, §7.4), CH-SWITCH (the rotating
+#                           committer), the funder renewal step
 #   Namespaces.remove,
-#   Namespaces.setListening CH-SWEEP (an expired join's namespace, §6.2.2 step 4)
+#   Namespaces.setListening CH-SWEEP (an expired join's namespace, §6.2.2 step 4; a drained generation's, §6.5)
 #
 # and **never from `CH-RECV` or `CH-JOIN`** (a blob that arrives causes no store, registration, funding or
 # listening change; a joiner's newer generation is switched by `CH-SWITCH` at its next session start, §19.8).
 # Every other restricted call — `Outbox.cancel`, `Registrations.request`/`rearm`/`forget`, `Namespaces.setRelays`/
-# `setSendDelay` — is made by no channel file in slice S4. The transactions §13.1 lists beyond these (`CH-SWITCH`,
-# `CH-REJOIN`, `CH-REVEAL`, `CH-LEAVE`, the funder renewal step and the rest of `CH-SWEEP`) are slices S5 … S9's: each
-# joins the table below deliberately, with the calls it makes, when it is built — a new file, or a new call in a
-# listed file, is refused until then, which is what makes it arrive on purpose. **An entry is a file of the channel
-# engine's own directory** (`android/messaging/src/<set>/kotlin/org/ghost/messaging/channel/engine/`, §19.38): a file
+# `setSendDelay` — is made by no channel file in slices S4 … S6. The transactions §13.1 lists beyond these
+# (`CH-REJOIN`, `CH-REVEAL`, the rest of `CH-SWEEP`) are slices S7 … S9's: each joins the table below
+# deliberately, with the calls it makes, when it is built — a new file, or a new call in a listed file, is
+# refused until then, which is what makes it arrive on purpose. **An entry is a file of the channel engine's
+# own directory** (`android/messaging/src/<set>/kotlin/org/ghost/messaging/channel/engine/`, §19.38): a file
 # of the same name anywhere else has no entry.
 #
 # **A second rule, one frame lower** (the S8 review's `STEP_TRIGGERS` of G-DM2, for the channel steps): the entry
@@ -83,15 +85,17 @@ QUALIFIER='([a-z][A-Za-z0-9_]*[[:space:]]*\.[[:space:]]*)*'
 
 # The channel files that MAY make a restricted call, and the calls each may make. One line per file:
 # `<basename>|<calls, space-separated>|<the transaction it holds>`. A call is named by its method; the names are
-# unique to their port (enqueue → Outbox, register/remove/setListening → Namespaces, put → Capabilities,
-# keep → Registrations, set → Funding). An entry holds for that file in the channel engine's directory only.
+# unique to their port (enqueue â†’ Outbox, register/remove/setListening â†’ Namespaces, put â†’ Capabilities,
+# keep â†’ Registrations, set â†’ Funding). An entry holds for that file in the channel engine's directory only.
 ALLOWED='
 ChannelCreateStep.kt|register put keep set|CH-CREATE (§6.1)
 ChannelAcceptStep.kt|register put enqueue|CH-ACCEPT (§6.2.2)
-ChannelPostStep.kt|enqueue|CH-POST and the INVITE_ISSUED of CH-INVITE (§6.3.1, §6.2.1)
+ChannelPostStep.kt|enqueue|CH-POST and the INVITE_ISSUED of CH-INVITE (§6.3.1, §6.2.1), CH-LEAVE (§6.6)
 ChannelPassStep.kt|enqueue|CH-PASS (§6.2.3)
-ChannelSettleStep.kt|enqueue|CH-SETTLE, the own winning commit'"'"'s Welcomes (§19.2)
-ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 4)
+ChannelSettleStep.kt|enqueue remove setListening|CH-SETTLE, the own winning commit'"'"'s Welcomes (§19.2); a removed member'"'"'s older drain ended at once (§6.5)
+ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 4) and a drained generation (§6.5)
+ChannelSwitchStep.kt|register put keep set remove setListening|CH-SWITCH (§6.5, §19.8; a switch ends an older drain at once)
+ChannelFunderStep.kt|register keep set|the funder renewal step (§7.5 item 7)
 '
 # The two steps §13.1 names as never allowed: an entry for either is itself a violation, so the table cannot grow one.
 NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
@@ -99,8 +103,8 @@ NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
 ENGINE_DIR_GLOB='android/messaging/src/*/org/ghost/messaging/channel/engine/*'
 
 # The second rule's entry points and the files that may write them.
-CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins'
-CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt'
+CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins|sweepDrains|sweepRequests|switchDue|renewDue'
+CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt'
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.
 CH_HOLDERS='
@@ -108,6 +112,8 @@ ChannelPostStep postStep|ChannelEngine.kt ChannelInviteStep.kt ChannelPassStep.k
 ChannelPassStep passStep|ChannelEngine.kt
 ChannelSettleStep settleStep|ChannelEngine.kt
 ChannelSweepStep sweepStep|ChannelEngine.kt
+ChannelSwitchStep switchStep|ChannelEngine.kt
+ChannelFunderStep funderStep|ChannelEngine.kt
 ChannelCreateStep createStep|ChannelEngine.kt
 ChannelAcceptStep acceptStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt

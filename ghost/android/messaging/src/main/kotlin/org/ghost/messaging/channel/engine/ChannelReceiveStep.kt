@@ -437,6 +437,13 @@ internal class ChannelReceiveStep(
                 return@transaction claimed.size
             }
             val stored = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
+            // §6.5 "What a removed member keeps": a removed (or replaced) member keeps listing the old
+            // namespace until the drain ends — the fetch stays, the rows are dropped (§19.8 (b): no
+            // reflexes). It merges nothing and inserts nothing.
+            if (channel.state == ChannelState.REMOVED || channel.state == ChannelState.REPLACED) {
+                for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
+                return@transaction claimed.size
+            }
             val received = try {
                 opened.crypto.receive(channelId, stored, epoch, claimed.map { it.body }, day.toInt())
             } catch (e: IllegalStateException) {
@@ -482,8 +489,10 @@ internal class ChannelReceiveStep(
                             ChannelPostStep.KIND_POST ->
                                 applyPost(tx, channel, epoch, item, claimed[index].blob, content, seenKey, now, day)
                             ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, judge(), day)
-                            // LEAVE is slice S6's (a committer's pending work), REVEAL slice S9's (the box keys).
-                            ChannelPostStep.KIND_LEAVE, ChannelPostStep.KIND_REVEAL ->
+                            // §6.6: a committer records a member's LEAVE as pending work (removed at its
+                            // next pass); REVEAL is slice S9's (the box keys).
+                            ChannelPostStep.KIND_LEAVE -> applyLeave(tx, channel, item, judge(), day)
+                            ChannelPostStep.KIND_REVEAL ->
                                 env.counters.count(ChannelCounters.Reason.DEFERRED_KIND)
                             else -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
                         }
@@ -599,6 +608,20 @@ internal class ChannelReceiveStep(
             heldReactions[heldKey] = HeldReaction(channel.channelId, target, item.sender, graphemeEnv)
             env.counters.count(ChannelCounters.Reason.REACTION_HELD)
         }
+    }
+
+    /**
+     * §6.6 (`CH-LEAVE`'s committer half): a committer records the sender's leave as pending work
+     * (`ch_request(leave)`, record-once — the day it was first recorded is CO-8's work-age clock), to be
+     * removed at its next pass; a non-committer consumes the post without effect. The request lives
+     * [ChannelPostStep.LEAVE_REQUEST_DAYS] — a leaver the committers never remove is swept with it.
+     */
+    private fun applyLeave(tx: SyncTransaction, channel: ChannelStore.ChannelRow, item: ChannelCrypto.Item.App, inviters: Inviters?, day: Long) {
+        if (inviters == null || item.sender.toList() !in inviters.members) return
+        stores.members.record(
+            tx, channel.channelId, org.ghost.messaging.channel.store.RequestKind.LEAVE, item.sender,
+            null, day + ChannelPostStep.LEAVE_REQUEST_DAYS, day,
+        )
     }
 
     /** Who may sponsor an invite in the current context (§6.2.1, Q46 (b)): its members and whether each may invite. */

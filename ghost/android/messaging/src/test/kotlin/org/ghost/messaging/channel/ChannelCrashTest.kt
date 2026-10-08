@@ -504,4 +504,375 @@ class ChannelCrashTest {
     /** The schedule row's `last_own_commit_day` (what a whole Remove pass wrote). */
     private fun ownerScheduleDay(owner: ChannelClient, id: ChannelId): Long =
         owner.database.transaction { tx -> owner.channelStores.channels.schedule(tx.sql, id.toByteArray()) }!!.lastOwnCommitDay!!
+
+    // ------------------------------------------------------------------------------------------- slice S6
+
+    /** The world just before the owner's pass that runs `CH-SWITCH` (slice S6): the removal settled, the switch hour passed, no pass since. */
+    private fun beforeSwitch(): Frozen {
+        val w = ChannelWorld()
+        try {
+            val ownerFile = folder.newFile("owner-before-switch.db").also { it.delete() }
+            val bobFile = folder.newFile("bob-before-switch.db").also { it.delete() }
+            val owner = w.client("owner", path = ownerFile.absolutePath)
+            val bob = w.client("bob", path = bobFile.absolutePath)
+            val id = ChannelScenes.channelOf(w, owner, bob)
+            owner.engine.remove(id, bob.contexts.open(id.toByteArray())!!.pseudonym)
+            w.quiesce()
+            w.pastSettleWindow()
+            w.quiesce()
+            assertEquals(1L, owner.count("ch_generation", "state = 'pending_switch'"))
+            w.advance(40 * DmWorld.MINUTE)
+            val relay = w.relay.copy()
+            val now = w.now
+            w.close()
+            return Frozen(ownerFile, bobFile, relay, now, id, ByteArray(0))
+        } finally {
+            w.close()
+        }
+    }
+
+    /**
+     * **CH-SWITCH's crash singles** (Phase 10 design §12.4, CS-C1/CS-C2; slice S6): a process death at every
+     * event of the pass that runs the generation switch — then a reboot and the pass again. After every
+     * crash: integrity; the generation is `pending_switch` (nothing of ns_1) or whole (`current`, the old one
+     * `draining`, ns_1 registered with its credentials and the rotating committer's funding and week
+     * registrations); the retried pass switches, the other member converges, and a post goes out in ns_1.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheSwitchLeavesTheGenerationPendingOrSwitchedWhole() {
+        val frozen = beforeSwitch()
+        val events = thawOwner(frozen, 1).let { t ->
+            try {
+                t.crash.reset()
+                t.owner.hintPass()
+                val seen = t.crash.count
+                assertEquals(1L, t.owner.count("ch_generation", "generation = 1 AND state = 'current'"))
+                seen
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertTrue("CH-SWITCH raised $events events", events >= 10)
+        println("SCN-CC crash singles: CH-SWITCH raises $events events")
+        var crashed = 0
+        for (k in 1..events) {
+            val t = thawOwner(frozen, 1)
+            try {
+                t.crash.reset()
+                t.crash.armAt = k
+                try {
+                    t.owner.hintPass()
+                    fail("no crash at event $k of $events")
+                } catch (e: SimulatedCrash) {
+                    crashed++
+                }
+                val owner = t.reboot(2)
+                assertEquals("after a crash at $k: ${owner.integrity()}", emptyList<String>(), owner.integrity())
+                val ns1 = generationNs(owner, frozen.channel, 1)
+                val switched = owner.count("ch_generation", "generation = 1 AND state = 'current'") == 1L
+                if (!switched) {
+                    assertEquals("crash at $k", 1L, owner.count("ch_generation", "state = 'pending_switch'"))
+                    assertEquals("crash at $k", 0L, owner.count("sync_namespace", "namespace_id = ?", ns1))
+                } else {
+                    assertEquals("crash at $k", 1L, owner.count("ch_generation", "generation = 0 AND state = 'draining'"))
+                    assertEquals("crash at $k", 1L, owner.count("sync_namespace", "namespace_id = ? AND listening = 1", ns1))
+                    assertEquals("crash at $k", 6L, owner.count("relay_capability", "namespace_id = ?", ns1))
+                    assertEquals("crash at $k", 1L, owner.count("sync_namespace_fund", "namespace_id = ?", ns1))
+                }
+                owner.hintPass()
+                assertEquals("crash at $k", 1L, owner.count("ch_generation", "generation = 1 AND state = 'current'"))
+                assertEquals(PostResult.QUEUED, owner.engine.post(frozen.channel, "în g_1".toByteArray(), null))
+                t.world.quiesce()
+                assertEquals(emptyList<String>(), owner.integrity())
+                assertEquals(emptyList<String>(), t.bob.integrity())
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertEquals(events, crashed)
+    }
+
+    /** The world just before the owner's pass that runs the drain's end (slice S6's `CH-SWEEP`): the switch ran, 15 days passed, no pass since. */
+    private fun beforeDrainEnd(): Frozen {
+        val w = ChannelWorld()
+        try {
+            val ownerFile = folder.newFile("owner-before-drain.db").also { it.delete() }
+            val bobFile = folder.newFile("bob-before-drain.db").also { it.delete() }
+            val owner = w.client("owner", path = ownerFile.absolutePath)
+            val bob = w.client("bob", path = bobFile.absolutePath)
+            val id = ChannelScenes.channelOf(w, owner, bob)
+            owner.engine.remove(id, bob.contexts.open(id.toByteArray())!!.pseudonym)
+            w.quiesce()
+            w.pastSettleWindow()
+            w.quiesce()
+            w.advance(40 * DmWorld.MINUTE)
+            owner.hintPass()
+            assertEquals(1L, owner.count("ch_generation", "generation = 0 AND state = 'draining'"))
+            // the production GC (the model relay runs none) deletes released ops long before a drain ends
+            owner.database.transaction { tx ->
+                tx.sql.exec("UPDATE outbox_op SET released = 1 WHERE released = 0 AND outcome <> 'pending'")
+                tx.sql.exec("DELETE FROM outbox_op WHERE released = 1 AND ciphertext IS NULL")
+            }
+            w.advance(15 * DmWorld.DAY)
+            val ns0 = generationNs(owner, id, 0)
+            val relay = w.relay.copy()
+            val now = w.now
+            w.close()
+            return Frozen(ownerFile, bobFile, relay, now, id, ns0)
+        } finally {
+            w.close()
+        }
+    }
+
+    /**
+     * **The drain end's crash singles** (§12.4, CS-C1/CS-C2; slice S6): a process death at every event of the
+     * pass that runs `CH-SWEEP`'s drain half. After every crash: integrity; the drained generation's row and
+     * its namespace are both there or both gone (`Namespaces.remove` and the `ch_generation` delete are one
+     * transaction); the retried pass removes them.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheDrainEndLeavesTheGenerationAndItsNamespaceTogether() {
+        val frozen = beforeDrainEnd()
+        val events = thawOwner(frozen, 1).let { t ->
+            try {
+                t.crash.reset()
+                t.owner.timePass()
+                val seen = t.crash.count
+                assertEquals(0L, t.owner.count("ch_generation", "generation = 0"))
+                seen
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertTrue("the drain end raised $events events", events >= 10)
+        println("SCN-CC crash singles: the drain end (CH-SWEEP) raises $events events")
+        var crashed = 0
+        for (k in 1..events) {
+            val t = thawOwner(frozen, 1)
+            try {
+                t.crash.reset()
+                t.crash.armAt = k
+                try {
+                    t.owner.timePass()
+                    fail("no crash at event $k of $events")
+                } catch (e: SimulatedCrash) {
+                    crashed++
+                }
+                val owner = t.reboot(2)
+                assertEquals("after a crash at $k: ${owner.integrity()}", emptyList<String>(), owner.integrity())
+                val ns0 = frozen.link
+                val gone = owner.count("ch_generation", "generation = 0") == 0L
+                // the namespace's listening moves with the row; the row itself is the GC's once the
+                // tombstones go (§11.2 #19), so only the flag is asserted here
+                assertEquals("crash at $k: the row and the namespace's listening move together", !gone,
+                    owner.count("sync_namespace", "namespace_id = ? AND listening = 1", ns0) == 1L)
+                owner.timePass()
+                assertEquals("crash at $k", 0L, owner.count("ch_generation", "generation = 0"))
+                assertEquals("crash at $k", 0L, owner.count("sync_namespace", "namespace_id = ? AND listening = 1", ns0))
+                assertEquals(emptyList<String>(), owner.integrity())
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertEquals(events, crashed)
+    }
+
+    /** The world just before the leaving member's `CH-LEAVE` (slice S6). */
+    private fun beforeLeave(): Frozen {
+        val w = ChannelWorld()
+        try {
+            val ownerFile = folder.newFile("owner-before-leave.db").also { it.delete() }
+            val bobFile = folder.newFile("bob-before-leave.db").also { it.delete() }
+            val owner = w.client("owner", path = ownerFile.absolutePath)
+            val bob = w.client("bob", path = bobFile.absolutePath)
+            val id = ChannelScenes.channelOf(w, owner, bob)
+            val relay = w.relay.copy()
+            val now = w.now
+            w.close()
+            return Frozen(ownerFile, bobFile, relay, now, id, ByteArray(0))
+        } finally {
+            w.close()
+        }
+    }
+
+    /**
+     * **CH-LEAVE's crash singles** (§12.4, CS-C1/CS-C2; slice S6): a process death at every event of the
+     * member's leave. After every crash: integrity; the channel is `active` with no leave op, or `leaving`
+     * with the op; the leave completes, the committer removes the leaver, and the leaver merges its removal.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheLeaveLeavesNoLeaveOrAWholeOne() {
+        val frozen = beforeLeave()
+        val events = thaw(frozen, 1).let { t ->
+            try {
+                t.crash.reset()
+                assertEquals(org.ghost.messaging.channel.engine.ChannelPostStep.LeaveResult.LEFT, t.bob.engine.leave(frozen.channel))
+                val seen = t.crash.count
+                assertEquals(ChannelState.LEAVING, t.bob.channel(frozen.channel)!!.state)
+                seen
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.owner.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertTrue("CH-LEAVE raised $events events", events >= 10)
+        println("SCN-CK crash singles: CH-LEAVE raises $events events")
+        var crashed = 0
+        for (k in 1..events) {
+            val t = thaw(frozen, 1)
+            try {
+                t.crash.reset()
+                t.crash.armAt = k
+                try {
+                    t.bob.engine.leave(frozen.channel)
+                    fail("no crash at event $k of $events")
+                } catch (e: SimulatedCrash) {
+                    crashed++
+                }
+                val bob = t.reboot(2)
+                assertEquals("after a crash at $k: ${bob.integrity()}", emptyList<String>(), bob.integrity())
+                val state = bob.channel(frozen.channel)!!.state
+                assertTrue("crash at $k left $state", state == ChannelState.ACTIVE || state == ChannelState.LEAVING)
+                if (state == ChannelState.ACTIVE) {
+                    assertEquals("crash at $k", 0L, bob.count("ch_outbound_op", "purpose = 'request'"))
+                    assertEquals("crash at $k", org.ghost.messaging.channel.engine.ChannelPostStep.LeaveResult.LEFT, bob.engine.leave(frozen.channel))
+                } else {
+                    assertEquals("crash at $k", 1L, bob.count("ch_outbound_op", "purpose = 'request'"))
+                }
+                // the leave completes: the owner records the request and removes the leaver
+                t.world.pump()
+                t.owner.hintPass()
+                assertEquals("crash at $k", 1L, t.owner.count("ch_request", "kind = 'leave'"))
+                t.world.advance(6 * DmWorld.HOUR)
+                t.owner.sessionStart()
+                t.world.advance(6 * DmWorld.MINUTE)
+                t.owner.timePass()
+                t.world.quiesce()
+                t.world.advance(21 * DmWorld.MINUTE)
+                t.world.pump()
+                bob.timePass()
+                t.owner.timePass()
+                t.world.quiesce()
+                assertEquals("crash at $k", ChannelState.REMOVED, bob.channel(frozen.channel)!!.state)
+                assertEquals(emptyList<String>(), bob.integrity())
+                assertEquals(emptyList<String>(), t.owner.integrity())
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.owner.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertEquals(events, crashed)
+    }
+
+    /** The world just before the owner's pass that evicts an idle member (slice S6's `CH-PASS` half). */
+    private fun beforeEviction(): Frozen {
+        val w = ChannelWorld()
+        try {
+            val ownerFile = folder.newFile("owner-before-eviction.db").also { it.delete() }
+            val bobFile = folder.newFile("bob-before-eviction.db").also { it.delete() }
+            val owner = w.client("owner", path = ownerFile.absolutePath)
+            val bob = w.client("bob", path = bobFile.absolutePath)
+            val id = ChannelScenes.channelOf(w, owner, bob)
+            val day = org.ghost.messaging.engine.DmTime.day(w.now)
+            owner.database.transaction { tx ->
+                owner.channelStores.members.putRefresh(tx, id.toByteArray(), bob.contexts.open(id.toByteArray())!!.pseudonym, day - 100)
+            }
+            w.advance(2 * DmWorld.DAY)
+            owner.database.transaction { tx ->
+                val row = owner.channelStores.channels.schedule(tx.sql, id.toByteArray())
+                owner.channelStores.channels.putSchedule(tx, id.toByteArray(), row!!.nextSelfupdateDay, row.lastOwnCommitDay, null)
+            }
+            owner.sessionStart()
+            w.advance(6 * DmWorld.MINUTE)
+            val relay = w.relay.copy()
+            val now = w.now
+            w.close()
+            return Frozen(ownerFile, bobFile, relay, now, id, ByteArray(0))
+        } finally {
+            w.close()
+        }
+    }
+
+    /**
+     * **The eviction pass's crash singles** (§12.4, CS-C1/CS-C2; slice S6): a process death at every event
+     * of the scheduled pass that evicts an idle member. After every crash: integrity; no own candidate (the
+     * member stays) or a whole commit (the candidate, the op, the schedule); the retried pass evicts, the
+     * settle merges the removal, and the epoch is final.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheEvictionPassLeavesNoCommitOrAWholeOne() {
+        val frozen = beforeEviction()
+        val events = thawOwner(frozen, 1).let { t ->
+            try {
+                t.crash.reset()
+                t.owner.timePass()
+                val seen = t.crash.count
+                assertEquals(1L, t.owner.count("ch_candidate", "own = 1 AND removes = 1"))
+                seen
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertTrue("the eviction pass raised $events events", events >= 10)
+        println("SCN-CK crash singles: the eviction pass (CH-PASS) raises $events events")
+        var crashed = 0
+        for (k in 1..events) {
+            val t = thawOwner(frozen, 1)
+            try {
+                t.crash.reset()
+                t.crash.armAt = k
+                try {
+                    t.owner.timePass()
+                    fail("no crash at event $k of $events")
+                } catch (e: SimulatedCrash) {
+                    crashed++
+                }
+                val owner = t.reboot(2)
+                assertEquals("after a crash at $k: ${owner.integrity()}", emptyList<String>(), owner.integrity())
+                val whole = owner.count("ch_candidate", "own = 1") == 1L
+                if (!whole) {
+                    assertEquals("crash at $k", 0L, owner.count("ch_outbound_op", "purpose = 'commit'"))
+                } else {
+                    assertEquals("crash at $k", 1L, owner.count("ch_outbound_op", "purpose = 'commit'"))
+                }
+                // A partial pass retries the eviction (the scheduled arm is still due); then the commit
+                // is delivered, its window passes, and the merges run.
+                if (!whole) owner.timePass()
+                t.world.quiesce()
+                t.world.advance(21 * DmWorld.MINUTE)
+                t.world.pump()
+                owner.timePass()
+                t.bob.timePass()
+                t.world.quiesce()
+                assertEquals("crash at $k", ChannelState.REMOVED, t.bob.channel(frozen.channel)!!.state)
+                assertEquals(emptyList<String>(), owner.integrity())
+                assertEquals(emptyList<String>(), t.bob.integrity())
+            } finally {
+                t.world.close()
+                t.crash.delegate.close()
+                (t.bob.sql as org.ghost.storage.JdbcSqlExecutor).close()
+            }
+        }
+        assertEquals(events, crashed)
+    }
+
+    /** The namespace of a generation (what the crash singles assert on). */
+    private fun generationNs(client: ChannelClient, id: ChannelId, generation: Long): ByteArray =
+        client.database.transaction { tx ->
+            var ns: ByteArray? = null
+            tx.sql.query("SELECT namespace_id FROM ch_generation WHERE channel_id = ? AND generation = ?", listOf(id.toByteArray(), generation)) { ns = it.blob(0) }
+            ns!!
+        }
 }
