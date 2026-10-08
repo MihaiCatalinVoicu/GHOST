@@ -216,7 +216,10 @@ class ChannelAdversarialTest {
         }
         var ground = groundOnce()
         var tries = 1
-        while (compareHash(ground.hash, w1.hash) >= 0 && tries < 16) {
+        // The process-global seeded stream (F-S5-10) makes the draws here depend on every test that
+        // ran before this one: the cap must clear the unluckiest stream position, not the average
+        // one — 64 consecutive misses is 2^-64 for a uniform hash.
+        while (compareHash(ground.hash, w1.hash) >= 0 && tries < 64) {
             ground = groundOnce()
             tries++
         }
@@ -360,6 +363,45 @@ class ChannelAdversarialTest {
         assertTrue(bob.integrity().isEmpty())
     }
 
+    /** CO-12: one SPAM_UNOPENABLE junk blob must not raise partition_suspected nor touch the stale flag — a window opened by an unopenable is no arrived message (§19.40). */
+    @Test
+    fun oneUnopenableJunkBlobNeitherRaisesPartitionNorResetsTheStaleClock() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        // The committer's last commit is 10 days back (what quiet days would say), then nine quiet
+        // days: CO-12's stale clock fires alone at bob, a non-committer — the owner's own flag
+        // needs someone else named in committers, and no message ever opened.
+        backdateCommitterCommit(bob, id, 10)
+        repeat(9) {
+            w.advance(1 * DmWorld.DAY)
+            w.pump()
+            bob.hintPass()
+        }
+        val quiet = bob.channel(id)!!
+        assertTrue("nine quiet days on a 10-day-old committer commit: stale alone (CO-12): $quiet", quiet.staleSuspected)
+        assertTrue("no partition without an opened message", !quiet.partitionSuspected)
+        // ONE junk blob: it opens the liveness window, but nothing opened — no message arrived.
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SPAM_UNOPENABLE)
+        val junk = ByteArray(900) { ((it * 31 + 7) % 251).toByte() }
+        w.relay.inject(ChannelAdversary.namespace(bob, id), ChannelAdversary.sealJunk(bob, id, junk), w.now, "spam-0")
+        w.pump()
+        bob.hintPass()
+        assertEquals(
+            "the junk was consumed unopened (the code path ran)",
+            1, bob[ChannelCounters.Reason.FORGED_SEAL] + bob[ChannelCounters.Reason.NON_CANONICAL],
+        )
+        assertEquals("the window opened on the junk", 1, livenessOf(bob, id).first)
+        val after = bob.channel(id)!!
+        assertTrue(
+            "one junk blob never raises partition_suspected (CO-12 needs an authenticated message): $after",
+            !after.partitionSuspected,
+        )
+        assertTrue("…and the stale flag stands", after.staleSuspected)
+        assertEquals("flags change nothing by themselves", ChannelState.ACTIVE, after.state)
+        assertTrue(bob.integrity().isEmpty())
+    }
+
     /** A member 10 days slow processes every commit like the others (Q42 (a): validity reads no clock). */
     @Test
     fun aMemberTenDaysSlowProcessesEveryCommitLikeTheOthers() = ChannelWorld().use { w ->
@@ -460,6 +502,14 @@ class ChannelAdversarialTest {
         client.database.transaction { tx ->
             val row = client.channelStores.channels.schedule(tx.sql, id.toByteArray())
             client.channelStores.channels.putSchedule(tx, id.toByteArray(), row?.nextSelfupdateDay ?: day, day, row?.nextPassMinute)
+        }
+    }
+
+    /** The member's `last_committer_commit_day` moved [days] back (what quiet days would say). */
+    private fun backdateCommitterCommit(client: ChannelClient, id: ChannelId, days: Long) {
+        val day = DmTime.day(client.clock.now) - days
+        client.database.transaction { tx ->
+            client.channelStores.channels.setLastCommitterCommitDay(tx, id.toByteArray(), day)
         }
     }
 

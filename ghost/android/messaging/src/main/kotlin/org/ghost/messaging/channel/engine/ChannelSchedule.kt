@@ -29,9 +29,11 @@ internal object ChannelSchedule {
     fun period(day: Long): Long = Math.floorDiv(day, PERIOD_DAYS)
 
     /**
-     * The day of [period]'s slot for [channelId]: `period × 28 + (HMAC(K, channel_id ‖ u32_be(period)) mod 28)`.
-     * [key] is `dm_self`'s random seen key (the KDoc above); the caller zeroes nothing — the seen key is the
-     * caller's copy to zero, as everywhere.
+     * The day of [period]'s slot for [channelId]:
+     * `period × 28 + floorMod(HMAC(K, channel_id ‖ u32_be(period)) as int64, 28)`. [key] is `dm_self`'s random
+     * seen key (the KDoc above); the caller zeroes nothing — the seen key is the caller's copy to zero, as
+     * everywhere. The offset is `floorMod`, never `%`: a signed int64's truncated remainder is negative for
+     * about half of all digests and would land the slot before its period's start (§19.40, the S5 review).
      */
     fun slotDay(channelId: ByteArray, period: Long, key: ByteArray): Long {
         val mac = Mac.getInstance("HmacSHA256")
@@ -40,7 +42,7 @@ internal object ChannelSchedule {
         val digest = mac.doFinal(msg)
         var head = 0L
         for (i in 0 until 8) head = (head shl 8) or (digest[i].toLong() and 0xff)
-        return period * PERIOD_DAYS + (head % PERIOD_DAYS)
+        return period * PERIOD_DAYS + Math.floorMod(head, PERIOD_DAYS)
     }
 
     /** The day of the slot that follows [day]'s period (what a committed or skipped self-update schedules next). */

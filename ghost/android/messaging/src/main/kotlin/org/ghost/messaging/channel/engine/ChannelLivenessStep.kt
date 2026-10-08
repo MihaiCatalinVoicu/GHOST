@@ -20,10 +20,12 @@ import org.ghost.sync.api.SyncTransaction
  * counts the current generation's namespace here, which is all a no-rotation channel has).
  *
  * **CO-11 (a).** A foreign blob of the channel's **current** generation's namespace (MM-37: a
- * draining namespace never counts, §19.15 (c)) that stayed unopenable under every key the member
- * holds is counted when its determination is final — the seal's hint matched a real key but the
- * AEAD refused (`FORGED_SEAL`, consumed at once, CS-S5), or no key ever opened it and its relay
- * copy expired (`UNOPENABLE`). A determination is final: the key was right, or the blob is dead.
+ * draining namespace never counts, §19.15 (c)) whose recognition matched a real epoch key but
+ * then failed — the seal's hint matched a real key but the AEAD refused (`FORGED_SEAL`, consumed
+ * at once, CS-S5), or a header that names another epoch than the key's (`NON_CANONICAL`) — is
+ * counted when its determination is final (F-S5-11, §19.39 row 16: only the
+ * recognition-matched-then-failed blobs count; a no-key blob's expiry (`UNOPENABLE`) stays a
+ * counted drop, never branch evidence — it is also the honest shape of future-epoch traffic).
  * The blob's operators are attributed through `inbox_source` × `relay_directory` (the relays that
  * listed it); the row keeps the widest per-blob attribution seen in the window.
  *
@@ -64,6 +66,9 @@ internal class ChannelLivenessStep(
     /** The window's progress, sealed in `ch_liveness.progress_env` under [ChannelAd.liveness]. */
     private class Progress(
         val senders: List<ByteArray>,
+        /** The day a foreign message last **opened**; [NO_FOREIGN_MESSAGE_DAY] (0) = none yet — a window
+         *  opened by an unopenable stamps the sentinel, never the opening day (§19.40: one junk blob
+         *  must not read as an arrived message to CO-12's clocks; real days are > 0). */
         val lastForeignMessageDay: Long,
         val foreignMerged: Boolean,
     ) {
@@ -93,7 +98,9 @@ internal class ChannelLivenessStep(
         val c = channel.channelId
         val row = stores.channels.liveness(tx.sql, c)
         if (row == null || row.unopenableFirstMinute == null) {
-            val progress = Progress(emptyList(), day, false)
+            // No message opened here: the last-foreign-message day is the sentinel, not today —
+            // a junk blob opening the window must not raise CO-12's partition clock (§19.40).
+            val progress = Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false)
             stores.channels.putLiveness(
                 tx, c, 1, operators, 1, encode(content, c, progress), DmTime.floorMinute(now),
             )
@@ -311,6 +318,9 @@ internal class ChannelLivenessStep(
 
         /** At most this many window senders are remembered (the progress env is bounded by the column). */
         const val MAX_TRACKED_SENDERS: Int = 7
+
+        /** `Progress.lastForeignMessageDay`'s sentinel: no foreign message has opened yet (real days are > 0). */
+        const val NO_FOREIGN_MESSAGE_DAY: Long = 0
 
         private const val PSEUDONYM_BYTES: Int = 32
     }
