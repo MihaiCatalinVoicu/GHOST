@@ -8,6 +8,7 @@ import org.ghost.crypto.bridge.MlsChange
 import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.crypto.bridge.MlsRow
+import org.ghost.messaging.FakeKeyWrapper
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.engine.ChannelAd
 import org.ghost.messaging.channel.engine.ChannelTime
@@ -128,7 +129,15 @@ internal object ChannelAdversary {
         val hash: ByteArray = MessageDigest.getInstance("SHA-256").digest(commit)
     }
 
-    fun commit(member: ChannelClient, id: ChannelId, context: ChannelPolicy? = null): Built {
+    fun commit(
+        member: ChannelClient,
+        id: ChannelId,
+        context: ChannelPolicy? = null,
+        /** The rotation flag (committers only, CO-2; GV's rank-255 refusal). */
+        rotate: Boolean = false,
+        /** Removes by pseudonym (a rank-255 Remove is refused, CO-1/CO-2). */
+        removes: List<ByteArray> = emptyList(),
+    ): Built {
         val v = view(member, id)
         val c = id.toByteArray()
         val day = v.day
@@ -142,6 +151,8 @@ internal object ChannelAdversary {
             c, rows,
             CommitRequest(
                 context = context,
+                rotate = rotate,
+                removes = removes,
                 commitMinute = Math.floorDiv(member.clock.now, DmTime.MINUTE),
                 floor = ChannelTime.floor(channel.sizeClass).toLong(),
                 generation = generation.generation,
@@ -193,6 +204,70 @@ internal object ChannelAdversary {
             val anchor = minOf(row?.anchorMinute ?: Long.MAX_VALUE, seen)
             member.channelStores.epochs.setAnchor(tx, c, epoch, anchor)
         }
+    }
+
+    /**
+     * SPAM_UNOPENABLE (§12.1): [member] seals [junk] under its current epoch's key id — the
+     * recognition hint matches `R_ep(e)`, no key opens the AEAD — what a modified client stores
+     * in bulk (CO-11 counts the consumed blobs toward `resync_needed`). Any member can compute
+     * the epoch's seal key, so any member can spam.
+     */
+    fun sealJunk(member: ChannelClient, id: ChannelId, junk: ByteArray): ByteArray {
+        val v = view(member, id)
+        val bucket = ChannelTime.bucket(junk.size, 0) ?: error("a body larger than any bucket")
+        return v.crypto.seal(
+            id.toByteArray(), epochKey(member, id), ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket,
+            ChannelCrypto.MODE_EPOCH, ChannelCrypto.SealOrder(channelEpoch(member, id), 0, 0), junk,
+        ).ok()
+    }
+
+    /**
+     * NEW_SIGNER (MM-31, §19.14): the native test entry's commit — [member]'s own commit whose
+     * update-path leaf carries [wrongIdentity] where its credential identity should be. Every MLS
+     * check passes; CO-2's leaf continuity refuses it (`CommitReason::Continuity`) at every member.
+     */
+    fun newSignerCommit(member: ChannelClient, id: ChannelId, wrongIdentity: ByteArray): ByteArray {
+        val c = id.toByteArray()
+        val day = DmTime.day(member.clock.now)
+        val stateKey = stateKeyOf(member)
+        val seed = member.seeds.pseudonymSeed(c) ?: error("no seed")
+        val rows = MlsRows.of(member.database.transaction { tx -> member.channelStores.mls.rows(tx.sql, c, day) })
+        val out = org.ghost.crypto.bridge.MlsVectors.call(
+            org.ghost.crypto.bridge.MlsVectors.NEW_SIGNER_COMMIT,
+            stateKey, c, seed, wrongIdentity, org.ghost.crypto.bridge.MlsVectors.rows(rows), org.ghost.crypto.bridge.MlsVectors.u32(day),
+        )
+        stateKey.fill(0)
+        seed.fill(0)
+        return out.single()
+    }
+
+    /** The member's channel state key, unwrapped like `ChannelContexts.crypto` does. */
+    private fun stateKeyOf(member: ChannelClient): ByteArray {
+        val wrapped = member.database.transaction { tx -> member.channelStores.self.stateKeyWrapped(tx.sql) }
+            ?: error("no state key stored")
+        return FakeKeyWrapper().unwrap(wrapped)
+    }
+
+    /** The current epoch's `K_ep` envelope at [member]. */
+    private fun epochKey(member: ChannelClient, id: ChannelId): ByteArray {
+        val day = DmTime.day(member.clock.now)
+        return member.database.transaction { tx ->
+            val channel = member.channelStores.channels.channel(tx.sql, id.toByteArray()) ?: error("not a member")
+            member.channelStores.epochs.epoch(tx.sql, id.toByteArray(), channel.epoch, day) ?: error("no epoch")
+        }.kEnv
+    }
+
+    private fun channelEpoch(member: ChannelClient, id: ChannelId): Long {
+        return member.channel(id)?.epoch ?: error("not a member")
+    }
+
+    /**
+     * Burns one native draw (a discarded KeyPackage build): the seeded stream would else redraw
+     * the identical commit for the same inputs — the grind loop's successive attempts must differ.
+     */
+    fun burnDraw(member: ChannelClient, id: ChannelId) {
+        val v = view(member, id)
+        v.crypto.keyPackage(id.toByteArray(), 1, v.day.toInt())
     }
 
     /** Injects [built]'s sealed blob into the relay as [label], stored now. */

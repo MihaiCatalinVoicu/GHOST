@@ -1,6 +1,7 @@
 //! The test-only native builders the Kotlin suites drive through `MlsVectors.run` (F-S4-6, MM-30
-//! and MM-46 / SCN-CM's lifetime cases; §19.37 row 39): a real MLS proposal by a member, and a
-//! commit carrying a finite-lifetime (expired, non-canonical) KeyPackage. Compiled only with the
+//! and MM-46 / SCN-CM's lifetime cases; §19.37 row 39; MM-31 / §19.14's NEW_SIGNER): a real MLS
+//! proposal by a member, a commit carrying a finite-lifetime (expired, non-canonical) KeyPackage,
+//! and a commit whose update-path leaf carries a mismatched credential. Compiled only with the
 //! `test-vectors` feature (the host library); shipped libraries export neither.
 #![cfg(feature = "test-vectors")]
 
@@ -100,6 +101,40 @@ fn a_member_builds_a_commit_with_an_expired_finite_lifetime_key_package() {
             );
         }
         other => panic!("expected INVALID_COMMIT(lifetime), got {other:?}"),
+    }
+    assert!(out.changes.is_empty());
+}
+
+#[test]
+fn a_member_builds_a_new_signer_commit_and_every_member_refuses_it() {
+    let mut w = World::create(1, 0);
+    w.admit(1);
+    let epoch = w.members[0].epoch.as_ref().unwrap().epoch;
+
+    // NEW_SIGNER (MM-31, §19.14): the member's own commit, every MLS check passing, but the
+    // update-path leaf's credential names another identity than the leaf's signature key.
+    let wrong = [0x5Au8; 32];
+    let m = &w.members[1];
+    let rows = m.wrapped();
+    let commit = m
+        .ctx
+        .test_new_signer(&m.ch, &WrappedRows(&rows), DAY, wrong)
+        .unwrap();
+
+    // Every other member answers INVALID_COMMIT(continuity), merging nothing (MM-31). (At the
+    // author the blob is its own message and `receive` reports it `OwnPrivateMessage` — §19.13 —
+    // which is why the engine's own-candidate path validates the build natively instead.)
+    let r = &mut w.members[0];
+    let rows = r.wrapped();
+    let out = r
+        .ctx
+        .receive(&r.ch, &WrappedRows(&rows), epoch, &[commit], DAY)
+        .unwrap();
+    match &out.items[0] {
+        ReceiveItem::Commit(s) => {
+            assert_eq!(s.verdict, Err(CommitReason::Continuity));
+        }
+        other => panic!("expected INVALID_COMMIT(continuity), got {other:?}"),
     }
     assert!(out.changes.is_empty());
 }

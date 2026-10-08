@@ -64,9 +64,10 @@ internal class ChannelEngine(
     val inviteStep = ChannelInviteStep(env, postStep)
     val acceptStep = ChannelAcceptStep(env, sync)
     val joinStep = ChannelJoinStep(env, sync)
-    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap)
+    val livenessStep = ChannelLivenessStep(env)
+    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap, livenessStep)
     val passStep = ChannelPassStep(env, sync, postStep)
-    val settleStep = ChannelSettleStep(env, sync)
+    val settleStep = ChannelSettleStep(env, sync, livenessStep)
     val outcomeStep = ChannelOutcomeStep(env, sync)
     val sweepStep = ChannelSweepStep(env, sync)
 
@@ -137,6 +138,7 @@ internal class ChannelEngine(
             receiveStep.consume(deadlineMonotonicMillis)
             if (settleStep.settleDue() == 0) break
         }
+        livenessStep.evaluate()
         postStep.encryptPending()
         if (timeTriggered) {
             if (sessionStart) passStep.scheduleAtSessionStart()

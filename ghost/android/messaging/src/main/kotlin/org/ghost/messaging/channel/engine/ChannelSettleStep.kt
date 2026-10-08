@@ -86,6 +86,8 @@ import org.ghost.sync.api.SyncTransaction
 internal class ChannelSettleStep(
     private val env: ChannelEnv,
     private val sync: ChannelSyncPorts,
+    /** CO-11 (b): a foreign winner's merge is progress (the liveness window reads it). */
+    private val liveness: ChannelLivenessStep? = null,
 ) {
     private val stores = env.stores
 
@@ -309,32 +311,12 @@ internal class ChannelSettleStep(
         // candidate cannot be abandoned: its committer's own blobs are never fetched back).
         val viable = candidates.filter { it.sender.toList() !in movedOn }
         if (viable.isEmpty()) return null
-        // CO-3: the winner maximises the successor senders, then minimises `(rank, hash)`. `maxWith`
-        // carries the comparison, so more successors must compare greater (`sa - sb`) and the
-        // ascending `(rank, hash)` order must be inverted in the fallback (S5b2: both halves were
-        // backwards — a plain two-candidate tie settled on the worst rank at every member, and two
-        // foreign candidates with different successor counts settled on the fewer — SCN-CD's shapes;
-        // S5b1's suites never held those cases, the demotion and adoption rules compare explicitly).
-        val byCo3 = Comparator<CandidateStore.CandidateRow> { a, b ->
-            val sa = counts[a.hash.toList()] ?: 0
-            val sb = counts[b.hash.toList()] ?: 0
-            if (sa != sb) sa - sb else ChannelReceiveStep.CANDIDATE_ORDER.compare(b, a)
-        }
-        val foreignViable = viable.filter { !it.own }
-        val bestForeign = foreignViable.maxWithOrNull(byCo3)
-        val winner = when (val o = viable.firstOrNull { it.own }) {
-            null -> bestForeign
-            else -> when (val f = bestForeign) {
-                // CO-4 (a): an unverified own commit is adopted on successor evidence alone.
-                null -> if (o.verified || (counts[o.hash.toList()] ?: 0) >= 1) o else null
-                else -> when {
-                    // §19.13: the unverified own candidate ranks below every held foreign candidate
-                    // unless it has MORE successor senders than that candidate.
-                    !o.verified -> if ((counts[o.hash.toList()] ?: 0) > (counts[f.hash.toList()] ?: 0)) o else f
-                    else -> listOf(o, f).maxWith(byCo3)
-                }
-            }
-        } ?: return null
+        // CO-3: the winner maximises the successor senders, then minimises `(rank, hash)`; the
+        // unverified-own demotion and the adoption rule sit between (EM-3's `better`, the rule the
+        // conformance probe replays — S5c).
+        val views = viable.map { Co3View(it.rank, it.hash.toList(), it.own, it.verified) }
+        val picked = co3Pick(views, counts) ?: return null
+        val winner = viable.first { it.hash.toList() == picked.hash }
 
         val body = content.open(winner.bodyEnv, ChannelAd.candidate(channelId, e, winner.hash)) ?: return refuseWinner(channelId, e, winner)
         val beforeRoster = opened.crypto.roster(channelId, stored, day.toInt()).valueOrNull() ?: return null
@@ -450,6 +432,8 @@ internal class ChannelSettleStep(
                 )
             }
             if (winner.rank < NOT_A_COMMITTER) stores.channels.setLastCommitterCommitDay(tx, c, day)
+            // CO-11 (b): a foreign winner's merge is progress for every member that merged it.
+            if (!winner.own && settled.standing == STANDING_MEMBER) liveness?.noteMerged(tx, c, content, day)
             mirrorPolicy(tx, c, fresh.nameEnv, merge, content)
             voidInvites(tx, c, merge)
         }
@@ -560,10 +544,58 @@ internal class ChannelSettleStep(
 
     override fun toString(): String = "ChannelSettleStep"
 
+    /** A plain view of a viable candidate for [co3Pick] (the EM-3 conformance probe builds these directly). */
+    internal class Co3View(
+        val rank: Int,
+        /** SHA-256 of the commit's bytes, as a list (the map's key). */
+        val hash: List<Byte>,
+        val own: Boolean,
+        val verified: Boolean,
+    ) {
+        override fun toString(): String = "Co3View(rank=$rank, own=$own, verified=$verified)"
+    }
+
     companion object {
+        /** CO-3's `(rank, hash)` ascending order over the plain views (the fallback, inverted in [co3Pick]). */
+        private val BY_RANK_HASH: Comparator<Co3View> =
+            compareBy<Co3View> { it.rank }.thenComparator { a, b ->
+                ChannelReceiveStep.compareUnsigned(a.hash.toByteArray(), b.hash.toByteArray())
+            }
+
         /** `settle`'s standing (§6.6): 1 member, 2 removed, 3 replaced. */
         const val STANDING_MEMBER: Int = 1
         const val STANDING_REPLACED: Int = 3
+
+        /**
+         * CO-3's decision over the viable candidates (abandonment already applied), as the EM-3
+         * model's `better` semantics run it (§19.34: maximise the successor senders, then minimise
+         * `(rank, hash)`; S5b2's fix): the foreign best by that order; an own candidate with a
+         * verified copy competes on the order; an **unverified** own candidate ranks below every
+         * held foreign one unless it has strictly more successor senders (§19.13), and is adopted
+         * as the only viable candidate on at least one successor sender (CO-4 (a)). The engine and
+         * the model agree by construction — the conformance probe replays scripted sets over this
+         * function (S5c).
+         */
+        fun co3Pick(viable: List<Co3View>, counts: Map<List<Byte>, Int>): Co3View? {
+            fun successors(v: Co3View): Int = counts[v.hash] ?: 0
+            // maxWith carries the comparison: more successors compare greater, the ascending
+            // `(rank, hash)` order is inverted in the fallback.
+            val byCo3 = Comparator<Co3View> { a, b ->
+                val sa = successors(a)
+                val sb = successors(b)
+                if (sa != sb) sa - sb else BY_RANK_HASH.compare(b, a)
+            }
+            val own = viable.firstOrNull { it.own }
+            val bestForeign = viable.filter { !it.own }.maxWithOrNull(byCo3)
+            return when {
+                own == null -> bestForeign
+                bestForeign == null ->
+                    if (own.verified || successors(own) >= 1) own else null
+                !own.verified ->
+                    if (successors(own) > successors(bestForeign)) own else bestForeign
+                else -> listOf(own, bestForeign).maxWith(byCo3)
+            }
+        }
 
         /** CO-1: the rank of a member that is no committer. */
         const val NOT_A_COMMITTER: Int = 255

@@ -18,6 +18,10 @@ site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/ChannelRecogn
 # The gate build type's hook, which the same rule reads (the `gate` source set ships on gate devices):
 site|android/crypto-bridge/src/gate/kotlin/org/ghost/crypto/bridge/gate/GateKeyChange.kt|SecretKeySpec(branch, "HmacSHA256")|1|fun alternateBranch(branch: ByteArray)|the §15.1 key-change hook, keyed by the MESSAGING branch m itself; gate build type only, never in a release (G-DM5)
 # Cipher keys: a text gate cannot tell a MAC key from a cipher key once the algorithm is a constant.
+# The CO-9 self-update slot PRF (Phase 10 design §6.4 CO-9; slice S5b2, finding F-S5-6: the design names K_sched
+# but defines no derivation, so the slot keys by dm_self's random seen key like the dm_seen tag — scheduling
+# metadata, never on the wire; the one relay-visible consequence, the self-update's store time, is the declared LC-6):
+site|android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/ChannelSchedule.kt|SecretKeySpec(key, "HmacSHA256")|1|fun slotDay(channelId: ByteArray, period: Long, key: ByteArray)|the §6.4 CO-9 slot PRF HMAC(seen key, channel_id ‖ u32_be(period)) mod 28, keyed by the random seen key of dm_self (F9 §7.6: random, never derived); the slot stays in the local schedule and never reaches a relay
 site|android/messaging/src/main/kotlin/org/ghost/messaging/store/ContentCipher.kt|SecretKeySpec(key, "ChaCha20")|2|private val key: ByteArray|not a derivation: the random content key (§3.2, random and never derived) sealing and opening local rows with ChaCha20-Poly1305
 #
 # The DM labels of these modules:

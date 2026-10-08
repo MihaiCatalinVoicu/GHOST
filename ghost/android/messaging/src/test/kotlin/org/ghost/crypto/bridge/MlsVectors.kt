@@ -14,6 +14,11 @@ object MlsVectors {
      *  (MM-46 / SCN-CM's lifetime cases; `MlsContext::test_finite_lifetime_commit`). */
     const val FINITE_KP_COMMIT: Int = 14
 
+    /** `[state_key, channel_id, pseudonym_seed, wrong_identity(32), rows, day] → [commit]`: the
+     * member's own commit whose update-path leaf carries a mismatched credential (MM-31 /
+     * §19.14's NEW_SIGNER; `MlsContext::test_new_signer`). */
+    const val NEW_SIGNER_COMMIT: Int = 15
+
     /** The case runner (the library is loaded by [MlsNative]). */
     @JvmStatic
     external fun run(kind: Int, input: ByteArray): ByteArray?

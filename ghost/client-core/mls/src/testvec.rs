@@ -71,6 +71,10 @@ pub mod kind {
     /// KeyPackage (MM-46 / SCN-CM's lifetime cases; `MlsContext::test_finite_lifetime_commit`).
     /// `rows` is encoded as in [`PROPOSAL`].
     pub const FINITE_KP_COMMIT: u8 = 14;
+    /// `[state_key, channel_id, pseudonym_seed, wrong_identity(32), rows, day] → [commit]`: the
+    /// member's own commit whose update-path leaf carries a mismatched credential (MM-31 /
+    /// §19.14's NEW_SIGNER; `MlsContext::test_new_signer`). `rows` is encoded as in [`PROPOSAL`].
+    pub const NEW_SIGNER_COMMIT: u8 = 15;
 }
 
 /// Decodes the `rows` item of [`kind::PROPOSAL`] and [`kind::FINITE_KP_COMMIT`]: the
@@ -375,6 +379,19 @@ fn run_case(case: u8, input: &[u8]) -> MlsResult<Vec<u8>> {
                 not_after,
             )?;
             reply(&[&kp, &commit])
+        }
+        kind::NEW_SIGNER_COMMIT => {
+            let state_key = StateKey::from_bytes(i.fixed()?);
+            let channel_id: [u8; 32] = i.fixed()?;
+            let seed = PseudonymSeed::from_bytes(i.fixed()?);
+            let wrong_identity: [u8; 32] = i.fixed()?;
+            let rows = rows_of(i.next()?)?;
+            let day = i.u32()?;
+            i.done()?;
+            let ctx = MlsContext::open(state_key)?;
+            let ch = ChannelHandle::open(channel_id, &seed);
+            let commit = ctx.test_new_signer(&ch, &WrappedRows(&rows), day, wrong_identity)?;
+            reply(&[&commit])
         }
         _ => return Err(nc()),
     };

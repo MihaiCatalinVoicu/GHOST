@@ -251,6 +251,7 @@ internal object ChannelAd {
     fun ownInvite(inviteId: ByteArray): ByteArray = of(6, inviteId)
     fun joinRequest(channelId: ByteArray, hash: ByteArray): ByteArray = of(7, channelId, hash)
     fun grapheme(target: ByteArray, author: ByteArray): ByteArray = of(8, target, author)
+    fun liveness(channelId: ByteArray): ByteArray = of(9, channelId)
 
     fun u64(value: Long): ByteArray = ByteArray(8) { i -> (value ushr (56 - 8 * i)).toByte() }
 }

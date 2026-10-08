@@ -2147,6 +2147,65 @@ impl MlsContext {
         Ok((kp_bytes, ser(&c)?))
     }
 
+    /// A **commit whose update-path leaf carries a mismatched credential** (test libraries only;
+    /// MM-31 / §19.14's NEW_SIGNER): the member's own empty commit with a path — signed with its
+    /// own key, so every MLS check passes and the leaf's self-signature verifies — but the new
+    /// leaf's `BasicCredential` identity is [wrong_identity], not the leaf's signature key. CO-2's
+    /// leaf-continuity check (`CommitReason::Continuity`) refuses it at every member. (§19.14's
+    /// changed-signature-key half needs `CommitBuilder::build_with_new_signer`, whose symbol the
+    /// G-M2 source scan refuses in any GHOST code — finding F-S5-9, §19.39; both halves fault at
+    /// the same native site, and the mismatched credential is the half a modified client can also
+    /// reach through `LeafNodeParameters` alone.) Nothing is persisted.
+    #[cfg(any(test, feature = "test-vectors"))]
+    pub fn test_new_signer(
+        &self,
+        ch: &ChannelHandle,
+        rows: &dyn RowSource,
+        day: u32,
+        wrong_identity: [u8; 32],
+    ) -> MlsResult<Vec<u8>> {
+        let channel_id = ch.channel_id;
+        let l = self.load(&channel_id, rows, day)?;
+        let mut g = Self::group(&l)?;
+        let aad = CommitAad {
+            commit_minute: day * 1440,
+            rotate: false,
+            admits: Vec::new(),
+            swaps: Vec::new(),
+        };
+        g.set_aad(aad.encode());
+        let (path_box_pk, _) = self.box_key(&channel_id)?;
+        let params = LeafNodeParameters::builder()
+            .with_credential_with_key(CredentialWithKey {
+                credential: BasicCredential::new(wrong_identity.to_vec()).into(),
+                signature_key: ch.signer.public().to_vec().into(),
+            })
+            .with_capabilities(canonical::canonical_capabilities())
+            .with_extensions(canonical::leaf_extensions(&GhostLeaf {
+                box_pk: path_box_pk,
+                refresh_epoch: g.epoch().as_u64(),
+            })?)
+            .build();
+        let bundle = g
+            .commit_builder()
+            .consume_proposal_store(false)
+            .force_self_update(true)
+            .leaf_node_parameters(params)
+            .load_psks(l.p.storage())
+            .map_err(corrupt)?
+            .create_group_info(false)
+            .build(l.p.rand(), l.p.crypto(), &ch.signer, |_| true)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?
+            .stage_commit(&l.p)
+            .map_err(|_| MlsError::new(Code::InvalidPolicy))?;
+        let (c, welcome, gi) = bundle.into_messages();
+        // No Adds: no Welcome; an exported GroupInfo never exists (S0-9).
+        if welcome.is_some() || gi.is_some() {
+            return Err(MlsError::new(Code::Internal));
+        }
+        ser(&c)
+    }
+
     // ---- fn 19: sweepPast -----------------------------------------------------------------------
 
     /// `sweepPast` (fn 19, §8.3): count-based deletion; `before_timestamp(UNIX_EPOCH)` is the
