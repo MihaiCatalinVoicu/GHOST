@@ -4,6 +4,7 @@ import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.crypto.bridge.ChannelRecognition
 import org.ghost.crypto.bridge.CommitSummary
 import org.ghost.crypto.bridge.MlsCode
+import org.ghost.crypto.bridge.MlsCommitReason
 import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
@@ -714,14 +715,37 @@ internal class ChannelReceiveStep(
                 is ChannelCrypto.Item.Commit -> {
                     if (item.summary.isValid && item.summary.epoch == o.epoch) {
                         recordCandidate(tx, fresh, o.epoch, item.summary, o.body, blob, content, now)
+                    } else if (item.summary.invalidReason == MlsCommitReason.LIFETIME) {
+                        // §19.29.1: a `LifetimeError` refusal is a non-canonical KeyPackage — the commit
+                        // is invalid for every member on both of OpenMLS's branches: dropped and counted,
+                        // never a candidate, never blocking.
+                        env.counters.count(ChannelCounters.Reason.INVALID_LIFETIME)
                     } else {
                         env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
                     }
                 }
-                // Phase 7 never fetches an own blob back: an own commit that arrives is a copy someone re-sealed (§19.13).
-                is ChannelCrypto.Item.Own -> env.counters.count(ChannelCounters.Reason.FORGED_OWN)
+                // The member's own message: a copy of the member's own commit that a listing pass
+                // fetched (D-5, owner 2026-10-05) verifies the pending commit, recognised by its hash,
+                // and ends the INDETERMINATE wait; any other "own" blob is a forgery (§19.13).
+                is ChannelCrypto.Item.Own -> {
+                    val hash = sha256(o.body)
+                    val ownCandidate = stores.candidates.own(tx.sql, c, o.epoch)
+                    if (ownCandidate != null && ownCandidate.hash.contentEquals(hash)) {
+                        val storeHour = (blob.relayExpiryHour - ChannelTime.handshakeTtl(fresh.timerCode).seconds).takeIf { it >= 0 }
+                        val seen = DmTime.floorMinute(now)
+                        stores.candidates.markVerified(tx, c, o.epoch, hash, seen, storeHour)
+                        lowerAnchor(tx, c, o.epoch, seen, storeHour)
+                    } else {
+                        env.counters.count(ChannelCounters.Reason.FORGED_OWN)
+                    }
+                }
                 is ChannelCrypto.Item.Proposal -> env.counters.count(ChannelCounters.Reason.PROPOSAL)
-                is ChannelCrypto.Item.Failed -> env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
+                is ChannelCrypto.Item.Failed ->
+                    if (item.refusal.reason == MlsCommitReason.LIFETIME) {
+                        env.counters.count(ChannelCounters.Reason.INVALID_LIFETIME)
+                    } else {
+                        env.counters.count(ChannelCounters.Reason.INVALID_COMMIT)
+                    }
                 is ChannelCrypto.Item.App, null -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
             }
             sync.inbox.markConsumed(tx, blob.namespace, blob.hash)

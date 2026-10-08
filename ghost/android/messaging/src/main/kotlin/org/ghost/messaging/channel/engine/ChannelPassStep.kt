@@ -402,7 +402,9 @@ internal class ChannelPassStep(
                     boxEnv = committed.boxEnv,
                     removes = committed.summary.removes.isNotEmpty() || committed.summary.swaps.isNotEmpty(),
                 )
-                // CO-4: the own commit's first sighting is its pass.
+                // CO-4 (D-4, S5): the creation pass is the committer's first sighting of its own
+                // candidate; the anchor only moves earlier from here — when a stored copy is later
+                // evidenced (the op's outcome, or a fetched copy with its store hour).
                 val row = stores.epochs.epoch(tx.sql, channelId, epoch, day)
                 val sighting = DmTime.floorMinute(now)
                 val anchor = row?.anchorMinute?.let { minOf(it, sighting) } ?: sighting

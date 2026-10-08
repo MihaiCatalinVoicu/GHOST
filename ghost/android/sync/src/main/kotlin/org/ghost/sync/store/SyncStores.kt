@@ -103,6 +103,9 @@ class SyncStores(
         override fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int =
             inboxStore.reofferDeferred(tx.checked(), namespace, clock.epochSeconds())
 
+        override fun held(namespace: NamespaceId, now: Long, limit: Int): List<InboundBlob> =
+            database.transaction { tx -> inboxStore.held(tx, namespace, now, limit) }
+
         override fun listingTails(namespace: NamespaceId): Map<RelayId, Long> =
             listingTailStore.of(namespace)
 

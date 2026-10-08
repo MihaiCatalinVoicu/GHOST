@@ -115,9 +115,15 @@ internal class ChannelWorld(
         committer.timePass()
     }
 
-    /** Past the settle window of CO-4 (20 minutes), with a time-triggered pass of every client. */
+    /**
+     * Past the settle window of CO-4 (20 minutes), with one relay round and a time-triggered pass of
+     * every client: the round is a completed listing pass over every relay of the set **after** the
+     * window opened, which is CO-4 (ii)'s condition — without it the passes would find (i) held and
+     * (ii) not, and settle nothing.
+     */
     fun pastSettleWindow() {
         advance(21 * DmWorld.MINUTE)
+        pump()
         for (c in clients) c.timePass()
     }
 
@@ -148,6 +154,59 @@ internal class ChannelWorld(
 /** The user actions on the caller's thread: the world is single-threaded on purpose. */
 internal object InlineActor : ChannelActor {
     override fun <T> call(body: () -> T): T = body()
+}
+
+/**
+ * The inbox port of a world's client: everything delegates to the real `:sync` inbox but
+ * [listingTails], which the world's relay feeds — a [ModelChannelRelay] round serves a client
+ * everything the relay holds, which is one completed listing pass over every relay of the set,
+ * the CO-4 (ii) signal (F-S4-1) the production read lane records. In-memory like the production
+ * store: a client rebuilt over its database after a crash forgets every pass.
+ */
+internal class WorldInbox(private val delegate: org.ghost.sync.api.Inbox) : org.ghost.sync.api.Inbox {
+    private val tails = HashMap<org.ghost.sync.api.RelayId, HashMap<List<Byte>, Long>>()
+
+    /** Records a completed pass over [namespaces] at monotonic [atMillis] for every [relay]. */
+    fun markPassed(namespaces: Collection<org.ghost.sync.api.NamespaceId>, relays: Collection<org.ghost.sync.api.RelayId>, atMillis: Long) {
+        for (ns in namespaces) {
+            val key = ns.toByteArray().toList()
+            for (relay in relays) tails.getOrPut(relay) { HashMap() }[key] = atMillis
+        }
+    }
+
+    override fun listingTails(namespace: org.ghost.sync.api.NamespaceId): Map<org.ghost.sync.api.RelayId, Long> {
+        val key = namespace.toByteArray().toList()
+        return tails.mapNotNull { (relay, byNs) -> byNs[key]?.let { relay to it } }.toMap()
+    }
+
+    override fun claim(consumer: org.ghost.sync.api.Consumer, limit: Int): List<org.ghost.sync.api.InboundBlob> = delegate.claim(consumer, limit)
+
+    override fun peek(consumer: org.ghost.sync.api.Consumer, limit: Int): List<org.ghost.sync.api.PeekedBlob> = delegate.peek(consumer, limit)
+
+    override fun claimOne(
+        consumer: org.ghost.sync.api.Consumer,
+        namespace: org.ghost.sync.api.NamespaceId,
+        hash: org.ghost.sync.api.BlobHash,
+    ): org.ghost.sync.api.InboundBlob? = delegate.claimOne(consumer, namespace, hash)
+
+    override fun markConsumed(tx: org.ghost.sync.api.SyncTransaction, namespace: org.ghost.sync.api.NamespaceId, hash: org.ghost.sync.api.BlobHash): Boolean =
+        delegate.markConsumed(tx, namespace, hash)
+
+    override fun defer(tx: org.ghost.sync.api.SyncTransaction, namespace: org.ghost.sync.api.NamespaceId, hash: org.ghost.sync.api.BlobHash, seconds: Int): Boolean =
+        delegate.defer(tx, namespace, hash, seconds)
+
+    override fun reofferDeferred(tx: org.ghost.sync.api.SyncTransaction, namespace: org.ghost.sync.api.NamespaceId): Int =
+        delegate.reofferDeferred(tx, namespace)
+
+    override fun held(namespace: org.ghost.sync.api.NamespaceId, now: Long, limit: Int): List<org.ghost.sync.api.InboundBlob> =
+        delegate.held(namespace, now, limit)
+
+    override fun forgetConsumed(tx: org.ghost.sync.api.SyncTransaction, namespace: org.ghost.sync.api.NamespaceId): Int =
+        delegate.forgetConsumed(tx, namespace)
+
+    override fun setListener(listener: org.ghost.sync.api.SyncListener?) = delegate.setListener(listener)
+
+    override fun toString(): String = "WorldInbox"
 }
 
 /**
@@ -196,10 +255,14 @@ internal class ChannelClient(
     val channelStores = ChannelStores()
     val counters = ChannelCounters()
     val contexts = ChannelContexts(database, channelStores, FakeKeyWrapper(), random, seeds)
+    val inbox = WorldInbox(stores.inbox)
     val env: ChannelEnv
     val engine: ChannelEngine
 
     init {
+        world.relay.onListed = { client, namespaces ->
+            client.inbox.markPassed(namespaces, client.slots.map { it.relay }, client.clock.monotonic)
+        }
         val relayIds = database.transaction { tx ->
             stores.relayDirectory.upsert(
                 tx,
@@ -214,7 +277,7 @@ internal class ChannelClient(
         env = ChannelEnv(database, channelStores, contexts, keys, clock, random, esSlots, counters)
         engine = ChannelEngine(
             env,
-            ChannelSyncPorts(stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, stores.inbox, stores.funding),
+            ChannelSyncPorts(stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, inbox, stores.funding),
             InlineActor,
             peekLimit = peekLimit,
         )

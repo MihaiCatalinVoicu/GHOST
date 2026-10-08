@@ -1842,14 +1842,15 @@ object Schema {
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch OR NEW.hash IS NOT OLD.hash
                   OR NEW.sender IS NOT OLD.sender OR NEW.rank IS NOT OLD.rank OR NEW.own IS NOT OLD.own
                   OR NEW.removes IS NOT OLD.removes
-                  OR NEW.body_env IS NOT OLD.body_env OR NEW.first_seen_minute IS NOT OLD.first_seen_minute
+                  OR NEW.body_env IS NOT OLD.body_env
+                  OR NEW.first_seen_minute > OLD.first_seen_minute
                   OR NEW.verified < OLD.verified
                   OR (OLD.welcome_env IS NULL AND NEW.welcome_env IS NOT NULL)
                   OR (OLD.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT OLD.welcome_env)
                   OR (OLD.box_env IS NULL AND NEW.box_env IS NOT NULL)
                   OR (OLD.box_env IS NOT NULL AND NEW.box_env IS NOT NULL AND NEW.box_env IS NOT OLD.box_env)
                   OR (OLD.store_hour IS NOT NULL AND (NEW.store_hour IS NULL OR NEW.store_hour > OLD.store_hour))
-                BEGIN SELECT RAISE(ABORT, 'a candidate changes only by a verified copy, an earlier store hour and the erasure of its Welcomes'); END""",
+                BEGIN SELECT RAISE(ABORT, 'a candidate changes only by a verified copy, an earlier sighting or store hour and the erasure of its Welcomes'); END""",
         """CREATE TRIGGER ch_fork_signal_limit BEFORE INSERT ON ch_fork_signal
                 WHEN (SELECT count(*) FROM ch_fork_signal WHERE channel_id = NEW.channel_id) >= 16
                 BEGIN SELECT RAISE(ABORT, 'at most 16 fork signals per channel'); END""",

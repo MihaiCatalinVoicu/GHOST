@@ -1,6 +1,7 @@
 package org.ghost.messaging.channel
 
 import org.ghost.messaging.DmWorld
+import org.ghost.sync.api.NamespaceId
 import java.security.MessageDigest
 
 /**
@@ -64,6 +65,13 @@ internal class ModelChannelRelay {
      * the poison guard backed off, does not count) — and is otherwise left at the relay for a later round, unserved.
      */
     var fetchedCap: Int? = null
+
+    /**
+     * Called after [client] was served every blob its listening namespaces hold: one round served
+     * everything the relay has, which is a completed listing pass over every relay of the set
+     * (CO-4 (ii)'s signal in this world; the world records it in the client's [WorldInbox]).
+     */
+    var onListed: (ChannelClient, List<NamespaceId>) -> Unit = { _, _ -> }
 
     class Stored(
         val namespace: ByteArray,
@@ -206,8 +214,11 @@ internal class ModelChannelRelay {
 
     private fun serve(client: ChannelClient, now: Long): Int {
         val listening = HashSet<String>()
+        val namespaces = ArrayList<NamespaceId>()
         client.sql.query("SELECT namespace_id FROM sync_namespace WHERE listening = 1 AND consumer = 'channel'") {
-            listening += hex(it.blob(0))
+            val raw = it.blob(0)
+            listening += hex(raw)
+            namespaces += NamespaceId(raw)
         }
         if (listening.isEmpty()) return 0
         var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
@@ -235,6 +246,7 @@ internal class ModelChannelRelay {
                 }
             }
         }
+        onListed(client, namespaces)
         return moved
     }
 

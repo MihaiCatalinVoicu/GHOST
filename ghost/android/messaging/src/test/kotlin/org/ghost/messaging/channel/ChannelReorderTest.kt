@@ -301,6 +301,8 @@ class ChannelReorderTest {
         assertEquals(1L, bob.count("ch_candidate"))
         // the owner settles first; carol joins and posts in epoch 2 at once
         w.advance(16 * DmWorld.MINUTE)
+        // CO-4 (ii), slice S5: a listing pass over every relay after the window opened (S4 settled without it)
+        w.pump()
         owner.timePass()
         w.quiesce()
         assertEquals(2L, carol.channel(id)!!.epoch)
@@ -312,6 +314,8 @@ class ChannelReorderTest {
         assertEquals(0, bob[Reason.UNOPENABLE])
         // bob's settle point: the settle re-offers the deferred post at once (§7.5 item 6), in the same pass
         w.advance(5 * DmWorld.MINUTE)
+        // CO-4 (ii), slice S5: a listing pass over every relay after the window opened
+        w.pump()
         bob.timePass()
         assertEquals(2L, bob.channel(id)!!.epoch)
         assertEquals(listOf("from epoch 2"), bob.displayed(id))

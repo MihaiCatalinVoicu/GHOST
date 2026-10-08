@@ -95,6 +95,15 @@ interface Inbox {
     fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int
 
     /**
+     * The fetched rows of [namespace] the consumer holds but is not offered now: rows whose re-offer
+     * time lies ahead (set by [defer]) or that the poison guard backed off (§11.2 #3) — Phase 10
+     * design §6.4 CO-3's "held blobs", the input of a commit trial settle. Read-only: no offer
+     * counter moves and nothing is claimed. At most [limit] rows, in hash order, so every consumer
+     * of one view sees the same set. Runs its own short transaction.
+     */
+    fun held(namespace: NamespaceId, now: Long, limit: Int): List<InboundBlob>
+
+    /**
      * The last completed listing pass per relay of [namespace] (Phase 10 design §6.3.1 (a) and §6.4
      * CO-4 (ii); finding F-S4-1 of §19.37, built in S5a): relay → the monotonic millisecond time
      * this process last finished listing the namespace from that relay to its tail. Relays never

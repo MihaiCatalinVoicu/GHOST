@@ -89,6 +89,12 @@ internal class ChannelCounters {
         /** A commit that fails CO-2. */
         INVALID_COMMIT,
 
+        /** A commit refused with `LifetimeError`: a non-canonical KeyPackage — invalid for every member (§19.29.1). */
+        INVALID_LIFETIME,
+
+        /** An unconsumed invite the winner's context voided (its committers changed or its pw_version is older). */
+        INVITE_VOIDED,
+
         /** A commit of a settled epoch with another hash: a fork signal (CO-6). */
         LATE_CANDIDATE,
 
