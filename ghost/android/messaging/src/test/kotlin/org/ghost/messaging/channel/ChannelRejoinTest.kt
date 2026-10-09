@@ -515,6 +515,382 @@ class ChannelRejoinTest {
         Unit
     }
 
+    // ------------------------------------------------------------------ the review of S7 (§19.44)
+
+    /**
+     * The review of S7, FIX 1 (a) — rejoin against rejoin: two stacks of one member, from copies of
+     * one database. The second's fresh rejoin KeyPackage is admitted and completes while the first
+     * stack's stale rejoin row is still pending; the first stack returns and merges the swap: the
+     * swap's `kp_ref` is not one of its own rejoin rows' — the existence-based discriminator of S7
+     * misread it as "my own rejoin" and stranded the first stack `active` with no leaf; the kp_ref
+     * and evidence-kind rule records `REPLACED` (the MLS state goes, the posts stay).
+     */
+    @Test
+    fun aSecondStacksRejoinReplacesTheFirstStacksStaleAttempt() {
+        val dir = java.nio.file.Files.createTempDirectory("ghost-s7-fix1a").toFile()
+        try {
+            ChannelWorld().use { w ->
+                val owner = w.client("owner")
+                val db1 = java.io.File(dir, "bob1.db")
+                val bob1 = w.client("bob", path = db1.absolutePath)
+                val id = ChannelScenes.channelOf(w, owner, bob1)
+                // One more epoch, so the live branch moves past the point the rejoin will claim.
+                agePcsClock(owner, id, 8)
+                duePass(w, owner)
+                w.quiesce()
+                w.pastSettleWindow()
+                w.quiesce()
+                // bob misses the epoch-2 commit (the relay holds it back, keeps it): his last final
+                // epoch stays 0, more than one handshake TTL old within days.
+                w.relay.holdAt = { name, s -> name == "bob" && s.purpose == "commit" }
+                w.advance(8 * DmWorld.DAY)
+                // The first stack's resync: the stale row (expiry attempt + 7) is pending from here on.
+                assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, bob1.engine.resync(id))
+                assertEquals(1L, bob1.count("ch_join", "type = 'rejoin'"))
+                // A post the old stack must keep through the replacement (posted now, so its claim
+                // above stays on the stale point).
+                ChannelScenes.post(owner, id, "before")
+                w.pump()
+                // The first stack dies; a second boots from a copy of its database and resyncs too —
+                // its fresh KeyPackage replaces the stale row in the copy. The relay held both
+                // requests back, so the owner's pass sees them together and admits the newest.
+                bob1.die()
+                bob1.close()
+                val db2 = java.io.File(dir, "bob2.db")
+                db1.copyTo(db2)
+                val bob2 = w.client("bob", boot = 1, path = db2.absolutePath)
+                assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, bob2.engine.resync(id))
+                w.pump()
+                assertEquals(2, w.relay.stored.count { it.purpose == "rejoin" })
+                w.relay.holdAt = { _, _ -> false }
+                w.pump()
+                duePass(w, owner)
+                w.quiesce()
+                w.pastSettleWindow()
+                w.quiesce()
+                assertEquals("the second stack's rejoin completed", ChannelState.ACTIVE, bob2.channel(id)!!.state)
+                assertEquals("at the live epoch", owner.channel(id)!!.epoch, bob2.channel(id)!!.epoch)
+                bob2.close()
+
+                // The first stack returns: the held epoch-2 commit reaches it (never served before);
+                // the swap commit was served to the name while the second stack held it — resurrect.
+                val bobOld = w.client("bob", boot = 2, path = db1.absolutePath)
+                assertEquals(1L, bobOld.count("ch_join", "type = 'rejoin'"))
+                w.relay.resurrect(w.now) { it.purpose == "commit" }
+                w.pump()
+                repeat(4) {
+                    bobOld.hintPass()
+                    w.advance(21 * DmWorld.MINUTE)
+                    w.pump()
+                    bobOld.timePass()
+                    w.quiesce()
+                }
+                assertEquals(
+                    "a genuine replacement: the swap's KeyPackage is not one of the first stack's own rejoin rows",
+                    ChannelState.REPLACED,
+                    bobOld.channel(id)!!.state,
+                )
+                assertEquals("its MLS state went at the merge", 0L, bobOld.count("mls_kv"))
+                assertTrue("its posts are kept", bobOld.displayed(id).any { it == "before" })
+                assertEquals(emptyList<String>(), bobOld.integrity())
+                assertEquals(emptyList<String>(), owner.integrity())
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * The review of S7, FIX 1 (b) — restore against rejoin: the second stack returns by a restore
+     * invite; the rotation the restore swap carries must process at the first stack's merge, which
+     * records `REPLACED` — the restore's swap KeyPackage is no own rejoin row either, and a restore
+     * swap is never the member's own rejoin completing.
+     */
+    @Test
+    fun aRestoreOfTheSecondStackReplacesTheFirstStacksStaleAttempt() {
+        val dir = java.nio.file.Files.createTempDirectory("ghost-s7-fix1b").toFile()
+        try {
+            ChannelWorld().use { w ->
+                val owner = w.client("owner")
+                val db1 = java.io.File(dir, "bob1.db")
+                val bob1 = w.client("bob", path = db1.absolutePath)
+                val id = ChannelScenes.channelOf(w, owner, bob1)
+                agePcsClock(owner, id, 8)
+                duePass(w, owner)
+                w.quiesce()
+                w.pastSettleWindow()
+                w.quiesce()
+
+                // Eight idle days (no passes run, no commits): the last final epoch's winner is more
+                // than one handshake TTL old — the first stack's rejoin is admissible, and its stale
+                // row (expiry attempt + 7) is pending for the rest of the test.
+                w.advance(8 * DmWorld.DAY)
+                assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, bob1.engine.resync(id))
+                // A post the old stack must keep through the replacement. bob1's own post: the own
+                // tombstone keeps the relay from serving it back to the bob copies — the second
+                // stack must open nothing foreign, or its CO-11 window keeps closing on progress.
+                ChannelScenes.post(bob1, id, "before")
+                w.pump()
+                bob1.die()
+                bob1.close()
+                val db2 = java.io.File(dir, "bob2.db")
+                db1.copyTo(db2)
+                val bob2 = w.client("bob", boot = 1, path = db2.absolutePath)
+                // The second stack's clocks are silenced: a commit of his would be authored by the
+                // name the old stack returns under, and the relay never serves a blob back to its
+                // author — the old stack could never merge it.
+                quietClocks(bob2, id)
+
+                // The second stack finds its branch dead (unopenable junk, no progress — CO-11) and
+                // enters resync_needed: the state an invite's restore accept re-enters joining from.
+                // Each distinct junk blob is counted once (consumed, not deferred); the copied
+                // liveness row latches an old merge as progress, so the first window cycle closes
+                // and clears it — the following days mature CO-11 (3 unopenable, a 3-day window,
+                // 3 sessions). The junk stays held from everyone: it would clog the old stack's
+                // peek at his return.
+                val junkFor = { n: Int -> ChannelAdversary.sealJunk(bob2, id, ByteArray(700) { ((it + n * 13) % 251).toByte() }) }
+                w.relay.holdAt = { name, s -> s.injected && name != "bob" }
+                repeat(3) { w.relay.inject(generationNs(bob2, id, 0), junkFor(it), w.now, "fork-junk") }
+                w.pump()
+                bob2.hintPass()
+                repeat(5) { day ->
+                    w.advance(1 * DmWorld.DAY)
+                    repeat(3) { w.relay.inject(generationNs(bob2, id, 0), junkFor(3 + day * 3 + it), w.now, "fork-junk") }
+                    w.pump()
+                    bob2.sessionStart()
+                    bob2.timePass()
+                    bob2.hintPass()
+                }
+                assertEquals("the second stack's branch died (CO-11)", ChannelState.RESYNC_NEEDED, bob2.channel(id)!!.state)
+
+                // The return by a restore invite: the admission swaps with Restore evidence and rotates.
+                // The commits the flow produces are held from the bob copies: the old stack must
+                // merge them at his return (a copy already served to the name would not re-serve).
+                w.relay.holdAt = { name, s ->
+                    (name == "bob" && s.purpose == "commit") || (s.injected && name != "bob")
+                }
+                val link = ChannelAdmissionTest.invite(owner, id)
+                assertEquals(AcceptResult.PENDING, bob2.engine.accept(link, null))
+                assertEquals(ChannelState.JOINING, bob2.channel(id)!!.state)
+                assertEquals(1L, bob2.count("ch_join", "type = 'restore'"))
+                w.pump()
+                duePass(w, owner)
+                w.quiesce()
+                w.pastSettleWindow()
+                w.quiesce()
+                assertEquals("the restore completed", ChannelState.ACTIVE, bob2.channel(id)!!.state)
+                // The restore rotated: the switch lands both on generation 1.
+                w.advance(2 * DmWorld.HOUR + 60)
+                w.quiesce()
+                owner.sessionStart()
+                bob2.sessionStart()
+                w.advance(6 * DmWorld.MINUTE)
+                owner.timePass()
+                bob2.timePass()
+                w.quiesce()
+                assertEquals(1L, owner.channel(id)!!.generation)
+                assertEquals(1L, bob2.channel(id)!!.generation)
+                bob2.close()
+
+                // The first stack returns and merges the restore's swap commit — the only commit it
+                // lacks (it missed nothing): REPLACED, and the rotation the restore carried
+                // processes at his merge — his generation row is the draining old one. Its own
+                // stale rejoin row is still pending (the 7-day re-send expiry has not passed): the
+                // S7 existence-based discriminator misread the restore swap as "my own rejoin"
+                // and stranded this stack active with no leaf; the kp_ref and evidence-kind rule
+                // records REPLACED.
+                val bobOld = w.client("bob", boot = 2, path = db1.absolutePath)
+                assertEquals(1L, bobOld.count("ch_join", "type = 'rejoin'"))
+                // The commits the restore flow held from the name are released to the old stack;
+                // the remaining junk stays held (its re-offers would clog his peek).
+                w.relay.holdAt = { _, s -> s.injected }
+                w.pump()
+                repeat(4) {
+                    bobOld.hintPass()
+                    w.advance(21 * DmWorld.MINUTE)
+                    w.pump()
+                    bobOld.timePass()
+                    w.quiesce()
+                }
+                assertEquals(
+                    "a restore swap never completes the member's own rejoin: the first stack is replaced",
+                    ChannelState.REPLACED,
+                    bobOld.channel(id)!!.state,
+                )
+                assertEquals(0L, bobOld.count("mls_kv"))
+                assertEquals(
+                    "the restore's rotation processed at the replaced member's merge: its row drains",
+                    1L,
+                    bobOld.count("ch_generation", "state = 'draining' AND generation = 0"),
+                )
+                assertTrue("its posts are kept", bobOld.displayed(id).any { it == "before" })
+                assertEquals(emptyList<String>(), bobOld.integrity())
+                assertEquals(emptyList<String>(), owner.integrity())
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+    /**
+     * The review of S7, FIX 2: the completion reads saw the rejoin row only until its 7-day re-send
+     * expiry, while §6.7 keeps the state and the keys until the 14-day give-up. Here the member's own
+     * rejoin is admitted at once, but the swap commit merges days before the Welcome is served; the
+     * Welcome then arrives on days 8-14 — past the re-send expiry, inside the deadline. The
+     * deadline-based read joins it (`active`, merged, the row gone); the expiry-based read dropped it
+     * `NOT_FOR_ME` and stranded the member with no leaf.
+     */
+    @Test
+    fun anOwnRejoinCompletingBetweenTheResendExpiryAndTheGiveUpDeadlineJoins() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, dave)
+        val ns0 = generationNs(owner, id, 0)
+        agePcsClock(owner, id, 8)
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+
+        // dave goes dark; the relay expires everything of ns_0 (the missed commits die at their TTL);
+        // nine days of silence raise stale_suspected; the resync user action at day X.
+        quietClocks(dave, id)
+        w.relay.modes = setOf(ModelChannelRelay.Mode.EXPIRE_LOG)
+        w.relay.expireLog = { it.namespace.contentEquals(ns0) }
+        ChannelScenes.post(owner, id, "quiet")
+        w.advance(21 * DmWorld.MINUTE)
+        duePass(w, owner)
+        w.pump()
+        repeat(3) {
+            w.advance(4 * DmWorld.DAY)
+            dave.sessionStart()
+        }
+        assertTrue(dave.channel(id)!!.staleSuspected)
+        assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, dave.engine.resync(id))
+        // The swap commit and the Welcome are held from dave until days 8-14 (the re-send expiry is
+        // attempt + 7, the give-up deadline attempt + 14). The commit's 7-day TTL then kills it at
+        // the relay; the Welcome is resurrected below.
+        w.relay.holdAt = { name, s -> name == "dave" && (s.purpose == "welcome" || s.purpose == "commit") }
+        w.relay.modes = emptySet()
+        w.pump()
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        // Nothing of the answer has reached dave yet: he waits, active, the row pending — §6.7 keeps
+        // the state and the keys until the give-up deadline, so the late Welcome must still join.
+        assertEquals(ChannelState.ACTIVE, dave.channel(id)!!.state)
+        assertEquals(1L, dave.count("ch_join", "type = 'rejoin'"))
+        assertEquals(2L, dave.channel(id)!!.epoch)
+
+        // Day X + 9: inside the give-up deadline, past the re-send expiry. No pass runs at dave in
+        // between (his clocks are quiet): the row is the original attempt's.
+        w.advance(9 * DmWorld.DAY)
+        w.relay.holdAt = { _, _ -> false }
+        w.relay.resurrect(w.now) { it.purpose == "welcome" }
+        w.pump()
+        dave.hintPass()
+        assertEquals("the Welcome completed the rejoin on days 8-14", 0L, dave.count("ch_join"))
+        assertEquals(ChannelState.ACTIVE, dave.channel(id)!!.state)
+        assertEquals(owner.channel(id)!!.epoch, dave.channel(id)!!.epoch)
+        // And the channel is live for him: a post round-trips both ways.
+        ChannelScenes.post(dave, id, "merged-late")
+        w.quiesce()
+        assertTrue(owner.displayed(id).any { it == "merged-late" })
+        ChannelScenes.post(owner, id, "welcome-back")
+        w.pump()
+        dave.hintPass()
+        assertTrue(dave.displayed(id).any { it == "welcome-back" })
+        assertTrue(dave.integrity().isEmpty())
+    }
+
+    /**
+     * The review of S7, FIX 3: nothing cleared a pending rejoin row when the member recovered. Here
+     * the resync is a user action on a healthy channel; every committer refuses the request (the
+     * live-leaf check: the member's leaf is live — it kept posting); the member merges a commit
+     * after the attempt and keeps posting healthily past the 14-day give-up. The give-up sweep must
+     * take only the pending state (the row and the KeyPackage's keys, one transaction) and leave the
+     * channel `active` — the S7 code moved even a healthy, posting channel to `reinvite_needed` and
+     * deleted the keys, and receive stopped.
+     */
+    @Test
+    fun aRecoveredChannelLosesOnlyThePendingRejoinState() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, dave)
+        agePcsClock(owner, id, 8)
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        ChannelScenes.post(dave, id, "healthy")
+
+        // Day X = 8: the channel is idle (epoch 2 still open, its claim more than one handshake TTL
+        // old), dave caught up. The user taps resync; dave's leaf is live on the branch (his post
+        // above), so the owner's pass refuses the request — the row stays pending, unanswered.
+        w.advance(8 * DmWorld.DAY)
+        assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, dave.engine.resync(id))
+        assertEquals(1L, dave.count("ch_join", "type = 'rejoin'"))
+        w.pump()
+        duePass(w, owner)
+        w.quiesce()
+        assertEquals(1L, dave.count("ch_join", "type = 'rejoin'"))
+        val refused = owner.counters[ChannelCounters.Reason.ADMISSION_REFUSED]
+        assertTrue("the owner's pass refused the live-leaf rejoin", refused >= 1)
+
+        // dave keeps posting healthily; a committer commit lands after the attempt and dave merges
+        // it; another post makes his leaf seen at the live epoch — the re-send's copy is refused
+        // on the live-leaf check (the recovery the give-up sweep must read).
+        ChannelScenes.post(dave, id, "still-here")
+        w.pump()
+        agePcsClock(owner, id, 7)
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(owner.channel(id)!!.epoch, dave.channel(id)!!.epoch)
+        ChannelScenes.post(dave, id, "still-here-2")
+        w.pump()
+        dave.hintPass()
+
+        // Day 16: the 7-day re-send fires (the copy is refused); day 24: past the 14-day give-up
+        // deadline and the fresh row's re-send expiry — the sweep takes the row and the keys; the
+        // channel stays active and live.
+        w.advance(7 * DmWorld.DAY)
+        w.pump()
+        dave.sessionStart()
+        dave.timePass()
+        w.advance(1 * DmWorld.DAY)
+        w.pump()
+        dave.sessionStart()
+        dave.timePass()
+        w.pump()
+        // dave's self-update slot fired on the way (CO-9): the owner's pass waits on its candidate
+        // (CO-7) — settle it, then the refusal pass processes the re-sent request.
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        duePass(w, owner)
+        w.quiesce()
+        assertEquals(1L, dave.count("ch_join", "type = 'rejoin'"))
+        w.advance(8 * DmWorld.DAY)
+        w.pump()
+        dave.sessionStart()
+        dave.timePass()
+        assertEquals(ChannelState.ACTIVE, dave.channel(id)!!.state)
+        assertEquals("the give-up cleared the pending row", 0L, dave.count("ch_join"))
+        assertEquals("and the KeyPackage's keys", 0L, dave.count("mls_global_kv", "delete_after_day IS NOT NULL"))
+        assertEquals("the re-sent copy was refused too", refused + 1, owner.counters[ChannelCounters.Reason.ADMISSION_REFUSED])
+        ChannelScenes.post(dave, id, "past-the-deadline")
+        w.quiesce()
+        assertTrue(owner.displayed(id).any { it == "past-the-deadline" })
+        ChannelScenes.post(owner, id, "still-live")
+        w.pump()
+        dave.hintPass()
+        assertTrue(dave.displayed(id).any { it == "still-live" })
+        assertTrue(dave.integrity().isEmpty())
+        assertTrue(owner.integrity().isEmpty())
+    }
+
     /**
      * SCN-CK's rejoin half: a rejoin swap does **not** rotate (MM-18), the member keeps its rank —
      * a committer rejoins like any member (§6.7, §19.13 item 2).

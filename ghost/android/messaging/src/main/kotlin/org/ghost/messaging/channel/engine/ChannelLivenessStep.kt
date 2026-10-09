@@ -154,6 +154,22 @@ internal class ChannelLivenessStep(
         )
     }
 
+    /**
+     * A rejoin or a restore restarts the channel (§6.7, §6.12): CO-11's window state — the
+     * unopenable count, the operators, the sessions, the window's first minute — belonged to the
+     * old leaf and its branch; carried over, a window that had matured before the rejoin refires
+     * the moment the channel returns to `active` (the review of S7, §19.44 F-S7-6). The join's
+     * transaction clears it; the progress record starts over too (the displayed posts stay, but
+     * every authenticated message they carried was the old branch's).
+     */
+    fun reset(tx: SyncTransaction, channelId: ByteArray, content: ContentCipher) {
+        stores.channels.putLiveness(
+            tx, channelId, 0, 0, 0,
+            encode(content, channelId, Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false)),
+            null,
+        )
+    }
+
     /** The operators that listed [blob], counted through `relay_directory` (CO-11's "2 operators"). */
     private fun operatorsOf(sql: SqlExecutor, blob: InboundBlob): Int {
         var n = 0
@@ -221,9 +237,15 @@ internal class ChannelLivenessStep(
             }
             if (hasProgress) closeWindow = true
         }
-        // Progress returns a resync_needed member to active (CO-11); its window restarts.
+        // Progress returns a resync_needed member to active (CO-11); its window restarts. The
+        // recovery also clears the pending rejoin attempt (§6.7, the review of S7 §19.44): the
+        // member caught up in band, its rejoin request is obsolete — the row and the KeyPackage's
+        // private keys go in this same transaction.
         if (hasProgress && channel.state == ChannelState.RESYNC_NEEDED) {
             stores.channels.transition(tx, c, ChannelState.RESYNC_NEEDED, ChannelState.ACTIVE)
+            val pending = stores.joins.rejoinsUntilDeadline(tx.sql, c, day)
+            for (j in pending) stores.joins.deleteJoin(tx, c, j.kpRef)
+            if (pending.isNotEmpty()) stores.mls.deleteKeyPackages(tx, c)
             closeWindow = true
         }
 

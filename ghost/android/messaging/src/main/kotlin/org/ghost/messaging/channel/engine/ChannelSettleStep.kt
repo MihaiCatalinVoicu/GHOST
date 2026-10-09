@@ -160,6 +160,8 @@ internal class ChannelSettleStep(
         val requestHash: ByteArray?,
         /** A rejoin or restore swap: the member's leaf was replaced, its local rows restart. */
         val swap: Boolean,
+        /** The swap's evidence kind: true for a rejoin swap, false for a restore swap (§19.44). */
+        val evidenceRejoin: Boolean,
     ) {
         override fun toString(): String = "Admitted(redacted)"
     }
@@ -353,6 +355,7 @@ internal class ChannelSettleStep(
                     kpDay = it.kpDay,
                     requestHash = it.requestHash,
                     swap = it.swap,
+                    evidenceRejoin = it.swapRejoin,
                 )
             } ?: emptyList()
             settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Own(body), snapshot.generation.toInt(), day.toInt())) {
@@ -377,27 +380,29 @@ internal class ChannelSettleStep(
                     kpDay = add?.recordOrNull(MlsField.KP_BIND)?.u32(MlsField.DAY),
                     requestHash = null,
                     swap = false,
+                    evidenceRejoin = false,
                 )
             } ?: emptyList()
-            // The winner's swaps (§19.2): matched to their KeyPackages by reference (a swap's Add
-            // carries the same `kp_ref` as its evidence). At every staying member they consume the
-            // restore's invite and restart the swapped member's local rows; at committers the
-            // KeyPackage's tag is kept.
-            val admittedSwaps = aad?.swaps?.mapNotNull { ev ->
-                val kpRef = when (ev) {
-                    is org.ghost.crypto.bridge.SwapEvidence.Rejoin -> ev.kpRef
-                    is org.ghost.crypto.bridge.SwapEvidence.Restore -> ev.evidence.kpRef
-                }
-                val add = summary.adds.firstOrNull { it.bytes(MlsField.KP_REF).contentEquals(kpRef) }
-                    ?: return@mapNotNull null
+            // The winner's swaps (§19.2): the AAD carries each swap's evidence (its KeyPackage's
+            // `kp_ref`; a restore's invite), the summary's swap records carry the pseudonym and the
+            // evidence kind — `summary.adds` lists join adds only, a swap's Add is not one, so the
+            // §19.44 self-rejoin rule reads the kind from here. Both lists run in the commit's swap
+            // order (CO-2 requires one evidence per swap, so a valid commit's lists pair by index).
+            val admittedSwaps = aad?.swaps?.mapIndexedNotNull { i, ev ->
+                if (aad.swaps.size != summary.swaps.size) return@mapIndexedNotNull null
+                val s = summary.swaps[i]
                 Admitted(
                     inviteId = (ev as? org.ghost.crypto.bridge.SwapEvidence.Restore)?.evidence?.inviteId,
-                    member = add.bytes(MlsField.PSEUDONYM),
+                    member = s.bytes(MlsField.PSEUDONYM),
                     sponsor = null,
-                    kpRef = kpRef,
-                    kpDay = add.recordOrNull(MlsField.KP_BIND)?.u32(MlsField.DAY),
+                    kpRef = when (ev) {
+                        is org.ghost.crypto.bridge.SwapEvidence.Rejoin -> ev.kpRef
+                        is org.ghost.crypto.bridge.SwapEvidence.Restore -> ev.evidence.kpRef
+                    },
+                    kpDay = null,
                     requestHash = null,
                     swap = true,
+                    evidenceRejoin = s.byte(MlsField.SWAP_KIND) == 1,
                 )
             } ?: emptyList()
             admitted = admittedJoins + admittedSwaps
@@ -475,20 +480,21 @@ internal class ChannelSettleStep(
         stores.epochs.appendLog(tx, c, e, winner.hash, day)
         val next = settled.epoch
         // §6.7's `replaced` detection, the requester's half: a winner that swaps this member's own
-        // leaf with a KeyPackage this client published as its own rejoin (the kp_ref is one of its
-        // pending `ch_join` rejoin rows) is the requester's own rejoin completing — not a replacement
-        // by another device (a seed thief's KeyPackage is not in `ch_join`, and that member is
-        // `REPLACED`). The merge's change-set applies (the state advances); the epoch stays without
-        // a successor until the Welcome — the join vehicle — replaces the state over the KeyPackage's
-        // global rows (`CH-JOIN`).
-        // §6.7's `replaced` detection, the requester's half: a member reported replaced while it
-        // holds a pending rejoin of its own is the requester — its own rejoin is completing, not a
-        // replacement by another device (a seed thief's KeyPackage is not in `ch_join`, and that
-        // member has no rejoin row pending: it is `REPLACED`). The merge's change-set applies (the
-        // state advances); the epoch stays without a successor until the Welcome — the join vehicle —
-        // replaces the state over the KeyPackage's global rows (`CH-JOIN`).
+        // leaf is the requester's own rejoin completing only when the swap's KeyPackage is one this
+        // client published for its own rejoin — the merge's admitted swap carries the `kp_ref` of one
+        // of the member's pending `ch_join` rejoin rows, with Rejoin evidence (a restore swap, or a
+        // rejoin KeyPackage this client never published — a second stack completing from a copy of
+        // this database — replaces the member: it is `REPLACED`, §19.44). The pending rows are read
+        // by the give-up deadline, not the 7-day re-send expiry: §6.7 keeps the state and the keys
+        // until day 14, so a completion on days 8-14 must still see the row. The merge's change-set
+        // applies (the state advances); the epoch stays without a successor until the Welcome — the
+        // join vehicle — replaces the state over the KeyPackage's global rows (`CH-JOIN`).
+        val selfRejoinJoins = stores.joins.rejoinsUntilDeadline(tx.sql, c, day)
         val selfRejoin = settled.standing == STANDING_REPLACED &&
-            stores.joins.joins(tx.sql, c, day).any { it.type == JoinType.REJOIN }
+            merge.admitted.any { a ->
+                a.swap && a.evidenceRejoin &&
+                    selfRejoinJoins.any { j -> j.type == JoinType.REJOIN && j.kpRef.contentEquals(a.kpRef) }
+            }
         if (selfRejoin) {
             // Nothing but the shared tail: the candidates go, the deferred blobs are re-offered, the
             // rejoin rows stay for the Welcome.

@@ -8,7 +8,6 @@ import org.ghost.messaging.channel.store.EpochStore
 import org.ghost.messaging.channel.store.GenerationState
 import org.ghost.messaging.channel.store.GenerationStore
 import org.ghost.messaging.channel.store.JoinStore
-import org.ghost.messaging.channel.store.JoinType
 import org.ghost.messaging.engine.DmTime
 import org.ghost.sync.api.InboundBlob
 import org.ghost.sync.api.NamespaceId
@@ -40,6 +39,7 @@ import org.ghost.sync.api.NamespaceId
 internal class ChannelJoinStep(
     private val env: ChannelEnv,
     private val sync: ChannelSyncPorts,
+    private val liveness: ChannelLivenessStep,
 ) {
     private val stores = env.stores
 
@@ -125,6 +125,9 @@ internal class ChannelJoinStep(
                 stores.joins.deleteJoins(tx, c)
                 // CO-8, CO-9's schedule, seeded like CH-CREATE's (the PCS clock starts at the join day).
                 seedSchedule(env, tx, c, day)
+                // §19.44 F-S7-6: the join restarts the channel — CO-11's window state belonged to
+                // the old leaf; carried over it would refire the moment the channel is active again.
+                liveness.reset(tx, c, content)
                 sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 sync.inbox.reofferDeferred(tx, NamespaceId(ns))
                 Outcome.JOINED
@@ -142,8 +145,10 @@ internal class ChannelJoinStep(
     /**
      * The rejoin's answer (§6.7, §19.16 (d), §19.29.2): [blob] was fetched from [generation]'s
      * namespace and its hint is `R_join` in mode 0x13 — a committer's answer to this member's
-     * rejoin. The blob opens under the generation's `JK_g`; each pending rejoin KeyPackage is tried
-     * with `welcomeJoin` over the KeyPackage's global rows only and the rejoin anchor — the
+     * rejoin. The blob opens under the generation's `JK_g`; each pending rejoin KeyPackage (every rejoin
+     * row whose give-up deadline has not passed — §6.7 keeps the row, the state and the keys until day 14,
+     * not the 7-day re-send, §19.44) is tried with `welcomeJoin` over the KeyPackage's global rows only and
+     * the rejoin anchor — the
      * GroupInfo signature must verify under one of the committers of the member's last final epoch,
      * which the stored state's context is (no digest comparison) — and the member keeps its rank
      * (its key is unchanged). A Welcome that fails a check writes nothing (the KeyPackage stays,
@@ -155,6 +160,7 @@ internal class ChannelJoinStep(
     fun joinWelcome(blob: InboundBlob, channelId: ByteArray, generation: GenerationStore.GenerationRow): Outcome {
         val now = env.now()
         val day = DmTime.day(now)
+        val content = env.keys.content() ?: return Outcome.LEFT
         val opened = env.contexts.open(channelId) ?: return Outcome.LEFT
         val body = when (
             val o = opened.crypto.open(
@@ -169,8 +175,7 @@ internal class ChannelJoinStep(
                 else -> consume(blob, ChannelCounters.Reason.NON_CANONICAL)
             }
         }
-        val joinRows = env.database.transaction { tx -> stores.joins.joins(tx.sql, channelId, day) }
-            .filter { it.type == JoinType.REJOIN }
+        val joinRows = env.database.transaction { tx -> stores.joins.rejoinsUntilDeadline(tx.sql, channelId, day) }
         if (joinRows.isEmpty()) return consume(blob, ChannelCounters.Reason.NOT_FOR_ME)
         // The anchor: the committers of the member's last final epoch — the context its stored state
         // holds, the state as of its last merged commit (§6.2.5, §19.29.2).
@@ -197,7 +202,7 @@ internal class ChannelJoinStep(
             }
             return env.database.transaction { tx ->
                 val fresh = stores.channels.channel(tx.sql, channelId)
-                val rejoins = stores.joins.joins(tx.sql, channelId, day).filter { it.type == JoinType.REJOIN }
+                val rejoins = stores.joins.rejoinsUntilDeadline(tx.sql, channelId, day)
                 if (fresh == null || rejoins.isEmpty() ||
                     (fresh.state != ChannelState.ACTIVE && fresh.state != ChannelState.RESYNC_NEEDED &&
                         fresh.state != ChannelState.REINVITE_NEEDED)
@@ -215,6 +220,9 @@ internal class ChannelJoinStep(
                 } else if (fresh.state == ChannelState.REINVITE_NEEDED) {
                     stores.channels.transition(tx, channelId, ChannelState.REINVITE_NEEDED, ChannelState.ACTIVE)
                 }
+                // §19.44 F-S7-6: the rejoin restarts the channel — CO-11's window state belonged to
+                // the old leaf; carried over it would refire the moment the channel is active again.
+                liveness.reset(tx, channelId, content)
                 val g = joined.generation
                 if (g.generation != fresh.generation) {
                     // A newer bootstrap (a rotation on the live branch): `CH-SWITCH` adopts it at the

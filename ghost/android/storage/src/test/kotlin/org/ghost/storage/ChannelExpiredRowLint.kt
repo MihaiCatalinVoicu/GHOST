@@ -230,6 +230,14 @@ object ChannelExpiredRowLint {
             row(expired, "ch_invite_own", "invite_id" to id(n), "expiry_day" to day, "invite_env" to if (n == 0x12) null else chBytes(363, n))
             row(expired, "ch_request", "kind" to if (n == 0x12) "remove" else "leave", "subject" to key(n), "until_day" to day)
         }
+        // Slice S7's review (§19.44): a rejoin row lives by its give-up deadline, not its 7-day re-send
+        // expiry. On its deadline's last day the completion read still sees it; its re-send day has not
+        // passed, so the sweep's expired batch does not name it (expiry_day = TODAY, not < TODAY).
+        row(
+            false, "ch_join", "kp_ref" to key(0x13), "type" to "rejoin", "invite_id" to null, "generation" to 0L,
+            "expiry_day" to TODAY, "ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null,
+            "rejoin_deadline_day" to TODAY,
+        )
         row(true, "ch_kp_seen", "tag" to tag(0xE1), "until_day" to TODAY - 1)
         row(false, "ch_kp_seen", "tag" to tag(0x11), "until_day" to TODAY)
         // ---- ch_generation: channel CH has an expired drain; channel CH_B a drain on its last day
@@ -492,7 +500,14 @@ object ChannelDaoQueries {
         read(
             "theJoinsOfAChannel",
             JOIN_COLUMNS + "WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref",
-            listOf(CH, TODAY), rows = 2,
+            listOf(CH, TODAY), rows = 3,
+        ),
+        // Slice S7's review (§19.44): the completion read — a rejoin row until its give-up deadline,
+        // even on the days 8-14 where its 7-day re-send expiry has passed.
+        read(
+            "theRejoinsUntilTheirGiveUpDeadline",
+            JOIN_COLUMNS + "WHERE channel_id = ? AND type = 'rejoin' AND rejoin_deadline_day >= ?",
+            listOf(CH, TODAY), rows = 1,
         ),
         read(
             "oneJoin",

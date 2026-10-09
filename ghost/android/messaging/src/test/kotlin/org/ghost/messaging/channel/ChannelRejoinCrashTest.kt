@@ -46,6 +46,8 @@ class ChannelRejoinCrashTest {
         val channel: ChannelId,
         /** The commit ops the owner had at the freeze (a crash run must not count them). */
         val ownerCommitOps: Long,
+        /** The invite link the owner issued at the freeze (the accept-as-restore single's action). */
+        val inviteLink: ByteArray? = null,
     )
 
     /**
@@ -205,6 +207,50 @@ class ChannelRejoinCrashTest {
         return freeze(d)
     }
 
+    /**
+     * The world with the rejoin row past its 7-day re-send expiry but inside the 14-day give-up
+     * deadline (attempt day X, frozen at X + 8) — the sweep's re-send transaction is the action.
+     */
+    private fun beforeResendSweep(): Frozen {
+        val d = darkWorld()
+        assertEquals(org.ghost.messaging.channel.engine.ChannelRejoinStep.ResyncResult.REQUESTED, d.dave.engine.resync(d.id))
+        d.world.advance(8 * DmWorld.DAY)
+        return freeze(d)
+    }
+
+    /**
+     * The world with the rejoin row past its give-up deadline (attempt day X, frozen at X + 15) —
+     * the sweep's give-up transaction is the action. The restore invite is issued at the freeze:
+     * it is the finish's return path.
+     */
+    private fun beforeGiveUpSweep(): Frozen {
+        val d = darkWorld()
+        assertEquals(org.ghost.messaging.channel.engine.ChannelRejoinStep.ResyncResult.REQUESTED, d.dave.engine.resync(d.id))
+        d.world.advance(15 * DmWorld.DAY)
+        val link = ChannelAdmissionTest.invite(d.owner, d.id)
+        val frozen = freeze(d)
+        return Frozen(frozen.owner, frozen.dave, frozen.relay, frozen.now, frozen.channel, frozen.ownerCommitOps, link)
+    }
+
+    /**
+     * The world past the give-up: dave at `reinvite_needed`, the KeyPackage's keys gone, the owner's
+     * fresh invite issued — dave's accept-as-restore transaction is the action.
+     */
+    private fun beforeRestoreAccept(): Frozen {
+        val d = darkWorld()
+        val w = d.world
+        val owner = d.owner
+        val dave = d.dave
+        val id = d.id
+        assertEquals(org.ghost.messaging.channel.engine.ChannelRejoinStep.ResyncResult.REQUESTED, dave.engine.resync(id))
+        w.advance(15 * DmWorld.DAY)
+        dave.timePass()
+        assertEquals(ChannelState.REINVITE_NEEDED, dave.channel(id)!!.state)
+        val link = ChannelAdmissionTest.invite(owner, id)
+        val frozen = freeze(d)
+        return Frozen(frozen.owner, frozen.dave, frozen.relay, frozen.now, frozen.channel, frozen.ownerCommitOps, link)
+    }
+
     // ----------------------------------------------------------------------------------- the finishes
 
     /** Liveness for the resync/admission worlds: the rejoin completes (or catch-up does), posts flow. */
@@ -238,6 +284,38 @@ class ChannelRejoinCrashTest {
         assertTrue("the post reaches the owner after the crash", shown)
         assertEquals(emptyList<String>(), t.dave.integrity())
         assertEquals(emptyList<String>(), t.owner.integrity())
+    }
+
+    /**
+     * Liveness for the give-up sweep world: the crash left the row whole or taken. A crash before
+     * the give-up transaction leaves the row pending past its deadline — the sweep then moves the
+     * dark channel (§19.44's rule does not apply: no commit merged since the attempt). Either way
+     * the return is the restore invite frozen with the world, then [finishJoin]'s flow.
+     */
+    private fun finishGiveUp(t: Thawed, frozen: Frozen) {
+        val w = t.world
+        repeat(2) {
+            if (t.dave.channel(frozen.channel)!!.state == ChannelState.ACTIVE &&
+                t.dave.count("ch_join", "type = 'rejoin'") > 0L
+            ) {
+                t.dave.timePass()
+                w.pump()
+            }
+        }
+        if (t.dave.channel(frozen.channel)!!.state == ChannelState.REINVITE_NEEDED) {
+            assertEquals(AcceptResult.PENDING, t.dave.engine.accept(frozen.inviteLink!!, null))
+            w.pump()
+        }
+        repeat(4) {
+            w.quiesce()
+            if (t.dave.channel(frozen.channel)!!.state == ChannelState.JOINING) {
+                admissionPass(w, t.owner)
+                w.quiesce()
+                w.pastSettleWindow()
+                w.quiesce()
+            }
+        }
+        finishJoin(t, frozen.channel)
     }
 
     /** Liveness for the restore/self-rejoin worlds: the join or the merge completes, posts flow. */
@@ -469,6 +547,80 @@ class ChannelRejoinCrashTest {
                 assertTrue("crash at $k", t.dave.channel(frozen.channel)?.state in listOf(ChannelState.ACTIVE, ChannelState.RESYNC_NEEDED))
             },
             finish = { t -> finishJoin(t, frozen.channel) },
+        )
+    }
+
+    /**
+     * The sweep's re-send transaction (§19.44): the expired attempt row is whole — old row, its
+     * KeyPackage rows and one op — or the fresh attempt is whole — new row, new KeyPackage rows, a
+     * second op. The row count never exceeds one and the state never moves.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheRejoinResendLeavesTheOldOrTheFreshAttempt() {
+        val frozen = beforeResendSweep()
+        runSingle(
+            "the rejoin re-send",
+            frozen,
+            action = { t -> t.dave.timePass() },
+            afterCrash = { t, k ->
+                assertEquals("crash at $k", ChannelState.ACTIVE, t.dave.channel(frozen.channel)!!.state)
+                assertEquals("crash at $k: exactly one attempt row, old or fresh", 1L, t.dave.count("ch_join", "type = 'rejoin'"))
+            },
+            finish = { t -> finishRejoin(t, frozen.channel, 2) },
+        )
+    }
+
+    /**
+     * The sweep's give-up transaction (§19.44): the channel untouched — `active` with the pending
+     * row — or fully transitioned — `reinvite_needed`, the row and the KeyPackage's keys gone in
+     * the same transaction. The finish returns the member by the frozen restore invite.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheRejoinGiveUpLeavesTheRowOrTheFullTransition() {
+        val frozen = beforeGiveUpSweep()
+        runSingle(
+            "the rejoin give-up",
+            frozen,
+            action = { t -> t.dave.timePass() },
+            afterCrash = { t, k ->
+                val state = t.dave.channel(frozen.channel)?.state
+                if (state == ChannelState.ACTIVE) {
+                    assertEquals("crash at $k: the pending row survived", 1L, t.dave.count("ch_join", "type = 'rejoin'"))
+                } else {
+                    assertEquals("crash at $k", ChannelState.REINVITE_NEEDED, state)
+                    assertEquals("crash at $k: the row went with the transition", 0L, t.dave.count("ch_join"))
+                    assertEquals("crash at $k: and the KeyPackage's keys with it", 0L, t.dave.count("mls_global_kv", "delete_after_day IS NOT NULL"))
+                }
+            },
+            finish = { t -> finishGiveUp(t, frozen) },
+        )
+    }
+
+    /**
+     * The accept-as-restore transaction: the stale state untouched — `reinvite_needed`, no restore
+     * row — or the restore whole — `joining` with its row, the KeyPackage's rows, the box key, the
+     * namespace registration and the request's op.
+     */
+    @Test
+    fun aCrashAtEveryEventOfTheRestoreAcceptLeavesTheStaleStateOrTheWholeRestore() {
+        val frozen = beforeRestoreAccept()
+        runSingle(
+            "the restore accept",
+            frozen,
+            action = { t -> t.dave.engine.accept(frozen.inviteLink!!, null) },
+            afterCrash = { t, k ->
+                val state = t.dave.channel(frozen.channel)?.state
+                if (state == ChannelState.REINVITE_NEEDED) {
+                    assertEquals("crash at $k: nothing of the restore was written", 0L, t.dave.count("ch_join"))
+                    assertEquals("crash at $k: the stale state is intact", 0L, t.dave.count("mls_global_kv", "delete_after_day IS NOT NULL"))
+                } else {
+                    assertEquals("crash at $k", ChannelState.JOINING, state)
+                    assertEquals("crash at $k: the restore row", 1L, t.dave.count("ch_join", "type = 'restore'"))
+                    assertTrue("crash at $k: the KeyPackage's rows", t.dave.count("mls_global_kv", "delete_after_day IS NOT NULL") >= 1)
+                    assertEquals("crash at $k: the request's op", 1L, t.dave.count("ch_outbound_op", "purpose = 'join'"))
+                }
+            },
+            finish = { t -> finishGiveUp(t, frozen) },
         )
     }
 }

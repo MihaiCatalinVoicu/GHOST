@@ -900,6 +900,7 @@ internal class ChannelPassStep(
                     requestHash = targetRequest.hash,
                     kpDay = admission?.kpDay ?: swap!!.kpDay,
                     swap = swap != null,
+                    swapRejoin = swap?.evidence is org.ghost.crypto.bridge.SwapEvidence.Rejoin,
                     blob = blob,
                 )
             }
@@ -1067,6 +1068,9 @@ internal object ChannelWelcomes {
         val kpDay: Long,
         /** A swap (rejoin or restore): the settle restarts the member's local rows instead of recording a sponsor. */
         val swap: Boolean,
+        /** The swap's evidence kind: true for a rejoin swap, false for a restore swap (§19.44: a restore
+         *  swap never completes the member's own rejoin — the settle's self-rejoin check reads this). */
+        val swapRejoin: Boolean,
         val blob: ByteArray,
     ) {
         override fun toString(): String = "Welcome(redacted)"
@@ -1076,8 +1080,10 @@ internal object ChannelWelcomes {
         override fun toString(): String = "Welcomes(${entries.size})"
     }
 
-    private const val VERSION: Int = 1
-    private const val FIXED: Int = 32 + 32 + 16 + 32 + 32 + 32 + 4 + 1 + 4
+    // The review of S7 (§19.44): version 2 adds the swap-kind byte, so the framing tells a rejoin
+    // swap from a restore swap (local framing only, nothing on the wire).
+    private const val VERSION: Int = 2
+    private const val FIXED: Int = 32 + 32 + 16 + 32 + 32 + 32 + 4 + 1 + 1 + 4
 
     fun encode(boxPk: ByteArray, entries: List<Entry>): ByteArray {
         require(boxPk.size == 32 && entries.size <= 0xffff) { "bad welcome framing" }
@@ -1093,7 +1099,7 @@ internal object ChannelWelcomes {
                 .put(e.member)
                 .put(e.sponsor ?: ByteArray(32))
                 .put(e.requestHash)
-            b.putInt(e.kpDay.toInt()).put(if (e.swap) 1 else 0).putInt(e.blob.size).put(e.blob)
+            b.putInt(e.kpDay.toInt()).put(if (e.swap) 1 else 0).put(if (e.swapRejoin) 1 else 0).putInt(e.blob.size).put(e.blob)
         }
         return b.array()
     }
@@ -1116,6 +1122,7 @@ internal object ChannelWelcomes {
             val requestHash = ByteArray(32).also { b.get(it) }
             val kpDay = b.int.toLong() and 0xffff_ffffL
             val swap = b.get().toInt() == 1
+            val swapRejoin = b.get().toInt() == 1
             val len = b.int
             if (len < 0 || len > b.remaining()) return null
             val blob = ByteArray(len).also { b.get(it) }
@@ -1124,7 +1131,7 @@ internal object ChannelWelcomes {
                 inviteId = if (inviteId.any { v -> v.toInt() != 0 }) inviteId else null,
                 member,
                 sponsor = if (sponsor.any { v -> v.toInt() != 0 }) sponsor else null,
-                requestHash, kpDay, swap, blob,
+                requestHash, kpDay, swap, swapRejoin, blob,
             )
         }
         if (b.hasRemaining()) return null

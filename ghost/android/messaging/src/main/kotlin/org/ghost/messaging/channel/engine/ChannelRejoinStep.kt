@@ -145,9 +145,11 @@ internal class ChannelRejoinStep(
                     tx, channelId, keyPackage.kpRef, JoinType.REJOIN, null, fresh.generation, day + RESEND_DAYS,
                     rejoinDeadlineDay = day + GIVE_UP_DAYS,
                 )
+                // §6.7 keeps the KeyPackage's private keys until the give-up deadline, not the 7-day
+                // re-send (the review of S7, §19.44 FIX 2): a completion on days 8-14 still joins.
                 stores.mls.apply(
                     tx, channelId, MlsRows.changes(keyPackage.changes),
-                    globalDeleteAfterDay = day + RESEND_DAYS, keyPackagesOnly = true,
+                    globalDeleteAfterDay = day + GIVE_UP_DAYS, keyPackagesOnly = true,
                 )
                 stores.members.insertBoxKey(tx, channelId, keyPackage.boxPk, keyPackage.boxEnv)
                 for ((generation, blob) in sealed) {
@@ -178,8 +180,11 @@ internal class ChannelRejoinStep(
     /**
      * The rejoin rows past their attempt day (§6.7): at day + 7 a fresh request (a fresh KeyPackage and
      * signature, the give-up day kept); at day + 14, past `rejoin_deadline_day`, the unanswered rejoin
-     * ends at `reinvite_needed` and the KeyPackage's private keys go. A channel that recovered (progress,
-     * or a restore) loses only the pending state. Each row one transaction; returns how many it finished.
+     * ends at `reinvite_needed` and the KeyPackage's private keys go — except on a channel that recovered
+     * in band: §6.7 ("a channel that recovered loses only the pending state", §19.44) — a member whose
+     * stale rejoin every committer refused on the live-leaf check kept merging commits, so the give-up
+     * takes only the row and the keys, the state stays `active`. Each row one transaction; returns how
+     * many it finished.
      */
     fun sweepRejoins(): Int {
         val now = env.now()
@@ -193,12 +198,20 @@ internal class ChannelRejoinStep(
             if (day > deadline) {
                 env.database.transaction { tx ->
                     val channel = stores.channels.channel(tx.sql, join.channelId) ?: return@transaction
-                    when (channel.state) {
-                        ChannelState.RESYNC_NEEDED ->
-                            stores.channels.transition(tx, join.channelId, ChannelState.RESYNC_NEEDED, ChannelState.REINVITE_NEEDED)
-                        ChannelState.ACTIVE ->
-                            stores.channels.transition(tx, join.channelId, ChannelState.ACTIVE, ChannelState.REINVITE_NEEDED)
-                        else -> Unit
+                    // The exact recovery rule (§19.44): the give-up transitions only a channel that is
+                    // still cut off — no commit merged since the attempt began. An `active` channel
+                    // that merged a commit in that window recovered in band (the request was obsolete,
+                    // refused by the committers' live-leaf check): it loses only the pending state.
+                    val recovered = channel.lastCommitterCommitDay != null &&
+                        channel.lastCommitterCommitDay >= deadline - GIVE_UP_DAYS
+                    if (!(channel.state == ChannelState.ACTIVE && recovered)) {
+                        when (channel.state) {
+                            ChannelState.RESYNC_NEEDED ->
+                                stores.channels.transition(tx, join.channelId, ChannelState.RESYNC_NEEDED, ChannelState.REINVITE_NEEDED)
+                            ChannelState.ACTIVE ->
+                                stores.channels.transition(tx, join.channelId, ChannelState.ACTIVE, ChannelState.REINVITE_NEEDED)
+                            else -> Unit
+                        }
                     }
                     stores.mls.deleteKeyPackages(tx, join.channelId)
                     stores.joins.deleteJoin(tx, join.channelId, join.kpRef)
@@ -213,6 +226,7 @@ internal class ChannelRejoinStep(
 
     /** The 7-day re-send: a fresh KeyPackage and request per listened generation, the deadline kept. */
     private fun resend(join: org.ghost.messaging.channel.store.JoinStore.JoinRow, day: Long, now: Long): Boolean {
+        val deadline = join.rejoinDeadlineDay ?: return false
         val channelId = join.channelId
         val opened = env.contexts.open(channelId) ?: return false
         val last = env.database.transaction { tx -> stores.epochs.lastLogged(tx.sql, channelId) } ?: return false
@@ -263,9 +277,11 @@ internal class ChannelRejoinStep(
                     tx, channelId, keyPackage.kpRef, JoinType.REJOIN, null, fresh.generation, day + RESEND_DAYS,
                     rejoinDeadlineDay = join.rejoinDeadlineDay,
                 )
+                // The fresh KeyPackage's keys live until the attempt's give-up deadline, exactly like
+                // the first one's (§19.44 FIX 2) — the re-send refreshes the request, not the lifetime.
                 stores.mls.apply(
                     tx, channelId, MlsRows.changes(keyPackage.changes),
-                    globalDeleteAfterDay = day + RESEND_DAYS, keyPackagesOnly = true,
+                    globalDeleteAfterDay = deadline, keyPackagesOnly = true,
                 )
                 stores.members.insertBoxKey(tx, channelId, keyPackage.boxPk, keyPackage.boxEnv)
                 for ((generation, blob) in sealed) {

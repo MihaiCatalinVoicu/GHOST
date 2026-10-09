@@ -13,8 +13,9 @@ import org.ghost.sync.api.SyncTransaction
  * **Every read applies the expiry filter** of its table (`expiry_day >= :today`, `until_day >= :today`;
  * §8.5 "kept until"): a join or a request past its day is not offered even if `CH-SWEEP` has not deleted it
  * (the committer must not admit an expired request, the invitee must not accept a Welcome for an expired
- * join). Every query is spelled out and registered with `:storage`'s `ChannelExpiredRowLint`; the sweep's
- * reads name the opposite set.
+ * join). The one exception is [rejoinsUntilDeadline], the rejoin **completion** read, which keeps a rejoin
+ * row until its §6.7 give-up deadline instead of its 7-day re-send expiry (§19.44). Every query is spelled
+ * out and registered with `:storage`'s `ChannelExpiredRowLint`; the sweep's reads name the opposite set.
  *
  * **The order of the requests is their arrival order, `ORDER BY rowid`**: §6.2.3 processes a pass's requests "in
  * arrival order", §9 gives `ch_join_request` no arrival column, and the table is one of the two that keep their
@@ -77,6 +78,20 @@ internal class JoinStore {
     fun joins(sql: SqlExecutor, channelId: ByteArray, today: Long): List<JoinRow> {
         val out = ArrayList<JoinRow>()
         sql.query(JOINS, listOf(channelId, today)) { r -> out += readJoin(r) }
+        return out
+    }
+
+    /**
+     * The rejoin rows whose give-up deadline has not passed — the **completion** reads (`CH-JOIN`'s
+     * rejoin-answer lookup, the settle's self-rejoin check). §6.7 keeps the state and the KeyPackage's
+     * keys until `rejoin_deadline_day` (attempt + 14), so a completion on days 8-14 must still see the
+     * row even though its 7-day re-send `expiry_day` has passed (the review of S7, §19.44). The
+     * sweep's re-send read stays expiry-based ([EXPIRED_JOINS]); every other read keeps the expiry
+     * filter of [JOINS].
+     */
+    fun rejoinsUntilDeadline(sql: SqlExecutor, channelId: ByteArray, day: Long): List<JoinRow> {
+        val out = ArrayList<JoinRow>()
+        sql.query(REJOINS_UNTIL_DEADLINE, listOf(channelId, day)) { r -> out += readJoin(r) }
         return out
     }
 
@@ -306,6 +321,12 @@ internal class JoinStore {
         const val JOIN_BY_NS: String =
             "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, " +
                 "committers_digest, rejoin_deadline_day FROM ch_join WHERE ns = ? AND expiry_day >= ?"
+
+        /** The completion reads (§19.44): a rejoin row lives for its give-up deadline, not its 7-day re-send. */
+        const val REJOINS_UNTIL_DEADLINE: String =
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, " +
+                "committers_digest, rejoin_deadline_day FROM ch_join " +
+                "WHERE channel_id = ? AND type = 'rejoin' AND rejoin_deadline_day >= ?"
 
         /** SWEEP's own batch. */
         const val EXPIRED_JOINS: String =
