@@ -22,16 +22,17 @@ internal enum class ChannelState(val sql: String) {
     /**
      * The edges of §6.11: `joining -> active | join_expired`, `active -> leaving | removed | replaced |
      * resync_needed | reinvite_needed`, `leaving -> left | removed`, `resync_needed -> active |
-     * reinvite_needed`, `reinvite_needed | replaced -> active` (the restore's Welcome), and a new invitation
-     * re-enters `joining` from a channel that was left, removed, replaced or expired (§6.2.2). The same state
-     * is no edge and no change.
+     * reinvite_needed | joining` (a restore invite accepted while a rejoin pends, §6.2.2),
+     * `reinvite_needed -> active | joining` (the restore's re-invitation), `replaced -> active |
+     * joining` (the restore's Welcome), and a new invitation re-enters `joining` from a channel
+     * that was left, removed, replaced or expired (§6.2.2). The same state is no edge and no change.
      */
     fun allows(to: ChannelState): Boolean = this == to || when (this) {
         JOINING -> to == ACTIVE || to == JOIN_EXPIRED
         ACTIVE -> to == LEAVING || to == REMOVED || to == REPLACED || to == RESYNC_NEEDED || to == REINVITE_NEEDED
         LEAVING -> to == LEFT || to == REMOVED
-        RESYNC_NEEDED -> to == ACTIVE || to == REINVITE_NEEDED
-        REINVITE_NEEDED -> to == ACTIVE
+        RESYNC_NEEDED -> to == ACTIVE || to == REINVITE_NEEDED || to == JOINING
+        REINVITE_NEEDED -> to == ACTIVE || to == JOINING
         REPLACED -> to == ACTIVE || to == JOINING
         LEFT, REMOVED, JOIN_EXPIRED -> to == JOINING
     }

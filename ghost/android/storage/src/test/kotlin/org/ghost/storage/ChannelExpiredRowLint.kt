@@ -230,6 +230,14 @@ object ChannelExpiredRowLint {
             row(expired, "ch_invite_own", "invite_id" to id(n), "expiry_day" to day, "invite_env" to if (n == 0x12) null else chBytes(363, n))
             row(expired, "ch_request", "kind" to if (n == 0x12) "remove" else "leave", "subject" to key(n), "until_day" to day)
         }
+        // Slice S7's review (§19.44): a rejoin row lives by its give-up deadline, not its 7-day re-send
+        // expiry. On its deadline's last day the completion read still sees it; its re-send day has not
+        // passed, so the sweep's expired batch does not name it (expiry_day = TODAY, not < TODAY).
+        row(
+            false, "ch_join", "kp_ref" to key(0x13), "type" to "rejoin", "invite_id" to null, "generation" to 0L,
+            "expiry_day" to TODAY, "ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null,
+            "rejoin_deadline_day" to TODAY,
+        )
         row(true, "ch_kp_seen", "tag" to tag(0xE1), "until_day" to TODAY - 1)
         row(false, "ch_kp_seen", "tag" to tag(0x11), "until_day" to TODAY)
         // ---- ch_generation: channel CH has an expired drain; channel CH_B a drain on its last day
@@ -336,12 +344,14 @@ object ChannelDaoQueries {
         "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
             "drain_until_day, open_epoch FROM ch_generation "
 
+    // Slice S7 (§6.7): the join and request rows gained `rejoin_deadline_day` and `member`.
     private const val JOIN_COLUMNS =
-        "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest FROM ch_join "
+        "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, " +
+            "committers_digest, rejoin_deadline_day FROM ch_join "
 
     private const val REQUEST_OF_INVITE =
-        "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
-            "WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
+        "SELECT channel_id, hash, generation, type, invite_id, body_env, member, until_day, recorded_day " +
+            "FROM ch_join_request WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
 
     private const val EPOCH_COLUMNS =
         "SELECT channel_id, epoch, state, k_env, r_ep, winner_hash, own_seq, anchor_minute, final_day, keep_until_day FROM ch_epoch "
@@ -490,7 +500,14 @@ object ChannelDaoQueries {
         read(
             "theJoinsOfAChannel",
             JOIN_COLUMNS + "WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref",
-            listOf(CH, TODAY), rows = 2,
+            listOf(CH, TODAY), rows = 3,
+        ),
+        // Slice S7's review (§19.44): the completion read — a rejoin row until its give-up deadline,
+        // even on the days 8-14 where its 7-day re-send expiry has passed.
+        read(
+            "theRejoinsUntilTheirGiveUpDeadline",
+            JOIN_COLUMNS + "WHERE channel_id = ? AND type = 'rejoin' AND rejoin_deadline_day >= ?",
+            listOf(CH, TODAY), rows = 1,
         ),
         read(
             "oneJoin",
@@ -510,19 +527,22 @@ object ChannelDaoQueries {
         ),
         read(
             "theJoinRequests",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, member, until_day, recorded_day " +
+                "FROM ch_join_request " +
                 "WHERE channel_id = ? AND until_day >= ? ORDER BY rowid",
             listOf(CH, TODAY), rows = 2,
         ),
         read(
             "oneJoinRequest",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, member, until_day, recorded_day " +
+                "FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?",
             listOf(CH, L.key(0x12), TODAY), rows = 1,
         ),
         hides(
             "anExpiredJoinRequest",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, member, until_day, recorded_day " +
+                "FROM ch_join_request " +
                 "WHERE channel_id = ? AND hash = ? AND until_day >= ?",
             listOf(CH, L.key(0xE1), TODAY), "ch_join_request", "hash = ?", listOf(L.key(0xE1)),
         ),
@@ -698,13 +718,15 @@ object ChannelSweepQueries {
         ),
         sweep(
             "oneBatchOfExpiredJoins",
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
-                "FROM ch_join WHERE expiry_day < ? ORDER BY expiry_day, channel_id, kp_ref LIMIT ?",
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, " +
+                "committers_digest, rejoin_deadline_day FROM ch_join " +
+                "WHERE expiry_day < ? ORDER BY expiry_day, channel_id, kp_ref LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),
         sweep(
             "oneBatchOfExpiredJoinRequests",
-            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day, recorded_day FROM ch_join_request " +
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, member, until_day, recorded_day " +
+                "FROM ch_join_request " +
                 "WHERE until_day < ? ORDER BY until_day, channel_id, hash LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
         ),

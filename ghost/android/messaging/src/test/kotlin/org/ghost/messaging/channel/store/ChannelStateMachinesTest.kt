@@ -109,11 +109,15 @@ class ChannelStateMachinesTest {
             for (d in Direction.entries) assertTrue(d.sql, accepted("ch_reveal", "direction", d.sql))
             for (t in JoinType.entries) {
                 val with = arrayOf<Pair<String, Any?>>("invite_id" to if (t.hasInvite) chBytes(16, 27) else null)
-                // Slice S4 (§19.35 F-8): a join or a restore carries its invite's state, a rejoin none of it.
+                // Slice S4 (§19.35 F-8): a join or a restore carries its invite's state, a rejoin none of it;
+                // slice S7 (§6.7): a rejoin row alone carries its give-up day.
                 val state = if (t.hasInvite) {
                     emptyArray()
                 } else {
-                    arrayOf<Pair<String, Any?>>("ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null)
+                    arrayOf<Pair<String, Any?>>(
+                        "ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null,
+                        "rejoin_deadline_day" to if (t == JoinType.REJOIN) 20_021L else null,
+                    )
                 }
                 assertTrue(t.sql, accepted("ch_join", "type", t.sql, *with, *state))
                 assertTrue(t.sql, accepted("ch_join_request", "type", t.sql, *with))

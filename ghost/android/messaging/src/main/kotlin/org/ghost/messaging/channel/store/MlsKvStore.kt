@@ -184,6 +184,17 @@ internal class MlsKvStore {
     fun deleteGlobalRows(tx: SyncTransaction, channelId: ByteArray): Int =
         tx.sql.execUpdate("DELETE FROM mls_global_kv WHERE channel_id = ?", listOf(channelId))
 
+    /**
+     * A rejoin's give-up (§6.7): the pending KeyPackage's private keys go with the `reinvite_needed`
+     * deadline. Only KeyPackage rows carry a death day ([apply] gives one to no other global row), so
+     * `delete_after_day IS NOT NULL` names exactly them; the live group's key-pair rows (no day) stay.
+     */
+    fun deleteKeyPackages(tx: SyncTransaction, channelId: ByteArray): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM mls_global_kv WHERE channel_id = ? AND delete_after_day IS NOT NULL",
+            listOf(channelId),
+        )
+
     /** SWEEP's read (§6.2.2, §6.12): the global rows past their day, oldest first. */
     fun expiredGlobal(sql: SqlExecutor, today: Long, batch: Int): List<ByteArray> {
         val out = ArrayList<ByteArray>()

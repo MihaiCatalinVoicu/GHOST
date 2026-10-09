@@ -47,7 +47,11 @@ class ChannelTriggersTest {
         for (to in listOf("leaving", "removed", "replaced", "resync_needed", "reinvite_needed")) add("active" to to)
         for (to in listOf("left", "removed")) add("leaving" to to)
         for (to in listOf("active", "reinvite_needed")) add("resync_needed" to to)
+        // Slice S7 (§6.2.2 step 2): a restore invite accepted while a rejoin pends.
+        add("resync_needed" to "joining")
         add("reinvite_needed" to "active")
+        // Slice S7 (§6.2.2 step 2): the restore's re-invitation.
+        add("reinvite_needed" to "joining")
         add("replaced" to "active")
         for (from in listOf("left", "removed", "replaced", "join_expired")) add(from to "joining")
     }
@@ -68,8 +72,8 @@ class ChannelTriggersTest {
                 assertEquals("$from -> $to", from, f.db.queryString("SELECT state FROM ch_channel"))
             }
         }
-        // 9 no-ops, 2 + 5 + 2 + 2 + 1 + 1 forward edges, and the 4 re-entries.
-        assertEquals(9 + 13 + 4, allowed)
+        // 9 no-ops, 2 + 5 + 2 + 2 + 1 + 1 forward edges, the 4 re-entries and the 2 S7 restore re-entries.
+        assertEquals(9 + 13 + 4 + 2, allowed)
     }
 
     @Test

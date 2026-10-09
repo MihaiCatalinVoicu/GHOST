@@ -40,7 +40,7 @@ class ChannelExpiredRowLintTest {
         val expected = mapOf(
             "ch_post" to (12L to 6L), "ch_reaction" to (3L to 2L), "ch_reveal" to (4L to 2L),
             "ch_pending_post" to (4L to 2L), "ch_seen" to (3L to 2L), "ch_generation" to (5L to 4L),
-            "ch_epoch" to (4L to 3L), "ch_join" to (3L to 2L), "ch_join_request" to (3L to 2L),
+            "ch_epoch" to (4L to 3L), "ch_join" to (4L to 3L), "ch_join_request" to (3L to 2L),
             "ch_kp_seen" to (2L to 1L), "ch_invite_issued" to (3L to 2L), "ch_invite_own" to (3L to 2L),
             "ch_request" to (3L to 2L), "mls_global_kv" to (4L to 3L), "ch_fork_signal" to (3L to 2L),
             "ch_box_key" to (4L to 3L),
@@ -54,7 +54,8 @@ class ChannelExpiredRowLintTest {
         // rows include the last day: the two places a filter's comparison can be one off.
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_post WHERE delete_at_minute = ?", listOf(now), true))
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_pending_post WHERE fail_after_hour = ?", listOf(now), true))
-        assertEquals(1L, L.countIn("SELECT count(*) FROM ch_join WHERE expiry_day = ?", listOf(today), false))
+        // Two joins expire on the boundary day: the plain one and the S7 review's rejoin row (§19.44).
+        assertEquals(2L, L.countIn("SELECT count(*) FROM ch_join WHERE expiry_day = ?", listOf(today), false))
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_generation WHERE drain_until_day = ?", listOf(today), false))
         // The week table's rows sit on the week grid, the boundary one exactly on the day the filters are given.
         assertEquals(0L, today % 7)
@@ -129,14 +130,15 @@ class ChannelExpiredRowLintTest {
 
     @Test
     fun theLintCatchesAFilterThatHidesALiveRowByItsRowCount() {
-        // No leak: both worlds agree, because the row that expires on its last day is hidden in both. Only the
-        // registered row count (the live fixture holds two joins) tells this from the compliant query.
+        // No leak: both worlds agree, because the rows that expire on their last day are hidden in both. Only the
+        // registered row count (the live fixture holds three joins, one of them a rejoin on its deadline's last
+        // day, §19.44) tells this from the compliant query.
         val tooStrict = L.outcomeOf("SELECT kp_ref FROM ch_join WHERE channel_id = ? AND expiry_day > ?", listOf(CH, today))
         assertFalse(tooStrict.showsAnExpiredRow)
         assertEquals("the last day of a join is a live day", 1, tooStrict.afterTheSweep.size)
         val compliant = L.outcomeOf("SELECT kp_ref FROM ch_join WHERE channel_id = ? AND expiry_day >= ?", listOf(CH, today))
         assertFalse(compliant.showsAnExpiredRow)
-        assertEquals(2, compliant.afterTheSweep.size)
+        assertEquals(3, compliant.afterTheSweep.size)
     }
 
     @Test

@@ -64,8 +64,9 @@ internal class ChannelEngine(
     val createStep = ChannelCreateStep(env, sync)
     val inviteStep = ChannelInviteStep(env, postStep)
     val acceptStep = ChannelAcceptStep(env, sync)
-    val joinStep = ChannelJoinStep(env, sync)
     val livenessStep = ChannelLivenessStep(env)
+    val joinStep = ChannelJoinStep(env, sync, livenessStep)
+    val rejoinStep = ChannelRejoinStep(env, sync)
     val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap, livenessStep)
     val passStep = ChannelPassStep(env, sync, postStep)
     val settleStep = ChannelSettleStep(env, sync, livenessStep)
@@ -156,6 +157,15 @@ internal class ChannelEngine(
             }
         }
 
+    /**
+     * `CH-REJOIN` (§6.7): the resync user action — a signed rejoin request per generation namespace the
+     * member listens to. The channel may be `active` (the UI's `resync` on a suspicion flag) or
+     * `resync_needed`; never a reflex. Past the committers' drain a stale member is sent straight to
+     * `reinvite_needed`.
+     */
+    fun resync(channel: ChannelId): ChannelRejoinStep.ResyncResult =
+        actor.call { rejoinStep.resync(channel.toByteArray()) }
+
     // ------------------------------------------------------------------------------------------- the pass
 
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
@@ -178,6 +188,7 @@ internal class ChannelEngine(
             passStep.runScheduledPasses()
             funderStep.renewDue()
             sweepStep.sweepJoins()
+            rejoinStep.sweepRejoins()
             sweepStep.sweepDrains()
             sweepStep.sweepRequests()
         }

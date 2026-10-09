@@ -38,10 +38,14 @@ internal class ChannelSweepStep(
 ) {
     private val stores = env.stores
 
-    /** Expires the joins past their day; returns how many joins it finished. */
+    /** Expires the joins past their day; returns how many joins it finished. Rejoin rows are slice S7's
+     * ([ChannelRejoinStep.sweepRejoins]: a re-send at day + 7, `reinvite_needed` at day + 14) and are
+     * not touched here. */
     fun sweepJoins(): Int {
         val day = DmTime.day(env.now())
-        val expired = env.database.transaction { tx -> stores.joins.expiredJoins(tx.sql, day, BATCH) }
+        val expired = env.database.transaction { tx ->
+            stores.joins.expiredJoins(tx.sql, day, BATCH).filter { it.type != org.ghost.messaging.channel.store.JoinType.REJOIN }
+        }
         var done = 0
         for (join in expired) {
             env.database.transaction { tx ->
