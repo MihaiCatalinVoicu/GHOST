@@ -6,6 +6,7 @@ import org.ghost.messaging.FakeKeyWrapper
 import org.ghost.messaging.FixedRandomSources
 import org.ghost.messaging.MovableClock
 import org.ghost.messaging.OwnerWorld
+import org.ghost.messaging.RecordingCheckpoint
 import org.ghost.messaging.SequentialRandom
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.engine.ChannelActor
@@ -257,6 +258,9 @@ internal class ChannelClient(
     val contexts = ChannelContexts(database, channelStores, FakeKeyWrapper(), random, seeds)
     val inbox = WorldInbox(stores.inbox)
     val env: ChannelEnv
+    /** The sweep's checkpoint port (§8.2): a test may make it busy or fail it to watch the debt retry (§10.7). */
+    lateinit var checkpoint: RecordingCheckpoint
+
     val engine: ChannelEngine
 
     init {
@@ -275,10 +279,13 @@ internal class ChannelClient(
             EsSlot(i, relayIds.getValue(OwnerWorld.onion(i)), OwnerWorld.operatorId(i % world.operators))
         }
         env = ChannelEnv(database, channelStores, contexts, keys, clock, random, esSlots, counters)
+        val checkpoint = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(this.sql) { } }
+        this.checkpoint = checkpoint
         engine = ChannelEngine(
             env,
             ChannelSyncPorts(stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, inbox, stores.funding),
             InlineActor,
+            checkpoint = checkpoint,
             peekLimit = peekLimit,
         )
     }

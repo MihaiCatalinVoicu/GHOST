@@ -379,19 +379,26 @@ class PostStoreTest {
     fun theOperationsOfAChannelAreMappedToTheObjectTheyCarry() = StoreWorld().use { w ->
         w.channel()
         val hash = chBytes(32, 0x42)
-        w.tx { w.stores.posts.insertOp(it, id(1), w.ch, OpPurpose.COMMIT, hash) }
-        w.tx { w.stores.posts.insertOp(it, id(2), w.ch, OpPurpose.POST, id(7)) }
-        w.tx { w.stores.posts.insertOp(it, id(3), w.ch, OpPurpose.REQUEST, null) }
+        val blob = chBytes(4096, 0x42)
+        w.tx { w.stores.posts.insertOp(it, id(1), w.ch, OpPurpose.COMMIT, hash, blob, 7_200) }
+        w.tx { w.stores.posts.insertOp(it, id(2), w.ch, OpPurpose.POST, id(7), chBytes(4096, 0x43), 7_200) }
+        w.tx { w.stores.posts.insertOp(it, id(3), w.ch, OpPurpose.REQUEST, null, chBytes(4096, 0x44), 7_200) }
         assertEquals(OpPurpose.COMMIT, w.stores.posts.op(w.db, id(1))!!.purpose)
         assertArrayEquals(hash, w.stores.posts.op(w.db, id(1))!!.ref)
         assertNull(w.stores.posts.op(w.db, id(3))!!.ref)
+        assertArrayEquals(blob, w.stores.posts.op(w.db, id(1))!!.blob)
+        assertEquals(7_200L, w.stores.posts.op(w.db, id(1))!!.deadlineHour)
+        assertEquals(0, w.stores.posts.op(w.db, id(1))!!.resends)
         assertEquals(listOf(id(1).toList()), w.stores.posts.opsFor(w.db, w.ch, OpPurpose.COMMIT, hash).map { it.operationId.toList() })
         assertEquals(emptyList<Any>(), w.stores.posts.opsFor(w.db, w.ch, OpPurpose.POST, hash))
         assertEquals(1, w.stores.posts.opsOf(w.db, w.ch, OpPurpose.POST).size)
         assertTrue(w.tx { w.stores.posts.deleteOp(it, id(1)) })
         assertNull(w.stores.posts.op(w.db, id(1)))
-        assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(2), w.ch, OpPurpose.POST, null) } }.error)
-        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(4), w.ch, OpPurpose.POST, chBytes(65, 1)) } }.error)
+        assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(2), w.ch, OpPurpose.POST, null, chBytes(4096, 0x45), 7_200) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(4), w.ch, OpPurpose.POST, chBytes(65, 1), chBytes(4096, 0x46), 7_200) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(5), w.ch, OpPurpose.POST, null, chBytes(100, 1), 7_200) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(6), w.ch, OpPurpose.POST, null, chBytes(4096, 0x47), 60) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(7), w.ch, OpPurpose.POST, null, chBytes(4096, 0x48), 7_200, resends = 3) } }.error)
         assertRedacted(w.stores.posts.op(w.db, id(2))!!, id(7), w.ch)
     }
 

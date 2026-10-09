@@ -15,7 +15,7 @@ import org.junit.Test
  *  - the tables are exactly the 26 of §9, and the columns of each are exactly §9's ([ChannelSchema.columns]),
  *    so a `created_at`, a counter or an activity column added to one fails until it is written down
  *    beside the rule that allows it (R-M1's "the dump shows only what the design declares");
- *  - every time column is one of the 30 of [ChannelSchema.timeColumns], each with the granularity its
+ *  - every time column is one of the 34 of [ChannelSchema.timeColumns], each with the granularity its
  *    suffix names and `typeof(x) = 'integer'` (R-M3), and every such CHECK is **executed**: a REAL
  *    whose whole part is aligned is refused, a value one unit off the grid is refused, a whole number
  *    written as `x.0` is stored as an integer;
@@ -102,7 +102,7 @@ class ChannelSchemaIntrospectionTest {
         assertEquals("declared time columns that no table has", ChannelSchema.timeColumns, foundTimes)
         assertEquals("declared epoch counters that no table has", ChannelSchema.epochColumns, foundEpochs)
         assertEquals("exemptions that match nothing", ChannelSchema.notTimes.keys, usedExemptions)
-        assertEquals(33, ChannelSchema.timeColumns.size)
+        assertEquals(34, ChannelSchema.timeColumns.size)
     }
 
     /** The suffix names the grid, and the grid and the type are in the column's own CHECK (T20, §21.14). */
@@ -195,6 +195,10 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_member_refresh.refresh_day", 20_000),
         Typed("ch_request.until_day", 20_007),
         Typed("ch_request.recorded_day", 20_000),
+        // Slice S8 (§19.45): the outbound op's deadline (an hour, §5.8) and its resend count (0..2, Phase 7's
+        // "at most twice" carried to the new op's row at a resend).
+        Typed("ch_outbound_op.deadline_hour", 7_200),
+        Typed("ch_outbound_op.resends", 1, outside = listOf(3L)),
         // ---- the epoch counters
         Typed("ch_channel.epoch", 5), Typed("ch_channel.joined_epoch", 5), Typed("ch_epoch.epoch", 5),
         Typed("ch_epoch_log.epoch", 5), Typed("ch_candidate.epoch", 5), Typed("ch_fork_signal.epoch", 5),
@@ -250,7 +254,7 @@ class ChannelSchemaIntrospectionTest {
             f.db.exec(sql, args)
             assertEquals(case.qualified, "integer", f.db.queryString("SELECT typeof($column) FROM $table WHERE $column IS NOT NULL LIMIT 1"))
         }
-        assertEquals("every minute, hour and week column was written one unit off its grid", 13, offGrid)
+        assertEquals("every minute, hour and week column was written one unit off its grid", 14, offGrid)
     }
 
     // ------------------------------------------------------------------ no counters beyond the declared ones

@@ -1618,11 +1618,21 @@ object Schema {
                   fail_after_hour INTEGER NOT NULL
                                   CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
                 ) WITHOUT ROWID""",
+        // `blob` is the retained ciphertext of the op's own enqueue, exactly what a relay stores (slice S8, §19.45:
+        // an INDETERMINATE resend repeats these bytes, never a re-seal — the seal's salt is a fresh draw). It goes
+        // with the row, at its outcome or into the resend's op row. `deadline_hour` is the op's own deadline
+        // (§5.8), what the resend bound is checked against. `resends` counts the identical-bytes resends the op
+        // itself is (Phase 7's "at most twice", the DM's `resendCount`): the row is insert-once and the count
+        // travels to the new op's row at a resend.
         """CREATE TABLE ch_outbound_op (
                   operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
                   channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   purpose      TEXT NOT NULL CHECK (purpose IN ('post', 'commit', 'welcome', 'join', 'rejoin', 'request')),
-                  ref          BLOB CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 64)
+                  ref          BLOB CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 64),
+                  blob         BLOB NOT NULL CHECK (length(blob) IN (4096, 16384, 65536)),
+                  deadline_hour INTEGER NOT NULL
+                               CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour >= 0 AND deadline_hour % 3600 = 0),
+                  resends      INTEGER NOT NULL DEFAULT 0 CHECK (typeof(resends) = 'integer' AND resends BETWEEN 0 AND 2)
                 ) WITHOUT ROWID""",
         // `until_day` is a week, `ceil7(…)`, as `dm_seen`'s (F9 §7.6 D3; §6.3.4 retains the tag "as `dm_seen`"): a
         // seizer learns the week a post was displayed in and not the day (L7-D7).

@@ -3,8 +3,11 @@ package org.ghost.messaging.channel.engine
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.OpPurpose
 import org.ghost.messaging.channel.store.PostState
+import org.ghost.messaging.channel.store.PostStore
 import org.ghost.messaging.engine.DmTime
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.InsufficientReplicasException
+import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.OutboundOutcome
 import org.ghost.sync.api.Outcome
 import org.ghost.sync.api.SyncTransaction
@@ -17,14 +20,24 @@ import org.ghost.sync.api.SyncTransaction
  * | Purpose | SENT, DEGRADED | FAILED | INDETERMINATE |
  * |---|---|---|---|
  * | post | the post's state | `failed` (the user may retry: the same op id, §6.3.4) | `indeterminate` |
- * | commit | the own candidate is **verified** (CO-4: it may win) | the own pending commit is **cleared** (`clearOwn`): no copy can exist, F7's contract | kept pending (CO-4 (a)); cleared by the sweep at its deadline plus the handshake TTL (CO-4 (c), slice S8) |
+ * | commit | the own candidate is **verified** (CO-4: it may win) | the own pending commit is **cleared** (`clearOwn`): no copy can exist, F7's contract | kept pending (CO-4 (a)); cleared by the settle's custody at its deadline plus the handshake TTL (CO-4 (c), [ChannelSettleStep]) |
  * | Welcome, join, request | nothing to record | nothing (a joiner whose request failed waits for its expiry) | nothing |
  *
- * **No resend in this slice.** Phase 7 lets an INDETERMINATE op be enqueued again with the identical bytes until its
- * resend bound; the DM layer does so twice. The channel engine does not yet (recorded in §19.37): the INDETERMINATE
- * post stays `indeterminate`, and an INDETERMINATE commit stays pending under CO-4's rule.
+ * **The INDETERMINATE resend** (slice S8, §19.37 row 47; the mirror of the DM's §7.5/G-7): an op that closed
+ * INDETERMINATE is enqueued again with **the identical bytes** — [org.ghost.sync.api.OutboundBlob] repeats the
+ * retained [org.ghost.messaging.channel.store.PostStore.OpRow.blob], never a re-seal (the seal's salt is a fresh
+ * draw, so a re-seal would not be the identical bytes Phase 7's resend contract names) — at most
+ * [org.ghost.messaging.channel.store.PostStore.MAX_RESENDS] times, only while `now < resendNotAfterEpochSeconds`
+ * and before the op's own deadline (`OpRow.deadlineHour`), and in the outcome's transaction, so the release and
+ * the new op commit together or not at all (the DM's §7.8 reasoning). The count travels to the new op's row, so
+ * the bound is per logical op, as the DM's `resendCount`. A post stays `indeterminate` through the resends; a
+ * commit stays pending under CO-4 — the resend is exactly what may yet produce the verified copy CO-4 (a) needs;
+ * past the bound, the op is released with nothing resent and the committer's custody is the settle's.
+ * Fewer than two operators this week: the resend is skipped (the release stands, the post stays `indeterminate`);
+ * a full disk rolls the release back and the outcome is offered again, as the DM's.
  *
- * **No relay-visible call** (T40, gate G-M5): `release` writes a local row; nothing is enqueued here.
+ * **No relay-visible call beyond the resend** (T40, gate G-M5): `release` writes a local row; the resend is caused
+ * by the user's own earlier send, never by inbound traffic — the same exemption the DM's `SendStep.resend` has.
  */
 internal class ChannelOutcomeStep(
     private val env: ChannelEnv,
@@ -93,8 +106,50 @@ internal class ChannelOutcomeStep(
                 }
                 OpPurpose.WELCOME, OpPurpose.JOIN, OpPurpose.REJOIN, OpPurpose.REQUEST -> Unit
             }
+            // The INDETERMINATE resend (the class note): identical bytes, at most twice, inside the resend
+            // bound and the op's deadline, in this transaction with the release. A commit resends only while
+            // its candidate is still pending (own != null above is the custody check); a post whose row is
+            // gone (swept meanwhile) resends like the DM's — the op row is what exists.
+            if (outcome.outcome == Outcome.INDETERMINATE) resend(tx, op, outcome)
             stores.posts.deleteOp(tx, operationId)
             true
+        }
+    }
+
+    /**
+     * The identical-bytes resend of an INDETERMINATE op (the class note): a new operation carries the retained
+     * bytes under a fresh id; the count travels to its row. False when the resend window is closed, the count is
+     * spent, the deadline has passed, or this week's slot table cannot give a quorum — the release stands either
+     * way and the caller deletes the old row.
+     *
+     * §11.2 #6 bounds the resend twice: by `resendNotAfter` (checked above) and by the recipients' tombstones
+     * (`Outbox.enqueue`'s own-tombstone check, which the channel side cannot read ahead). The second bound closes
+     * only when a copy exists but no listing ever raised the tombstone — a relay that serves the copies to others
+     * and withholds the owner's listings; the next honest listing raises it and the resend proceeds. Either bound
+     * closing is the resend's terminal state: the op ends `indeterminate` and the commit stays pending under
+     * CO-4 — so the refusal is caught here, narrowly, and every other enqueue defect still throws.
+     */
+    private fun resend(tx: SyncTransaction, op: PostStore.OpRow, outcome: OutboundOutcome): Boolean {
+        val now = env.now()
+        val notAfter = outcome.resendNotAfterEpochSeconds
+        if (op.resends >= PostStore.MAX_RESENDS || notAfter == null || now >= notAfter || now >= op.deadlineHour) {
+            return false
+        }
+        val newOperationId = env.random.bytes(org.ghost.sync.api.OperationId.SIZE)
+        return try {
+            sync.outbox.enqueue(
+                tx,
+                OutboundBlob(
+                    org.ghost.sync.api.OperationId(newOperationId), outcome.namespace, op.blob, outcome.ttl,
+                    deadlineEpochSeconds = op.deadlineHour,
+                ),
+            )
+            stores.posts.insertOp(tx, newOperationId, op.channelId, op.purpose, op.ref, op.blob, op.deadlineHour, op.resends + 1)
+            true
+        } catch (e: InsufficientReplicasException) {
+            false
+        } catch (e: IllegalStateException) {
+            if (e.message == "identical bytes can no longer be resent") false else throw e
         }
     }
 

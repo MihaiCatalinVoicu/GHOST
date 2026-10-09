@@ -617,7 +617,7 @@ internal class ChannelSettleStep(
                             deadlineEpochSeconds = ChannelTime.handshakeDeadline(DmTime.floorMinute(now)),
                         ),
                     )
-                    stores.posts.insertOp(tx, operationId, c, OpPurpose.WELCOME, w.kpRef)
+                    stores.posts.insertOp(tx, operationId, c, OpPurpose.WELCOME, w.kpRef, w.blob, DmTime.ceilHour(ChannelTime.handshakeDeadline(DmTime.floorMinute(now))))
                 }
             }
             // The update path's fresh leaf key replaces the current one (§19.17) — on every own winning
