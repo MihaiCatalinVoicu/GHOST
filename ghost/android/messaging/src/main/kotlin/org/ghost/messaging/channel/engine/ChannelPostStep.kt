@@ -24,10 +24,10 @@ import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.SyncTransaction
 
 /**
- * **`CH-POST`** (Phase 10 design §6.3.1, §10.4): a post, a reaction or an administrative post (`INVITE_ISSUED`, §6.2.1)
- * is encrypted **only when the channel is current**, in one transaction with its op; otherwise it waits as plaintext
- * under the content key in `ch_pending_post` and is encrypted in the first transaction where the channel is current
- * ([encryptPending], run at every actor pass after the receive step).
+ * **`CH-POST`** (Phase 10 design §6.3.1, §10.4): a post, a reaction or an administrative post (`INVITE_ISSUED`,
+ * §6.2.1; `LEAVE`, §6.6) is encrypted **only when the channel is current**, in one transaction with its op;
+ * otherwise it waits as plaintext under the content key in `ch_pending_post` and is encrypted in the first
+ * transaction where the channel is current ([encryptPending], run at every actor pass after the receive step).
  *
  * **What "current" is here** ([isCurrent]): the channel is `active`; it holds no valid candidate for its current epoch
  * that removes a pseudonym — the removal hold of CO-13 (§19.6), read from `ch_candidate.removes` (§19.35 F-1, amended
@@ -53,6 +53,79 @@ internal class ChannelPostStep(
 
     /** What [compose] did with a post. */
     enum class Composed { ENCRYPTED, PENDING }
+
+    /** What [leave] did (§10.3's `Result` shape; the facade maps it in Phase 13). */
+    enum class LeaveResult {
+        /** The LEAVE post is out and the channel is `leaving`: no more posts, the MLS state goes when the op resolves. */
+        LEFT,
+
+        /** Nothing left: not an active member, or the transition raced. */
+        NOTHING,
+
+        /** A committer's leave is refused until it resigned (rank ≥ 1) or transferred rank 0 (§6.6, §19.13 item 3). */
+        NOT_ALLOWED,
+
+        /** The context or the content key is not available. */
+        UNAVAILABLE,
+    }
+
+    /**
+     * `CH-LEAVE` (§6.6), a user action, **one transaction**: the member's leave. The LEAVE post goes out
+     * as a handshake post (the handshake TTL, §5.8) and the channel becomes `leaving` — [post] and [react]
+     * answer `NOT_MEMBER` from then on (§6.6: "stop posting"). A **committer** is refused (`NOT_ALLOWED`):
+     * it leaves in two steps — a resignation (rank ≥ 1) or a transfer of rank 0 ([ChannelPassStep.resign] /
+     * [ChannelPassStep.transfer], §19.13 item 3) — and then leaves as a member. The MLS state is deleted
+     * at the merge of the removing commit (§6.6 "deletes the MLS state" — the merge is where the member
+     * learns of its removal; deleting at the leave op's outcome would strand a leaver that must still
+     * merge, recorded in §19.41); the listening of the generation's namespace keeps until the drain ends
+     * (§6.5, as a removed member's).
+     */
+    fun leave(channelId: ByteArray): LeaveResult {
+        val now = env.now()
+        val day = DmTime.day(now)
+        val content = env.keys.content() ?: return LeaveResult.UNAVAILABLE
+        val row = env.database.transaction { tx -> stores.channels.channel(tx.sql, channelId) }
+            ?: return LeaveResult.NOTHING
+        if (row.state != ChannelState.ACTIVE) return LeaveResult.NOTHING
+        val opened = env.contexts.open(channelId) ?: return LeaveResult.UNAVAILABLE
+        if (!opened.pseudonym.contentEquals(row.myPseudonym)) return LeaveResult.UNAVAILABLE
+        val stillCommitter = env.database.transaction { tx ->
+            val rows = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
+            opened.crypto.roster(channelId, rows, day.toInt()).valueOrNull()
+                ?.context?.committers?.any { it.contentEquals(opened.pseudonym) }
+                ?: false
+        }
+        if (stillCommitter) return LeaveResult.NOT_ALLOWED
+        val fields = ChannelContentFields(
+            kind = KIND_LEAVE,
+            opId = env.random.bytes(OP_ID_BYTES),
+            authorMinute = Math.floorDiv(now, DmTime.MINUTE),
+            timerCode = row.timerCode,
+            text = null,
+            replyTo = null,
+            target = null,
+            grapheme = null,
+        )
+        val encoded = when (val e = ChannelCrypto.contentEncode(fields)) {
+            is MlsOutcome.Ok -> e.value
+            is MlsOutcome.Refused -> return LeaveResult.UNAVAILABLE
+        }
+        return try {
+            env.database.transaction { tx ->
+                val fresh = stores.channels.channel(tx.sql, channelId)
+                if (fresh == null || fresh.state != ChannelState.ACTIVE) return@transaction LeaveResult.NOTHING
+                compose(tx, fresh, opened, content, fields, encoded, handshake = true, now = now)
+                stores.channels.transition(tx, channelId, ChannelState.ACTIVE, ChannelState.LEAVING)
+                LeaveResult.LEFT
+            }
+        } catch (e: InsufficientReplicasException) {
+            LeaveResult.NOTHING
+        } catch (e: StorageFullException) {
+            LeaveResult.UNAVAILABLE
+        } finally {
+            encoded.fill(0)
+        }
+    }
 
     /**
      * The facade's `post` and `react` (§10.3): [fields] is the content (kind 1 or 2) with a fresh op id; the author minute
@@ -379,6 +452,9 @@ internal class ChannelPostStep(
         const val KIND_INVITE_ISSUED: Int = 3
         const val KIND_LEAVE: Int = 4
         const val KIND_REVEAL: Int = 5
+
+        /** §6.6: a recorded leave lives this long unprocessed before the sweep drops it. */
+        const val LEAVE_REQUEST_DAYS: Long = 7
 
         /** The longest text of a post (§5.5, NFR-14). */
         const val MAX_TEXT: Int = 16_000

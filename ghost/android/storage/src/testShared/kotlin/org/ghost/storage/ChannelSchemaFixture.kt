@@ -145,6 +145,9 @@ internal object ChannelSchema {
         "ch_candidate.own", "ch_candidate.verified", "ch_invite_issued.consumed", "ch_invite_issued.void",
         // Slice S4 (§19.35 F-1, §19.37): the candidate removes a pseudonym, the removal hold of CO-13.
         "ch_candidate.removes",
+        // Slice S6 (§19.41): the member's own commit opened the generation (its funding is the rotating
+        // committer's at the switch, §6.5).
+        "ch_generation.own_rotation",
     )
 
     /**
@@ -167,8 +170,8 @@ internal object ChannelSchema {
             "committers_digest?",
         "ch_liveness" to "channel_id unopenable_count unopenable_operators sessions progress_env unopenable_first_minute?",
         "ch_schedule" to "channel_id next_selfupdate_day last_own_commit_day? next_pass_minute?",
-        "ch_generation" to "channel_id generation namespace_id state g_env jk_env r_join open_epoch switch_hour? " +
-            "drain_until_day?",
+        "ch_generation" to "channel_id generation namespace_id state g_env jk_env r_join open_epoch own_rotation " +
+            "switch_hour? drain_until_day?",
         "ch_epoch" to "channel_id epoch state k_env r_ep winner_hash? own_seq anchor_minute? final_day? keep_until_day?",
         "ch_epoch_log" to "channel_id epoch winner_hash final_day",
         "ch_candidate" to "channel_id epoch hash sender rank own verified body_env welcome_env? box_env? " +

@@ -1628,7 +1628,7 @@ chenq_case recv 2 "ChannelReceiveStep.kt:9:        sync.outbox.enqueue(tx, blob)
   "refuses a CH-RECV that enqueues (and lets CH-CREATE register)"
 chenq_case recv 2 "ChannelReceiveStep.kt:10:        sync.namespaces.register(tx, ns)" "refuses a CH-RECV that registers"
 expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-wrongcall"
-chenq_case wrongcall 2 "ChannelSettleStep.kt:10:        sync.funding.set(tx, ns, true) (G-M5: set is not one of ChannelSettleStep.kt's calls (enqueue))" \
+chenq_case wrongcall 2 "ChannelSettleStep.kt:10:        sync.funding.set(tx, ns, true) (G-M5: set is not one of ChannelSettleStep.kt's calls (enqueue remove setListening))" \
   "refuses a CH-SETTLE that funds, though it may enqueue its Welcomes"
 chenq_case wrongcall 2 "ChannelSweepStep.kt:11:        ob.enqueue(tx, blob) (G-M5: enqueue is not one of ChannelSweepStep.kt's calls (remove setListening))" \
   "refuses a join sweep that enqueues through a typed port, though it may remove"

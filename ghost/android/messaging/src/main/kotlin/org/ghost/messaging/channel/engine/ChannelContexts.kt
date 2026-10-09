@@ -99,6 +99,12 @@ internal class ChannelContexts(
         return Opened(context, p)
     }
 
+    /** Closes the native channel and forgets the cached pseudonym (§6.6: a leaver's MLS state at its op's outcome). */
+    fun closeChannel(channelId: ByteArray) {
+        crypto?.closeChannel(channelId)
+        pseudonyms.remove(channelId.toList())
+    }
+
     /** Closes the native context — every channel opened on it with it — and forgets the pseudonyms (lock, wipe). */
     fun close() {
         crypto?.close()

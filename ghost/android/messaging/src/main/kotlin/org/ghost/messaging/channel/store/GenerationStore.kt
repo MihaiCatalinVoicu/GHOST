@@ -35,6 +35,13 @@ internal class GenerationStore {
          * `generation` (fn 13) takes it. Amended by slice S4 (§19.37, F-S4-7): §9 has no column for it.
          */
         val openEpoch: Long,
+        /**
+         * 1 when the member's **own** commit opened this generation (a rotation the member committed): the
+         * member is the rotating committer and funds the namespace for the current week at its `CH-SWITCH`
+         * (§6.5, §19.8 (d); amended into migration 7 by slice S6, §19.41). Write-once at insert (the
+         * `ch_generation_identity` trigger); the settle of an own rotating winner is the only writer.
+         */
+        val ownRotation: Boolean,
         /** Set on a pending row only; `null` there means "at the next session start" (§19.8, a joiner's). */
         val switchHour: Long?,
         /** Set on a draining row only. */
@@ -86,6 +93,30 @@ internal class GenerationStore {
     }
 
     /**
+     * The channel's draining generation, **whatever its deadline**: the only draining row there can be
+     * (the schema's at-most-one-draining triggers), read without the drain filter. `CH-SWITCH` uses it
+     * where the demotion's trigger makes the row matter even after its drain ended: a drain whose end
+     * moved to before today is invisible to [live], but its row still reads `draining` until `CH-SWEEP`
+     * removes it, and the switch ends-or-defers it there instead of aborting (the double-rotation
+     * deadlock of §19.42). Registered in `ChannelSweepQueries` (it names the expired row; nothing once
+     * the sweep has deleted it).
+     */
+    fun draining(sql: SqlExecutor, channelId: ByteArray): GenerationRow? {
+        var row: GenerationRow? = null
+        sql.query(DRAINING, listOf(channelId)) { r -> row = read(r) }
+        return row
+    }
+
+    /** A generation whose drain has ended: what `CH-SWEEP` removes (§6.5 "Drain"). */
+    class DrainedRow(
+        val channelId: ByteArray,
+        val generation: Long,
+        val namespaceId: ByteArray,
+    ) {
+        override fun toString() = "DrainedRow(generation=$generation)"
+    }
+
+    /**
      * Inserts a generation: `current` at creation (`CH-CREATE`) and at a join, `pending_switch` at a settle that
      * rotates or a Welcome that names a newer generation, `draining` for a removed member's old one. The
      * namespace is unique across channels, the key is `(channel, generation)`; a repeat of either is
@@ -101,6 +132,7 @@ internal class GenerationStore {
         jkEnv: ByteArray,
         rJoin: ByteArray,
         openEpoch: Long,
+        ownRotation: Boolean = false,
         switchHour: Long? = null,
         drainUntilDay: Long? = null,
     ) {
@@ -120,10 +152,11 @@ internal class GenerationStore {
         }
         val changed = tx.sql.execUpdate(
             "INSERT INTO ch_generation(channel_id, generation, namespace_id, state, g_env, jk_env, r_join, open_epoch, " +
-                "switch_hour, drain_until_day) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
+                "own_rotation, switch_hour, drain_until_day) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
                 "(SELECT 1 FROM ch_generation WHERE (channel_id = ? AND generation = ?) OR namespace_id = ?)",
             listOf(
-                channelId, generation, namespaceId, state.sql, gEnv, jkEnv, rJoin, openEpoch, switchHour, drainUntilDay,
+                channelId, generation, namespaceId, state.sql, gEnv, jkEnv, rJoin, openEpoch,
+                Fields.flag(ownRotation), switchHour, drainUntilDay,
                 channelId, generation, namespaceId,
             ),
         )
@@ -148,18 +181,35 @@ internal class GenerationStore {
         ) == 1
     }
 
-    /** Ends a generation: an older drain ended by a newer switch (§6.5), a drain that ran out, or a pending one that was skipped. */
+    /**
+     * Ends a generation: an older drain ended by a newer switch (§6.5), a drain that ran out, or a pending one that was skipped.
+     */
     fun delete(tx: SyncTransaction, channelId: ByteArray, generation: Long): Boolean =
         tx.sql.execUpdate(
             "DELETE FROM ch_generation WHERE channel_id = ? AND generation = ?",
             listOf(channelId, generation),
         ) == 1
 
+    /**
+     * `CH-SWITCH`: a newer switch ends an **older drain at once** (§6.5: its unfetched posts are the declared
+     * loss). The schema lets a drain's end move only earlier ([`ch_generation_drain`]); [day] is the day the
+     * newer switch runs, and `CH-SWEEP` owns the namespace's actual removal — which `Namespaces.remove` can
+     * refuse while an op is open — from the next sweep on.
+     */
+    fun endDrainEarly(tx: SyncTransaction, channelId: ByteArray, generation: Long, day: Long): Boolean {
+        Fields.nonNegative("ch_generation.drain_until_day", day)
+        return tx.sql.execUpdate(
+            "UPDATE ch_generation SET drain_until_day = ? WHERE channel_id = ? AND generation = ? " +
+                "AND state = 'draining' AND drain_until_day > ?",
+            listOf(day - 1, channelId, generation, day - 1),
+        ) == 1
+    }
+
     /** SWEEP's read (§6.5 "Drain"): the draining generations whose drain ended before [today], oldest first. */
-    fun drained(sql: SqlExecutor, today: Long, batch: Int): List<Route> {
-        val out = ArrayList<Route>()
+    fun drained(sql: SqlExecutor, today: Long, batch: Int): List<DrainedRow> {
+        val out = ArrayList<DrainedRow>()
         sql.query(DRAINED, listOf(today, batch.toLong())) { r ->
-            out += Route(r.blob(0), r.long(1), GenerationState.of(r.string(2)))
+            out += DrainedRow(r.blob(0), r.long(1), r.blob(2))
         }
         return out
     }
@@ -172,34 +222,34 @@ internal class GenerationStore {
         gEnv = r.blob(4),
         jkEnv = r.blob(5),
         rJoin = r.blob(6),
-        switchHour = if (r.isNull(7)) null else r.long(7),
-        drainUntilDay = if (r.isNull(8)) null else r.long(8),
-        openEpoch = r.long(9),
+        switchHour = if (r.isNull(8)) null else r.long(8),
+        drainUntilDay = if (r.isNull(9)) null else r.long(9),
+        openEpoch = r.long(10),
+        ownRotation = r.long(7) == 1L,
     )
 
     companion object {
+        // The column lists are spelled out per query (not a shared constant): the expired-row lint scans the
+        // source text of the DAOs and compares each read against its registration (ChannelExpiredRowLint).
+
         const val GENERATION: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
-                "open_epoch " +
-                "FROM ch_generation WHERE channel_id = ? AND generation = ? " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND generation = ? " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
 
         const val LIVE: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
-                "open_epoch " +
-                "FROM ch_generation WHERE channel_id = ? AND (drain_until_day IS NULL OR drain_until_day >= ?) " +
-                "ORDER BY generation"
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? " +
+                "AND (drain_until_day IS NULL OR drain_until_day >= ?) ORDER BY generation"
 
         const val CURRENT: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
-                "open_epoch " +
-                "FROM ch_generation WHERE channel_id = ? AND state = 'current' " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND state = 'current' " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
 
         const val DUE_PENDING: String =
-            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day, " +
-                "open_epoch " +
-                "FROM ch_generation WHERE channel_id = ? AND state = 'pending_switch' " +
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND state = 'pending_switch' " +
                 "AND (switch_hour IS NULL OR switch_hour <= ?) AND (drain_until_day IS NULL OR drain_until_day >= ?) " +
                 "ORDER BY generation"
 
@@ -207,9 +257,14 @@ internal class GenerationStore {
             "SELECT channel_id, generation, state FROM ch_generation WHERE namespace_id = ? " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
 
+        /** CH-SWITCH's end-or-defer read (§19.42): the draining row without the drain filter; registered in `ChannelSweepQueries`. */
+        const val DRAINING: String =
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND state = 'draining'"
+
         /** SWEEP's own batch: registered in `ChannelSweepQueries`, judged by the opposite contract. */
         const val DRAINED: String =
-            "SELECT channel_id, generation, state FROM ch_generation WHERE drain_until_day < ? " +
+            "SELECT channel_id, generation, namespace_id FROM ch_generation WHERE drain_until_day < ? " +
                 "ORDER BY drain_until_day, channel_id, generation LIMIT ?"
     }
 }
