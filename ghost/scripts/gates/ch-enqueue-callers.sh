@@ -96,6 +96,7 @@ ChannelSettleStep.kt|enqueue remove setListening|CH-SETTLE, the own winning comm
 ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 4) and a drained generation (§6.5)
 ChannelSwitchStep.kt|register put keep set remove setListening|CH-SWITCH (§6.5, §19.8; a switch ends an older drain at once)
 ChannelFunderStep.kt|register keep set|the funder renewal step (§7.5 item 7)
+ChannelRejoinStep.kt|enqueue|CH-REJOIN (§6.7) and the CH-SWEEP re-send of an unanswered rejoin
 '
 # The two steps §13.1 names as never allowed: an entry for either is itself a violation, so the table cannot grow one.
 NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
@@ -103,8 +104,8 @@ NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
 ENGINE_DIR_GLOB='android/messaging/src/*/org/ghost/messaging/channel/engine/*'
 
 # The second rule's entry points and the files that may write them.
-CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins|sweepDrains|sweepRequests|switchDue|renewDue'
-CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt'
+CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins|sweepDrains|sweepRequests|switchDue|renewDue|resync|sweepRejoins'
+CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt ChannelRejoinStep.kt'
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.
 CH_HOLDERS='
@@ -116,6 +117,7 @@ ChannelSwitchStep switchStep|ChannelEngine.kt
 ChannelFunderStep funderStep|ChannelEngine.kt
 ChannelCreateStep createStep|ChannelEngine.kt
 ChannelAcceptStep acceptStep|ChannelEngine.kt
+ChannelRejoinStep rejoinStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt
 ChannelEngine|MessagingRuntime.kt
 ChannelPassSteps|ChannelEngine.kt DmActor.kt MessagingRuntime.kt

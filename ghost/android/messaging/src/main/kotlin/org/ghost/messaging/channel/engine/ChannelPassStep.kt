@@ -192,6 +192,17 @@ internal class ChannelPassStep(
         val tag: ByteArray,
     )
 
+    /** A rejoin or restore the pass admits: the swap's evidence and what the settle records about it. */
+    private class SwapAdmission(
+        val request: JoinStore.RequestRow,
+        val verified: ChannelCrypto.JoinVerified,
+        val evidence: org.ghost.crypto.bridge.SwapEvidence,
+        val kpDay: Long,
+        /** The pseudonym whose leaf the swap replaces (a current member, §6.7). */
+        val member: ByteArray,
+        val tag: ByteArray,
+    )
+
     /** A request the pass refuses: deleted, and its KeyPackage's tag kept until [untilDay] when the KeyPackage was read. */
     private class Refusal(val request: JoinStore.RequestRow, val tag: ByteArray?, val untilDay: Long) {
         override fun toString(): String = "Refusal(redacted)"
@@ -272,68 +283,35 @@ internal class ChannelPassStep(
         }
         val refused = ArrayList<Refusal>()
         val admissions = ArrayList<Admission>()
+        val swaps = ArrayList<SwapAdmission>()
+        /** One swap admission per pseudonym: a re-sent rejoin (two namespaces, a re-send) presents the
+         *  newest request only — the older copies are refused like any other refused request. */
+        val swapByMember = HashMap<List<Byte>, SwapAdmission>()
         val invitesUsed = HashSet<List<Byte>>()
         val cap = ChannelTime.cap(snapshot.channel.sizeClass)
         for (request in agedRequests) {
-            if (admissions.size >= MAX_ADDS) break
-            if (request.type != JoinType.JOIN) continue // a restore or rejoin is S7's (an invite-authorized swap, §6.12)
-            val inviteId = request.inviteId ?: continue
-            val body = content.open(request.bodyEnv, ChannelAd.joinRequest(channelId, request.hash))
-            if (body == null) {
-                refused += Refusal(request, null, 0)
-                continue
-            }
-            val invite = env.database.transaction { tx -> stores.invites.issued(tx.sql, channelId, inviteId, day) }
-            if (invite == null || invite.consumed || invite.void) {
-                refused += Refusal(request, null, 0)
-                continue
-            }
-            val verified = when (val v = opened.crypto.joinVerify(channelId, body, invite.invitePk, null, request.generation.toInt())) {
-                is MlsOutcome.Ok -> v.value
-                is MlsOutcome.Refused -> {
-                    if (v.code == MlsCode.CRYPTO_UNAVAILABLE) return Result.UNAVAILABLE
-                    refused += Refusal(request, null, 0)
-                    continue
+            if (admissions.size + swaps.size >= MAX_ADDS) break
+            try {
+                when (request.type) {
+                    JoinType.JOIN -> admitJoin(
+                        request, opened, content, members, committerSet, membersMayInvite, digest,
+                        passwordChannel, roster, day, seenKey, refused, admissions, invitesUsed, cap,
+                    )
+                    JoinType.RESTORE -> admitRestore(
+                        request, opened, content, members, committerSet, membersMayInvite, digest,
+                        passwordChannel, roster.context.pwVersion, day, seenKey, refused, swaps, swapByMember, invitesUsed,
+                    )
+                    JoinType.REJOIN -> admitRejoin(
+                        request, opened, content, members, snapshot.epoch.epoch, snapshot.channel.timerCode,
+                        day, seenKey, refused, swaps, swapByMember,
+                    )
                 }
+            } catch (e: CryptoUnavailable) {
+                return Result.UNAVAILABLE
             }
-            val tag = ChannelTags.keyPackageTag(seenKey, channelId, verified.kpRef)
-            val kpDay = verified.kpBind.u32(MlsField.DAY)
-            val seen = env.database.transaction { tx -> stores.joins.isKpSeen(tx.sql, channelId, tag, day) }
-            val ok = !seen &&
-                verified.requestType == ChannelReceiveStep.REQUEST_JOIN &&
-                kpDay in (day - KP_DAYS_BEFORE)..(day + KP_DAYS_AFTER) &&
-                invite.sponsor.toList() in members &&
-                (invite.sponsor.toList() in committerSet || membersMayInvite) &&
-                digest != null && digest.contentEquals(invite.committersDigest) &&
-                (!passwordChannel || invite.pwVersion == roster.context.pwVersion) &&
-                verified.pseudonym.toList() !in members &&
-                invitesUsed.add(inviteId.toList()) &&
-                members.size + admissions.size + 1 <= cap
-            if (!ok) {
-                refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
-                continue
-            }
-            admissions += Admission(
-                request = request,
-                verified = verified,
-                evidence = AdmitEvidence(
-                    kpRef = verified.kpRef,
-                    inviteId = inviteId,
-                    invitePk = invite.invitePk,
-                    expiryDay = invite.expiryDay,
-                    sponsor = invite.sponsor,
-                    sponsorSig = invite.sponsorSig,
-                    inviteSig = verified.auth.bytes(MlsField.INVITE_SIG),
-                ),
-                kpDay = kpDay,
-                sponsor = invite.sponsor,
-                tag = tag,
-            )
         }
 
-        if (removeTarget != null && removeTarget.toList() !in members) return writeRefusals(channelId, refused)
-
-        // ---- §6.6's membership work: leave requests and idle evictions (a committer's pass, any rank).
+        if (removeTarget != null && removeTarget.toList() !in members) return writeRefusals(channelId, refused)        // ---- §6.6's membership work: leave requests and idle evictions (a committer's pass, any rank).
         // A leave is recorded work: the work-age rule ages it like a join request. An eviction is a scan,
         // like the PCS cadence, lower-rank-only: CO-2's rank rule and the owner — whom no rank sits below —
         // are never evicted (declared L8-C16).
@@ -407,10 +385,10 @@ internal class ChannelPassStep(
             addAll(leaves)
             addAll(evictions)
         }.distinctBy { it.toList() }.filter { it.toList() in members }
-        val hasWork = admissions.isNotEmpty() || removeWork.isNotEmpty() || context != null
+        val hasWork = admissions.isNotEmpty() || swaps.isNotEmpty() || removeWork.isNotEmpty() || context != null
         val built = if (hasWork) {
             buildCommit(
-                opened, snapshot, rows, admissions, refused, now, day,
+                opened, snapshot, rows, admissions, swaps, refused, now, day,
                 removes = removeWork,
                 context = context ?: if (removeWork.isNotEmpty()) removeContext(roster.context, removeWork) else null,
             )
@@ -425,9 +403,304 @@ internal class ChannelPassStep(
         val lastOwn = snapshot.schedule?.lastOwnCommitDay
         val pcsDue = lastOwn != null && day - lastOwn >= ChannelTime.pcsDays(snapshot.channel.timerCode)
         if (!pcsDue || removeTarget != null || resign || transferTo != null) return Result.NOTHING
-        val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), now, day, emptyList(), null)
+        val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null)
             ?: return Result.NOTHING
         return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, seenKey)
+    }
+
+    /** A native call found the context or the content key gone: the pass answers [Result.UNAVAILABLE]. */
+    private class CryptoUnavailable : Exception()
+
+    /** §6.2.4 (B), unchanged from S4: the join admission of one request. */
+    private fun admitJoin(
+        request: JoinStore.RequestRow,
+        opened: ChannelContexts.Opened,
+        content: org.ghost.messaging.store.ContentCipher,
+        members: Set<List<Byte>>,
+        committerSet: Set<List<Byte>>,
+        membersMayInvite: Boolean,
+        digest: ByteArray?,
+        passwordChannel: Boolean,
+        roster: org.ghost.crypto.bridge.ChannelCrypto.Roster,
+        day: Long,
+        seenKey: ByteArray,
+        refused: MutableList<Refusal>,
+        admissions: MutableList<Admission>,
+        invitesUsed: MutableSet<List<Byte>>,
+        cap: Int,
+    ) {
+        val channelId = request.channelId
+        val inviteId = request.inviteId ?: run {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val body = content.open(request.bodyEnv, ChannelAd.joinRequest(channelId, request.hash))
+        if (body == null) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val invite = env.database.transaction { tx -> stores.invites.issued(tx.sql, channelId, inviteId, day) }
+        if (invite == null || invite.consumed || invite.void) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val verified = when (val v = opened.crypto.joinVerify(channelId, body, invite.invitePk, null, request.generation.toInt())) {
+            is MlsOutcome.Ok -> v.value
+            is MlsOutcome.Refused -> {
+                if (v.code == MlsCode.CRYPTO_UNAVAILABLE) throw CryptoUnavailable()
+                refused += Refusal(request, null, 0)
+                return
+            }
+        }
+        val tag = ChannelTags.keyPackageTag(seenKey, channelId, verified.kpRef)
+        val kpDay = verified.kpBind.u32(MlsField.DAY)
+        val seen = env.database.transaction { tx -> stores.joins.isKpSeen(tx.sql, channelId, tag, day) }
+        val ok = !seen &&
+            verified.requestType == ChannelReceiveStep.REQUEST_JOIN &&
+            kpDay in (day - KP_DAYS_BEFORE)..(day + KP_DAYS_AFTER) &&
+            invite.sponsor.toList() in members &&
+            (invite.sponsor.toList() in committerSet || membersMayInvite) &&
+            digest != null && digest.contentEquals(invite.committersDigest) &&
+            (!passwordChannel || invite.pwVersion == roster.context.pwVersion) &&
+            verified.pseudonym.toList() !in members &&
+            invitesUsed.add(inviteId.toList()) &&
+            members.size + admissions.size + 1 <= cap
+        if (!ok) {
+            refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        admissions += Admission(
+            request = request,
+            verified = verified,
+            evidence = AdmitEvidence(
+                kpRef = verified.kpRef,
+                inviteId = inviteId,
+                invitePk = invite.invitePk,
+                expiryDay = invite.expiryDay,
+                sponsor = invite.sponsor,
+                sponsorSig = invite.sponsorSig,
+                inviteSig = verified.auth.bytes(MlsField.INVITE_SIG),
+            ),
+            kpDay = kpDay,
+            sponsor = invite.sponsor,
+            tag = tag,
+        )
+    }
+
+    /**
+     * §6.12's restore admission: the invite-authorized swap of a current member's leaf. Like the join
+     * admission (the invite is held, unexpired, unconsumed, unvoid; the sponsor may invite; the digest
+     * matches; the KeyPackage is canonical and in its day window; the tag is new; the password version
+     * matches) except that the pseudonym **is** a current member — a swap replaces the leaf, the member
+     * count does not move, and the evidence is a restore swap. No freshness rule applies: the invite
+     * authorizes the swap (§6.7).
+     */
+    private fun admitRestore(
+        request: JoinStore.RequestRow,
+        opened: ChannelContexts.Opened,
+        content: org.ghost.messaging.store.ContentCipher,
+        members: Set<List<Byte>>,
+        committerSet: Set<List<Byte>>,
+        membersMayInvite: Boolean,
+        digest: ByteArray?,
+        passwordChannel: Boolean,
+        pwVersion: Int,
+        day: Long,
+        seenKey: ByteArray,
+        refused: MutableList<Refusal>,
+        swaps: MutableList<SwapAdmission>,
+        swapByMember: MutableMap<List<Byte>, SwapAdmission>,
+        invitesUsed: MutableSet<List<Byte>>,
+    ) {
+        val channelId = request.channelId
+        val inviteId = request.inviteId ?: run {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val body = content.open(request.bodyEnv, ChannelAd.joinRequest(channelId, request.hash))
+        if (body == null) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val invite = env.database.transaction { tx -> stores.invites.issued(tx.sql, channelId, inviteId, day) }
+        if (invite == null || invite.consumed || invite.void) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val verified = when (val v = opened.crypto.joinVerify(channelId, body, invite.invitePk, null, request.generation.toInt())) {
+            is MlsOutcome.Ok -> v.value
+            is MlsOutcome.Refused -> {
+                if (v.code == MlsCode.CRYPTO_UNAVAILABLE) throw CryptoUnavailable()
+                refused += Refusal(request, null, 0)
+                return
+            }
+        }
+        val tag = ChannelTags.keyPackageTag(seenKey, channelId, verified.kpRef)
+        val kpDay = verified.kpBind.u32(MlsField.DAY)
+        val seen = env.database.transaction { tx -> stores.joins.isKpSeen(tx.sql, channelId, tag, day) }
+        val ok = !seen &&
+            verified.requestType == ChannelReceiveStep.REQUEST_RESTORE &&
+            kpDay in (day - KP_DAYS_BEFORE)..(day + KP_DAYS_AFTER) &&
+            invite.sponsor.toList() in members &&
+            (invite.sponsor.toList() in committerSet || membersMayInvite) &&
+            digest != null && digest.contentEquals(invite.committersDigest) &&
+            (!passwordChannel || invite.pwVersion == pwVersion) &&
+            verified.pseudonym.toList() in members &&
+            invitesUsed.add(inviteId.toList())
+        if (!ok) {
+            refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        addSwap(
+            SwapAdmission(
+                request = request,
+                verified = verified,
+                evidence = org.ghost.crypto.bridge.SwapEvidence.Restore(
+                    AdmitEvidence(
+                        kpRef = verified.kpRef,
+                        inviteId = inviteId,
+                        invitePk = invite.invitePk,
+                        expiryDay = invite.expiryDay,
+                        sponsor = invite.sponsor,
+                        sponsorSig = invite.sponsorSig,
+                        inviteSig = verified.auth.bytes(MlsField.INVITE_SIG),
+                    ),
+                ),
+                kpDay = kpDay,
+                member = verified.pseudonym,
+                tag = tag,
+            ),
+            swaps, swapByMember, refused, day,
+        )
+    }
+
+    /**
+     * §6.7's rejoin admission, the policy read from the committer's branch and clock: the pseudonym is a
+     * current member; `rejoin_sig` verifies under that leaf's signature key (every leaf keeps its
+     * member's key, §19.14) over (channel_id, the request's generation, the signed day, the claimed last
+     * final epoch and its winner hash, the KeyPackage's hash); the day is in `[day − 7, day + 3]`; the
+     * KeyPackage's tag is new and its `GhostKpBind` names this channel with purpose rejoin (the native
+     * `joinVerify`); the claimed point cannot be caught up from — `last_epoch` is below the committer's
+     * current epoch and either the epoch log holds a different winner for it (a fork) or its winner was
+     * finalized more than one handshake TTL ago or is older than the log (D-6) —; and no authenticated
+     * message from the member's current leaf opened on this branch in an epoch after `last_epoch`
+     * (`ch_member_seen`: a live leaf is never replaced).
+     */
+    private fun admitRejoin(
+        request: JoinStore.RequestRow,
+        opened: ChannelContexts.Opened,
+        content: org.ghost.messaging.store.ContentCipher,
+        members: Set<List<Byte>>,
+        currentEpoch: Long,
+        timerCode: Int,
+        day: Long,
+        seenKey: ByteArray,
+        refused: MutableList<Refusal>,
+        swaps: MutableList<SwapAdmission>,
+        swapByMember: MutableMap<List<Byte>, SwapAdmission>,
+    ) {
+        val channelId = request.channelId
+        val member = request.member ?: run {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        if (member.toList() !in members) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        val body = content.open(request.bodyEnv, ChannelAd.joinRequest(channelId, request.hash))
+        if (body == null) {
+            refused += Refusal(request, null, 0)
+            return
+        }
+        // The signature is bound to the generation of the namespace the request was recorded from.
+        val verified = when (
+            val v = opened.crypto.joinVerify(channelId, body, null, member, request.generation.toInt())
+        ) {
+            is MlsOutcome.Ok -> v.value
+            is MlsOutcome.Refused -> {
+                if (v.code == MlsCode.CRYPTO_UNAVAILABLE) throw CryptoUnavailable()
+                refused += Refusal(request, null, 0)
+                return
+            }
+        }
+        val tag = ChannelTags.keyPackageTag(seenKey, channelId, verified.kpRef)
+        val signedDay = verified.auth.u32(MlsField.DAY).toLong()
+        val lastEpoch = verified.auth.i64(MlsField.LAST_EPOCH)
+        val lastHash = verified.auth.bytes(MlsField.LAST_HASH)
+        val rejoinSig = verified.auth.bytes(MlsField.REJOIN_SIG)
+        val kpDay = verified.kpBind.u32(MlsField.DAY)
+        val seen = env.database.transaction { tx -> stores.joins.isKpSeen(tx.sql, channelId, tag, day) }
+        if (seen || verified.requestType != ChannelReceiveStep.REQUEST_REJOIN ||
+            signedDay !in (day - KP_DAYS_BEFORE)..(day + KP_DAYS_AFTER)
+        ) {
+            refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        // The freshness of the claimed point (§6.7, D-6): a fork on this branch, or a winner settled
+        // beyond one handshake TTL (the requester cannot catch up in-band), or older than the log.
+        val logged = env.database.transaction { tx -> stores.epochs.logged(tx.sql, channelId, lastEpoch) }
+        val fork = logged != null && !logged.winnerHash.contentEquals(lastHash)
+        val ttlDays = ChannelTime.handshakeTtl(timerCode).seconds / DmTime.DAY
+        val beyondTtl = logged == null || day - logged.finalDay > ttlDays
+        if (lastEpoch >= currentEpoch || (!fork && !beyondTtl)) {
+            refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        // The live-leaf check: no authenticated message from the member's current leaf in an epoch
+        // after the claimed one (§6.7; recorded by `CH-RECV`).
+        val leafEpoch = env.database.transaction { tx -> stores.members.lastEpoch(tx.sql, channelId, member) }
+        if (leafEpoch != null && leafEpoch > lastEpoch) {
+            refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        addSwap(
+            SwapAdmission(
+                request = request,
+                verified = verified,
+                evidence = org.ghost.crypto.bridge.SwapEvidence.Rejoin(
+                    kpRef = verified.kpRef,
+                    generation = request.generation,
+                    day = signedDay,
+                    lastEpoch = lastEpoch,
+                    lastHash = lastHash,
+                    rejoinSig = rejoinSig,
+                ),
+                kpDay = kpDay,
+                member = member,
+                tag = tag,
+            ),
+            swaps, swapByMember, refused, day,
+        )
+    }
+
+    /**
+     * Keeps one swap admission per pseudonym (the newest request wins; the older copies are refused
+     * and their tags kept, exactly the shape of any other refusal).
+     */
+    private fun addSwap(
+        candidate: SwapAdmission,
+        swaps: MutableList<SwapAdmission>,
+        swapByMember: MutableMap<List<Byte>, SwapAdmission>,
+        refused: MutableList<Refusal>,
+        day: Long,
+    ) {
+        val key = candidate.member.toList()
+        val held = swapByMember[key]
+        if (held == null) {
+            swapByMember[key] = candidate
+            swaps += candidate
+            return
+        }
+        val (keep, drop) = if (candidate.request.recordedDay >= held.request.recordedDay) {
+            candidate to held
+        } else {
+            held to candidate
+        }
+        swapByMember[key] = keep
+        swaps.remove(held)
+        swaps += keep
+        refused += Refusal(drop.request, drop.tag, drop.kpDay + KP_SEEN_DAYS)
     }
 
     /** CO-9: the rank-255 member's self-update at its slot — or the skip/NOTHING the rule dictates. */
@@ -456,7 +729,7 @@ internal class ChannelPassStep(
             }
             return Result.NOTHING
         }
-        val built = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), now, day, emptyList(), null)
+        val built = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null)
             ?: return Result.NOTHING
         return writeCommit(snapshot.channel.channelId, opened, content, snapshot, built, emptyList(), now, day, NOT_A_COMMITTER, selfUpdate = true, seenKey)
     }
@@ -507,17 +780,18 @@ internal class ChannelPassStep(
     )
 
     /**
-     * `commit` with the admissions, the Removes and the context change; a KeyPackage or evidence the native side
-     * refuses by index is refused here and the commit is built again without it. An admission whose generation's
-     * drain has ended is refused at selection, before the native call (the review of S6, §19.42). Null when a
-     * build is refused outright (a Remove the native CO-2 rank rule refuses, a floor that fits nothing) or no
-     * admission and no membership work remains.
+     * `commit` with the admissions, the swaps, the Removes and the context change; a KeyPackage or
+     * evidence the native side refuses by index is refused here and the commit is built again without
+     * it. An admission whose generation's drain has ended is refused at selection, before the native
+     * call (the review of S6, §19.42). Null when a build is refused outright (a Remove the native CO-2
+     * rank rule refuses, a floor that fits nothing) or no admission, swap or membership work remains.
      */
     private fun buildCommit(
         opened: ChannelContexts.Opened,
         snapshot: Snapshot,
         rows: List<org.ghost.crypto.bridge.MlsRow>,
         admissions: MutableList<Admission>,
+        swaps: MutableList<SwapAdmission>,
         refused: MutableList<Refusal>,
         now: Long,
         day: Long,
@@ -534,27 +808,37 @@ internal class ChannelPassStep(
         // kept, counted, exactly the shape of a KeyPackage the native side refuses below — and the pass
         // continues with the remaining work.
         val generationRows = HashMap<Long, org.ghost.messaging.channel.store.GenerationStore.GenerationRow>()
-        if (admissions.isNotEmpty()) {
-            val selected = admissions.iterator()
-            while (selected.hasNext()) {
-                val a = selected.next()
-                val row = env.database.transaction { tx ->
-                    stores.generations.generation(tx.sql, c, a.request.generation, day)
-                }
-                if (row == null) {
-                    selected.remove()
+        fun generationOf(request: JoinStore.RequestRow): org.ghost.messaging.channel.store.GenerationStore.GenerationRow? {
+            return generationRows.getOrPut(request.generation) {
+                env.database.transaction { tx -> stores.generations.generation(tx.sql, c, request.generation, day) }
+                    ?: return null
+            }
+        }
+        if (admissions.isNotEmpty() || swaps.isNotEmpty()) {
+            val selectedAdmissions = admissions.iterator()
+            while (selectedAdmissions.hasNext()) {
+                val a = selectedAdmissions.next()
+                if (generationOf(a.request) == null) {
+                    selectedAdmissions.remove()
                     refused += Refusal(a.request, a.tag, a.kpDay + KP_SEEN_DAYS)
-                } else {
-                    generationRows[a.request.generation] = row
                 }
             }
-            // Every admission refused and no membership work: nothing to build (the refusals are written).
-            if (admissions.isEmpty() && removes.isEmpty() && context == null) return null
+            val selectedSwaps = swaps.iterator()
+            while (selectedSwaps.hasNext()) {
+                val s = selectedSwaps.next()
+                if (generationOf(s.request) == null) {
+                    selectedSwaps.remove()
+                    refused += Refusal(s.request, s.tag, s.kpDay + KP_SEEN_DAYS)
+                }
+            }
+            // Every admission and swap refused and no membership work: nothing to build (the refusals are written).
+            if (admissions.isEmpty() && swaps.isEmpty() && removes.isEmpty() && context == null) return null
         }
         while (true) {
             val request = CommitRequest(
                 adds = admissions.map { it.verified.keyPackage to it.evidence },
                 removes = removes,
+                swaps = swaps.map { Triple(it.member, it.verified.keyPackage, it.evidence) },
                 context = context,
                 commitMinute = Math.floorDiv(now, DmTime.MINUTE),
                 floor = floor.toLong(),
@@ -566,12 +850,19 @@ internal class ChannelPassStep(
                 is MlsOutcome.Ok -> r.value
                 is MlsOutcome.Refused -> {
                     val index = r.refusal.index
-                    if ((r.code == MlsCode.INVALID_KEYPACKAGE || r.code == MlsCode.INVALID_EVIDENCE) && index != null &&
-                        index in admissions.indices
-                    ) {
-                        val gone = admissions.removeAt(index)
-                        refused += Refusal(gone.request, gone.tag, gone.kpDay + KP_SEEN_DAYS)
-                        if (admissions.isEmpty()) return null
+                    // The refusal's index names the requested work: Adds first, then the swaps (the
+                    // native side's numbering), then the Removes and the context (never indexed).
+                    if ((r.code == MlsCode.INVALID_KEYPACKAGE || r.code == MlsCode.INVALID_EVIDENCE) && index != null) {
+                        if (index in admissions.indices) {
+                            val gone = admissions.removeAt(index)
+                            refused += Refusal(gone.request, gone.tag, gone.kpDay + KP_SEEN_DAYS)
+                        } else if (index - admissions.size in swaps.indices) {
+                            val gone = swaps.removeAt(index - admissions.size)
+                            refused += Refusal(gone.request, gone.tag, gone.kpDay + KP_SEEN_DAYS)
+                        } else {
+                            return null
+                        }
+                        if (admissions.isEmpty() && swaps.isEmpty()) return null
                         continue
                     }
                     return null
@@ -581,12 +872,18 @@ internal class ChannelPassStep(
                 c, snapshot.epoch.kEnv, ChannelCrypto.KEY_CLASS_EPOCH, snapshot.generation.namespaceId, floor,
                 ChannelCrypto.MODE_EPOCH, ChannelCrypto.SealOrder(snapshot.epoch.epoch, 0, 0), committed.commit,
             ).valueOrNull() ?: return null
+            // One WELCOME per joiner and per swapped member, sealed in mode 0x13 under the `JK_g` of
+            // the namespace its request came from and kept wrapped in the own candidate row.
             val entries = ArrayList<ChannelWelcomes.Entry>()
             for ((i, kpRef) in committed.joiners.withIndex()) {
-                val admission = admissions.firstOrNull { it.verified.kpRef.contentEquals(kpRef) } ?: return null
-                // Read at selection above (every remaining admission passed it): a generation row cannot
-                // vanish between the two — the pass is single-threaded and the selection ran in this pass.
-                val generation = generationRows[admission.request.generation]
+                val admission = admissions.firstOrNull { it.verified.kpRef.contentEquals(kpRef) }
+                val swap = swaps.firstOrNull { it.verified.kpRef.contentEquals(kpRef) }
+                if (admission == null && swap == null) return null
+                val targetRequest = admission?.request ?: swap!!.request
+                // Read at selection above (every remaining admission and swap passed it): a generation
+                // row cannot vanish between the two — the pass is single-threaded and the selection ran
+                // in this pass.
+                val generation = generationOf(targetRequest)
                     ?: throw IllegalStateException("an admitted request's generation vanished between selection and the seal")
                 val welcome = committed.welcomes[i]
                 val bucket = ChannelTime.bucket(welcome.size, snapshot.channel.sizeClass) ?: return null
@@ -597,11 +894,12 @@ internal class ChannelPassStep(
                 entries += ChannelWelcomes.Entry(
                     ns = generation.namespaceId,
                     kpRef = kpRef,
-                    inviteId = admission.evidence.inviteId,
-                    member = admission.verified.pseudonym,
-                    sponsor = admission.sponsor,
-                    requestHash = admission.request.hash,
-                    kpDay = admission.kpDay,
+                    inviteId = admission?.request?.inviteId,
+                    member = admission?.verified?.pseudonym ?: swap!!.member,
+                    sponsor = admission?.sponsor,
+                    requestHash = targetRequest.hash,
+                    kpDay = admission?.kpDay ?: swap!!.kpDay,
+                    swap = swap != null,
                     blob = blob,
                 )
             }
@@ -747,22 +1045,28 @@ private fun org.ghost.crypto.bridge.ChannelCrypto.Roster.ownRefreshEpoch(p: Byte
 
 /**
  * The plaintext of an own candidate's `welcome_env` (local, under the content key; never on the wire): the new leaf's box
- * public key and, per joiner, what `CH-SETTLE` needs to enqueue the sealed WELCOME blob and to record the admission —
- * the namespace, the KeyPackage reference, the invite, the member's pseudonym, the sponsor, the request's blob hash and
- * the KeyPackage's day (its `ch_kp_seen` lifetime).
+ * public key and, per joiner or swapped member, what `CH-SETTLE` needs to enqueue the sealed WELCOME blob and to record
+ * the admission — the namespace, the KeyPackage reference, the invite (null for a rejoin: its swap deletes the request by
+ * hash instead of consuming an invite), the member's pseudonym, the sponsor (null for a swap), the request's blob hash,
+ * the KeyPackage's day (its `ch_kp_seen` lifetime) and whether the entry is a swap (the settle restarts the member's
+ * refresh and member-seen rows and keeps the sponsor record of the original admission).
  *
- * `version(1) = 1 ‖ box_pk(32) ‖ count(u16) ‖ count × (ns(32) ‖ kp_ref(32) ‖ invite_id(16) ‖ member(32) ‖ sponsor(32) ‖
- * request_hash(32) ‖ kp_day(u32) ‖ len(u32) ‖ blob)`.
+ * `version(1) = 1 ‖ box_pk(32) ‖ count(u16) ‖ count × (ns(32) ‖ kp_ref(32) ‖ invite_id(16, zeros when none) ‖
+ * member(32) ‖ sponsor(32, zeros when none) ‖ request_hash(32) ‖ kp_day(u32) ‖ swap(u8) ‖ len(u32) ‖ blob)`.
  */
 internal object ChannelWelcomes {
     class Entry(
         val ns: ByteArray,
         val kpRef: ByteArray,
-        val inviteId: ByteArray,
+        /** Null for a rejoin swap: no invite is consumed. */
+        val inviteId: ByteArray?,
         val member: ByteArray,
-        val sponsor: ByteArray,
+        /** Null for a swap: the sponsor record of the original admission stays. */
+        val sponsor: ByteArray?,
         val requestHash: ByteArray,
         val kpDay: Long,
+        /** A swap (rejoin or restore): the settle restarts the member's local rows instead of recording a sponsor. */
+        val swap: Boolean,
         val blob: ByteArray,
     ) {
         override fun toString(): String = "Welcome(redacted)"
@@ -773,7 +1077,7 @@ internal object ChannelWelcomes {
     }
 
     private const val VERSION: Int = 1
-    private const val FIXED: Int = 32 + 32 + 16 + 32 + 32 + 32 + 4 + 4
+    private const val FIXED: Int = 32 + 32 + 16 + 32 + 32 + 32 + 4 + 1 + 4
 
     fun encode(boxPk: ByteArray, entries: List<Entry>): ByteArray {
         require(boxPk.size == 32 && entries.size <= 0xffff) { "bad welcome framing" }
@@ -781,10 +1085,15 @@ internal object ChannelWelcomes {
         val b = ByteBuffer.allocate(size)
         b.put(VERSION.toByte()).put(boxPk).putShort(entries.size.toShort())
         for (e in entries) {
-            require(e.ns.size == 32 && e.kpRef.size == 32 && e.inviteId.size == 16 && e.member.size == 32 &&
-                e.sponsor.size == 32 && e.requestHash.size == 32) { "bad welcome entry" }
-            b.put(e.ns).put(e.kpRef).put(e.inviteId).put(e.member).put(e.sponsor).put(e.requestHash)
-            b.putInt(e.kpDay.toInt()).putInt(e.blob.size).put(e.blob)
+            require(e.ns.size == 32 && e.kpRef.size == 32 && (e.inviteId == null || e.inviteId.size == 16) &&
+                e.member.size == 32 && (e.sponsor == null || e.sponsor.size == 32) && e.requestHash.size == 32
+            ) { "bad welcome entry" }
+            b.put(e.ns).put(e.kpRef)
+                .put(e.inviteId ?: ByteArray(16))
+                .put(e.member)
+                .put(e.sponsor ?: ByteArray(32))
+                .put(e.requestHash)
+            b.putInt(e.kpDay.toInt()).put(if (e.swap) 1 else 0).putInt(e.blob.size).put(e.blob)
         }
         return b.array()
     }
@@ -806,10 +1115,17 @@ internal object ChannelWelcomes {
             val sponsor = ByteArray(32).also { b.get(it) }
             val requestHash = ByteArray(32).also { b.get(it) }
             val kpDay = b.int.toLong() and 0xffff_ffffL
+            val swap = b.get().toInt() == 1
             val len = b.int
             if (len < 0 || len > b.remaining()) return null
             val blob = ByteArray(len).also { b.get(it) }
-            out += Entry(ns, kpRef, inviteId, member, sponsor, requestHash, kpDay, blob)
+            out += Entry(
+                ns, kpRef,
+                inviteId = if (inviteId.any { v -> v.toInt() != 0 }) inviteId else null,
+                member,
+                sponsor = if (sponsor.any { v -> v.toInt() != 0 }) sponsor else null,
+                requestHash, kpDay, swap, blob,
+            )
         }
         if (b.hasRemaining()) return null
         return Framed(boxPk, out)

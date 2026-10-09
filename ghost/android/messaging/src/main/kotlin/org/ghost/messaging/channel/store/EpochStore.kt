@@ -223,6 +223,13 @@ internal class EpochStore {
         return row
     }
 
+    /** The newest settled epoch, what `CH-REJOIN` claims as its last final epoch (§6.7). */
+    fun lastLogged(sql: SqlExecutor, channelId: ByteArray): LogRow? {
+        var row: LogRow? = null
+        sql.query(LAST_LOGGED, listOf(channelId)) { r -> row = LogRow(r.blob(0), r.long(1), r.blob(2), r.long(3)) }
+        return row
+    }
+
     fun logCount(sql: SqlExecutor, channelId: ByteArray): Int = count(sql, "SELECT count(*) FROM ch_epoch_log WHERE channel_id = ?", channelId)
 
     /** Drops the oldest rows beyond [keep], which makes room for the next (the trigger refuses the 1025th); returns how many went. */
@@ -311,6 +318,9 @@ internal class EpochStore {
             "SELECT channel_id, epoch FROM ch_epoch WHERE keep_until_day < ? ORDER BY keep_until_day, channel_id, epoch LIMIT ?"
 
         const val LOGGED: String = "SELECT channel_id, epoch, winner_hash, final_day FROM ch_epoch_log WHERE channel_id = ? AND epoch = ?"
+
+        const val LAST_LOGGED: String =
+            "SELECT channel_id, epoch, winner_hash, final_day FROM ch_epoch_log WHERE channel_id = ? ORDER BY epoch DESC LIMIT 1"
 
         const val FORK_SIGNALS: String =
             "SELECT s.channel_id, s.epoch, s.hash, s.first_seen_day FROM ch_fork_signal s WHERE s.channel_id = ? " +

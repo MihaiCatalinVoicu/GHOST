@@ -38,7 +38,7 @@ class JoinInviteMemberStoreTest {
     fun aJoinIsReadByItsKeyPackageRefUntilItsDayAndItsRowsGoWhenTheWelcomeComes() = StoreWorld().use { w ->
         w.channel()
         w.tx { w.stores.joins.joinWithState(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, 1) }
-        w.tx { w.stores.joins.insertJoin(it, w.ch, key(2), JoinType.REJOIN, null, 1, 20_007) }
+        w.tx { w.stores.joins.insertJoin(it, w.ch, key(2), JoinType.REJOIN, null, 1, 20_007, rejoinDeadlineDay = 20_021) }
         w.tx { w.stores.joins.joinWithState(it, w.ch, key(3), JoinType.RESTORE, inv(3), 0, 19_999, 3) }
         assertEquals(listOf(JoinType.JOIN, JoinType.REJOIN), w.stores.joins.joins(w.db, w.ch, today).map { it.type }.sortedBy { it.ordinal })
         val join = w.stores.joins.join(w.db, w.ch, key(1), today)!!
@@ -72,6 +72,9 @@ class JoinInviteMemberStoreTest {
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007) } }
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, ns = ns(1)) } }
         refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.REJOIN, null, 0, 20_007, ns = ns(1)) } }
+        // Slice S7 (§6.7): a rejoin row carries its give-up day, and only a rejoin does.
+        refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.REJOIN, null, 0, 20_007) } }
+        refused { w.tx { w.stores.joins.insertJoin(it, w.ch, key(1), JoinType.JOIN, inv(1), 0, 20_007, rejoinDeadlineDay = 20_021) } }
         refused {
             w.tx {
                 w.stores.joins.insertJoin(

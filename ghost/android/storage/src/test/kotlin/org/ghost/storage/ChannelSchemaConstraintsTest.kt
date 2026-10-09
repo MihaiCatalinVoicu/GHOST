@@ -191,8 +191,9 @@ class ChannelSchemaConstraintsTest {
         addAll(oneOf("ch_join", "type", listOf("join", "restore"), "invite_id" to chBytes(16, 27)))
         // A rejoin has no invite, so none of the invite's state either (slice S4, §19.35 F-8).
         val noInviteState = arrayOf("ns" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null)
-        add(accepted("ch_join", "a rejoin without an invite", "type" to "rejoin", "invite_id" to null, *noInviteState))
-        add(refused("ch_join", "a rejoin with an invite's namespace", "type" to "rejoin", "invite_id" to null, "jk_env" to null, "r_join" to null, "committers_digest" to null))
+        // Slice S7 (§6.7): a rejoin row alone carries its give-up day.
+        add(accepted("ch_join", "a rejoin without an invite", "type" to "rejoin", "invite_id" to null, "rejoin_deadline_day" to 20_021L, *noInviteState))
+        add(refused("ch_join", "a rejoin with an invite's namespace", "type" to "rejoin", "invite_id" to null, "rejoin_deadline_day" to 20_021L, "jk_env" to null, "r_join" to null, "committers_digest" to null))
         add(refused("ch_join", "a join without its invite's state", *noInviteState))
         for (column in listOf("ns", "jk_env", "r_join", "committers_digest")) {
             add(refused("ch_join", "a join whose invite state lacks $column", column to null))

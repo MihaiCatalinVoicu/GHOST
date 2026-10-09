@@ -12,6 +12,7 @@ import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.ChannelStore
 import org.ghost.messaging.channel.store.EpochStore
 import org.ghost.messaging.channel.store.GenerationState
+import org.ghost.messaging.channel.store.JoinType
 import org.ghost.messaging.channel.store.OpPurpose
 import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.store.ContentCipher
@@ -146,13 +147,19 @@ internal class ChannelSettleStep(
         val removed: List<ByteArray>,
     )
 
-    /** One admission the winner made: what the settle records about it. */
+    /** One admission or swap the winner made: what the settle records about it. */
     private class Admitted(
-        val inviteId: ByteArray,
+        /** Null for a rejoin swap: no invite is consumed, the request is deleted by its hash. */
+        val inviteId: ByteArray?,
         val member: ByteArray?,
-        val sponsor: ByteArray,
+        /** Null for a swap: the sponsor record of the original admission stays (§8.5). */
+        val sponsor: ByteArray?,
         val kpRef: ByteArray,
         val kpDay: Long?,
+        /** The admitted request's blob hash (a rejoin swap's request is deleted by it). */
+        val requestHash: ByteArray?,
+        /** A rejoin or restore swap: the member's leaf was replaced, its local rows restart. */
+        val swap: Boolean,
     ) {
         override fun toString(): String = "Admitted(redacted)"
     }
@@ -330,14 +337,24 @@ internal class ChannelSettleStep(
         val committer = before.committers.any { it.contentEquals(opened.pseudonym) }
         var rows = stored
         val changes = ArrayList<MlsChange>()
-        val admitted: List<Admitted>
+        var admitted: List<Admitted>
         var framed: ChannelWelcomes.Framed? = null
         val settled: ChannelCrypto.Settled
         if (winner.own) {
             val welcomeEnv = winner.welcomeEnv
             framed = if (welcomeEnv == null) null else content.open(welcomeEnv, ChannelAd.welcomes(channelId, e, winner.hash))?.let(ChannelWelcomes::decode)
             if (welcomeEnv != null && framed == null) return refuseWinner(channelId, e, winner)
-            admitted = framed?.entries?.map { Admitted(it.inviteId, it.member, it.sponsor, it.kpRef, it.kpDay) } ?: emptyList()
+            admitted = framed?.entries?.map {
+                Admitted(
+                    inviteId = it.inviteId,
+                    member = it.member,
+                    sponsor = it.sponsor,
+                    kpRef = it.kpRef,
+                    kpDay = it.kpDay,
+                    requestHash = it.requestHash,
+                    swap = it.swap,
+                )
+            } ?: emptyList()
             settled = when (val s = opened.crypto.settle(channelId, rows, ChannelCrypto.Winner.Own(body), snapshot.generation.toInt(), day.toInt())) {
                 is MlsOutcome.Ok -> s.value
                 is MlsOutcome.Refused -> return if (s.code == MlsCode.CRYPTO_UNAVAILABLE || s.code == MlsCode.STATE_CORRUPT) null else refuseWinner(channelId, e, winner)
@@ -349,7 +366,8 @@ internal class ChannelSettleStep(
                 is MlsOutcome.Refused -> if (r.code == MlsCode.CRYPTO_UNAVAILABLE || r.code == MlsCode.STATE_CORRUPT) return null else null
             }
             if (summary == null || !summary.isValid) return refuseWinner(channelId, e, winner)
-            admitted = summary.aad?.admits?.map { a ->
+            val aad = summary.aad
+            val admittedJoins = aad?.admits?.map { a ->
                 val add = summary.adds.firstOrNull { it.bytes(MlsField.KP_REF).contentEquals(a.kpRef) }
                 Admitted(
                     inviteId = a.inviteId,
@@ -357,8 +375,32 @@ internal class ChannelSettleStep(
                     sponsor = a.sponsor,
                     kpRef = a.kpRef,
                     kpDay = add?.recordOrNull(MlsField.KP_BIND)?.u32(MlsField.DAY),
+                    requestHash = null,
+                    swap = false,
                 )
             } ?: emptyList()
+            // The winner's swaps (§19.2): matched to their KeyPackages by reference (a swap's Add
+            // carries the same `kp_ref` as its evidence). At every staying member they consume the
+            // restore's invite and restart the swapped member's local rows; at committers the
+            // KeyPackage's tag is kept.
+            val admittedSwaps = aad?.swaps?.mapNotNull { ev ->
+                val kpRef = when (ev) {
+                    is org.ghost.crypto.bridge.SwapEvidence.Rejoin -> ev.kpRef
+                    is org.ghost.crypto.bridge.SwapEvidence.Restore -> ev.evidence.kpRef
+                }
+                val add = summary.adds.firstOrNull { it.bytes(MlsField.KP_REF).contentEquals(kpRef) }
+                    ?: return@mapNotNull null
+                Admitted(
+                    inviteId = (ev as? org.ghost.crypto.bridge.SwapEvidence.Restore)?.evidence?.inviteId,
+                    member = add.bytes(MlsField.PSEUDONYM),
+                    sponsor = null,
+                    kpRef = kpRef,
+                    kpDay = add.recordOrNull(MlsField.KP_BIND)?.u32(MlsField.DAY),
+                    requestHash = null,
+                    swap = true,
+                )
+            } ?: emptyList()
+            admitted = admittedJoins + admittedSwaps
             if (own != null) {
                 // CO-4 (b): another candidate wins at a settle point, so the own pending commit is
                 // cleared before the winner is merged.
@@ -432,7 +474,25 @@ internal class ChannelSettleStep(
         if (stores.epochs.logCount(tx.sql, c) >= EpochStore.MAX_LOG) stores.epochs.trimLog(tx, c, EpochStore.MAX_LOG - 1)
         stores.epochs.appendLog(tx, c, e, winner.hash, day)
         val next = settled.epoch
-        if (settled.standing != STANDING_MEMBER || next == null) {
+        // §6.7's `replaced` detection, the requester's half: a winner that swaps this member's own
+        // leaf with a KeyPackage this client published as its own rejoin (the kp_ref is one of its
+        // pending `ch_join` rejoin rows) is the requester's own rejoin completing — not a replacement
+        // by another device (a seed thief's KeyPackage is not in `ch_join`, and that member is
+        // `REPLACED`). The merge's change-set applies (the state advances); the epoch stays without
+        // a successor until the Welcome — the join vehicle — replaces the state over the KeyPackage's
+        // global rows (`CH-JOIN`).
+        // §6.7's `replaced` detection, the requester's half: a member reported replaced while it
+        // holds a pending rejoin of its own is the requester — its own rejoin is completing, not a
+        // replacement by another device (a seed thief's KeyPackage is not in `ch_join`, and that
+        // member has no rejoin row pending: it is `REPLACED`). The merge's change-set applies (the
+        // state advances); the epoch stays without a successor until the Welcome — the join vehicle —
+        // replaces the state over the KeyPackage's global rows (`CH-JOIN`).
+        val selfRejoin = settled.standing == STANDING_REPLACED &&
+            stores.joins.joins(tx.sql, c, day).any { it.type == JoinType.REJOIN }
+        if (selfRejoin) {
+            // Nothing but the shared tail: the candidates go, the deferred blobs are re-offered, the
+            // rejoin rows stay for the Welcome.
+        } else if (settled.standing != STANDING_MEMBER || next == null) {
             // §6.6: removed (or replaced by a restore of its own pseudonym): the state is recorded, the
             // MLS state goes (§6.6 "deletes the MLS state"), and the departure keeps listening until the
             // drain ends. The deletion is the merge's, not the leave op's outcome's: a leaver whose op
@@ -507,12 +567,32 @@ internal class ChannelSettleStep(
             }
         }
         for (a in merge.admitted) {
-            stores.invites.markConsumed(tx, c, a.inviteId)
-            stores.joins.deleteRequestsOfInvite(tx, c, a.inviteId)
-            a.member?.let {
-                stores.invites.putSponsor(tx, c, it, a.sponsor, a.inviteId, day)
-                // §6.6: a join is the joiner's last leaf refresh.
-                if (merge.committer) stores.members.putRefresh(tx, c, it, day)
+            // A restore swap consumes its invite like an admission; a rejoin swap names none — its
+            // request is deleted by the hash the own winner's framing recorded. A foreign winner's
+            // swap (no hash here) leaves the copies to expire or to be refused on the kept tag.
+            if (a.inviteId != null) {
+                stores.invites.markConsumed(tx, c, a.inviteId)
+                stores.joins.deleteRequestsOfInvite(tx, c, a.inviteId)
+            } else if (a.requestHash != null) {
+                stores.joins.deleteRequest(tx, c, a.requestHash)
+            }
+            if (a.swap) {
+                // The leaf was replaced: a rejoin or restore is the member's last leaf refresh, and
+                // the member-seen record starts over for the new leaf (§6.7's live-leaf check reads
+                // it; the row's old epochs were the removed leaf's). A swap of this member itself is
+                // the removed branch above — its rows are already gone.
+                a.member?.let {
+                    if (!it.contentEquals(merge.self)) {
+                        if (merge.committer) stores.members.putRefresh(tx, c, it, day)
+                        stores.members.deleteMemberSeen(tx, c, it)
+                    }
+                }
+            } else {
+                a.member?.let {
+                    stores.invites.putSponsor(tx, c, it, a.sponsor ?: ByteArray(32), a.inviteId ?: ByteArray(16), day)
+                    // §6.6: a join is the joiner's last leaf refresh.
+                    if (merge.committer) stores.members.putRefresh(tx, c, it, day)
+                }
             }
             if (merge.committer && a.kpDay != null) {
                 stores.joins.markKpSeen(tx, c, ChannelTags.keyPackageTag(seenKey, c, a.kpRef), a.kpDay + ChannelPassStep.KP_SEEN_DAYS)

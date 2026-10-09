@@ -102,7 +102,7 @@ class ChannelSchemaIntrospectionTest {
         assertEquals("declared time columns that no table has", ChannelSchema.timeColumns, foundTimes)
         assertEquals("declared epoch counters that no table has", ChannelSchema.epochColumns, foundEpochs)
         assertEquals("exemptions that match nothing", ChannelSchema.notTimes.keys, usedExemptions)
-        assertEquals(32, ChannelSchema.timeColumns.size)
+        assertEquals(33, ChannelSchema.timeColumns.size)
     }
 
     /** The suffix names the grid, and the grid and the type are in the column's own CHECK (T20, §21.14). */
@@ -178,6 +178,14 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_seen.until_day", 19_999),
         Typed("ch_reveal.delete_at_minute", 600),
         Typed("ch_join.expiry_day", 20_007),
+        // Slice S7 (§6.7): a rejoin row's give-up day, rejoin rows only.
+        Typed(
+            "ch_join.rejoin_deadline_day", 20_021,
+            mapOf(
+                "type" to "rejoin", "invite_id" to null, "ns" to null, "jk_env" to null,
+                "r_join" to null, "committers_digest" to null,
+            ),
+        ),
         Typed("ch_join_request.until_day", 20_007),
         Typed("ch_join_request.recorded_day", 20_000),
         Typed("ch_invite_issued.expiry_day", 20_007),

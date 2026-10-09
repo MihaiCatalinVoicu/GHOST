@@ -484,6 +484,12 @@ internal class ChannelReceiveStep(
                         if (epoch == channel.epoch && !item.sender.contentEquals(opened.pseudonym)) {
                             foreignSenders[item.sender.toList().toString()] = item.sender
                         }
+                        // §6.7's live-leaf check: the last epoch with an authenticated message from a
+                        // member's current leaf (read by the rejoin admission at committers; kept at
+                        // every member — only committers read it, the row is local, §19.43).
+                        if (!item.sender.contentEquals(opened.pseudonym)) {
+                            stores.members.noteMemberSeen(tx, channelId, item.sender, epoch)
+                        }
                         when (item.content.kind) {
                             ChannelPostStep.KIND_REACTION -> reactions += item
                             ChannelPostStep.KIND_POST ->
@@ -808,6 +814,9 @@ internal class ChannelReceiveStep(
     ) {
         val c = channel.channelId
         val hash = summary.hash
+        // §6.7: a valid commit of the current epoch is an authenticated message from its sender's
+        // leaf — the live-leaf check of the rejoin admission reads it.
+        stores.members.noteMemberSeen(tx, c, summary.sender, epoch)
         // CO-4: the store hour is `relayExpiryHour − handshake TTL` of the copy fetched (the relay rounds the expiry up).
         val storeHour = (blob.relayExpiryHour - ChannelTime.handshakeTtl(channel.timerCode).seconds).takeIf { it >= 0 }
         val firstSeen = DmTime.floorMinute(now)
@@ -908,16 +917,43 @@ internal class ChannelReceiveStep(
                 }
             }
         }
+        // A rejoin names no invite (§6.7): the signature is verified under each current member's key
+        // until one matches — the claimed pseudonym is the one that verifies (the admission policy is
+        // the pass's, on the stored row). A blob no member verifies is a forgery: consumed and counted.
+        var rejoin: Pair<ByteArray, ChannelCrypto.JoinVerified>? = null
+        if (found == null) {
+            val rows = MlsRows.of(env.database.transaction { tx -> stores.mls.rows(tx.sql, channel.channelId, day) })
+            val members = opened.crypto.roster(channel.channelId, rows, day.toInt()).valueOrNull()?.members ?: return 0
+            for (member in members) {
+                when (
+                    val v = opened.crypto.joinVerify(
+                        channel.channelId, body, null, member.pseudonym, generation.generation.toInt(),
+                    )
+                ) {
+                    is MlsOutcome.Ok -> {
+                        rejoin = member.pseudonym to v.value
+                        break
+                    }
+                    is MlsOutcome.Refused -> when (v.code) {
+                        MlsCode.BAD_SIGNATURE -> continue
+                        MlsCode.CRYPTO_UNAVAILABLE -> return 0
+                        else -> return if (drop(c, ChannelCounters.Reason.JOIN_REFUSED)) 1 else 0
+                    }
+                }
+            }
+            if (rejoin == null) {
+                // No member's key verifies it (a join request whose INVITE_ISSUED has not arrived
+                // is the honest case): deferred, like a request no held invite signs — the blob is
+                // re-offered when its record lands, consumed at its relay expiry.
+                env.counters.count(ChannelCounters.Reason.JOIN_UNKNOWN_INVITE)
+                return deferUnknown(c, now)
+            }
+        }
         val match = found
-        if (match == null) {
+        val rejoinMatch = rejoin
+        if (match == null && rejoinMatch == null) {
             env.counters.count(ChannelCounters.Reason.JOIN_UNKNOWN_INVITE)
             return deferUnknown(c, now)
-        }
-        val (invite, verified) = match
-        val type = when (verified.requestType) {
-            REQUEST_JOIN -> JoinType.JOIN
-            REQUEST_RESTORE -> JoinType.RESTORE
-            else -> return if (drop(c, ChannelCounters.Reason.JOIN_REFUSED)) 1 else 0
         }
         val blob = when (val r = claim(c)) {
             Claim.Poisoned -> return 1
@@ -925,20 +961,50 @@ internal class ChannelReceiveStep(
             is Claim.Held -> r.blob
         }
         return env.database.transaction { tx ->
-            when {
-                invite.consumed || invite.void -> consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
-                // A second request for one invite is ignored (§6.2.4); so is a request past the 64 of §6.3.5.
-                stores.joins.requestOfInvite(tx.sql, channel.channelId, invite.inviteId, day) != null ->
-                    consume(tx, blob, ChannelCounters.Reason.DUPLICATE)
-                stores.joins.requests(tx.sql, channel.channelId, day).size >= MAX_JOIN_REQUESTS ->
-                    consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
-                else -> {
-                    val hash = blob.hash.toByteArray()
-                    stores.joins.insertRequest(
-                        tx, channel.channelId, hash, generation.generation, type, invite.inviteId,
-                        env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body), invite.expiryDay, day,
-                    )
-                    sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+            if (match != null) {
+                val (invite, verified) = match
+                val type = when (verified.requestType) {
+                    REQUEST_JOIN -> JoinType.JOIN
+                    REQUEST_RESTORE -> JoinType.RESTORE
+                    else -> {
+                        consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
+                        return@transaction 1
+                    }
+                }
+                when {
+                    invite.consumed || invite.void -> consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
+                    // A second request for one invite is ignored (§6.2.4); so is a request past the 64 of §6.3.5.
+                    stores.joins.requestOfInvite(tx.sql, channel.channelId, invite.inviteId, day) != null ->
+                        consume(tx, blob, ChannelCounters.Reason.DUPLICATE)
+                    stores.joins.requests(tx.sql, channel.channelId, day).size >= MAX_JOIN_REQUESTS ->
+                        consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
+                    else -> {
+                        val hash = blob.hash.toByteArray()
+                        stores.joins.insertRequest(
+                            tx, channel.channelId, hash, generation.generation, type, invite.inviteId,
+                            env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body),
+                            invite.expiryDay, day, verified.pseudonym,
+                        )
+                        sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+                    }
+                }
+            } else {
+                val (member, verified) = rejoinMatch!!
+                when {
+                    // §19.3: the request type must be a rejoin (a join-purpose KeyPackage names an
+                    // invite; a restore purpose verifies under no member's key) — refused otherwise.
+                    verified.requestType != REQUEST_REJOIN -> consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
+                    stores.joins.requests(tx.sql, channel.channelId, day).size >= MAX_JOIN_REQUESTS ->
+                        consume(tx, blob, ChannelCounters.Reason.JOIN_REFUSED)
+                    else -> {
+                        val hash = blob.hash.toByteArray()
+                        stores.joins.insertRequest(
+                            tx, channel.channelId, hash, generation.generation, JoinType.REJOIN, null,
+                            env.seal(content, ChannelAd.joinRequest(channel.channelId, hash), body),
+                            day + ChannelRejoinStep.GIVE_UP_DAYS, day, member,
+                        )
+                        sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+                    }
                 }
             }
             1
@@ -957,19 +1023,47 @@ internal class ChannelReceiveStep(
 
     private fun welcome(c: Classified): Int {
         val join = c.join
-        if (join == null || c.channel?.state != ChannelState.JOINING) {
-            // §6.3.2's 0x13 row: a member needs nothing from a Welcome.
-            return if (drop(c, null)) 1 else 0
-        }
+        val channel = c.channel
         val blob = when (val r = claim(c)) {
             Claim.Poisoned -> return 1
             Claim.Gone -> return 0
             is Claim.Held -> r.blob
         }
-        return when (joinStep.join(blob, join)) {
-            ChannelJoinStep.Outcome.JOINED, ChannelJoinStep.Outcome.CONSUMED -> 1
-            ChannelJoinStep.Outcome.LEFT -> 0
+        // §6.3.2's 0x13 rows: a pending join's Welcome is `CH-JOIN`'s (the invite flow); a rejoining
+        // member's (its channel `resync_needed`, `reinvite_needed` or still `active` with a rejoin
+        // pending) is answered over the generation's `JK_g` with the rejoin anchor (`CH-REJOIN`).
+        if (join != null && channel?.state == ChannelState.JOINING) {
+            return when (joinStep.join(blob, join)) {
+                ChannelJoinStep.Outcome.JOINED, ChannelJoinStep.Outcome.CONSUMED -> 1
+                ChannelJoinStep.Outcome.LEFT -> 0
+            }
         }
+        // A restore's (or any re-entry's) Welcome can arrive in a namespace the member already holds
+        // a generation row for: the routing above took the generation branch (`join == null`), so the
+        // invite flow's join is looked up by the namespace before the drop (slice S7, F-S7-4).
+        if (join == null && channel != null && channel.state == ChannelState.JOINING) {
+            val day = DmTime.day(env.now())
+            val byNs = env.database.transaction { tx ->
+                stores.joins.joinByNamespace(tx.sql, c.blob.namespace.toByteArray(), day)
+            }
+            if (byNs != null && byNs.channelId.contentEquals(channel.channelId)) {
+                return when (joinStep.join(blob, byNs)) {
+                    ChannelJoinStep.Outcome.JOINED, ChannelJoinStep.Outcome.CONSUMED -> 1
+                    ChannelJoinStep.Outcome.LEFT -> 0
+                }
+            }
+        }
+        if (join == null && channel != null && c.generation != null &&
+            (channel.state == ChannelState.RESYNC_NEEDED || channel.state == ChannelState.REINVITE_NEEDED ||
+                channel.state == ChannelState.ACTIVE)
+        ) {
+            return when (joinStep.joinWelcome(blob, channel.channelId, c.generation)) {
+                ChannelJoinStep.Outcome.JOINED, ChannelJoinStep.Outcome.CONSUMED -> 1
+                ChannelJoinStep.Outcome.LEFT -> 0
+            }
+        }
+        // A member needs nothing from a Welcome (§6.3.2's row).
+        return if (drop(c, null)) 1 else 0
     }
 
     // -------------------------------------------------------------------------------------------- no match
@@ -1116,6 +1210,7 @@ internal class ChannelReceiveStep(
 
         /** `joinVerify`'s request types: 1 join, 2 rejoin, 3 restore. */
         const val REQUEST_JOIN: Int = 1
+        const val REQUEST_REJOIN: Int = 2
         const val REQUEST_RESTORE: Int = 3
 
         /** The clock skew an `INVITE_ISSUED`'s expiry may carry beyond §5.9's `issue day + 7` (§19.38). */

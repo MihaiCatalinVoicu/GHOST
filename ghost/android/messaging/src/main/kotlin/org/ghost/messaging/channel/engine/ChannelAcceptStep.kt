@@ -30,9 +30,9 @@ import org.ghost.sync.api.SendDelay
  * 2. **`ALREADY_MEMBER` is decided after the parse** (the review of S2b, §19.36 row 3, asked for it before): the channel
  *    id is inside the sealed body too, so no decision can precede the parse. Nothing is written then, and the class-6
  *    envelope the parse minted — which seals a join request and opens a Welcome and nothing else (§19.36 row 3) — is
- *    dropped unused. A channel this client left, was removed from or was replaced in, or that is `resync_needed` or
- *    `reinvite_needed`, is `ALREADY_MEMBER` in this slice: the re-entry and the restore purpose of §6.2.2 step 2 come with
- *    the flows that create those states (S6, S7). A join that **expired** re-enters `joining` (§6.11).
+ *    dropped unused. A channel this client left or was removed from is `ALREADY_MEMBER`; one that is `resync_needed`,
+ *    `reinvite_needed` or `replaced` accepts the invite as a **restore** (§6.2.2 step 2, §6.12) and re-enters
+ *    `joining` like a `join_expired` channel (slice S7). A join that **expired** re-enters `joining` (§6.11).
  * 3. **The KeyPackage** (fn 4, purpose join): the canonical one of §6.2.4 (B), 395 bytes; its private keys are global rows
  *    that die with the join (`ch_join.expiry_day`), except the leaf's key pairs, which a Welcome hands to the group.
  * 4. **One transaction:** `ch_channel(joining)` — or `join_expired → joining` —, `ch_join` with the invite's state
@@ -84,7 +84,15 @@ internal class ChannelAcceptStep(
         if (parsed.expiryDay < day) return AcceptResult.EXPIRED
         val channelId = parsed.channelId
         val existing = env.database.transaction { tx -> stores.channels.channel(tx.sql, channelId) }
-        if (existing != null && existing.state != ChannelState.JOIN_EXPIRED) return AcceptResult.ALREADY_MEMBER
+        // §6.2.2 step 2: an invite for a channel the client is already a member of serves a restore
+        // when the channel is `resync_needed`, `reinvite_needed` or `replaced` (the member's
+        // pseudonym is a current member; the admission is an invite-authorized swap, §6.12) — and
+        // re-enters `joining` like a `join_expired` channel does. Every other state is `ALREADY_MEMBER`.
+        val restore = existing != null && (existing.state == ChannelState.RESYNC_NEEDED ||
+            existing.state == ChannelState.REINVITE_NEEDED || existing.state == ChannelState.REPLACED)
+        if (existing != null && existing.state != ChannelState.JOIN_EXPIRED && !restore) {
+            return AcceptResult.ALREADY_MEMBER
+        }
         if (existing == null && env.database.transaction { tx -> env.liveChannels(tx.sql) } >= ChannelEnv.MAX_CHANNELS) {
             return AcceptResult.LIMIT_REACHED
         }
@@ -92,7 +100,9 @@ internal class ChannelAcceptStep(
         val opened = env.contexts.open(channelId) ?: return AcceptResult.CRYPTO_UNAVAILABLE
         val p = opened.pseudonym
         if (existing != null && !existing.myPseudonym.contentEquals(p)) return AcceptResult.CRYPTO_UNAVAILABLE
-        val keyPackage = opened.crypto.keyPackage(channelId, PURPOSE_JOIN, day.toInt()).valueOrNull()
+        // The KeyPackage's purpose: a join, or a restore when an invite readmits a current pseudonym
+        // (§6.12; CO-2 requires the purpose to match the evidence kind, §19.3 rule 2).
+        val keyPackage = opened.crypto.keyPackage(channelId, if (restore) PURPOSE_RESTORE else PURPOSE_JOIN, day.toInt()).valueOrNull()
             ?: return AcceptResult.CRYPTO_UNAVAILABLE
         val body = when (val b = opened.crypto.joinRequest(channelId, parsed.inviteId, parsed.inviteSeedEnv, keyPackage.keyPackage)) {
             is MlsOutcome.Ok -> b.value
@@ -133,15 +143,26 @@ internal class ChannelAcceptStep(
                         ),
                     )
                 } else {
-                    if (fresh.state != ChannelState.JOIN_EXPIRED) return@transaction AcceptResult.ALREADY_MEMBER
-                    stores.channels.transition(tx, channelId, ChannelState.JOIN_EXPIRED, ChannelState.JOINING)
-                    stores.channels.setPosition(tx, channelId, parsed.generation, 0)
-                    stores.channels.setPolicy(tx, channelId, timerCode, parsed.sizeClass, parsed.kdfCode != 0, nameEnv)
-                    // The expired join's row may still name the namespace (its removal waits for its op, CH-SWEEP).
+                    if (fresh.state == ChannelState.JOIN_EXPIRED) {
+                        stores.channels.transition(tx, channelId, ChannelState.JOIN_EXPIRED, ChannelState.JOINING)
+                        stores.channels.setPosition(tx, channelId, parsed.generation, 0)
+                        stores.channels.setPolicy(tx, channelId, timerCode, parsed.sizeClass, parsed.kdfCode != 0, nameEnv)
+                    } else if (fresh.state == ChannelState.RESYNC_NEEDED || fresh.state == ChannelState.REINVITE_NEEDED ||
+                        fresh.state == ChannelState.REPLACED
+                    ) {
+                        // The restore's re-entry (§6.2.2 step 2): the position and policy the join
+                        // writes come from the Welcome; only the state and the stale join state move.
+                        stores.channels.transition(tx, channelId, fresh.state, ChannelState.JOINING)
+                    } else {
+                        return@transaction AcceptResult.ALREADY_MEMBER
+                    }
+                    // The expired or stale join's row may still name the namespace (its removal waits
+                    // for its op, CH-SWEEP).
                     stores.joins.deleteJoins(tx, channelId)
                 }
                 stores.joins.insertJoin(
-                    tx, channelId, keyPackage.kpRef, JoinType.JOIN, parsed.inviteId, parsed.generation, parsed.expiryDay,
+                    tx, channelId, keyPackage.kpRef,
+                    if (restore) JoinType.RESTORE else JoinType.JOIN, parsed.inviteId, parsed.generation, parsed.expiryDay,
                     ns = parsed.ns, jkEnv = parsed.jkEnv, rJoin = parsed.rJoin, committersDigest = parsed.committersDigest,
                 )
                 stores.mls.apply(
@@ -188,5 +209,6 @@ internal class ChannelAcceptStep(
     companion object {
         /** `GhostKpBind.purpose` (§5.4): 1 join, 2 rejoin, 3 restore. */
         const val PURPOSE_JOIN: Int = 1
+        const val PURPOSE_RESTORE: Int = 3
     }
 }

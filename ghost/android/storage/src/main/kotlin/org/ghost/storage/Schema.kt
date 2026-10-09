@@ -1659,7 +1659,13 @@ object Schema {
                   jk_env     BLOB CHECK (jk_env IS NULL OR length(jk_env) = 60),
                   r_join     BLOB CHECK (r_join IS NULL OR length(r_join) = 32),
                   committers_digest BLOB CHECK (committers_digest IS NULL OR length(committers_digest) = 32),
+                  -- `CH-REJOIN`'s absolute give-up day (first attempt day + 14, §6.7): `expiry_day`
+                  -- is the next re-send (attempt day + 7); past the deadline an unanswered rejoin
+                  -- ends at `reinvite_needed`. Rejoin rows only (slice S7).
+                  rejoin_deadline_day INTEGER CHECK (rejoin_deadline_day IS NULL
+                                      OR (typeof(rejoin_deadline_day) = 'integer' AND rejoin_deadline_day >= 0)),
                   CHECK ((type = 'rejoin') = (invite_id IS NULL)),
+                  CHECK ((type = 'rejoin') = (rejoin_deadline_day IS NOT NULL)),
                   CHECK ((type = 'rejoin') = (ns IS NULL)),
                   CHECK ((ns IS NULL) = (jk_env IS NULL) AND (ns IS NULL) = (r_join IS NULL)
                          AND (ns IS NULL) = (committers_digest IS NULL)),
@@ -1677,6 +1683,10 @@ object Schema {
                   type         TEXT NOT NULL CHECK (type IN ('join', 'rejoin', 'restore')),
                   invite_id    BLOB CHECK (invite_id IS NULL OR length(invite_id) = 16),
                   body_env     BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 4096),
+                  -- The requester's pseudonym, set at recording for every type (slice S7): a rejoin
+                  -- names no invite, so the admission pass reads it from here (and the live-leaf
+                  -- check of §6.7 needs it before any native re-verification).
+                  member       BLOB CHECK (member IS NULL OR length(member) = 32),
                   until_day    INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
                   -- The day the request was first recorded (§19.35 F-11 (a), amended by slice S5): CO-8's work-age
                   -- rule (§19.13 item 4) measures the age of the work from it; `until_day` is the expiry, not the age.
@@ -1774,9 +1784,9 @@ object Schema {
                        OR (OLD.state = 'joining' AND NEW.state IN ('active', 'join_expired'))
                        OR (OLD.state = 'active' AND NEW.state IN ('leaving', 'removed', 'replaced', 'resync_needed', 'reinvite_needed'))
                        OR (OLD.state = 'leaving' AND NEW.state IN ('left', 'removed'))
-                       OR (OLD.state = 'resync_needed' AND NEW.state IN ('active', 'reinvite_needed'))
+                       OR (OLD.state = 'resync_needed' AND NEW.state IN ('active', 'reinvite_needed', 'joining'))
                        OR (OLD.state IN ('reinvite_needed', 'replaced') AND NEW.state = 'active')
-                       OR (OLD.state IN ('left', 'removed', 'replaced', 'join_expired') AND NEW.state = 'joining'))
+                       OR (OLD.state IN ('resync_needed', 'reinvite_needed', 'left', 'removed', 'replaced', 'join_expired') AND NEW.state = 'joining'))
                 BEGIN SELECT RAISE(ABORT, 'illegal channel state transition'); END""",
         // ---- generations (§6.5, §6.11): pending_switch -> current -> draining, one of each kind at a time
         """CREATE TRIGGER ch_generation_identity BEFORE UPDATE ON ch_generation

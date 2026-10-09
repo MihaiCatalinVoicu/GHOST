@@ -334,8 +334,11 @@ internal class ChannelClient(
         sql.query(
             "SELECT 1 FROM ch_channel c WHERE c.state = 'joining' AND NOT EXISTS (SELECT 1 FROM ch_join j WHERE j.channel_id = c.channel_id)",
         ) { problems += "a joining channel without its join state" }
+        // Slice S7 (§6.7): an active channel may keep a rejoin row (the resync is a user action on
+        // an active channel); a join or a restore's row on an active channel is still residue.
         sql.query(
-            "SELECT 1 FROM ch_channel c WHERE c.state = 'active' AND EXISTS (SELECT 1 FROM ch_join j WHERE j.channel_id = c.channel_id)",
+            "SELECT 1 FROM ch_channel c WHERE c.state = 'active' AND EXISTS " +
+                "(SELECT 1 FROM ch_join j WHERE j.channel_id = c.channel_id AND j.type != 'rejoin')",
         ) { problems += "an active channel that kept its join state" }
         return problems
     }

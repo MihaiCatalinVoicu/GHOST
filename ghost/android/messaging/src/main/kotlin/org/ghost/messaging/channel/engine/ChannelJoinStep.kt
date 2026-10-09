@@ -4,8 +4,11 @@ import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.crypto.bridge.MlsCode
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.ChannelState
+import org.ghost.messaging.channel.store.EpochStore
 import org.ghost.messaging.channel.store.GenerationState
+import org.ghost.messaging.channel.store.GenerationStore
 import org.ghost.messaging.channel.store.JoinStore
+import org.ghost.messaging.channel.store.JoinType
 import org.ghost.messaging.engine.DmTime
 import org.ghost.sync.api.InboundBlob
 import org.ghost.sync.api.NamespaceId
@@ -98,6 +101,10 @@ internal class ChannelJoinStep(
                 }
                 val context = joined.context
                 val g = joined.generation
+                // §19.16 (d): a rejoin's or restore's Welcome joins over the KeyPackage's global rows
+                // only (nothing of the old group was passed to `welcomeJoin`); the old group rows are
+                // deleted in the same transaction. A fresh join has none — the delete is a no-op.
+                stores.mls.deleteGroupRows(tx, c)
                 stores.mls.apply(tx, c, MlsRows.changes(joined.changes))
                 stores.channels.transition(tx, c, ChannelState.JOINING, ChannelState.ACTIVE)
                 stores.channels.setJoined(tx, c, joined.epoch.epoch, g.generation)
@@ -130,6 +137,124 @@ internal class ChannelJoinStep(
         env.database.transaction { tx -> sync.inbox.markConsumed(tx, blob.namespace, blob.hash) }
         env.counters.count(reason)
         return Outcome.CONSUMED
+    }
+
+    /**
+     * The rejoin's answer (§6.7, §19.16 (d), §19.29.2): [blob] was fetched from [generation]'s
+     * namespace and its hint is `R_join` in mode 0x13 — a committer's answer to this member's
+     * rejoin. The blob opens under the generation's `JK_g`; each pending rejoin KeyPackage is tried
+     * with `welcomeJoin` over the KeyPackage's global rows only and the rejoin anchor — the
+     * GroupInfo signature must verify under one of the committers of the member's last final epoch,
+     * which the stored state's context is (no digest comparison) — and the member keeps its rank
+     * (its key is unchanged). A Welcome that fails a check writes nothing (the KeyPackage stays,
+     * §6.2.5); one of another KeyPackage is `NOT_FOR_ME`. In the success transaction: the old
+     * group rows are deleted (the rows were not passed to `welcomeJoin`: no `GroupAlreadyExists`),
+     * the change-set applies, `resync_needed`/`reinvite_needed` return to `active`, a newer
+     * bootstrap generation becomes `pending_switch` (§19.8), and the displayed posts stay.
+     */
+    fun joinWelcome(blob: InboundBlob, channelId: ByteArray, generation: GenerationStore.GenerationRow): Outcome {
+        val now = env.now()
+        val day = DmTime.day(now)
+        val opened = env.contexts.open(channelId) ?: return Outcome.LEFT
+        val body = when (
+            val o = opened.crypto.open(
+                channelId, generation.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, generation.namespaceId,
+                ChannelCrypto.MODE_WELCOME, blob.ciphertext,
+            )
+        ) {
+            is MlsOutcome.Ok -> o.value.body
+            is MlsOutcome.Refused -> return when (o.code) {
+                MlsCode.CRYPTO_UNAVAILABLE -> Outcome.LEFT
+                MlsCode.NOT_OPEN -> consume(blob, ChannelCounters.Reason.FORGED_SEAL)
+                else -> consume(blob, ChannelCounters.Reason.NON_CANONICAL)
+            }
+        }
+        val joinRows = env.database.transaction { tx -> stores.joins.joins(tx.sql, channelId, day) }
+            .filter { it.type == JoinType.REJOIN }
+        if (joinRows.isEmpty()) return consume(blob, ChannelCounters.Reason.NOT_FOR_ME)
+        // The anchor: the committers of the member's last final epoch — the context its stored state
+        // holds, the state as of its last merged commit (§6.2.5, §19.29.2).
+        val rows = MlsRows.of(env.database.transaction { tx -> stores.mls.rows(tx.sql, channelId, day) })
+        val committers = opened.crypto.roster(channelId, rows, day.toInt()).valueOrNull()
+            ?.context?.committers ?: return Outcome.LEFT
+        val global = MlsRows.of(env.database.transaction { tx -> stores.mls.globalRows(tx.sql, channelId, day) })
+        for (join in joinRows) {
+            val joined = when (
+                val r = opened.crypto.welcomeJoin(
+                    channelId, global, body, day.toInt(), join.generation.toInt(), generation.namespaceId,
+                    ChannelCrypto.Anchor.Rejoin(committers),
+                )
+            ) {
+                is MlsOutcome.Ok -> r.value
+                is MlsOutcome.Refused -> when (r.code) {
+                    MlsCode.NOT_FOR_ME -> continue
+                    MlsCode.CRYPTO_UNAVAILABLE -> return Outcome.LEFT
+                    MlsCode.STATE_CORRUPT -> return defer(blob)
+                    // INVALID_WELCOME (the anchor among its causes), INVALID_BOOTSTRAP, INVALID_POLICY:
+                    // nothing is written, the KeyPackage stays for the real one (V10-8, PC-19).
+                    else -> return consume(blob, ChannelCounters.Reason.INVALID_WELCOME)
+                }
+            }
+            return env.database.transaction { tx ->
+                val fresh = stores.channels.channel(tx.sql, channelId)
+                val rejoins = stores.joins.joins(tx.sql, channelId, day).filter { it.type == JoinType.REJOIN }
+                if (fresh == null || rejoins.isEmpty() ||
+                    (fresh.state != ChannelState.ACTIVE && fresh.state != ChannelState.RESYNC_NEEDED &&
+                        fresh.state != ChannelState.REINVITE_NEEDED)
+                ) {
+                    // Joined by a copy, restored by an invite meanwhile, or gone: nothing to apply.
+                    sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+                    return@transaction Outcome.CONSUMED
+                }
+                // §19.16 (d): the old group's rows are not passed to `welcomeJoin` and are deleted in
+                // the same transaction; the Welcome's change-set replaces them.
+                stores.mls.deleteGroupRows(tx, channelId)
+                stores.mls.apply(tx, channelId, MlsRows.changes(joined.changes))
+                if (fresh.state == ChannelState.RESYNC_NEEDED) {
+                    stores.channels.transition(tx, channelId, ChannelState.RESYNC_NEEDED, ChannelState.ACTIVE)
+                } else if (fresh.state == ChannelState.REINVITE_NEEDED) {
+                    stores.channels.transition(tx, channelId, ChannelState.REINVITE_NEEDED, ChannelState.ACTIVE)
+                }
+                val g = joined.generation
+                if (g.generation != fresh.generation) {
+                    // A newer bootstrap (a rotation on the live branch): `CH-SWITCH` adopts it at the
+                    // next session start or switch hour (§19.8).
+                    stores.generations.insert(
+                        tx, channelId, g.generation, g.ns, GenerationState.PENDING_SWITCH, g.gEnv, g.jkEnv,
+                        g.rJoin, g.openEpoch,
+                    )
+                }
+                // Room for the joined epoch's row (the schema keeps the current and 16 past, S0-6).
+                for (k in stores.epochs.expired(tx.sql, day, EpochStore.MAX_EPOCHS * 4)) {
+                    if (k.channelId.contentEquals(channelId)) {
+                        stores.epochs.deleteForkSignals(tx, channelId, k.epoch)
+                        stores.epochs.delete(tx, channelId, k.epoch)
+                    }
+                }
+                val retained = stores.epochs.retained(tx.sql, channelId, day)
+                if (retained.size >= EpochStore.MAX_EPOCHS) {
+                    retained.filter { it.finalDay != null }.minByOrNull { it.epoch }?.let {
+                        stores.epochs.deleteForkSignals(tx, channelId, it.epoch)
+                        stores.epochs.delete(tx, channelId, it.epoch)
+                    }
+                }
+                stores.epochs.insert(tx, channelId, joined.epoch.epoch, joined.epoch.kEnv, joined.epoch.rEp)
+                stores.channels.setPosition(tx, channelId, g.generation, joined.epoch.epoch)
+                // The admission commit is the last committer commit the branch reflects (CO-12's clock,
+                // as at a join).
+                stores.channels.setLastCommitterCommitDay(tx, channelId, day)
+                val schedule = stores.channels.schedule(tx.sql, channelId)
+                if (schedule != null) {
+                    // The new leaf is fresh: the PCS clock restarts, the slot stays.
+                    stores.channels.putSchedule(tx, channelId, schedule.nextSelfupdateDay, day, schedule.nextPassMinute)
+                }
+                stores.joins.deleteJoins(tx, channelId)
+                sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+                sync.inbox.reofferDeferred(tx, NamespaceId(generation.namespaceId))
+                Outcome.JOINED
+            }
+        }
+        return consume(blob, ChannelCounters.Reason.NOT_FOR_ME)
     }
 
     private fun defer(blob: InboundBlob): Outcome {

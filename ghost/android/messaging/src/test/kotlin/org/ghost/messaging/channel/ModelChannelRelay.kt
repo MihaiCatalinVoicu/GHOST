@@ -59,6 +59,8 @@ internal class ModelChannelRelay {
     enum class Mode {
         DROP_WELCOME, COPY_JOIN, FAKE_WELCOME, REPLACE_BOOTSTRAP, REPLAY_JOIN, SHUFFLE, REPEATS, COPY_NAMESPACE,
         FORK, WITHHOLD_COMMIT, REORDER_ACROSS_EPOCH, RESURRECT_COMMIT, LATE_COMMIT, GRIND, SPAM_UNOPENABLE,
+        // Slice S7 (SCN-CE's EXPIRE_LOG variant, SCN-CL's silent orphan, MM-36/MM-37):
+        EXPIRE_LOG, SILENT_ORPHAN,
     }
 
     var modes: Set<Mode> = emptySet()
@@ -98,6 +100,17 @@ internal class ModelChannelRelay {
 
     /** The same, from one client only (by its name): a relay that withholds a blob from a subset. */
     var holdAt: (String, Stored) -> Boolean = { _, _ -> false }
+
+    /**
+     * [Mode.EXPIRE_LOG] (SCN-CE's variant): the matching blobs are never served and die at the relay
+     * at their TTL un-fetched — a member whose missed commit expired on every relay before it listed
+     * (CO-11's "missed commits past their TTL").
+     */
+    var expireLog: (Stored) -> Boolean = { false }
+
+    /** [Mode.SILENT_ORPHAN] (SCN-CL's variant, MM-36): the matching blobs never reach this client at
+     *  all — the member missed a rotating commit for good and its old namespace drains and goes quiet. */
+    var silentOrphan: (String, Stored) -> Boolean = { _, _ -> false }
 
     /** How far past the store the relay claims a blob expires (`InboundBlob.relayExpiryHour`): its TTL, honestly. */
     var expiryFor: (Stored) -> Long = { it.storedAt + it.ttl }
@@ -160,6 +173,8 @@ internal class ModelChannelRelay {
         out.orderKey = orderKey
         out.fetchedCap = fetchedCap
         out.onListed = onListed
+        out.expireLog = expireLog
+        out.silentOrphan = silentOrphan
         out.stored += stored
         out.collected += collected
         out.served += served
@@ -190,6 +205,11 @@ internal class ModelChannelRelay {
     /** One round: every client's pending stores reach the relay, then every stored blob reaches every listener. */
     fun pump(clients: List<ChannelClient>, now: Long): Int {
         for (c in clients) collect(c, now)
+        if (Mode.EXPIRE_LOG in modes) {
+            // The held blobs die at the relay at their TTL, un-fetched: a missed commit past its TTL
+            // is exactly "no blob ever arrives".
+            stored.removeAll { expireLog(it) && now >= it.storedAt + it.ttl }
+        }
         var moved = 0
         for (c in clients) moved += serve(c, now)
         return moved
@@ -285,6 +305,13 @@ internal class ModelChannelRelay {
         for (blob in candidates) {
             if (hold(blob) || holdAt(client.name, blob)) {
                 withheld++
+                continue
+            }
+            if (Mode.EXPIRE_LOG in modes && expireLog(blob)) {
+                withheld++
+                continue
+            }
+            if (Mode.SILENT_ORPHAN in modes && silentOrphan(client.name, blob)) {
                 continue
             }
             if (Mode.FORK in modes) {

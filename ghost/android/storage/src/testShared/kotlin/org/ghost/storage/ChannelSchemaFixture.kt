@@ -76,9 +76,10 @@ internal object ChannelSchema {
     val withoutRowidTables: Set<String> = tables - rowidTables
 
     /**
-     * Every time column of §9, as `table.column`: 32 of them. The introspection tests require the
-     * database to hold exactly these (a column that matches the time-like rule and is not here fails,
-     * and so does one here that no table has), each with the granularity its suffix names.
+     * Every time column of §9, as `table.column`: 33 of them (32 before slice S7 amended `ch_join` with the
+     * rejoin's give-up day, §6.7). The introspection tests require the database to hold exactly these (a column
+     * that matches the time-like rule and is not here fails, and so does one here that no table has), each with
+     * the granularity its suffix names.
      */
     val timeColumns: Set<String> = setOf(
         "ch_channel.last_committer_commit_day",
@@ -94,7 +95,10 @@ internal object ChannelSchema {
         "ch_pending_post.fail_after_hour",
         "ch_seen.until_day",
         "ch_reveal.delete_at_minute",
-        "ch_join.expiry_day", "ch_join_request.until_day", "ch_join_request.recorded_day",
+        "ch_join.expiry_day",
+        // Slice S7 (§6.7): `CH-REJOIN`'s absolute give-up day, first attempt day + 14.
+        "ch_join.rejoin_deadline_day",
+        "ch_join_request.until_day", "ch_join_request.recorded_day",
         "ch_invite_issued.expiry_day", "ch_kp_seen.until_day", "ch_invite_own.expiry_day",
         "ch_sponsor.admitted_day", "ch_member_refresh.refresh_day",
         "ch_request.until_day", "ch_request.recorded_day",
@@ -186,8 +190,9 @@ internal object ChannelSchema {
         "ch_outbound_op" to "operation_id channel_id purpose ref?",
         "ch_seen" to "channel_id tag until_day",
         "ch_reveal" to "channel_id direction peer delete_at_minute?",
-        "ch_join" to "channel_id kp_ref type invite_id? generation expiry_day ns? jk_env? r_join? committers_digest?",
-        "ch_join_request" to "channel_id hash generation type invite_id? body_env until_day recorded_day",
+        "ch_join" to "channel_id kp_ref type invite_id? generation expiry_day ns? jk_env? r_join? committers_digest? " +
+            "rejoin_deadline_day?",
+        "ch_join_request" to "channel_id hash generation type invite_id? body_env member? until_day recorded_day",
         "ch_invite_issued" to "channel_id invite_id invite_pk sponsor sponsor_sig committers_digest pw_version? " +
             "consumed void expiry_day",
         "ch_kp_seen" to "channel_id tag until_day",
