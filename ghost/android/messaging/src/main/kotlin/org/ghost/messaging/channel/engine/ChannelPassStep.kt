@@ -346,9 +346,29 @@ internal class ChannelPassStep(
             .map { it.subject }
             .filter { it.toList() in members && !it.contentEquals(p) }
         val evictions = if (rank != NOT_A_COMMITTER) {
-            env.database.transaction { tx ->
-                stores.members.idleBefore(tx.sql, channelId, day - roster.context.idleEvictDays, MAX_EVICTIONS)
-            }.filter { it.toList() in members && !it.contentEquals(p) && memberRank(it) > rank }
+            // The LIMIT applies in SQL, before the roster and rank filters — a removed member's refresh
+            // row survives on the committer's device until the settle that removed it deletes it (and one
+            // written before this fix ships survives indefinitely), so a round of stale rows must not
+            // crowd out the real idler: the candidate set is walked in rounds and the bound applies after
+            // the filters (the review of S6, §19.42).
+            val picked = ArrayList<ByteArray>()
+            var offset = 0
+            while (picked.size < MAX_EVICTIONS) {
+                val round = env.database.transaction { tx ->
+                    stores.members.idleBefore(tx.sql, channelId, day - roster.context.idleEvictDays, MAX_EVICTIONS, offset)
+                }
+                for (candidate in round) {
+                    if (picked.size >= MAX_EVICTIONS) break
+                    if (candidate.toList() in members && !candidate.contentEquals(p) && memberRank(candidate) > rank &&
+                        picked.none { it.contentEquals(candidate) }
+                    ) {
+                        picked += candidate
+                    }
+                }
+                if (round.size < MAX_EVICTIONS) break
+                offset += MAX_EVICTIONS
+            }
+            picked
         } else {
             emptyList()
         }
@@ -488,8 +508,10 @@ internal class ChannelPassStep(
 
     /**
      * `commit` with the admissions, the Removes and the context change; a KeyPackage or evidence the native side
-     * refuses by index is refused here and the commit is built again without it. Null when a build is refused
-     * outright (a Remove the native CO-2 rank rule refuses, a floor that fits nothing) or no admission remains.
+     * refuses by index is refused here and the commit is built again without it. An admission whose generation's
+     * drain has ended is refused at selection, before the native call (the review of S6, §19.42). Null when a
+     * build is refused outright (a Remove the native CO-2 rank rule refuses, a floor that fits nothing) or no
+     * admission and no membership work remains.
      */
     private fun buildCommit(
         opened: ChannelContexts.Opened,
@@ -504,6 +526,31 @@ internal class ChannelPassStep(
     ): Built? {
         val c = snapshot.channel.channelId
         val floor = ChannelTime.floor(snapshot.channel.sizeClass)
+        // The review of S6 (§19.42): a request recorded against a generation whose drain has ended —
+        // the request outlived the generation it was fetched from — must not null the whole commit
+        // (the evictions, the leave removals and a user Remove riding along would all be skipped, an
+        // empty PCS commit could go out instead, and the request would be re-selected and re-drop the
+        // pass until its expiry). The admission is refused at selection — deleted, its KeyPackage's tag
+        // kept, counted, exactly the shape of a KeyPackage the native side refuses below — and the pass
+        // continues with the remaining work.
+        val generationRows = HashMap<Long, org.ghost.messaging.channel.store.GenerationStore.GenerationRow>()
+        if (admissions.isNotEmpty()) {
+            val selected = admissions.iterator()
+            while (selected.hasNext()) {
+                val a = selected.next()
+                val row = env.database.transaction { tx ->
+                    stores.generations.generation(tx.sql, c, a.request.generation, day)
+                }
+                if (row == null) {
+                    selected.remove()
+                    refused += Refusal(a.request, a.tag, a.kpDay + KP_SEEN_DAYS)
+                } else {
+                    generationRows[a.request.generation] = row
+                }
+            }
+            // Every admission refused and no membership work: nothing to build (the refusals are written).
+            if (admissions.isEmpty() && removes.isEmpty() && context == null) return null
+        }
         while (true) {
             val request = CommitRequest(
                 adds = admissions.map { it.verified.keyPackage to it.evidence },
@@ -537,9 +584,10 @@ internal class ChannelPassStep(
             val entries = ArrayList<ChannelWelcomes.Entry>()
             for ((i, kpRef) in committed.joiners.withIndex()) {
                 val admission = admissions.firstOrNull { it.verified.kpRef.contentEquals(kpRef) } ?: return null
-                val generation = env.database.transaction { tx ->
-                    stores.generations.generation(tx.sql, c, admission.request.generation, day)
-                } ?: return null
+                // Read at selection above (every remaining admission passed it): a generation row cannot
+                // vanish between the two — the pass is single-threaded and the selection ran in this pass.
+                val generation = generationRows[admission.request.generation]
+                    ?: throw IllegalStateException("an admitted request's generation vanished between selection and the seal")
                 val welcome = committed.welcomes[i]
                 val bucket = ChannelTime.bucket(welcome.size, snapshot.channel.sizeClass) ?: return null
                 val blob = opened.crypto.seal(

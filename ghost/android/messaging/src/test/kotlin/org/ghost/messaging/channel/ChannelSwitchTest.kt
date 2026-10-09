@@ -143,6 +143,77 @@ class ChannelSwitchTest {
         assertTrue(owner.integrity().isEmpty())
     }
 
+    /**
+     * §6.5, the review of S6 (§19.42): a second rotation while an op of the older namespace is still open
+     * (production GC collects released ops long before a drain ends; the model relay runs no GC, so the
+     * probe keeps them, as a production client can see them before its GC runs). The switch defers; the
+     * next pass must not deadlock on the still-draining row — without the fix the demotion's
+     * at-most-one-draining trigger aborts the switch transaction, CH-SWITCH runs before CH-SWEEP, and
+     * every pass throws for ever.
+     */
+    @Test
+    fun aSecondRotationWithAnOpenOpOfTheOlderDrainDefersAndCompletesWhenTheOpCloses() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol, dave)
+        val ns0 = generationNs(owner, id, 0)
+        owner.engine.remove(id, pseudonymOf(carol, id))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        w.advance(70 * DmWorld.MINUTE)
+        for (c in w.clients) c.hintPass()
+        assertEquals(1L, owner.count("ch_generation", "generation = 0 AND state = 'draining'"))
+
+        // No op collection: the owner's ops of ns_0 stay, and one is still open.
+        owner.engine.remove(id, pseudonymOf(dave, id))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        w.advance(70 * DmWorld.MINUTE)
+        // The switch: the older drain's removal is refused (an op of ns_0 is open) — the switch ends the
+        // older drain early, turns its listening off, and defers.
+        owner.hintPass()
+        assertEquals("the switch waits for the older drain's removal", 1L, owner.count("ch_generation", "generation = 2 AND state = 'pending_switch'"))
+        assertEquals("the older drain ended early", DmTime.day(w.now) - 1, drainDayOf(owner, id, 0))
+        assertEquals("its listening is off", 0L, owner.count("sync_namespace", "namespace_id = ? AND listening = 1", ns0))
+
+        // A day later the expired draining row is invisible to live() but still reads `draining`: without
+        // the fix the demotion aborts on it and the pass throws — the channel is dead for good.
+        w.advance(DmWorld.DAY)
+        owner.hintPass()
+        assertEquals("the pass does not deadlock on the expired draining row", 1L, owner.count("ch_generation", "generation = 2 AND state = 'pending_switch'"))
+
+        // The op closes (production GC) at every member; the switch completes in the next pass and the
+        // channel keeps making progress.
+        collectOps(owner)
+        collectOps(bob)
+        owner.hintPass()
+        assertEquals("the switch completed once the op closed", 1L, owner.count("ch_generation", "generation = 2 AND state = 'current'"))
+        assertEquals("the older drain went with its removal", 0L, owner.count("ch_generation", "generation = 0"))
+        assertEquals("the previous generation drains", 1L, owner.count("ch_generation", "generation = 1 AND state = 'draining'"))
+        ChannelScenes.post(owner, id, "încă merge")
+        // bob's first pass can defer once more — an unconsumed fetched row of ns_0 refuses the removal;
+        // the row is consumed in that same pass and the next one switches. The relay serves the post
+        // once bob listens to ns_2.
+        w.pump()
+        bob.hintPass()
+        w.pump()
+        bob.hintPass()
+        w.pump()
+        bob.hintPass()
+        assertTrue("a post reaches the other member afterwards", bob.displayed(id).contains("încă merge"))
+        ChannelScenes.post(bob, id, "și înapoi")
+        w.pump()
+        owner.hintPass()
+        w.pump()
+        owner.hintPass()
+        assertTrue("and one comes back", owner.displayed(id).contains("și înapoi"))
+        assertTrue(owner.integrity().isEmpty())
+    }
+
     /** §19.8: a joiner that joined into a newer generation switches at its next session start. */
     @Test
     fun aJoinerWithANewerGenerationSwitchesAtItsNextSessionStart() = ChannelWorld().use { w ->

@@ -4,6 +4,7 @@ import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AcceptResult
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.api.PostResult
+import org.ghost.messaging.channel.engine.ChannelCounters
 import org.ghost.messaging.channel.engine.ChannelEngine
 import org.ghost.messaging.channel.engine.ChannelPostStep
 import org.ghost.messaging.channel.store.ChannelState
@@ -280,7 +281,178 @@ class ChannelMembershipTest {
         assertTrue(bob.integrity().isEmpty())
     }
 
+    /**
+     * The review of S6 (§19.42): a join request recorded against a generation whose drain has ended must
+     * not null the committer's whole pass — the eviction riding along would be skipped, the request
+     * re-selected and the commit re-dropped until its expiry. The reviewer's world: the request is
+     * recorded in a draining generation; a second rotation ends that generation at once; the rank-1
+     * committer's pass refuses the dead admission **and** evicts the idle member in the one commit.
+     */
+    @Test
+    fun aRequestOfAnEndedGenerationIsRefusedAtSelectionAndThePassContinues() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val erin = w.client("erin")
+        val frank = w.client("frank")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol, erin, frank)
+        makeCommitter(w, owner, bob, id) // bob at rank 1
+        // dave's invite, day 0 (after the committer change: the digest of bob's passes must match).
+        val link = ChannelAdmissionTest.invite(owner, id)
+        // Rotation 1, day 0: carol goes; the switch leaves generation 0 draining (until day 14).
+        owner.engine.remove(id, pseudonymOf(carol, id))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        w.advance(70 * DmWorld.MINUTE)
+        for (c in w.clients) c.hintPass()
+        assertEquals(1L, owner.count("ch_generation", "generation = 0 AND state = 'draining'"))
+
+        // Day 5: dave accepts the day-0 invite; the committers fetch his request from ns_0 — still
+        // draining and listened — and record it against generation 0.
+        w.advance(5 * DmWorld.DAY)
+        val dave = w.client("dave")
+        assertEquals(AcceptResult.PENDING, dave.engine.accept(link, null))
+        w.quiesce()
+        assertEquals("the request is recorded at the rank-1 committer", 1L, bob.count("ch_join_request"))
+
+        // Day 6: rotation 2 — bob (rank 1) removes erin. The owner's pass may not run here: dave's
+        // request is aged work for rank 0, and the owner's pass would admit him. For bob it is not aged
+        // (day 5 + 2 × 48 h > day 6), so his pass takes only the Remove.
+        w.advance(DmWorld.DAY)
+        assertEquals(ChannelEngine.RemoveResult.REMOVED, bob.engine.remove(id, pseudonymOf(erin, id)))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        // The production GC (the model relay runs none) collects released ops before a drain can end —
+        // at every member: one member's open op of ns_0 refuses its removal and strands its switch.
+        for (c in w.clients) collectOps(c)
+        w.advance(70 * DmWorld.MINUTE)
+        for (c in w.clients) c.hintPass()
+        // A member's pass can defer once more — an unconsumed fetched row of ns_0 refuses the removal;
+        // the row is consumed in the same pass and the next one switches.
+        w.pump()
+        for (c in w.clients) c.hintPass()
+        assertEquals("generation 0 ended at once", 0L, owner.count("ch_generation", "generation = 0"))
+
+        // Day 7: frank has been silent since his admission; bob's pass must evict frank AND refuse
+        // dave — one commit with the Remove, the request deleted and counted.
+        w.advance(DmWorld.DAY)
+        backdateRefresh(bob, id, 70, pseudonymOf(frank, id))
+        duePass(w, bob)
+        assertEquals("the pass evicts frank", 1L, bob.count("ch_candidate", "own = 1 AND removes = 1"))
+        assertEquals("and refuses dave", 0L, bob.count("ch_join_request"))
+        assertTrue("the refusal is counted", bob.counters[ChannelCounters.Reason.ADMISSION_REFUSED] >= 1)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals("frank is removed", ChannelState.REMOVED, frank.channel(id)!!.state)
+        assertEquals("dave is never admitted", ChannelState.JOINING, dave.channel(id)!!.state)
+        assertTrue(bob.integrity().isEmpty())
+    }
+
+    /**
+     * The review of S6 (§19.42), probe B: removed members' refresh rows starve the idle-eviction scan —
+     * the SQL LIMIT applies before the roster filter, and 8 stale rows crowd out the real idler. The
+     * stale rows of a pre-fix device (or one written before this fix ships) survive the removal, so the
+     * pass walks the candidate set beyond one round; the idler is evicted at the +72-day pass and stays
+     * removed at +102.
+     */
+    @Test
+    fun idleEvictionWalksPastRemovedMembersStaleRowsToTheRealIdler() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val members = (1..9).map { w.client("m$it") }
+        // one commit's floor fits four KeyPackages: the creating pass admits four, five more follow
+        val id = ChannelScenes.channelOf(w, owner, members[0], members[1], members[2], members[3])
+        for (m in members.drop(4)) ChannelScenes.admit(w, owner, id, m)
+        val idler = members[8]
+        // m1..m8 idle for 100 days; m9 (the idler) stays fresh.
+        for (m in members.take(8)) backdateRefresh(owner, id, 100, pseudonymOf(m, id))
+        w.advance(2 * DmWorld.DAY)
+        duePass(w, owner)
+        assertEquals("the pass evicts the eight idle members", 1L, owner.count("ch_candidate", "own = 1 AND removes = 1"))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        for (m in members.take(8)) assertEquals("${m.name} is removed", ChannelState.REMOVED, m.channel(id)!!.state)
+
+        // Everyone switches the new generation first (a member's pass can defer once — an unconsumed
+        // fetched row of the old namespace refuses the removal; the next pass switches).
+        w.advance(70 * DmWorld.MINUTE)
+        for (c in w.clients) c.hintPass()
+        w.pump()
+        for (c in w.clients) c.hintPass()
+
+        // The residue a pre-fix device holds: the eight removed members' stale rows, written as the
+        // admission-day rows were.
+        for (m in members.take(8)) backdateRefresh(owner, id, 100, pseudonymOf(m, id))
+
+        // +72 days: the idler's last refresh (its admission) is past the 63-day policy, and the eight
+        // stale rows sit ahead of it in the scan. Without the fix the SQL round returns exactly the
+        // stale rows and the idler is never evicted.
+        w.advance(72 * DmWorld.DAY)
+        duePass(w, owner)
+        assertEquals("the idler is evicted despite the stale rows", 1L, owner.count("ch_candidate", "own = 1 AND removes = 1"))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.REMOVED, idler.channel(id)!!.state)
+
+        // +102 days: the idler stays removed; no pass starves or resurrects anything.
+        w.advance(30 * DmWorld.DAY)
+        duePass(w, owner)
+        assertEquals(0L, owner.count("ch_candidate", "own = 1 AND removes = 1"))
+        assertEquals(ChannelState.REMOVED, idler.channel(id)!!.state)
+        assertTrue(owner.integrity().isEmpty())
+    }
+
+    /**
+     * §8.5, the review of S6 (§19.42): a removed member's rows — refresh, member-seen, sponsor — go at
+     * its removal. The sponsor row lives on every other member's device (deleted where the winner's
+     * merge learns of the removal); the member's own refresh row lives on its own device once it has
+     * committed (its own commit's update path refreshes its leaf) — deleted where it merges its removal.
+     */
+    @Test
+    fun aRemovedMembersRowsGoWithItsRemoval() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        makeCommitter(w, owner, bob, id) // bob at rank 1
+        // bob resigns: his own commit's update path refreshes his leaf, and his device merges the winner
+        // as a committer — his own `ch_member_refresh` row exists from here on.
+        assertEquals(ChannelEngine.RemoveResult.REMOVED, bob.engine.resign(id))
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        val bobP = pseudonymOf(bob, id)
+        assertEquals("the sponsor row of the admission", 1L, owner.count("ch_sponsor", "member = ?", bobP))
+        assertTrue("the member's own refresh row (its own commit merged)", refreshDayOf(bob, id, bobP) >= 0)
+
+        // The member leave and the committer's removal of the leaver.
+        assertEquals(ChannelPostStep.LeaveResult.LEFT, bob.engine.leave(id))
+        w.pump()
+        owner.hintPass()
+        assertEquals(1L, owner.count("ch_request", "kind = 'leave'"))
+        w.advance(6 * DmWorld.HOUR)
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.REMOVED, bob.channel(id)!!.state)
+        assertEquals("the sponsor row went with the removal", 0L, owner.count("ch_sponsor", "member = ?", bobP))
+        assertEquals("the removed member's own refresh row went at the merge", -1L, refreshDayOf(bob, id, bobP))
+        assertTrue(owner.integrity().isEmpty())
+    }
+
     // ----------------------------------------------------------------------------------------------- helpers
+
+    /** The production GC's op collection (the model relay runs no GC): released ops die long before a drain ends. */
+    private fun collectOps(client: ChannelClient) {
+        client.database.transaction { tx ->
+            tx.sql.exec("UPDATE outbox_op SET released = 1 WHERE released = 0 AND outcome <> 'pending'")
+            tx.sql.exec("DELETE FROM outbox_op WHERE released = 1 AND ciphertext IS NULL")
+        }
+    }
 
     private fun rosterSize(client: ChannelClient, id: ChannelId): Int = client.database.transaction { tx ->
         val rows = org.ghost.messaging.channel.engine.MlsRows.of(
@@ -306,6 +478,7 @@ class ChannelMembershipTest {
             tx.sql.query("SELECT refresh_day FROM ch_member_refresh WHERE channel_id = ? AND member = ?", listOf(id.toByteArray(), member)) { d = it.long(0) }
             d
         }
+
 
     /** Every refresh day aged [days] back (what quiet days would say), or one member's. */
     private fun backdateRefresh(client: ChannelClient, id: ChannelId, days: Long, only: ByteArray? = null) {

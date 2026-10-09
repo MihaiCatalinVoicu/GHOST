@@ -140,6 +140,10 @@ internal class ChannelSettleStep(
         val ownBoxPk: ByteArray?,
         /** The members whose leaf the winner's update path refreshed (§6.6's `ch_member_refresh`): their pseudonyms. */
         val refreshed: List<ByteArray>,
+        /** The member's own pseudonym: what the removed branch deletes its rows by (§8.5, §19.42). */
+        val self: ByteArray,
+        /** The members the winner removed (the pre-commit roster minus the post-commit one): their rows go at this merge. */
+        val removed: List<ByteArray>,
     )
 
     /** One admission the winner made: what the settle records about it. */
@@ -377,7 +381,16 @@ internal class ChannelSettleStep(
         // §6.6: the winner's update path refreshes its committer's leaf with `refresh_epoch = e` (§6.8's
         // force_self_update is native for every commit): the members to stamp in `ch_member_refresh`.
         val refreshed = afterRoster?.members?.filter { it.refreshEpoch == e }?.map { it.pseudonym.copyOf() } ?: emptyList()
-        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk, refreshed)
+        // §8.5, the review of S6 (§19.42): the members the winner removed — the pre-commit roster minus the
+        // post-commit one (a swap keeps its pseudonym, so a restore/rejoin is not a removal). Null for the
+        // member the winner removed itself: its own settle takes the removed branch below, which deletes
+        // its rows by its own pseudonym.
+        val removed = afterRoster?.members?.let { after ->
+            beforeRoster.members
+                .filterNot { b -> after.any { it.pseudonym.contentEquals(b.pseudonym) } }
+                .map { it.pseudonym.copyOf() }
+        } ?: emptyList()
+        return Merge(winner, changes, settled, admitted, framed, before, afterRoster?.context, afterRoster?.committersDigest, committer, own, ownBoxPk, refreshed, opened.pseudonym, removed)
     }
 
     /** Lexicographic byte order: the deterministic order of the held blobs and the trial keys. */
@@ -427,6 +440,12 @@ internal class ChannelSettleStep(
             val to = if (settled.standing == STANDING_REPLACED && fresh.state == ChannelState.ACTIVE) ChannelState.REPLACED else ChannelState.REMOVED
             stores.channels.transition(tx, c, fresh.state, to)
             stores.mls.deleteGroupRows(tx, c)
+            // §8.5, the review of S6 (§19.42): the removed member's rows go with the removal, in the same
+            // transaction as its MLS state — the refresh and member-seen records and the sponsor
+            // attribution of a member no longer in the channel are residue ("deleted at its removal").
+            stores.members.deleteRefresh(tx, c, merge.self)
+            stores.members.deleteMemberSeen(tx, c, merge.self)
+            stores.invites.deleteSponsor(tx, c, merge.self)
             env.contexts.closeChannel(c)
             // §6.5 "What a removed member keeps": a removal rotates, and the removed member keeps listing
             // `ns_g` until the drain ends — `drain_until_day` is the day of the removing commit's switch hour
@@ -436,11 +455,16 @@ internal class ChannelSettleStep(
             // A member removed while its previous generation still drains (a second rotation inside one
             // drain) ends the older drain at once — at most one draining generation per channel — and the
             // demotion of the current one waits for the sweep's removal of the older ([ChannelSweepStep],
-            // the corner needs an op of the old namespace still open here; recorded in §19.41).
+            // the corner needs an op of the old namespace still open here; recorded in §19.41). The older
+            // drain is read without the drain filter (the review of S6, §19.42): one whose end already
+            // moved to before today is invisible to live() but its row still reads `draining`, and the
+            // demotion's at-most-one-draining trigger would abort this transaction on it — the same
+            // end-or-defer shape the switch takes, and the sweep owns the removal retry either way.
             if (settled.rotates) {
                 val commitSeconds = settled.commitMinute * DmTime.MINUTE
                 val switchHour = minOf(DmTime.ceilHour(commitSeconds + SWITCH_DELAY_SECONDS), DmTime.ceilHour(now + SWITCH_CLAMP_SECONDS))
                 val older = stores.generations.live(tx.sql, c, day).firstOrNull { it.state == GenerationState.DRAINING }
+                    ?: stores.generations.draining(tx.sql, c)
                 if (older == null) {
                     stores.generations.demote(tx, c, fresh.generation, DmTime.day(switchHour) + DRAIN_DAYS)
                 } else {
@@ -471,6 +495,15 @@ internal class ChannelSettleStep(
             // §6.6: the committer's per-member refresh days (a committer's rows only — nobody else reads them).
             if (merge.committer) {
                 for (p in merge.refreshed) stores.members.putRefresh(tx, c, p, day)
+            }
+            // §8.5, the review of S6 (§19.42): the winner's removed members' rows go at this merge, on
+            // every staying member's device — the committer's idle-eviction scan reads `ch_member_refresh`,
+            // and a removed member's stale row there would crowd out the real idler (the pass walks the
+            // candidate set beyond one SQL round now, and this deletes them at the source).
+            for (r in merge.removed) {
+                stores.members.deleteRefresh(tx, c, r)
+                stores.members.deleteMemberSeen(tx, c, r)
+                stores.invites.deleteSponsor(tx, c, r)
             }
         }
         for (a in merge.admitted) {

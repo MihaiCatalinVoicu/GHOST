@@ -17,7 +17,9 @@ import org.ghost.sync.api.NamespaceId
  *
  * **When it runs.** On a **time-triggered** pass in the last [RENEWAL_WINDOW_SECONDS] of the ISO week (F8
  * §12.4's EXPIRING renewal: a PRF time in the last 23 h of the week), for every channel whose current
- * context names the member a funder. `Registrations.keep` inserts only the missing rows, so a pass in the
+ * context names the member a funder — `active` ones and a `leaving` member's own channel while the
+ * context still names it (the removal merges at the settle; until then the registrations are still its
+ * to keep, §19.42). `Registrations.keep` inserts only the missing rows, so a pass in the
  * window repeats nothing; the step stays cheap on later passes.
  *
  * **What it renews.** For every generation the member listens to that is `current` or `pending_switch`
@@ -68,7 +70,12 @@ internal class ChannelFunderStep(
         if (!renewalDue(now)) return 0
         val day = DmTime.day(now)
         val week = DmTime.week(now)
-        val channels = env.database.transaction { tx -> stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) }
+        // A LEAVING member the current context still names a funder keeps renewing until the removing
+        // commit merges (the review of S6, §19.42): its funders key drops only at that settle's context
+        // change, and the namespace's registrations must bridge the gap.
+        val channels = env.database.transaction { tx ->
+            stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) + stores.channels.channelsIn(tx.sql, ChannelState.LEAVING)
+        }
         var renewed = 0
         for (channel in channels) {
             if (renew(channel.channelId, day, week, now)) renewed++
@@ -82,7 +89,9 @@ internal class ChannelFunderStep(
         // The generations to renew and the relay sets: read first (the relay set can be absent this week).
         val view = env.database.transaction { tx ->
             val channel = stores.channels.channel(tx.sql, channelId)
-            if (channel == null || channel.state != ChannelState.ACTIVE) return@transaction null
+            if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING)) {
+                return@transaction null
+            }
             val generations = stores.generations.live(tx.sql, channelId, day)
                 .filter { it.state == GenerationState.CURRENT || it.state == GenerationState.PENDING_SWITCH }
             if (generations.isEmpty()) return@transaction null

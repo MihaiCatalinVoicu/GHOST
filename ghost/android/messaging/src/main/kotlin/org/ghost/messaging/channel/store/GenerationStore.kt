@@ -92,6 +92,21 @@ internal class GenerationStore {
         return route
     }
 
+    /**
+     * The channel's draining generation, **whatever its deadline**: the only draining row there can be
+     * (the schema's at-most-one-draining triggers), read without the drain filter. `CH-SWITCH` uses it
+     * where the demotion's trigger makes the row matter even after its drain ended: a drain whose end
+     * moved to before today is invisible to [live], but its row still reads `draining` until `CH-SWEEP`
+     * removes it, and the switch ends-or-defers it there instead of aborting (the double-rotation
+     * deadlock of §19.42). Registered in `ChannelSweepQueries` (it names the expired row; nothing once
+     * the sweep has deleted it).
+     */
+    fun draining(sql: SqlExecutor, channelId: ByteArray): GenerationRow? {
+        var row: GenerationRow? = null
+        sql.query(DRAINING, listOf(channelId)) { r -> row = read(r) }
+        return row
+    }
+
     /** A generation whose drain has ended: what `CH-SWEEP` removes (§6.5 "Drain"). */
     class DrainedRow(
         val channelId: ByteArray,
@@ -241,6 +256,11 @@ internal class GenerationStore {
         const val ROUTE: String =
             "SELECT channel_id, generation, state FROM ch_generation WHERE namespace_id = ? " +
                 "AND (drain_until_day IS NULL OR drain_until_day >= ?)"
+
+        /** CH-SWITCH's end-or-defer read (§19.42): the draining row without the drain filter; registered in `ChannelSweepQueries`. */
+        const val DRAINING: String =
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND state = 'draining'"
 
         /** SWEEP's own batch: registered in `ChannelSweepQueries`, judged by the opposite contract. */
         const val DRAINED: String =

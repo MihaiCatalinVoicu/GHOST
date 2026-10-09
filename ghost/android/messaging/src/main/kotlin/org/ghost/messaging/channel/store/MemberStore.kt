@@ -76,10 +76,15 @@ internal class MemberStore {
         return day
     }
 
-    /** The members whose last refresh is before [beforeDay]: the idle-eviction candidates of §6.6, oldest first. */
-    fun idleBefore(sql: SqlExecutor, channelId: ByteArray, beforeDay: Long, limit: Int): List<ByteArray> {
+    /**
+     * The members whose last refresh is before [beforeDay]: the idle-eviction candidates of §6.6, oldest first.
+     * [limit] bounds one round and [offset] walks the candidate set: the caller applies its roster and rank
+     * filters before the bound, so a round of stale rows (a removed member's surviving row) cannot crowd out
+     * the real idlers (the review of S6, §19.42).
+     */
+    fun idleBefore(sql: SqlExecutor, channelId: ByteArray, beforeDay: Long, limit: Int, offset: Int = 0): List<ByteArray> {
         val out = ArrayList<ByteArray>()
-        sql.query(IDLE, listOf(channelId, beforeDay, limit.toLong())) { r -> out += r.blob(0) }
+        sql.query(IDLE, listOf(channelId, beforeDay, limit.toLong(), offset.toLong())) { r -> out += r.blob(0) }
         return out
     }
 
@@ -234,7 +239,7 @@ internal class MemberStore {
         const val MEMBER_SEEN: String = "SELECT last_epoch FROM ch_member_seen WHERE channel_id = ? AND member = ?"
         const val REFRESH: String = "SELECT refresh_day FROM ch_member_refresh WHERE channel_id = ? AND member = ?"
         const val IDLE: String =
-            "SELECT member FROM ch_member_refresh WHERE channel_id = ? AND refresh_day < ? ORDER BY refresh_day, member LIMIT ?"
+            "SELECT member FROM ch_member_refresh WHERE channel_id = ? AND refresh_day < ? ORDER BY refresh_day, member LIMIT ? OFFSET ?"
 
         const val REQUESTS: String =
             "SELECT channel_id, kind, subject, payload_env, until_day, recorded_day FROM ch_request WHERE channel_id = ? AND until_day >= ? " +

@@ -682,6 +682,16 @@ object ChannelSweepQueries {
             listOf(TODAY, 500L), rows = 1,
         ),
         sweep(
+            "theDrainingGenerationWhateverItsDeadline",
+            // The review of S6 (§19.42): CH-SWITCH's end-or-defer read — the draining row even after its
+            // drain ended (its row blocks the demotion's at-most-one-draining trigger until the sweep
+            // deletes it). Judged by the sweep contract: it names the expired drain of the fixture's
+            // channel and nothing once the sweep has deleted the row.
+            "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, own_rotation, switch_hour, " +
+                "drain_until_day, open_epoch FROM ch_generation WHERE channel_id = ? AND state = 'draining'",
+            listOf(L.CH), rows = 1,
+        ),
+        sweep(
             "oneBatchOfExpiredEpochs",
             "SELECT channel_id, epoch FROM ch_epoch WHERE keep_until_day < ? ORDER BY keep_until_day, channel_id, epoch LIMIT ?",
             listOf(TODAY, 500L), rows = 1,

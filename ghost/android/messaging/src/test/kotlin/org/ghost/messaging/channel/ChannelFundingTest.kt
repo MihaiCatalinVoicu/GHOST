@@ -3,6 +3,7 @@ package org.ghost.messaging.channel
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.engine.ChannelFunderStep
+import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.engine.DmTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -169,6 +170,53 @@ class ChannelFundingTest {
         )
     }
 
+    /**
+     * The review of S6 (§19.42): a leaving funder stops renewing only when its removal merges — until
+     * then the current context still names it, and the namespace's registrations are still its to keep.
+     */
+    @Test
+    fun aLeavingFunderRenewsUntilItsRemovalMerges() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        makeBobAFunder(w, owner, bob, id)
+        val ns0 = generationNs(bob, id, 0)
+
+        // bob leaves (a plain member — no resignation needed); his channel is `leaving`, and the
+        // context still names him a funder.
+        assertEquals(org.ghost.messaging.channel.engine.ChannelPostStep.LeaveResult.LEFT, bob.engine.leave(id))
+        assertEquals(ChannelState.LEAVING, bob.channel(id)!!.state)
+        advanceToWindow(w)
+        bob.timePass()
+        assertTrue(
+            "the leaving funder renewed",
+            bob.count("relay_key_registration", "namespace_id = ? AND period_id = ?", ns0, DmTime.week(w.now)) >= 6,
+        )
+
+        // The removal merges: the owner records the leave and removes the leaver; bob merges it.
+        w.pump()
+        owner.hintPass()
+        assertEquals(1L, owner.count("ch_request", "kind = 'leave'"))
+        w.advance(6 * DmWorld.HOUR)
+        clearArm(owner, id)
+        owner.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.REMOVED, bob.channel(id)!!.state)
+
+        // From the next window on, a removed member renews nothing.
+        val rows = bob.count("relay_key_registration", "namespace_id = ?", ns0)
+        w.advance(DmWorld.WEEK)
+        advanceToWindow(w)
+        bob.timePass()
+        assertEquals("a removed member renews nothing", rows, bob.count("relay_key_registration", "namespace_id = ?", ns0))
+        assertTrue(bob.integrity().isEmpty())
+    }
+
     // ----------------------------------------------------------------------------------------------- helpers
 
     /** The owner removes [carol] (a rotation), everyone settles; returns ns_1. */
@@ -205,6 +253,14 @@ class ChannelFundingTest {
     private fun advanceToWindow(w: ChannelWorld) {
         val target = DmTime.weekStart(DmTime.week(w.now) + 1) - ChannelFunderStep.RENEWAL_WINDOW_SECONDS + 60
         if (target > w.now) w.advance(target - w.now)
+    }
+
+    /** The member's `next_pass_minute` arm cleared (a session start schedules the pass this helper then runs). */
+    private fun clearArm(client: ChannelClient, id: ChannelId) {
+        client.database.transaction { tx ->
+            val row = client.channelStores.channels.schedule(tx.sql, id.toByteArray()) ?: return@transaction
+            client.channelStores.channels.putSchedule(tx, id.toByteArray(), row.nextSelfupdateDay, row.lastOwnCommitDay, null)
+        }
     }
 
     /** The production GC's op collection (the model relay runs no GC): released ops die long before a drain ends. */

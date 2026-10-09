@@ -34,7 +34,9 @@ import org.ghost.sync.api.SendDelay
  *    posts are the declared loss, §6.3.6): the older namespace is removed here when it has no open op
  *    (its still-deferred fetched rows marked consumed first, §19.23), else its `drain_until_day` moves to
  *    the day before today — the schema lets a drain's end move only earlier — and `CH-SWEEP` owns the
- *    removal retry;
+ *    removal retry; the older drain is read without the drain filter, so a drain whose end already moved
+ *    takes the same end-or-defer path instead of aborting the demotion (the double-rotation deadlock,
+ *    §19.42);
  *  - **the rotating committer funds**: when the pending row's `own_rotation` marks the member's own commit
  *    (§6.5 "Funding at a rotation", §19.8 (d): the time is the committer's own switch hour, never the
  *    settle's), `Funding.set(ns_{g+1}, true)` and the READ and DEPOSIT registration rows of the current
@@ -141,7 +143,15 @@ internal class ChannelSwitchStep(
                 // demotion below needs the older row gone: when an open op refuses the removal, the older
                 // drain's end moves to the day before today and the switch waits — CH-SWEEP owns the
                 // removal retry and the next pass completes the switch.
+                //
+                // The older drain is read without the drain filter too (the review of S6, §19.42): once
+                // its end moved to before today, no live() read names it, but its row still reads
+                // `draining` — and the demotion's at-most-one-draining trigger would abort the whole
+                // switch transaction on it, every pass, for ever (CH-SWITCH runs before CH-SWEEP, so the
+                // sweep's removal retry never runs: a permanent engine deadlock). The end-or-defer shape
+                // is the same — the removal is retried here and, while it stays refused, left to the sweep.
                 val older = stores.generations.live(tx.sql, channelId, day).firstOrNull { it.state == GenerationState.DRAINING }
+                    ?: stores.generations.draining(tx.sql, channelId)
                 if (older != null) {
                     val oldNs = NamespaceId(older.namespaceId)
                     if (sync.namespaces.remove(tx, oldNs)) {
