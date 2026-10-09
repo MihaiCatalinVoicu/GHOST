@@ -4,6 +4,7 @@ import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AcceptResult
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.api.PostResult
+import org.ghost.messaging.channel.engine.ChannelSweepStep
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.Direction
 import org.junit.Assert.assertEquals
@@ -18,10 +19,11 @@ import org.junit.Test
  * real OpenMLS — the post timers and §8.2's cascade (a fired post takes its reactions and its derived rows;
  * mutant ME-C1, ME-C5), the expired-pending edge recorded for this slice (§19.37 row 11: FAILED), the
  * epochs past retention with the count of §8.3 (`sweepPast`, MM-28) and the box keys of §19.17, the
- * administrative posts' TTL (§8.5: `INVITE_ISSUED` until `expiry_day + 1`), the sweep's no-op cases (a
- * pending commit is custody's, never the sweep's — §19.37 row 47), the checkpoint after the cascade with
- * the §10.7 debt (a busy reader is retried, never lost), and T25's relay half of §5.8 (a handshake blob
- * carries the handshake TTL, not the post TTL, in channels with timers ≤ 1 d; X-7).
+ * administrative posts' TTL (§8.5: `INVITE_ISSUED` and the sponsor's link through `expiry_day`, swept from
+ * `expiry_day + 1`), the sweep's no-op cases (a pending commit is custody's, never the sweep's — §19.37 row
+ * 47), the checkpoint after the cascade with the §10.7 debt (a busy reader is retried, never lost), the
+ * sweep's rounds cap (the DM sweeper's `MAX_BATCHES` rule, §19.46 FIX 4), and T25's relay half of §5.8 (a
+ * handshake blob carries the handshake TTL, not the post TTL, in channels with timers ≤ 1 d; X-7).
  *
  * What runs where: the timer-change half of SCN-CF ("older posts keep their own timer") awaits the policy
  * actions' user entry points (Phase 13, as S6 recorded for the password actions); the per-timer matrix of
@@ -306,12 +308,13 @@ class ChannelEphemeralTest {
 
     /**
      * The administrative posts' TTL (§8.5's table, §19.21; mutant ME-C5's invite-record half): an
-     * `INVITE_ISSUED` record is declared membership metadata, kept until `expiry_day + 1` — a committer
-     * admits up to the invite's expiry — on every member; the sponsor's own link is kept only until
-     * `expiry_day`.
+     * `INVITE_ISSUED` record is declared membership metadata, ids/keys/signature, no user text, kept on
+     * every member **through** `expiry_day` — a committer admits up to the invite's expiry — and the
+     * sponsor's own link the same; both are swept from `expiry_day + 1` (the reads' filter is
+     * `expiry_day >= today`; at day granularity the old "+1 vs until" divergence collapses, §19.46 FIX 7).
      */
     @Test
-    fun inviteRecordsLiveUntilTheirExpiryDayPlusOne() = ChannelWorld().use { w ->
+    fun inviteRecordsLiveThroughTheirExpiryDayAndAreSweptFromTheNextOne() = ChannelWorld().use { w ->
         val owner = w.client("owner")
         val bob = w.client("bob")
         val id = channelOfTimer(w, owner, 4, bob)
@@ -336,7 +339,7 @@ class ChannelEphemeralTest {
         assertEquals(atBob, bob.count("ch_invite_issued"))
         assertEquals(2L, owner.count("ch_invite_issued"))
         assertEquals(2L, owner.count("ch_invite_own"))
-        // the day after: the sweep deletes them (kept until expiry_day + 1)
+        // the day after: the sweep deletes them (both live through expiry_day, swept from expiry_day + 1)
         w.advance(DmWorld.DAY)
         owner.timePass()
         bob.timePass()
@@ -394,11 +397,54 @@ class ChannelEphemeralTest {
     }
 
     /**
-     * §8.2's "Sweeps run where DM sweeps run": the actor's next wake is at the next post timer, so a fired
-     * post does not wait for an unrelated alarm (the inexact alarm half is the wiring's, Phase 13).
+     * The sweep's rounds cap (§19.46 FIX 4): a backlog past [ChannelSweepStep.MAX_BATCHES] batches drains
+     * over several passes — one sweep must not become unbounded work on the actor thread, the DM sweeper's
+     * rule — and a pass whose sweep hit the cap still runs its later steps (the reveal row inserted beside
+     * the backlog is swept by `sweepReveals` of the same pass).
      */
     @Test
-    fun theNextWakeIsTheNextPostTimer() = ChannelWorld().use { w ->
+    fun aSweepPastTheRoundsCapDrainsOverTheNextPassesAndThePassRunsOn() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val id = channelOfTimer(w, owner, 0)
+        val hourAgo = org.ghost.messaging.engine.DmTime.floorHour(w.now) - org.ghost.messaging.engine.DmTime.HOUR
+        val minute = org.ghost.messaging.engine.DmTime.floorMinute(w.now)
+        // a backlog of MAX_BATCHES + 1 batches: unread posts past their relay expiry E
+        val backlog = (ChannelSweepStep.MAX_BATCHES + 1) * ChannelSweepStep.BATCH
+        owner.database.transaction { tx ->
+            for (i in 0 until backlog) {
+                owner.channelStores.posts.insertIncomingIfAbsent(
+                    tx,
+                    byteArrayOf(i.toByte(), (i shr 8).toByte()) + ByteArray(14) { 0x5a }, id.toByteArray(),
+                    ByteArray(32) { 0x5b }, 1, null, 0, 1, ByteArray(29) { 0x5c }, minute, null, hourAgo,
+                )
+            }
+        }
+        // one expired reveal row beside the backlog: a later sweep step of the same pass
+        owner.sql.exec(
+            "INSERT INTO ch_reveal(channel_id, direction, peer, delete_at_minute) VALUES (?, 'in', ?, ?)",
+            listOf(id.toByteArray(), ByteArray(32) { 0x5d }, minute - 60),
+        )
+        owner.timePass()
+        // the cap: one batch short of the backlog stands; the reveal row went all the same
+        assertEquals(ChannelSweepStep.BATCH.toLong(), owner.count("ch_post"))
+        assertEquals(0L, owner.count("ch_reveal"))
+        owner.timePass()
+        assertEquals(0L, owner.count("ch_post"))
+        assertEquals(emptyList<String>(), owner.integrity())
+    }
+
+    /**
+     * §8.2's "Sweeps run where DM sweeps run": the actor's next wake is at the next post timer, so a fired
+     * post does not wait for an unrelated alarm (the inexact alarm half is the wiring's, Phase 13).
+     *
+     * The assertion is an **equality**, not `deadline - now >= wake`: the quiesced world holds no earlier
+     * due term (no settle point, no scheduled pass inside the hour — the committer spacing is 6 h —, no
+     * hold, the funder renewal days out), so under the old `>=` shape any earlier term satisfied the test
+     * — a scheduled-pass term masked a missing `nextPostDelete` term in the shipped world (the S8 review,
+     * §19.46 FIX 5). The equality fails if the engine drops the post timer from the wake.
+     */
+    @Test
+    fun theNextWakeIsExactlyTheNextPostTimer() = ChannelWorld().use { w ->
         val owner = w.client("owner")
         val id = channelOfTimer(w, owner, 2, w.client("bob")) // 1-hour channel
         ChannelScenes.post(owner, id, "timed")
@@ -409,6 +455,9 @@ class ChannelEphemeralTest {
         }!!
         val wake = owner.engine.nextWakeSeconds()
         assertNotNull(wake)
-        assertTrue("the wake is at the post's timer ($deadline), not later", deadline - owner.clock.now >= wake!!)
+        assertEquals(
+            "the wake is exactly the post's timer ($deadline): no earlier due term stands in this world",
+            deadline - owner.clock.now, wake!!,
+        )
     }
 }

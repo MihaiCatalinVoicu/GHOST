@@ -399,6 +399,15 @@ class PostStoreTest {
         assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(5), w.ch, OpPurpose.POST, null, chBytes(100, 1), 7_200) } }.error)
         assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(6), w.ch, OpPurpose.POST, null, chBytes(4096, 0x47), 60) } }.error)
         assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(7), w.ch, OpPurpose.POST, null, chBytes(4096, 0x48), 7_200, resends = 3) } }.error)
+        // the blob is a floor-sized bucket of §5.6, not a range (§19.46 FIX 6): a non-bucket size is
+        // the typed BAD_VALUE before the statement runs — without the check the schema's CHECK refuses
+        // it as a raw SQLException, which no typed catch of the engine can name
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(8), w.ch, OpPurpose.POST, null, chBytes(4097, 0x49), 7_200) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.insertOp(it, id(9), w.ch, OpPurpose.POST, null, chBytes(65_537, 0x4a), 7_200) } }.error)
+        w.tx { w.stores.posts.insertOp(it, id(10), w.ch, OpPurpose.POST, null, chBytes(16_384, 0x4b), 7_200) }
+        w.tx { w.stores.posts.insertOp(it, id(11), w.ch, OpPurpose.POST, null, chBytes(65_536, 0x4c), 7_200) }
+        assertEquals(16_384, w.stores.posts.op(w.db, id(10))!!.blob.size)
+        assertEquals(65_536, w.stores.posts.op(w.db, id(11))!!.blob.size)
         assertRedacted(w.stores.posts.op(w.db, id(2))!!, id(7), w.ch)
     }
 

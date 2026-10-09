@@ -11,10 +11,11 @@ import org.ghost.sync.api.SyncTransaction
  * kept while the member is in the channel).
  *
  * **Every read of `ch_invite_issued` and `ch_invite_own` applies the expiry filter** `expiry_day >= :today`
- * (§8.5: "kept until `expiry_day + 1`"; the caller passes the day the row must still reach, so the one-day
- * slack for the clocks' skew is a day it chooses and not a number in a query): a committer must not admit an
- * invite that expired, and the UI must not show a link that did. Registered with `:storage`'s
- * `ChannelExpiredRowLint`; the sweep's reads name the opposite set. `ch_sponsor` has no deadline.
+ * (a row lives **through** `expiry_day` and is swept from `expiry_day + 1`; the caller passes the day the
+ * row must still reach, so the one-day slack for the clocks' skew is a day it chooses and not a number in
+ * a query — §19.46 FIX 7): a committer must not admit an invite that expired, and the UI must not show a
+ * link that did. Registered with `:storage`'s `ChannelExpiredRowLint`; the sweep's reads name the opposite
+ * set. `ch_sponsor` has no deadline.
  *
  * **Voiding** (CO-5): a settle voids the unconsumed invites whose `committers_digest` no longer matches the new
  * committers (S0-15), those of an older `pw_version` when the password changed (§19.29.3) and those of a

@@ -1,7 +1,10 @@
 package org.ghost.messaging.channel
 
 import org.ghost.messaging.DmWorld
+import org.ghost.messaging.api.AcceptResult
 import org.ghost.messaging.api.PostResult
+import org.ghost.messaging.channel.ChannelScenes.get
+import org.ghost.messaging.channel.engine.ChannelCounters
 import org.ghost.messaging.channel.store.PostState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -141,5 +144,174 @@ class ChannelResendTest {
         owner.timePass()
         assertEquals(1L, owner.count("ch_candidate", "own = 1 AND verified = 0"))
         assertTrue(owner.integrity().isEmpty())
+    }
+
+    /**
+     * Review probe A (§19.46 FIX 1): an op closes INDETERMINATE while its bytes' own tombstone is still
+     * `listed` — listed from a relay before the `done` tombstone existed, a documented real state the
+     * enqueue's upsert leaves alone. `Outbox.enqueue` refuses the resend ("these bytes were received from
+     * a relay"), and the refusal is the resend's terminal state: the release stands, nothing is resent, the
+     * pass completes. The unfixed catch let the refusal roll the whole outcome transaction back — release
+     * included — and every later pass stalled on the same outcome, a permanent stall (the outcome step is
+     * the pass's first step).
+     */
+    @Test
+    fun aListedTombstoneEndsTheResendWithoutPoisoningThePass() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        var indeterminateOnce = true
+        w.relay.outcomeFor = { client, purpose ->
+            if (client.name == "bob" && purpose == "post" && indeterminateOnce) {
+                indeterminateOnce = false
+                "indeterminate"
+            } else {
+                "sent"
+            }
+        }
+        ChannelScenes.post(bob, id, "hello")
+        val opId = ChannelScenes.opIdOf(bob, id, "hello")
+        val op = opBytes(bob, "c.ref = ? AND c.purpose = 'post'", opId)
+        // the documented real state: the (namespace, hash) row a relay's listing raised — 'listed',
+        // the done tombstone not yet (schema: 'done' is final, so the row stands alone)
+        val day = org.ghost.messaging.engine.DmTime.day(bob.clock.now)
+        val retain = (day / 7 + 1) * 7
+        bob.sql.exec("DELETE FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?", listOf(op.namespace, op.hash))
+        bob.sql.exec(
+            "INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'listed', ?)",
+            listOf(op.namespace, op.hash, retain),
+        )
+        // pass 1: the outcome applies — released, the post stays indeterminate, no resend, no throw
+        w.pump()
+        bob.hintPass()
+        assertEquals(PostState.INDETERMINATE, bob.database.transaction { tx ->
+            bob.channelStores.posts.post(tx.sql, opId, bob.clock.now)!!.state
+        })
+        assertEquals("the release stands despite the refusal", 1L, bob.count("outbox_op", "operation_id = ? AND released = 1", op.operation))
+        assertEquals(0L, bob.count("ch_outbound_op", "ref = ?", opId))
+        assertEquals(0L, pendingCopiesOf(bob, op.hash))
+        // pass 2 does not throw and the channel keeps making progress
+        bob.hintPass()
+        ChannelScenes.post(bob, id, "still alive")
+        w.quiesce()
+        assertEquals(listOf("still alive", "hello"), owner.displayed(id))
+        assertEquals(emptyList<String>(), bob.integrity())
+    }
+
+    /**
+     * Review probe B (§19.46 FIX 2): a commit whose own candidate was cleared under CO-4 (b) — a foreign
+     * candidate won at a settle — is not resent. The resend's custody check is the candidate's existence
+     * (§19.45 row 3's own text); here the original outcome legitimately resends once (its candidate stood
+     * when the outcome applied), the settle then clears the candidate, and the resend op's own INDETERMINATE
+     * outcome releases with nothing resent: zero new COMMIT ops, zero pending copies.
+     */
+    @Test
+    fun aCommitWhoseCandidateWasClearedUnderCo4bIsNotResent() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        // two owner epochs, so bob's rank-255 self-update passes CO-14 (the settle suites' shape)
+        for (e in 1..2) {
+            val next = ChannelAdversary.commit(owner, id)
+            w.relay.holdAt = { name, s -> s.purpose == "advance-$e" && name == "owner" }
+            ChannelAdversary.stageOwn(owner, id, next, rank = 0)
+            ChannelAdversary.inject(w, owner, id, next, "advance-$e")
+            settleEveryone(w, owner, bob)
+        }
+        val dave = w.client("dave")
+        assertEquals(AcceptResult.PENDING, dave.engine.accept(ChannelAdmissionTest.invite(owner, id), null))
+        w.quiesce()
+        val f = ChannelAdversary.commit(bob, id)
+        // bob's self-update waits at the relay, held from bob (its author — there it would count
+        // FORGE_OWN), until the owner's admission commit exists: CO-7 refuses a committer's pass
+        // over any held candidate, so the admission must come first
+        w.relay.holdAt = { name, s -> s.purpose == "probeB-F" && name == "bob" }
+        ChannelAdversary.stageOwn(bob, id, f, rank = 255)
+        ChannelAdversary.inject(w, bob, id, f, "probeB-F")
+        // the owner's admission commit closes INDETERMINATE at the relay
+        w.relay.outcomeFor = { client, purpose -> if (client.name == "owner" && purpose == "commit") "indeterminate" else "sent" }
+        w.advance(6 * DmWorld.HOUR)
+        w.admissionPass(owner)
+        val op = opBytes(owner, "c.channel_id = ? AND c.purpose = 'commit' AND c.resends = 0", id.toByteArray())
+        val candidateHash = owner.database.transaction { tx -> owner.channelStores.posts.op(tx.sql, op.operation)!!.ref }!!
+        // the copy a real receipt would raise (the enqueue-time tombstone's retention already closed
+        // the resend bound — the suite's recipe), before the outcome is applied
+        raiseTombstone(owner, op, 7 * DmWorld.DAY)
+        // the relay decides the op and serves bob's self-update in one round; no pass applies the
+        // outcome yet — the next pass applies it AND settles, in one actor step
+        w.pump()
+        w.advance(21 * DmWorld.MINUTE)
+        w.pump()
+        owner.timePass()
+        // the original outcome applied while the candidate stood: one legitimate resend; then the
+        // settle of the same pass cleared the candidate under CO-4 (b) — bob's self-update won
+        assertEquals(4L, owner.channel(id)!!.epoch)
+        assertEquals(0L, owner.count("ch_candidate"))
+        var counts = resendsOf(owner, candidateHash)
+        assertEquals("the outcome that applied before the clearing resent once", 1L, counts.first)
+        assertEquals(1L, counts.second)
+        // the resend op closes INDETERMINATE with its candidate gone: released, nothing resent
+        w.pump()
+        owner.hintPass()
+        counts = resendsOf(owner, candidateHash)
+        assertEquals("a commit whose candidate is gone is not resent", 0L, counts.first)
+        assertEquals(0L, pendingCopiesOf(owner, op.hash))
+        assertEquals("dave's request waits for the owner's next pass", 1L, owner.count("ch_join_request"))
+        assertTrue(owner.integrity().isEmpty())
+    }
+
+    /**
+     * The review's probe of FIX 3 (§19.46): a resend op that closes FAILED must not clear the own pending
+     * commit. F7's no-copy-can-exist contract is the original send's alone; the original INDETERMINATE
+     * verdict leaves copy-existence open (§19.13: an own commit that may have reached a relay is never
+     * cleared on its own). A resend op's FAILED is terminal-INDETERMINATE of a kind: release, keep the
+     * commit pending, and the custody at the settle is its bound.
+     */
+    @Test
+    fun aFailedResendKeepsTheOwnCommitPending() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        // the owner's PCS commit of a quiet week: first op INDETERMINATE, the resend op FAILED
+        w.advance(7 * DmWorld.DAY + DmWorld.HOUR)
+        w.admissionPass(owner)
+        w.relay.outcomeFor = { client, purpose ->
+            // the original op's row went when its outcome applied: what is collected after it is the resend
+            if (client.name == "owner" && purpose == "commit") {
+                if (owner.count("ch_outbound_op", "purpose = 'commit' AND resends = 0") == 0L) "failed" else "indeterminate"
+            } else {
+                "sent"
+            }
+        }
+        val op = opBytes(owner, "c.channel_id = ? AND c.purpose = 'commit' AND c.resends = 0", id.toByteArray())
+        val candidateHash = owner.database.transaction { tx -> owner.channelStores.posts.op(tx.sql, op.operation)!!.ref }!!
+        raiseTombstone(owner, op, 7 * DmWorld.DAY)
+        w.pump()
+        owner.hintPass()
+        // round 1: INDETERMINATE resent the identical bytes once; the candidate stays pending
+        assertEquals(1L, resendsOf(owner, candidateHash).first)
+        assertEquals(1L, resendsOf(owner, candidateHash).second)
+        assertEquals(1L, pendingCopiesOf(owner, op.hash))
+        assertEquals(1L, owner.count("ch_candidate", "own = 1 AND verified = 0"))
+        // round 2: the resend op closes FAILED — the commit stays pending, no copy can be declared gone
+        w.pump()
+        owner.hintPass()
+        assertEquals(
+            "a resend op's FAILED is not F7's contract: the own commit stays pending (§19.13)",
+            1L, owner.count("ch_candidate", "own = 1 AND verified = 0"),
+        )
+        assertEquals(0, owner[ChannelCounters.Reason.OWN_COMMIT_CLEARED])
+        assertEquals(0L, resendsOf(owner, candidateHash).first)
+        assertEquals(0L, pendingCopiesOf(owner, op.hash))
+        assertTrue(owner.integrity().isEmpty())
+    }
+
+    /** The injected commits recorded, every settle window passed, one relay round, a time-triggered pass of each named client, then quiesce. */
+    private fun settleEveryone(w: ChannelWorld, vararg cs: ChannelClient) {
+        w.quiesce()
+        w.advance(21 * DmWorld.MINUTE)
+        w.pump()
+        for (client in cs) client.timePass()
+        w.quiesce()
     }
 }

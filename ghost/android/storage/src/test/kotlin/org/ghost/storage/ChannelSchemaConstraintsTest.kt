@@ -175,6 +175,20 @@ class ChannelSchemaConstraintsTest {
         add(refused("ch_outbound_op", "a reference of 65 bytes", "ref" to chBytes(65, 1)))
         add(accepted("ch_outbound_op", "a reference of 64 bytes", "ref" to chBytes(64, 1)))
         add(accepted("ch_outbound_op", "no reference"))
+        // Slice S8's three columns (§19.45; unpinned until the review, §19.46 FIX 6): the blob is a
+        // floor-sized bucket of §5.6, the deadline an hour, the resend count 0 … 2.
+        add(accepted("ch_outbound_op", "a blob of the 4 KiB bucket", "blob" to chBytes(4096, 1)))
+        add(accepted("ch_outbound_op", "a blob of the 16 KiB bucket", "blob" to chBytes(16384, 1)))
+        add(accepted("ch_outbound_op", "a blob of the 64 KiB bucket", "blob" to chBytes(65536, 1)))
+        add(refused("ch_outbound_op", "a blob of 4095 bytes", "blob" to chBytes(4095, 1)))
+        add(refused("ch_outbound_op", "a blob of 4097 bytes", "blob" to chBytes(4097, 1)))
+        add(refused("ch_outbound_op", "a blob of 65537 bytes", "blob" to chBytes(65537, 1)))
+        add(accepted("ch_outbound_op", "a deadline on the hour", "deadline_hour" to 3600L))
+        add(refused("ch_outbound_op", "a deadline an hour over the grid", "deadline_hour" to 3601L))
+        add(refused("ch_outbound_op", "a negative deadline", "deadline_hour" to -3600L))
+        add(accepted("ch_outbound_op", "two resends", "resends" to 2L))
+        add(refused("ch_outbound_op", "three resends", "resends" to 3L))
+        add(refused("ch_outbound_op", "a negative resend count", "resends" to -1L))
         // ---- ch_seen, ch_kp_seen, ch_reveal
         addAll(exact("ch_seen", "tag", 16))
         // the day is a week, as dm_seen's (F9 section 7.6 D3): a seizer learns the week and not the day

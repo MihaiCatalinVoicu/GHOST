@@ -87,18 +87,27 @@ internal class ChannelOutcomeStep(
                                 lowerAnchor(tx, c, own.epoch, seen, null)
                             }
                             Outcome.FAILED -> {
-                                // CO-4: no copy can exist, so the pending commit is cleared and its requests stay pending.
-                                val opened = env.contexts.open(c) ?: throw IllegalStateException("channel context closed under an outcome")
-                                val rows = MlsRows.of(stores.mls.rows(tx.sql, c, day))
-                                when (val r = opened.crypto.clearOwn(c, rows, day.toInt())) {
-                                    is MlsOutcome.Ok -> stores.mls.apply(tx, c, MlsRows.changes(r.value))
-                                    is MlsOutcome.Refused -> throw IllegalStateException("channel clearOwn refused: ${r.code}")
+                                // CO-4: no copy can exist, so the pending commit is cleared and
+                                // its requests stay pending — but F7's no-copy-can-exist contract
+                                // is the original send's alone: a resend op's FAILED leaves
+                                // copy-existence open (§19.13: an own commit that may have reached
+                                // a relay is never cleared on its own), so only the original op
+                                // (resends = 0) clears here. A resend op's FAILED is
+                                // terminal-INDETERMINATE of a kind: release, keep the commit
+                                // pending, and the custody at the settle is its bound (§19.46).
+                                if (op.resends == 0) {
+                                    val opened = env.contexts.open(c) ?: throw IllegalStateException("channel context closed under an outcome")
+                                    val rows = MlsRows.of(stores.mls.rows(tx.sql, c, day))
+                                    when (val r = opened.crypto.clearOwn(c, rows, day.toInt())) {
+                                        is MlsOutcome.Ok -> stores.mls.apply(tx, c, MlsRows.changes(r.value))
+                                        is MlsOutcome.Refused -> throw IllegalStateException("channel clearOwn refused: ${r.code}")
+                                    }
+                                    stores.candidates.delete(tx, c, own.epoch, own.hash)
+                                    if (stores.candidates.candidates(tx.sql, c, own.epoch).isEmpty()) {
+                                        stores.epochs.setAnchor(tx, c, own.epoch, null)
+                                    }
+                                    env.counters.count(ChannelCounters.Reason.OWN_COMMIT_CLEARED)
                                 }
-                                stores.candidates.delete(tx, c, own.epoch, own.hash)
-                                if (stores.candidates.candidates(tx.sql, c, own.epoch).isEmpty()) {
-                                    stores.epochs.setAnchor(tx, c, own.epoch, null)
-                                }
-                                env.counters.count(ChannelCounters.Reason.OWN_COMMIT_CLEARED)
                             }
                             Outcome.INDETERMINATE -> Unit
                         }
@@ -108,9 +117,15 @@ internal class ChannelOutcomeStep(
             }
             // The INDETERMINATE resend (the class note): identical bytes, at most twice, inside the resend
             // bound and the op's deadline, in this transaction with the release. A commit resends only while
-            // its candidate is still pending (own != null above is the custody check); a post whose row is
-            // gone (swept meanwhile) resends like the DM's — the op row is what exists.
-            if (outcome.outcome == Outcome.INDETERMINATE) resend(tx, op, outcome)
+            // its candidate is still pending — the custody check is the candidate's existence, §19.45 row 3's
+            // own text: a commit whose candidate was cleared meanwhile (CO-4 (b) at a settle) is not resent;
+            // a post whose row is gone (swept meanwhile) resends like the DM's — the op row is what exists.
+            if (outcome.outcome == Outcome.INDETERMINATE) {
+                val ref = op.ref
+                val candidatePending = op.purpose != OpPurpose.COMMIT ||
+                    ref != null && stores.candidates.ownCommits(tx.sql, c).any { it.hash.contentEquals(ref) }
+                if (candidatePending) resend(tx, op, outcome)
+            }
             stores.posts.deleteOp(tx, operationId)
             true
         }
@@ -123,11 +138,12 @@ internal class ChannelOutcomeStep(
      * way and the caller deletes the old row.
      *
      * §11.2 #6 bounds the resend twice: by `resendNotAfter` (checked above) and by the recipients' tombstones
-     * (`Outbox.enqueue`'s own-tombstone check, which the channel side cannot read ahead). The second bound closes
-     * only when a copy exists but no listing ever raised the tombstone — a relay that serves the copies to others
-     * and withholds the owner's listings; the next honest listing raises it and the resend proceeds. Either bound
-     * closing is the resend's terminal state: the op ends `indeterminate` and the commit stays pending under
-     * CO-4 — so the refusal is caught here, narrowly, and every other enqueue defect still throws.
+     * (`Outbox.enqueue`'s own-tombstone check, which the channel side cannot read ahead). The tombstone bound
+     * closes in two documented states: the `done` row's retention passed, and the row still `listed` from a
+     * relay before the `done` tombstone existed — an op can close INDETERMINATE while its bytes' own tombstone
+     * is in that state. Either bound closing is the resend's terminal state: the op ends `indeterminate` and
+     * the commit stays pending under CO-4 — so both refusal predicates are caught here, exactly, and every
+     * other enqueue defect still throws (§19.46 FIX 1).
      */
     private fun resend(tx: SyncTransaction, op: PostStore.OpRow, outcome: OutboundOutcome): Boolean {
         val now = env.now()
@@ -149,7 +165,10 @@ internal class ChannelOutcomeStep(
         } catch (e: InsufficientReplicasException) {
             false
         } catch (e: IllegalStateException) {
-            if (e.message == "identical bytes can no longer be resent") false else throw e
+            // Both §11.2 #6 refusal predicates are the resend's terminal state (§19.46 FIX 1):
+            // the retention bound and the own tombstone still 'listed' — the refusal a raised
+            // tombstone raises for bytes it received. Anything else is an enqueue defect and throws.
+            if (e.message in RESEND_TERMINAL_REFUSALS) false else throw e
         }
     }
 
@@ -167,5 +186,15 @@ internal class ChannelOutcomeStep(
     companion object {
         /** Outcomes released per pass. */
         const val OUTCOMES: Int = 64
+
+        /**
+         * The exact refusal predicates of `Outbox.enqueue`'s own-tombstone check (§11.2 #6): either
+         * one closing is the resend's terminal state — the release stands, nothing is resent. Kept
+         * verbatim beside the enqueue check they mirror; any other enqueue defect still throws.
+         */
+        private val RESEND_TERMINAL_REFUSALS = setOf(
+            "identical bytes can no longer be resent",
+            "these bytes were received from a relay",
+        )
     }
 }

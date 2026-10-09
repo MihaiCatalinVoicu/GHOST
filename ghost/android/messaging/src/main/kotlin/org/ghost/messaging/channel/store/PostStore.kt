@@ -483,7 +483,7 @@ internal class PostStore {
     ) {
         Fields.bytes("ch_outbound_op.operation_id", operationId, 16)
         Fields.bytesBetweenOrNull("ch_outbound_op.ref", ref, 1, 64)
-        Fields.bytesBetween("ch_outbound_op.blob", blob, 4096, 65_536)
+        Fields.bucket("ch_outbound_op.blob", blob)
         Fields.hour("ch_outbound_op.deadline_hour", deadlineHour)
         Fields.rangeInt("ch_outbound_op.resends", resends, 0, MAX_RESENDS)
         val changed = tx.sql.execUpdate(

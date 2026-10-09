@@ -50,9 +50,9 @@ import org.ghost.sync.api.NamespaceId
  *    **A pending own commit is never touched here**: its custody is CO-4's, at the settle
  *    ([ChannelSettleStep]'s custody clear) and the outcome step's resends — the sweep leaves a pending
  *    commit pending, which EP-C asserts (§19.37 row 47).
- *  - [sweepInvites] deletes the `INVITE_ISSUED` records past `expiry_day + 1` (§8.5: committers admit up
- *    to the invite's expiry; the records hold ids, keys and a signature, no user text) and the sponsor's
- *    own links past `expiry_day` (§6.2.1).
+ *  - [sweepInvites] deletes the `INVITE_ISSUED` records and the sponsor's own links past their
+ *    `expiry_day` — both live through `expiry_day` and are swept from `expiry_day + 1` (§8.5: committers
+ *    admit up to the invite's expiry; §6.2.1; the records hold ids, keys and a signature, no user text).
  *  - [sweepJoinRequests] and [sweepRequests] drop the requests past their day: a join request until its
  *    invite's expiry or 7 days after its day (§6.3.5), a `ch_request` (a leaver never removed) after 7 days
  *    (§6.6, `LEAVE_REQUEST_DAYS`).
@@ -170,17 +170,18 @@ internal class ChannelSweepStep(
      * Fires the post timers (§8.2, §8.5): every post past `delete_at_minute` or — while unread — past its
      * relay expiry E, in the cascade of §8.2, one transaction per batch of [BATCH]: the post row (its
      * reactions follow by the foreign key's `ON DELETE CASCADE`, ADR-32) and its `ch_pending_post` row (a
-     * failed post's retry still waiting). Rounds run until a short batch, so a device back after a long
-     * absence drains in one sweep (the DM sweeper's rule, §10.6 bounds the transaction, not the sweep);
-     * the sweep ends with `wal_checkpoint(TRUNCATE)`, after the commits, its result checked — without it
-     * the bodies stay in the `-wal` (T25's physical scan; mutant ME-C3). A busy pragma or a full disk at
-     * the checkpoint keeps the debt like the DM sweeper (§10.7, the ME-10 shape): retried at the next
-     * sweep that deleted rows, never lost with the counts.
+     * failed post's retry still waiting). Rounds run until a short batch or [MAX_BATCHES] rounds (the DM
+     * sweeper's cap, §19.46 FIX 4: keeps one sweep from becoming unbounded work on the actor thread; what
+     * the cap does not drain, the next pass does); the sweep ends with `wal_checkpoint(TRUNCATE)`, after
+     * the commits, its result checked — without it the bodies stay in the `-wal` (T25's physical scan;
+     * mutant ME-C3). A busy pragma or a full disk at the checkpoint keeps the debt like the DM sweeper
+     * (§10.7, the ME-10 shape): retried at the next sweep that deleted rows, never lost with the counts.
      */
     fun sweepPosts(): Int {
         val nowMinute = DmTime.floorMinute(env.now())
         var done = 0
-        while (true) {
+        var batches = 0
+        while (batches < MAX_BATCHES) {
             val batch = env.database.transaction { tx -> stores.posts.expiredPosts(tx.sql, nowMinute, BATCH) }
             if (batch.isEmpty()) break
             env.database.transaction { tx ->
@@ -189,6 +190,7 @@ internal class ChannelSweepStep(
                     stores.posts.deletePending(tx, opId)
                 }
             }
+            batches++
             if (batch.size < BATCH) break
         }
         if (done > 0 || checkpointDue) {
@@ -265,7 +267,8 @@ internal class ChannelSweepStep(
         val day = DmTime.day(env.now())
         var done = 0
         val touched = HashSet<List<Byte>>()
-        while (true) {
+        var batches = 0
+        while (batches < MAX_BATCHES) {
             val batch = env.database.transaction { tx -> stores.epochs.expired(tx.sql, day, BATCH) }
             if (batch.isEmpty()) break
             env.database.transaction { tx ->
@@ -277,6 +280,7 @@ internal class ChannelSweepStep(
                     }
                 }
             }
+            batches++
             if (batch.size < BATCH) break
         }
         for (id in touched) {
@@ -308,9 +312,10 @@ internal class ChannelSweepStep(
 
     /**
      * The administrative posts' records (§8.5, §5.8, §19.21): an `INVITE_ISSUED` is declared membership
-     * metadata, kept until `expiry_day + 1` — a committer admits up to the invite's expiry — and holds
-     * ids, keys and a signature, no user text; past that the record goes. The sponsor's own link
-     * (`ch_invite_own`) is kept only until `expiry_day` (§6.2.1; a password invite keeps no link at all).
+     * metadata — ids, keys, a signature, no user text — kept **through** `expiry_day` on every member (a
+     * committer admits up to the invite's expiry) and swept from `expiry_day + 1`; the sponsor's own link
+     * (`ch_invite_own`) lives by the same rule (§6.2.1; at day granularity the old "+1 vs until" divergence
+     * collapses, §19.46 FIX 7).
      */
     fun sweepInvites(): Int {
         val day = DmTime.day(env.now())
@@ -355,6 +360,13 @@ internal class ChannelSweepStep(
 
     companion object {
         const val BATCH: Int = 16
+
+        /**
+         * The rounds cap of the two round-robin sweeps ([sweepPosts], [sweepEpochs]), the DM sweeper's
+         * `MAX_BATCHES` value and rule (§19.46 FIX 4): keeps one sweep from becoming unbounded work on
+         * the actor thread; what it does not drain, the next pass does.
+         */
+        const val MAX_BATCHES: Int = 20
 
         /** The deferred rows consumed per round before a drain's removal (a namespace's fetched cap is 256). */
         const val HELD_BATCH: Int = 256
