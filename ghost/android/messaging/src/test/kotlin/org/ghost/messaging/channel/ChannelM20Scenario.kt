@@ -360,21 +360,29 @@ internal object ChannelM20 {
         val swapPseudonym = pseudonymOf(swap, id)
         quietClocks(swap, id)
         val currentNs = generationNs(owner, id, owner.channel(id)!!.generation)
-        w.relay.modes = setOf(ModelChannelRelay.Mode.EXPIRE_LOG)
-        w.relay.expireLog = { it.namespace.contentEquals(currentNs) }
+        // The subject's blindness is per-client (SILENT_ORPHAN): EXPIRE_LOG's serve-skip is
+        // blob-level — it would withhold the honest window traffic from every listener, not only
+        // the dark subject (F-S10-3 was exactly that: the forced commits reached nobody, the
+        // committers advanced on their own copies, everyone else starved with empty candidate
+        // sets and null anchors). The missed commits' TTL death is composed below, explicitly.
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SILENT_ORPHAN)
+        w.relay.silentOrphan = { name, _ -> name == swapName }
         w.advance(10 * DmWorld.DAY)
         burst(40)
-        // Two forced commits while the subject is dark: its missed commits die at the relays past
-        // their TTL (EXPIRE_LOG), so the subject is genuinely past its epoch when it returns.
+        // Two forced commits while the subject is dark, settled everywhere but at the subject.
         // Two epochs must open over the dark subject (its missed commits die past their TTL);
         // a pass is skipped while a candidate of the epoch is held (CO-7), so retry as needed.
         val swapWindowEpoch = owner.channel(id)!!.epoch
         var swapPcsGuard = 0
-        while (owner.channel(id)!!.epoch < swapWindowEpoch + 2 && swapPcsGuard++ < 6) {
+        while (owner.channel(id)!!.epoch < swapWindowEpoch + 3 && swapPcsGuard++ < 8) {
             pcs(lead())
             pcs(byName(MODERATOR))
         }
         settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
+        // The subject's missed commits die at the relays past their TTL (what EXPIRE_LOG models):
+        // the online members hold their copies fetched; the subject's share is un-fetched, and the
+        // relay copies are gone — the subject cannot catch up when it returns.
+        w.relay.stored.removeAll { it.namespace.contentEquals(currentNs) && w.now >= it.storedAt + it.ttl }
         val swapDarkEpoch = swap.channel(id)!!.epoch
         repeat(3) {
             w.advance(4 * DmWorld.DAY)
@@ -386,22 +394,31 @@ internal object ChannelM20 {
         // the sweep's give-up lands at `reinvite_needed` 14 days from the attempt); past the bound
         // the resync itself is the honest `reinvite_needed` — the design's device-swap path either
         // way (§12.5: the return is a new invite admitted as a restore).
+        // The resync's rejoin request must go unanswered: held from every committer (the S7
+        // scenario's "no answer" modelling — with the subject blind by SILENT_ORPHAN, not by
+        // EXPIRE_LOG's blob-level withholding).
+        w.relay.holdAt = { name, b -> b.purpose == "rejoin" && b.from == swapName && name != swapName }
         val swapResync = swap.engine.resync(id)
         if (swapResync == ChannelRejoinStep.ResyncResult.REQUESTED) {
             w.advance(15 * DmWorld.DAY)
             swap.timePass()
         }
+        // The subject's stale rejoin stays held until its restore has completed — served now, it
+        // would record at the committer beside the restore request and the same-member swap would
+        // be claimed by the request that can never complete (the dark subject never answers it).
         assertEquals(
             "the swap subject is at reinvite_needed (the unanswered rejoin gave up, or the stale clock said so)",
             ChannelState.REINVITE_NEEDED, swap.channel(id)!!.state,
         )
-        val swapLiveEpoch = owner.channel(id)!!.epoch
+        // The live epoch is the acting committer's — in the owner-restore variant the owner is the
+        // dark subject and its own epoch is frozen.
+        val swapLiveEpoch = lead().channel(id)!!.epoch
         assertTrue("the missed commits are past the subject's epoch", swapLiveEpoch - swapDarkEpoch >= 2)
 
         // The return: a fresh invite, accepted by the restored stack — a copy of the dark device's
         // database (the row-holding restore of F-S7-2) under a new name with the same seed.
         w.relay.modes = emptySet()
-        w.relay.expireLog = { false }
+        w.relay.silentOrphan = { _, _ -> false }
         w.pump()
         val link = ChannelAdmissionTest.invite(if (config.variant == Variant.OWNER_RESTORE) byName(MODERATOR) else owner, id)
         // The restore stack starts from a whole copy of the dark device's database.
@@ -414,11 +431,29 @@ internal object ChannelM20 {
         assertEquals("the return is a restore", 1L, restored.count("ch_join", "type = 'restore'"))
         w.quiesce()
         if (config.stopAt == StopAt.RESTORE_ADMISSION) return id
-        duePass(w, if (config.variant == Variant.OWNER_RESTORE) byName(MODERATOR) else owner)
-        w.quiesce()
-        w.pastSettleWindow()
-        w.quiesce()
-        val restoreEpoch = owner.channel(id)!!.epoch
+        val restorer = if (config.variant == Variant.OWNER_RESTORE) byName(MODERATOR) else owner
+        // A rank-1 committer's scheduled pass ignores work younger than 48 h (§19.13): age the
+        // request before the admission (rank 0, the base variant's restorer, has no rule).
+        if (config.variant == Variant.OWNER_RESTORE) w.advance(2 * DmWorld.DAY)
+        var restoreGuard = 0
+        while (restored.channel(id)!!.state != ChannelState.ACTIVE && restoreGuard++ < 6) {
+            clearArm(restorer, id)
+            duePass(w, restorer)
+            System.err.println(
+                "RESTORE-ADM guard $restoreGuard: requests=${restorer.count("ch_join_request")} " +
+                    "own=${restorer.count("ch_candidate", "own = 1")} cands=${restorer.count("ch_candidate")} " +
+                    "counters=${
+                        org.ghost.messaging.channel.engine.ChannelCounters.Reason.values()
+                            .filter { restorer.counters[it] > 0 }
+                            .joinToString(",") { "${it.name}=${restorer.counters[it]}" }
+                    } restored=${restored.channel(id)!!.state}",
+            )
+            w.quiesce()
+            w.pastSettleWindow()
+            w.quiesce()
+        }
+        w.relay.holdAt = { _, _ -> false }
+        val restoreEpoch = lead().channel(id)!!.epoch
         assertEquals("the restored member is active", ChannelState.ACTIVE, restored.channel(id)!!.state)
         assertEquals(lead().channel(id)!!.epoch, restored.channel(id)!!.epoch)
         assertArrayEquals(
@@ -427,15 +462,17 @@ internal object ChannelM20 {
         )
         assertEquals("the restored member kept its rank", swapRankBefore, rankOf(::byName, id, restored))
         assertArrayEquals("the same pseudonym returns (D12)", swapPseudonym, pseudonymOf(restored, id))
+        // The old stack held every generation up to the one current at its swap — the channel's
+        // generation number moves at CH-SWITCH, so this is read before the switch below.
         report.subjects += Subject(
-            "$swapName-old", "device-swap (restore)", restoreEpoch, owner.channel(id)!!.generation - 1, swapDump,
+            "$swapName-old", "device-swap (restore)", restoreEpoch, owner.channel(id)!!.generation, swapDump,
         )
         // The long dark window made every member's PCS cadence due at once: settle the restore
         // commit everywhere before the switch arms the committers again, then settle the cadence
         // wave it triggers — T41 is asserted only once every member holds the same epoch.
         settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
         switch(w, ::byName, id)
-        assertEquals("the restore moved the channel to generation 4", 4L, owner.channel(id)!!.generation)
+        assertEquals("the restore moved the channel to generation 4", 4L, lead().channel(id)!!.generation)
         settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
         converged(w, ::byName, id, report, exclude = setOf(swapName))
 
@@ -443,30 +480,40 @@ internal object ChannelM20 {
         // rejoin does not rotate). The freeze point for the crash singles sits on the admitting pass.
         val lost = byName(PAST_TTL)
         quietClocks(lost, id)
-        val nsNow = generationNs(owner, id, owner.channel(id)!!.generation)
-        w.relay.modes = setOf(ModelChannelRelay.Mode.EXPIRE_LOG)
-        w.relay.expireLog = { it.namespace.contentEquals(nsNow) }
+        // Per-client blindness (F-S10-3's lesson): EXPIRE_LOG's serve-skip is blob-level and
+        // would starve everyone; more subtly it blinds the subject to only one namespace, and
+        // traffic of an older draining generation it can still open resets the stale clock.
+        val nsNow = generationNs(lead(), id, lead().channel(id)!!.generation)
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SILENT_ORPHAN)
+        w.relay.silentOrphan = { name, _ -> name == PAST_TTL }
         // The window stays inside the stale clock's 14-day drain bound: this member **rejoins**
         // (§12.5), it does not need the return invite the swap subject's path ends in.
         w.advance(10 * DmWorld.DAY)
         burst(20)
-        repeat(2) {
+        // The stale flag's 9-day clock (CO-12) — bounded so the resync that follows stays inside
+        // the stale clock's 14-day drain bound; either answer completes the return (resyncBack).
+        var staleGuard = 0
+        while (!lost.channel(id)!!.staleSuspected && staleGuard++ < 3) {
             w.advance(DmWorld.DAY)
             lost.sessionStart()
         }
-        assertTrue(lost.channel(id)!!.staleSuspected)
+        assertTrue("${lost.name} stale_suspected inside the window", lost.channel(id)!!.staleSuspected)
+        // Its missed commits died at the relays past their TTL while it was blind (what EXPIRE_LOG
+        // models): remove them now — the rejoin, not a catch-up, is its only way back.
+        w.relay.stored.removeAll { it.namespace.contentEquals(nsNow) && w.now >= it.storedAt + it.ttl }
         w.relay.modes = emptySet()
-        w.relay.expireLog = { false }
-        assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, lost.engine.resync(id))
+        w.relay.silentOrphan = { _, _ -> false }
+        resyncBack(w, ::byName, id, lead(), lost)
         w.pump()
         if (config.stopAt == StopAt.REJOIN_ADMISSION) return id
+        if (config.variant == Variant.OWNER_RESTORE) w.advance(2 * DmWorld.DAY)
         duePass(w, lead())
         w.quiesce()
         w.pastSettleWindow()
         w.quiesce()
         assertEquals("the past-TTL member rejoined", ChannelState.ACTIVE, lost.channel(id)!!.state)
         assertEquals(lead().channel(id)!!.epoch, lost.channel(id)!!.epoch)
-        assertEquals("a rejoin does not rotate", 4L, owner.channel(id)!!.generation)
+        assertEquals("a rejoin does not rotate", 4L, lead().channel(id)!!.generation)
         // Catch-up: one pass, no wall-clock wait (SCN-CE's latency claim).
         ChannelScenes.post(lead(), id, "after-the-rejoin-${config.seed}")
         w.pump()
@@ -475,14 +522,20 @@ internal object ChannelM20 {
         converged(w, ::byName, id, report, exclude = setOf(swapName))
 
         // The re-add: the moderator-removed client is re-invited and returns with the same pseudonym.
-        val readdLink = ChannelAdmissionTest.invite(lead(), id)
-        assertEquals(AcceptResult.PENDING, byName(MODERATOR_REMOVED).engine.accept(readdLink, null))
-        w.quiesce()
-        duePass(w, lead())
-        w.quiesce()
-        w.pastSettleWindow()
-        w.quiesce()
         val readded = byName(MODERATOR_REMOVED)
+        val readdLink = ChannelAdmissionTest.invite(lead(), id)
+        assertEquals(AcceptResult.PENDING, readded.engine.accept(readdLink, null))
+        w.quiesce()
+        // A rank-1 committer's scheduled pass ignores work younger than 48 h (§19.13).
+        if (config.variant == Variant.OWNER_RESTORE) w.advance(2 * DmWorld.DAY)
+        var readdGuard = 0
+        while (readded.channel(id)!!.state != ChannelState.ACTIVE && readdGuard++ < 6) {
+            clearArm(lead(), id)
+            duePass(w, lead())
+            w.quiesce()
+            w.pastSettleWindow()
+            w.quiesce()
+        }
         assertEquals("the removed client re-joined", ChannelState.ACTIVE, readded.channel(id)!!.state)
         assertArrayEquals("the re-added member returns with the same pseudonym (D12)", c10Pseudonym, pseudonymOf(readded, id))
         report.joiners += Joiner(MODERATOR_REMOVED, readded.channel(id)!!.epoch)
@@ -504,7 +557,7 @@ internal object ChannelM20 {
 
         report.postsStored = w.relay.stored.count { it.purpose == "post" && !it.injected }
         report.epochs = lead().channel(id)!!.epoch.toInt()
-        report.generations = owner.channel(id)!!.generation.toInt() + 1
+        report.generations = lead().channel(id)!!.generation.toInt() + 1
         for (c in clients) {
             if (c.channel(id)?.state == ChannelState.ACTIVE) assertTrue("${c.name}: ${c.integrity()}", c.integrity().isEmpty())
         }
@@ -585,7 +638,10 @@ internal object ChannelM20 {
             val selfUp = byName("c14")
             bringSlotTo(selfUp, id)
             duePass(world, selfUp)
-            world.quiesce()
+            // No round between the two builds: if the rank-255 commit is delivered before the
+            // rank-0 exists, a member's settle window opens on it alone and it settles (CO-6 then
+            // never lets the better candidate move it — T41's fork). Both commits must exist before
+            // either reaches the relays.
             agePcsClock(owner, id, 8)
             clearArm(owner, id)
             owner.sessionStart()
@@ -687,7 +743,7 @@ internal object ChannelM20 {
             world.pump()
             for (b in sideB) b.hintPass()
             var guard = 0
-            while (sideB.count { it.channel(id)!!.splitSuspected } < sideBNames.size && guard++ < 12) {
+            while (sideB.count { it.channel(id)!!.splitSuspected } < sideBNames.size && guard++ < 9) {
                 world.advance(DmWorld.DAY)
                 world.pump()
                 for (b in sideB) {
@@ -695,7 +751,11 @@ internal object ChannelM20 {
                 }
                 world.pump()
                 for (b in sideB) b.hintPass()
-                for (c in clients) c.timePass()
+                // The window matures at 72 h and three sessions (CO-11): sessions are session starts.
+                for (c in clients) {
+                    c.sessionStart()
+                    c.timePass()
+                }
             }
             assertEquals(
                 "the several-member side raised split_suspected (CO-12, D-3)",
@@ -711,13 +771,15 @@ internal object ChannelM20 {
             // differs from the owner's — then `resync`; the owner's passes admit every rejoin (the
             // claimed epochs' winners differ on the two branches, §6.7's fork case) and the side
             // converges back.
-            assertNotEquals(epochAuthenticator(sideB.first(), id), ownerAuth)
-            for (b in sideB) assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, b.engine.resync(id))
-            world.pump()
+            assertNotEquals(epochAuthenticator(sideB.first(), id), epochAuthenticator(owner, id))
+            for (b in sideB) resyncBack(world, ::byName, id, owner, b)
             admitUntil(world, ::byName, id, owner, sideBNames)
+            // The owner's branch lived through the resync window: compare against its current
+            // authenticator (c20 is still on its dead branch here — it rejoins below).
+            val ownerAuthNow = epochAuthenticator(owner, id)
             for (b in sideB) {
                 assertEquals("${b.name} rejoined the owner's branch", ChannelState.ACTIVE, b.channel(id)!!.state)
-                assertArrayEquals("the authenticators agree again (T41)", ownerAuth, epochAuthenticator(b, id))
+                assertArrayEquals("the authenticators agree again (T41)", ownerAuthNow, epochAuthenticator(b, id))
                 report.forkMembersRejoined++
             }
             // The alone member: nothing of its branch ever arrived; nine quiet days raise
@@ -737,14 +799,21 @@ internal object ChannelM20 {
                 "the one-member side found its branch dead",
                 alone.channel(id)!!.state == ChannelState.RESYNC_NEEDED || alone.channel(id)!!.staleSuspected,
             )
-            assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, alone.engine.resync(id))
-            world.pump()
+            resyncBack(world, ::byName, id, owner, alone)
             admitUntil(world, ::byName, id, owner, listOf("c20"))
             assertEquals("the alone member rejoined", ChannelState.ACTIVE, alone.channel(id)!!.state)
-            assertArrayEquals(ownerAuth, epochAuthenticator(alone, id))
+            // Catch the rejoiner up across any commits the live branch made during its resync, then
+            // the authenticators must agree.
+            var aloneCatchGuard = 0
+            while (alone.channel(id)!!.epoch < owner.channel(id)!!.epoch && aloneCatchGuard++ < 20) {
+                world.pastSettleWindow()
+                world.quiesce()
+            }
+            assertEquals("the alone member caught up", owner.channel(id)!!.epoch, alone.channel(id)!!.epoch)
+            assertArrayEquals(epochAuthenticator(owner, id), epochAuthenticator(alone, id))
             report.forkMembersRejoined++
 
-            converged(world, ::byName, id, report)
+            converged(world, ::byName, id, report, tipOnly = true)
             report.postsStored = world.relay.stored.count { it.purpose == "post" && !it.injected }
             report.epochs = owner.channel(id)!!.epoch.toInt()
             report.generations = owner.count("ch_generation").toInt()
@@ -766,6 +835,10 @@ internal object ChannelM20 {
         id: ChannelId,
         report: Report,
         exclude: Set<String> = emptySet(),
+        /** True after a fork's recovery: rejoined members keep their dead branch's log rows —
+         *  only the tip of their CURRENT branch must equal the anchor's (the per-epoch check
+         *  stays for every member that never forked). */
+        tipOnly: Boolean = false,
     ) {
         val anchor = byName(if (exclude.contains(OWNER)) MODERATOR else OWNER)
         val anchorEpoch = anchor.channel(id)!!.epoch
@@ -778,15 +851,21 @@ internal object ChannelM20 {
             assertEquals("T41: $name at the anchor's epoch", anchorEpoch, c.channel(id)!!.epoch)
             assertArrayEquals("T41: $name's epoch_authenticator", anchorAuth, epochAuthenticator(c, id))
             // The epoch log is what the member settled itself: a joiner's log starts at its join
-            // epoch, so it must equal the anchor's rows from its first logged epoch on (empty at a
-            // member that has not settled an epoch yet: nothing to compare).
+            // epoch and a re-added member's skips the epochs it was removed for — every logged
+            // winner must still equal the anchor's for that epoch (T41's substance: no divergent
+            // winner at any epoch the member settled).
             val memberLog = epochLog(c, id)
-            if (memberLog.isNotEmpty()) {
-                assertEquals(
-                    "T41: $name's epoch log",
-                    anchorLog.filter { it.first >= memberLog.first().first },
-                    memberLog,
-                )
+            // tipOnly (the fork's recovery): a rejoined member's log keeps its dead branch's rows
+            // and may hold no row of the new branch yet — the authenticator equality asserted
+            // above is T41's substance for it.
+            if (memberLog.isNotEmpty() && !tipOnly) {
+                val anchorByEpoch = anchorLog.toMap()
+                for ((epoch, winner) in memberLog) {
+                    assertEquals(
+                        "T41: $name's winner of epoch $epoch",
+                        anchorByEpoch[epoch], winner,
+                    )
+                }
             }
         }
         report.t41Checks++
@@ -822,6 +901,31 @@ internal object ChannelM20 {
         duePass(w, moderate)
         assertEquals(0L, moderate.count("ch_candidate", "own = 1"))
         converged(w, byName, id, report)
+    }
+
+    /**
+     * The scripted resync of [member] after the fingerprint comparison: inside the committers'
+     * 14-day drain bound the rejoin request is admitted by the owner's passes; past it the honest
+     * answer is `reinvite_needed` and the return is a fresh invite admitted as a restore (§6.7's
+     * stale clock, F-S10-1).
+     */
+    private fun resyncBack(
+        w: ChannelWorld,
+        byName: (String) -> ChannelClient,
+        id: ChannelId,
+        owner: ChannelClient,
+        member: ChannelClient,
+    ) {
+        val result = member.engine.resync(id)
+        if (result == ChannelRejoinStep.ResyncResult.REQUESTED) {
+            w.pump()
+            return
+        }
+        assertEquals("${member.name}'s resync is the stale clock's reinvite", ChannelRejoinStep.ResyncResult.REINVITE_NEEDED, result)
+        val back = ChannelAdmissionTest.invite(owner, id)
+        assertEquals(AcceptResult.PENDING, member.engine.accept(back, null))
+        assertEquals(1L, member.count("ch_join", "type = 'restore'"))
+        w.quiesce()
     }
 
     /** The committer's passes until every named member is active at the anchor's epoch (fork rejoins). */
@@ -867,8 +971,43 @@ internal object ChannelM20 {
         error(
             "the members did not settle to the anchor's epoch $target: " +
                 ALL.joinToString(" ") { n ->
-                    val ch = byName(n).channel(id)
-                    "$n=${ch?.state}@${ch?.epoch}"
+                    val c = byName(n)
+                    val ch = c.channel(id)
+                    if (ch == null || ch.state != ChannelState.ACTIVE || ch.epoch >= target) return@joinToString "$n=ok@${ch?.epoch}"
+                    // Replicate ChannelSettleStep.settleWith's snapshot predicates for the stuck member.
+                    val cId = id.toByteArray()
+                    val day = DmTime.day(c.clock.now)
+                    val diag = c.database.transaction { tx ->
+                        val epoch = c.channelStores.epochs.open(tx.sql, cId, day)
+                        val anchorMin = epoch?.anchorMinute
+                        val cands = StringBuilder()
+                        tx.sql.query(
+                            "SELECT epoch, rank, own, verified, first_seen_minute FROM ch_candidate WHERE channel_id = ? AND epoch = ?",
+                            listOf(cId, ch.epoch),
+                        ) { r -> cands.append("[r=${r.long(1)} own=${r.long(2)} ver=${r.long(3)} seen=${r.long(4)}]") }
+                        val gen = c.channelStores.generations.current(tx.sql, cId, day)
+                        val epState = c.channelStores.epochs.epoch(tx.sql, cId, ch.epoch, day)
+                        val inbox = StringBuilder()
+                        tx.sql.query(
+                            "SELECT state, count(*) FROM inbox_blob WHERE namespace_id = ? GROUP BY state",
+                            listOf(gen!!.namespaceId),
+                        ) { r -> inbox.append("${r.string(0)}:${r.long(1)} ") }
+                        val counters = org.ghost.messaging.channel.engine.ChannelCounters.Reason.values()
+                            .filter { c.counters[it] > 0 }
+                            .joinToString(",") { "${it.name}=${c.counters[it]}" }
+                        "epoch@${ch.epoch}(${epState?.state},win=${epState?.winnerHash?.let { ModelChannelRelay.hex(it).take(6) }}) " +
+                            "anchor=$anchorMin cands=$cands inbox=[$inbox] counters=$counters"
+                    }
+                    val tails = (c.inbox as WorldInbox).listingTails(
+                        org.ghost.sync.api.NamespaceId(
+                            c.database.transaction { tx ->
+                                var ns: ByteArray? = null
+                                tx.sql.query("SELECT namespace_id FROM ch_generation WHERE channel_id = ? AND state = 'current'", listOf(cId)) { ns = it.blob(0) }
+                                ns!!
+                            },
+                        ),
+                    )
+                    "$n=$diag tails=$tails mono=${c.clock.monotonic}"
                 },
         )
     }

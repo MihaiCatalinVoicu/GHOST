@@ -36,12 +36,6 @@ class ChannelM20Test {
     }
 
     /** The base scenario over the pinned seeds: §12.5's script, its assertions inside the runner. */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun theExitScenarioRunsGreenOverThePinnedSeeds() {
         for (seed in ChannelM20.selectedSeeds()) {
@@ -51,12 +45,6 @@ class ChannelM20Test {
     }
 
     /** The owner-restore variant: client 1 restores through a rank-1 committer's swap and keeps rank 0. */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun theOwnerRestoreVariantKeepsRankZero() {
         val dir = folder.newFolder("m20-owner-restore")
@@ -65,12 +53,6 @@ class ChannelM20Test {
     }
 
     /** The FORK variant: the settle window holds at every member; both sides recover by rejoin. */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun theForkVariantRejoinsBothSides() {
         val built = ChannelM20.buildFork(ChannelM20.SEEDS[0])
@@ -92,12 +74,6 @@ class ChannelM20Test {
      * of every later epoch and every later generation. 0 opens (P-C4(a)/(b), the exit gate's
      * "membru scos nu decriptează epoch-uri noi", FR-3.8, LIMITE:39).
      */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun theRemovedMemberOracleOpensNothingLater() {
         val dir = folder.newFolder("m20-oracle")
@@ -118,6 +94,19 @@ class ChannelM20Test {
                 )
             }
             for (r in reports) {
+                if (!r.passed) {
+                    System.err.println("ORACLE DIAG " + r.subject + ": " + r.openViolations.take(5).joinToString(" | "))
+                    System.err.println(
+                        "ORACLE GENS " + r.subject + ": " + org.ghost.storage.JdbcSqlExecutor(
+                            java.io.File(built.report.subjects.first { it.name == r.subject }.dump!!.absolutePath).absolutePath,
+                        ).let { ex ->
+                            val sb = StringBuilder()
+                            ex.query("SELECT generation, state FROM ch_generation ORDER BY generation") { sb.append("[g=${it.long(0)} ${it.string(1)}]") }
+                            ex.close()
+                            sb.toString()
+                        },
+                    )
+                }
                 assertTrue(r.line(), r.passed)
                 ChannelReport.line(r.line())
             }
@@ -125,12 +114,6 @@ class ChannelM20Test {
     }
 
     /** T39 over the wave joiners: nothing of the epochs before a join opens at the joiner. */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun theJoinerOracleOpensNothingBeforeTheJoins() {
         val built = ChannelM20.build(ChannelM20.Config(seed = ChannelM20.SEEDS[0]))
@@ -160,12 +143,6 @@ class ChannelM20Test {
     }
 
     /** §12.5's size assertions (S0-5): every commit within its floor, every Welcome under the cap. */
-    /** OPEN (F-S10-3): the run stalls one settle short of the anchor after the forced commits of the swap
-     *  window — the members at e−1 hold the anchor's winner (fresh on the relays) but 80 settle rounds do
-     *  not advance them (c1/c2 hold the anchor; the rest sit at e−1/e−2 with no candidate recorded). One
-     *  probe cycle from green: the waves, the four removals, the offline catch-up, the CO-3 race and the
-     *  restore itself all complete and assert; the stall is the settle path's at 20 members. */
-    @org.junit.Ignore("open: F-S10-3 — the settle-to-anchor after the swap window's forced commits stalls (members hold the winner, 80 rounds do not advance them); everything before it is green")
     @Test
     fun everyCommitIsWithinItsFloorAndEveryWelcomeUnderTheCap() {
         val built = ChannelM20.build(ChannelM20.Config(seed = ChannelM20.SEEDS[0]))

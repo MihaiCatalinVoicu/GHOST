@@ -60,6 +60,8 @@ internal object RemovedMemberOracle {
         val joinTrafficOpened: Int,
         /** Recognition matches over later-epoch or later-generation blobs: MUST be 0. */
         val recognisedLater: Int,
+        /** Diagnostic: each later-generation open, classified. */
+        val openViolations: List<String>,
         /** Static residue of the dump: rows past the subject's removal. */
         val laterEpochRows: Long,
         val laterGenerationRows: Long,
@@ -146,6 +148,7 @@ internal object RemovedMemberOracle {
         // Recognition: every stored 32-byte value against every blob's hint, all three modes.
         var matched = 0
         var recognisedLater = 0
+        val violations = ArrayList<String>()
         var opens = 0
         var openedLaterEpoch = 0
         var openedLaterGeneration = 0
@@ -185,13 +188,19 @@ internal object RemovedMemberOracle {
                                 mode == ChannelCrypto.MODE_EPOCH -> {
                                     val headerEpoch = o.value.headerEpoch ?: o.value.order.epoch
                                     when {
-                                        openedGen != null && openedGen > heldGeneration -> openedLaterGeneration++
+                                        openedGen != null && openedGen > heldGeneration -> {
+                                            openedLaterGeneration++
+                                            violations += "OPENED-LATER-GEN mode=0x11 nsGen=$openedGen hdrEpoch=$headerEpoch purpose=${blob.purpose} from=${blob.from} size=${blob.ciphertext.size}"
+                                        }
                                         headerEpoch > removedAtEpoch -> openedLaterEpoch++
                                         headerEpoch == removedAtEpoch -> openedRemovingEpoch++
                                         else -> openedEarlierEpoch++
                                     }
                                 }
-                                openedGen != null && openedGen > heldGeneration -> openedLaterGeneration++
+                                openedGen != null && openedGen > heldGeneration -> {
+                                    openedLaterGeneration++
+                                    violations += "OPENED-LATER-GEN mode=0x${"%02x".format(mode)} cls=$cls nsGen=$openedGen purpose=${blob.purpose} from=${blob.from} size=${blob.ciphertext.size}"
+                                }
                                 else -> joinTrafficOpened++
                             }
                         }
@@ -212,6 +221,7 @@ internal object RemovedMemberOracle {
             openedRemovingEpoch = openedRemovingEpoch,
             openedEarlierEpoch = openedEarlierEpoch,
             joinTrafficOpened = joinTrafficOpened,
+            openViolations = violations,
             recognisedLater = recognisedLater,
             laterEpochRows = laterEpochRows,
             laterGenerationRows = laterGenerationRows,
