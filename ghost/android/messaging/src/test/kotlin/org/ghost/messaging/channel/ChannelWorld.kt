@@ -33,9 +33,11 @@ import org.ghost.sync.store.SyncStores
 import java.security.MessageDigest
 
 /**
- * The channel world of slice S4 (Phase 10 design §12.1, scaled to what S4 builds): 2 … 6 clients, each a real
- * `:messaging` channel engine over its own migrated v7 database and its own `:sync` stores, the **real** OpenMLS through
- * `MlsNative` loading `ghost-dm-host`, and a model relay ([ModelChannelRelay]) between them.
+ * The channel world of Phase 10's test plan (design §12.1): each client a real `:messaging` channel engine
+ * over its own migrated v7 database and its own `:sync` stores, the **real** OpenMLS through `MlsNative`
+ * loading `ghost-dm-host`, and a model relay ([ModelChannelRelay]) between them. S4 built it at 2 … 6
+ * clients; slice S10 scales it to SCN-M20's 20 (§12.5) — nothing here bounds the client count, and a
+ * [seedName] lets a restored stack (a new device holding the same seed) live beside the lost one.
  *
  * **What is real and what is a model.** Everything inside `:messaging` and `:crypto-bridge` is the production code: the
  * engine, its steps, the stores, the facade, the native library. The transport is the model relay — it reads the ops
@@ -64,6 +66,11 @@ internal class ChannelWorld(
     /**
      * A new client, named; its database in memory, or in the file [path] (which the client then owns and closes: what a
      * crash enumeration freezes, [ChannelWorld.restore]), or over the executor [sql] the caller owns.
+     *
+     * [seedName] overrides the name the client's **secrets** derive from (content and seen keys, the pseudonym
+     * seeds, the DM identity): the new stack of a device swap (SCN-M20's restore, §12.5) is a different device —
+     * its own random stream and relay name — holding the same seed, so it re-derives the removed device's
+     * pseudonym and accepts the return invite as a restore (F-S7-2's row-holding flow). Null derives from [name].
      */
     fun client(
         name: String,
@@ -72,8 +79,9 @@ internal class ChannelWorld(
         path: String? = null,
         /** The receive step's peek window: a narrower one puts the client's passes under pressure (§19.38). */
         peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
+        seedName: String? = null,
     ): ChannelClient {
-        val client = ChannelClient(this, name, sql, boot, path, peekLimit)
+        val client = ChannelClient(this, name, sql, boot, path, peekLimit, seedName)
         clients.removeAll { it.name == name }
         clients += client
         return client
@@ -224,11 +232,27 @@ internal class ChannelClient(
     /** A database file the client opens and owns (closed by [close], so the file can then be copied whole). */
     path: String? = null,
     peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
+    /**
+     * The name the secret material derives from (null: [name]): a restored stack passes the lost device's
+     * name here, so its pseudonym, content/seen keys and DM identity re-derive — while its random stream
+     * stays its own (a new device never reuses another's draws).
+     */
+    seedName: String? = null,
 ) : AutoCloseable {
+
+    private val seedOf: String = seedName ?: name
 
     private val ownExecutor: JdbcSqlExecutor? =
         if (sql == null) JdbcSqlExecutor(path ?: ":memory:").also { MigrationRunner(it).migrate() } else null
     val sql: SqlExecutor = sql ?: requireNotNull(ownExecutor)
+
+    /**
+     * The file this client's database lives in (null when the caller passed an executor): what a
+     * consistent snapshot reads through a fresh connection ([ChannelM20.snapshotOpenDb]) — a
+     * `VACUUM INTO` on the live connection itself is refused (its cached prepared statements read
+     * as statements in progress).
+     */
+    val dbPath: String? = if (sql == null) (path ?: ":memory:").takeIf { it != ":memory:" } else null
     val database = SyncDatabase(this.sql)
     val clock = MovableClock(world.now)
     val stores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
@@ -237,8 +261,8 @@ internal class ChannelClient(
     var slots: List<EsSlot>
     private val esSlots = EsSlots { slots }
 
-    private val contentKey: ByteArray = ChannelWorld.sha256("content:$name")
-    private val seen: ByteArray = ChannelWorld.sha256("seen:$name")
+    private val contentKey: ByteArray = ChannelWorld.sha256("content:$seedOf")
+    private val seen: ByteArray = ChannelWorld.sha256("seen:$seedOf")
     val content = ContentCipher(contentKey)
 
     /** False makes the local keys unavailable, as a locked identity would (`CRYPTO_UNAVAILABLE`). */
@@ -250,8 +274,9 @@ internal class ChannelClient(
         override fun seenKey(): ByteArray? = if (unlocked) seen.copyOf() else null
     }
 
-    /** `ps` for a channel: what `:identity` derives from the root (here from the client's name, so a reboot keeps it). */
-    val seeds = ChannelSeeds { channelId -> ChannelWorld.sha256("seed:$name:" + ChannelWorld.hex(channelId)) }
+    /** `ps` for a channel: what `:identity` derives from the root (here from the client's seed name, so a
+     *  restore stack re-derives the lost device's pseudonym and a reboot keeps it). */
+    val seeds = ChannelSeeds { channelId -> ChannelWorld.sha256("seed:$seedOf:" + ChannelWorld.hex(channelId)) }
 
     /**
      * The DM context §6.9's `revealSeal` signs with: the world's stand-in for the DM stack's
@@ -269,11 +294,11 @@ internal class ChannelClient(
         dmHandle?.let { return it }
         val opened = org.ghost.crypto.bridge.DmSessions.openContext(
             ChannelWorld.sha256("dm-branch"),
-            // The identity persists across reboots, like the pseudonym seed (a reboot changes the
-            // random streams, never the identity): a revealed card must verify as the same
+            // The identity persists across reboots and restores, like the pseudonym seed (a reboot
+            // changes the random streams, never the identity): a revealed card must verify as the same
             // identity after the device crashed and came back.
-            ChannelWorld.sha256("identity:$name"),
-            ChannelWorld.sha256("dm-state:$name"),
+            ChannelWorld.sha256("identity:$seedOf"),
+            ChannelWorld.sha256("dm-state:$seedOf"),
         )
         dmHandle = opened
         return opened
