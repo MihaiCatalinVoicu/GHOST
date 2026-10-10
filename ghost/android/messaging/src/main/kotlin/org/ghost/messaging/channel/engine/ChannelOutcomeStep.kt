@@ -124,7 +124,7 @@ internal class ChannelOutcomeStep(
                 val ref = op.ref
                 val candidatePending = op.purpose != OpPurpose.COMMIT ||
                     ref != null && stores.candidates.ownCommits(tx.sql, c).any { it.hash.contentEquals(ref) }
-                if (candidatePending) resend(tx, op, outcome)
+                if (candidatePending) resendOp(tx, op, outcome)
             }
             stores.posts.deleteOp(tx, operationId)
             true
@@ -137,6 +137,11 @@ internal class ChannelOutcomeStep(
      * spent, the deadline has passed, or this week's slot table cannot give a quorum — the release stands either
      * way and the caller deletes the old row.
      *
+     * Named `resendOp`, not `resend`: G-DM2 (`dm-enqueue-callers.sh`) matches the DM step objects' entry
+     * points by name under the premise they are unique to them, and this file is a channel engine file the
+     * gate's step rule still reads (review of S9, §19.48 — the rename restores the premise; the gate's rule
+     * and strength are untouched).
+     *
      * §11.2 #6 bounds the resend twice: by `resendNotAfter` (checked above) and by the recipients' tombstones
      * (`Outbox.enqueue`'s own-tombstone check, which the channel side cannot read ahead). The tombstone bound
      * closes in two documented states: the `done` row's retention passed, and the row still `listed` from a
@@ -145,7 +150,7 @@ internal class ChannelOutcomeStep(
      * the commit stays pending under CO-4 — so both refusal predicates are caught here, exactly, and every
      * other enqueue defect still throws (§19.46 FIX 1).
      */
-    private fun resend(tx: SyncTransaction, op: PostStore.OpRow, outcome: OutboundOutcome): Boolean {
+    private fun resendOp(tx: SyncTransaction, op: PostStore.OpRow, outcome: OutboundOutcome): Boolean {
         val now = env.now()
         val notAfter = outcome.resendNotAfterEpochSeconds
         if (op.resends >= PostStore.MAX_RESENDS || notAfter == null || now >= notAfter || now >= op.deadlineHour) {

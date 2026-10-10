@@ -2057,8 +2057,10 @@ else
 fi
 
 # G-M6 (Phase 10 design faza10-forum.md §10.2, §13.1; slice S2b): the channel JNI surface is a
-# closed list with function 16 reserved for slice S9 — G-R6's halves for `MlsNative`, its one test
-# entry (`MlsVectors.run`) only in a test library, and one list of allowed classes shared with G-R6.
+# closed list — G-R6's halves for `MlsNative`, its one test entry (`MlsVectors.run`) only in a
+# test library, and one list of allowed classes shared with G-R6. S2b reserved function 16 for
+# slice S9; S9 exported it (revealSeal/revealOpen), so the negative library fixture now exports
+# a function beyond the list's maximum instead (review of S9, the self-test's fixture fix).
 MLS_JNI="$HARNESS/mls-jni"
 if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
      GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
@@ -2204,11 +2206,11 @@ mls_lib_case() { # $1 = expect pass|fail, $2 = expected text ("" for pass), $3 =
     echo "SELF-TEST FAIL: mls-jni-surface $desc ($got)" >&2; printf '%s\n' "$out" | tail -4 >&2; rc=1
   fi
 }
-mls_lib_case pass "" "accepts a shipped library whose symbols are the closed list minus function 16" exact-nm "$mls_elf"
+mls_lib_case pass "" "accepts a shipped library whose symbols are exactly the closed list's Exported entries" exact-nm "$mls_elf"
 mls_lib_case pass "" "accepts a test library with exactly its one test entry point" entry-nm --test "$mls_elf"
 mls_lib_case fail "exports 'MlsNative.debugDump', which is not on the closed list" "rejects a library exporting a symbol outside the closed list" stray-nm "$mls_elf"
 mls_lib_case fail "does not export 'MlsNative.trialCount'" "rejects a library that does not export an Exported entry" missing-nm "$mls_elf"
-mls_lib_case fail "exports 'MlsNative.revealSeal', which is reserved for a later slice (function 16 is S9's)" "rejects a library exporting function 16 early" reveal-nm "$mls_elf"
+mls_lib_case fail "exports 'MlsNative.revealVerify', which is not on the closed list" "rejects a library exporting a function beyond the closed list's maximum (function 16 is S9's, exported; a would-be next function is still unlisted)" reveal-nm "$mls_elf"
 mls_lib_case fail "exports the test entry point 'MlsVectors.run': a shipped library never carries it" "rejects the test entry point in a shipped library" entry-nm "$mls_elf"
 mls_lib_case fail "does not export the test entry point 'MlsVectors.run'" "rejects a test library without its test entry point" exact-nm --test "$mls_elf"
 mls_lib_case fail "exports 'MlsVectors.dumpState', which is not its one test entry point" "rejects a test library with a second test entry" entry-extra-nm --test "$mls_elf"

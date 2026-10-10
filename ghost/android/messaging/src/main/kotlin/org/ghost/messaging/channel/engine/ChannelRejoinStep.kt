@@ -217,15 +217,18 @@ internal class ChannelRejoinStep(
                     stores.joins.deleteJoin(tx, join.channelId, join.kpRef)
                 }
                 done++
-            } else if (resend(join, day, now)) {
+            } else if (resendJoin(join, day, now)) {
                 done++
             }
         }
         return done
     }
 
-    /** The 7-day re-send: a fresh KeyPackage and request per listened generation, the deadline kept. */
-    private fun resend(join: org.ghost.messaging.channel.store.JoinStore.JoinRow, day: Long, now: Long): Boolean {
+    /**
+     * The 7-day re-send: a fresh KeyPackage and request per listened generation, the deadline kept.
+     * Named `resendJoin`, not `resend`, for the reason [ChannelOutcomeStep.resendOp] names.
+     */
+    private fun resendJoin(join: org.ghost.messaging.channel.store.JoinStore.JoinRow, day: Long, now: Long): Boolean {
         val deadline = join.rejoinDeadlineDay ?: return false
         val channelId = join.channelId
         val opened = env.contexts.open(channelId) ?: return false

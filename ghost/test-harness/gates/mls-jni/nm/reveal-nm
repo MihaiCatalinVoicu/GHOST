@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
-# Fixture symbol reader for G-M6: a library exporting function 16, reserved for slice S9, early.
+# Fixture symbol reader for G-M6: a library exporting a function beyond the closed list's
+# maximum early. Slice S9 promoted function 16 (revealSeal/revealOpen) to Exported, so the old
+# extra (revealSeal) is legitimate on today's list — the earliest function a later slice could
+# add is refused until the closed list names it (review of S9, the self-test's fixture fix).
 set -euo pipefail
-MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsNative_revealSeal" exec bash "$(dirname "$0")/exact-nm" "$@"
+MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsNative_revealVerify" exec bash "$(dirname "$0")/exact-nm" "$@"
