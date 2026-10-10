@@ -192,7 +192,7 @@ internal class ChannelAcceptStep(
                         deadlineEpochSeconds = ChannelTime.handshakeDeadline(DmTime.floorMinute(now)),
                     ),
                 )
-                stores.posts.insertOp(tx, operationId, channelId, OpPurpose.JOIN, keyPackage.kpRef)
+                stores.posts.insertOp(tx, operationId, channelId, OpPurpose.JOIN, keyPackage.kpRef, blob, DmTime.ceilHour(ChannelTime.handshakeDeadline(DmTime.floorMinute(now))))
                 AcceptResult.PENDING
             }
         } catch (e: InsufficientReplicasException) {

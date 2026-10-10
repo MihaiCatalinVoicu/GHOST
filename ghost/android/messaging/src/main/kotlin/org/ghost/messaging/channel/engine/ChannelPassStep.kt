@@ -958,7 +958,7 @@ internal class ChannelPassStep(
                         deadlineEpochSeconds = ChannelTime.handshakeDeadline(DmTime.floorMinute(now)),
                     ),
                 )
-                stores.posts.insertOp(tx, operationId, channelId, OpPurpose.COMMIT, hash)
+                stores.posts.insertOp(tx, operationId, channelId, OpPurpose.COMMIT, hash, built.blob, DmTime.ceilHour(ChannelTime.handshakeDeadline(DmTime.floorMinute(now))))
                 stores.candidates.insert(
                     tx = tx,
                     channelId = channelId,

@@ -56,6 +56,12 @@ internal object Fields {
         return value
     }
 
+    /** A floor-sized bucket of §5.6: exactly one of 4 KiB, 16 KiB or 64 KiB (the schema's CHECK is the backstop). */
+    fun bucket(where: String, value: ByteArray): ByteArray {
+        if (value.size != 4_096 && value.size != 16_384 && value.size != 65_536) bad(where)
+        return value
+    }
+
     fun bytesOrNull(where: String, value: ByteArray?, size: Int): ByteArray? = value?.let { bytes(where, it, size) }
 
     fun bytesBetweenOrNull(where: String, value: ByteArray?, min: Int, max: Int): ByteArray? =

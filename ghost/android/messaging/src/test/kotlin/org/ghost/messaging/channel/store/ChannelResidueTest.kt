@@ -81,8 +81,8 @@ class ChannelResidueTest {
             s.posts.insertPending(tx, id(4), w.ch, 1, chBytes(60, 4), now - 3_600)
             s.posts.putReveal(tx, w.ch, Direction.OUT, key(0x82), now - 60)
             s.posts.markSeen(tx, w.ch, chBytes(16, 6), today - 1)
-            s.posts.insertOp(tx, id(5), w.ch, OpPurpose.POST, id(3))
-            s.posts.insertOp(tx, id(6), w.ch, OpPurpose.COMMIT, key(40))
+            s.posts.insertOp(tx, id(5), w.ch, OpPurpose.POST, id(3), chBytes(4096, 0x51), now + 3_600)
+            s.posts.insertOp(tx, id(6), w.ch, OpPurpose.COMMIT, key(40), chBytes(4096, 0x52), now + 3_600)
             // joins, requests, invites, tags: all past their day
             s.joins.insertJoin(
                 tx, w.ch, key(0x91), JoinType.JOIN, id(0x31), 0, today - 1,

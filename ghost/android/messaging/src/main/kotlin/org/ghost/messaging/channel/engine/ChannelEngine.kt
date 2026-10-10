@@ -6,6 +6,8 @@ import org.ghost.messaging.api.CreateResult
 import org.ghost.messaging.api.InviteResult
 import org.ghost.messaging.api.PostId
 import org.ghost.messaging.api.PostResult
+import org.ghost.messaging.engine.DmTime
+import org.ghost.messaging.port.DmCheckpoint
 
 /**
  * What the messaging actor runs of the channel engine (Phase 10 design §7.7, D16: one actor drains `Consumer.DM` and
@@ -54,6 +56,8 @@ internal class ChannelEngine(
     private val env: ChannelEnv,
     sync: ChannelSyncPorts,
     private val actor: ChannelActor,
+    /** The checkpoint after the post cascade (§8.2): the pragma needs an executor outside a transaction. */
+    checkpoint: DmCheckpoint,
     /** The receive step's peek window (§19.38); production keeps the default, a world may narrow it. */
     peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
     /** Phase 7's fetched cap of a namespace, as the receive step reads pressure from it (§19.38). */
@@ -70,8 +74,8 @@ internal class ChannelEngine(
     val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap, livenessStep)
     val passStep = ChannelPassStep(env, sync, postStep)
     val settleStep = ChannelSettleStep(env, sync, livenessStep)
-    val outcomeStep = ChannelOutcomeStep(env, sync)
-    val sweepStep = ChannelSweepStep(env, sync)
+    val channelOutcomeStep = ChannelOutcomeStep(env, sync)
+    val sweepStep = ChannelSweepStep(env, sync, checkpoint)
     val switchStep = ChannelSwitchStep(env, sync)
     val funderStep = ChannelFunderStep(env, sync)
 
@@ -171,7 +175,7 @@ internal class ChannelEngine(
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
         if (env.keys.content() == null) return
         if (timeTriggered) lastTimeTriggered = env.now()
-        outcomeStep.run()
+        channelOutcomeStep.run()
         // CH-SWITCH first: the pass works in the new generation once the commit's switch hour has come
         // (§19.8 (a)); the receive then routes ns_{g+1} and the pending posts encrypt into it.
         switchStep.switchDue(sessionStart)
@@ -191,6 +195,18 @@ internal class ChannelEngine(
             rejoinStep.sweepRejoins()
             sweepStep.sweepDrains()
             sweepStep.sweepRequests()
+            // CH-SWEEP's ephemeral half (slice S8, §8.2, §8.3, §8.5): the post timers and their cascade,
+            // the expired-pending FAILED edge, the derived rows, the epochs by count, the administrative
+            // posts' records and the bounded tables' expired rows.
+            sweepStep.sweepPosts()
+            sweepStep.sweepPending()
+            sweepStep.sweepReveals()
+            sweepStep.sweepSeen()
+            sweepStep.sweepEpochs()
+            sweepStep.sweepInvites()
+            sweepStep.sweepJoinRequests()
+            sweepStep.sweepKpTags()
+            sweepStep.sweepGlobalRows()
         }
     }
 
@@ -203,7 +219,13 @@ internal class ChannelEngine(
      */
     override fun nextWakeSeconds(): Long? {
         val now = env.now()
-        return listOfNotNull(settleStep.nextDue(), passStep.nextDue(), peekOrder.holdEnds(), switchStep.nextDue(), funderStep.nextDue(now))
+        val nextPostDelete: Long? = env.database.transaction<Long?> { tx ->
+            env.stores.posts.nextDeleteAt(tx.sql, DmTime.floorMinute(now))
+        }
+        return listOfNotNull<Long>(
+            settleStep.nextDue(), passStep.nextDue(), peekOrder.holdEnds(), switchStep.nextDue(),
+            funderStep.nextDue(now), nextPostDelete,
+        )
             .filter { due -> due > now || due > lastTimeTriggered }
             .minOrNull()
             ?.let { maxOf(0L, it - now) }

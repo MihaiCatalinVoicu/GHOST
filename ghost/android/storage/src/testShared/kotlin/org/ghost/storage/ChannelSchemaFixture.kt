@@ -76,8 +76,8 @@ internal object ChannelSchema {
     val withoutRowidTables: Set<String> = tables - rowidTables
 
     /**
-     * Every time column of §9, as `table.column`: 33 of them (32 before slice S7 amended `ch_join` with the
-     * rejoin's give-up day, §6.7). The introspection tests require the database to hold exactly these (a column
+     * Every time column of §9, as `table.column`: 34 of them (33 before slice S8 amended `ch_outbound_op` with the
+     * op's deadline, §5.8, §19.45). The introspection tests require the database to hold exactly these (a column
      * that matches the time-like rule and is not here fails, and so does one here that no table has), each with
      * the granularity its suffix names.
      */
@@ -102,6 +102,8 @@ internal object ChannelSchema {
         "ch_invite_issued.expiry_day", "ch_kp_seen.until_day", "ch_invite_own.expiry_day",
         "ch_sponsor.admitted_day", "ch_member_refresh.refresh_day",
         "ch_request.until_day", "ch_request.recorded_day",
+        // Slice S8 (§19.45): the outbound op's own deadline (§5.8), what the INDETERMINATE resend is bounded by.
+        "ch_outbound_op.deadline_hour",
     )
 
     /**
@@ -132,13 +134,14 @@ internal object ChannelSchema {
     /**
      * Integer columns that are neither a time nor an epoch and carry `typeof` beside a range: the
      * generation counters (`u32`), the commit rank, the own sequence number, the liveness counters, the
-     * password version, the content kind of a pending post and the two timer codes.
+     * password version, the content kind of a pending post, the op's resend count (slice S8, §19.45:
+     * Phase 7's "at most twice") and the two timer codes.
      */
     val counterColumns: Set<String> = setOf(
         "ch_channel.generation", "ch_generation.generation", "ch_join.generation", "ch_join_request.generation",
         "ch_candidate.rank", "ch_epoch.own_seq",
         "ch_liveness.unopenable_count", "ch_liveness.unopenable_operators", "ch_liveness.sessions",
-        "ch_invite_issued.pw_version", "ch_pending_post.kind",
+        "ch_invite_issued.pw_version", "ch_pending_post.kind", "ch_outbound_op.resends",
         "ch_channel.timer_code", "ch_post.timer_code",
     )
 
@@ -187,7 +190,7 @@ internal object ChannelSchema {
             "displayed_minute? delete_at_minute? relay_expiry_hour?",
         "ch_reaction" to "target author channel_id grapheme_env",
         "ch_pending_post" to "op_id channel_id kind content_env fail_after_hour",
-        "ch_outbound_op" to "operation_id channel_id purpose ref?",
+        "ch_outbound_op" to "operation_id channel_id purpose ref? blob deadline_hour resends",
         "ch_seen" to "channel_id tag until_day",
         "ch_reveal" to "channel_id direction peer delete_at_minute?",
         "ch_join" to "channel_id kp_ref type invite_id? generation expiry_day ns? jk_env? r_join? committers_digest? " +
@@ -263,6 +266,7 @@ internal class ChannelFixture(
             ),
             "ch_outbound_op" to linkedMapOf(
                 "operation_id" to chBytes(16, 23), "channel_id" to CH, "purpose" to "post",
+                "blob" to chBytes(4096, 0x17), "deadline_hour" to 7_200L,
             ),
             "ch_seen" to linkedMapOf("channel_id" to CH, "tag" to chBytes(16, 24), "until_day" to 19_999L),
             "ch_reveal" to linkedMapOf("channel_id" to CH, "direction" to "out", "peer" to chBytes(32, 25)),

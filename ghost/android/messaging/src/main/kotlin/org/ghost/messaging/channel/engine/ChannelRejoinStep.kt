@@ -162,7 +162,7 @@ internal class ChannelRejoinStep(
                             deadlineEpochSeconds = ChannelTime.handshakeDeadline(DmTime.floorMinute(now)),
                         ),
                     )
-                    stores.posts.insertOp(tx, operationId, channelId, OpPurpose.REJOIN, blobHash(blob))
+                    stores.posts.insertOp(tx, operationId, channelId, OpPurpose.REJOIN, blobHash(blob), blob, DmTime.ceilHour(ChannelTime.handshakeDeadline(DmTime.floorMinute(now))))
                 }
             }
             return ResyncResult.REQUESTED
@@ -294,7 +294,7 @@ internal class ChannelRejoinStep(
                             deadlineEpochSeconds = ChannelTime.handshakeDeadline(DmTime.floorMinute(now)),
                         ),
                     )
-                    stores.posts.insertOp(tx, operationId, channelId, OpPurpose.REJOIN, blobHash(blob))
+                    stores.posts.insertOp(tx, operationId, channelId, OpPurpose.REJOIN, blobHash(blob), blob, DmTime.ceilHour(ChannelTime.handshakeDeadline(DmTime.floorMinute(now))))
                 }
             }
             return true

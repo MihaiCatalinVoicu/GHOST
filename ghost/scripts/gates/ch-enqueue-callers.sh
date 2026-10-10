@@ -5,7 +5,9 @@
 #
 #   Outbox.enqueue          CH-ACCEPT (the join request), CH-POST (posts, reactions and CH-INVITE's INVITE_ISSUED,
 #                           through ChannelPostStep.compose, and CH-LEAVE's LEAVE post), CH-PASS (the commit),
-#                           CH-SETTLE (the Welcomes of the member's own winning commit only, §19.2)
+#                           CH-SETTLE (the Welcomes of the member's own winning commit only, §19.2),
+#                           CH-OUTCOME (the identical-bytes resend of an op that closed INDETERMINATE, §7.5's
+#                           mirror of the DM's SendStep.resend; slice S8, §19.45)
 #   Namespaces.register     CH-CREATE, CH-ACCEPT, CH-SWITCH (§6.5, §19.8)
 #   Capabilities.put        CH-CREATE, CH-ACCEPT (the READ and DEPOSIT credentials of every slot), CH-SWITCH
 #   Registrations.keep      CH-CREATE (the funder's READ and DEPOSIT registrations of the week), CH-SWITCH
@@ -18,8 +20,8 @@
 # and **never from `CH-RECV` or `CH-JOIN`** (a blob that arrives causes no store, registration, funding or
 # listening change; a joiner's newer generation is switched by `CH-SWITCH` at its next session start, §19.8).
 # Every other restricted call — `Outbox.cancel`, `Registrations.request`/`rearm`/`forget`, `Namespaces.setRelays`/
-# `setSendDelay` — is made by no channel file in slices S4 … S6. The transactions §13.1 lists beyond these
-# (`CH-REJOIN`, `CH-REVEAL`, the rest of `CH-SWEEP`) are slices S7 … S9's: each joins the table below
+# `setSendDelay` — is made by no channel file in slices S4 … S8. The transactions §13.1 lists beyond these
+# (`CH-REVEAL`, `CH-SWEEP`'s remainder) are slices S9's: each joins the table below
 # deliberately, with the calls it makes, when it is built — a new file, or a new call in a listed file, is
 # refused until then, which is what makes it arrive on purpose. **An entry is a file of the channel engine's
 # own directory** (`android/messaging/src/<set>/kotlin/org/ghost/messaging/channel/engine/`, §19.38): a file
@@ -97,6 +99,7 @@ ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 
 ChannelSwitchStep.kt|register put keep set remove setListening|CH-SWITCH (§6.5, §19.8; a switch ends an older drain at once)
 ChannelFunderStep.kt|register keep set|the funder renewal step (§7.5 item 7)
 ChannelRejoinStep.kt|enqueue|CH-REJOIN (§6.7) and the CH-SWEEP re-send of an unanswered rejoin
+ChannelOutcomeStep.kt|enqueue|CH-OUTCOME (§7.5): the identical-bytes resend of an INDETERMINATE op, the mirror of the DM resend (slice S8, §19.45)
 '
 # The two steps §13.1 names as never allowed: an entry for either is itself a violation, so the table cannot grow one.
 NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
@@ -118,6 +121,7 @@ ChannelFunderStep funderStep|ChannelEngine.kt
 ChannelCreateStep createStep|ChannelEngine.kt
 ChannelAcceptStep acceptStep|ChannelEngine.kt
 ChannelRejoinStep rejoinStep|ChannelEngine.kt
+ChannelOutcomeStep channelOutcomeStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt
 ChannelEngine|MessagingRuntime.kt
 ChannelPassSteps|ChannelEngine.kt DmActor.kt MessagingRuntime.kt

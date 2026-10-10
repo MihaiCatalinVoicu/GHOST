@@ -69,8 +69,20 @@ internal class PostStore {
         override fun toString(): String = "RevealRow(direction=${direction.sql})"
     }
 
-    class OpRow(val operationId: ByteArray, val channelId: ByteArray, val purpose: OpPurpose, val ref: ByteArray?) {
-        override fun toString(): String = "OpRow(purpose=${purpose.sql})"
+    class OpRow(
+        val operationId: ByteArray,
+        val channelId: ByteArray,
+        val purpose: OpPurpose,
+        val ref: ByteArray?,
+        /** The retained ciphertext of the op's own enqueue (slice S8, §19.45): an INDETERMINATE resend repeats
+         *  these identical bytes, never a re-seal. E2E ciphertext; the row takes it to its outcome. */
+        val blob: ByteArray,
+        /** The op's own deadline of §5.8, hour-grain: the resend bound is checked against it. */
+        val deadlineHour: Long,
+        /** How many identical-bytes resends this op itself is (Phase 7's "at most twice"). */
+        val resends: Int,
+    ) {
+        override fun toString(): String = "OpRow(purpose=${purpose.sql}, resends=$resends)"
     }
 
     // ------------------------------------------------------------------------------------ ch_post
@@ -455,13 +467,30 @@ internal class PostStore {
 
     // ----------------------------------------------------------------------------- ch_outbound_op
 
-    fun insertOp(tx: SyncTransaction, operationId: ByteArray, channelId: ByteArray, purpose: OpPurpose, ref: ByteArray?) {
+    /**
+     * The op of one enqueue, retained until its outcome (`CH-OUTCOME`): the ciphertext the resend repeats
+     * ([OpRow.blob]), the op's deadline and the resend count. Slice S8 (§19.45).
+     */
+    fun insertOp(
+        tx: SyncTransaction,
+        operationId: ByteArray,
+        channelId: ByteArray,
+        purpose: OpPurpose,
+        ref: ByteArray?,
+        blob: ByteArray,
+        deadlineHour: Long,
+        resends: Int = 0,
+    ) {
         Fields.bytes("ch_outbound_op.operation_id", operationId, 16)
         Fields.bytesBetweenOrNull("ch_outbound_op.ref", ref, 1, 64)
+        Fields.bucket("ch_outbound_op.blob", blob)
+        Fields.hour("ch_outbound_op.deadline_hour", deadlineHour)
+        Fields.rangeInt("ch_outbound_op.resends", resends, 0, MAX_RESENDS)
         val changed = tx.sql.execUpdate(
-            "INSERT INTO ch_outbound_op(operation_id, channel_id, purpose, ref) SELECT ?, ?, ?, ? " +
-                "WHERE NOT EXISTS (SELECT 1 FROM ch_outbound_op WHERE operation_id = ?)",
-            listOf(operationId, channelId, purpose.sql, ref, operationId),
+            "INSERT INTO ch_outbound_op(operation_id, channel_id, purpose, ref, blob, deadline_hour, resends) " +
+                "SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
+                "(SELECT 1 FROM ch_outbound_op WHERE operation_id = ?)",
+            listOf(operationId, channelId, purpose.sql, ref, blob, deadlineHour, resends.toLong(), operationId),
         )
         if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_outbound_op")
     }
@@ -488,12 +517,17 @@ internal class PostStore {
     fun deleteOp(tx: SyncTransaction, operationId: ByteArray): Boolean =
         tx.sql.execUpdate("DELETE FROM ch_outbound_op WHERE operation_id = ?", listOf(operationId)) == 1
 
-    private fun readOp(r: SqlExecutor.Row) =
-        OpRow(r.blob(0), r.blob(1), OpPurpose.of(r.string(2)), if (r.isNull(3)) null else r.blob(3))
+    private fun readOp(r: SqlExecutor.Row) = OpRow(
+        r.blob(0), r.blob(1), OpPurpose.of(r.string(2)), if (r.isNull(3)) null else r.blob(3),
+        r.blob(4), r.long(5), r.long(6).toInt(),
+    )
 
     companion object {
         const val MAX_BODY: Int = 65_564
         const val MAX_PENDING: Int = 256
+
+        /** Phase 7's bound on the identical-bytes resends of an op (the DM's G-7, C-15). */
+        const val MAX_RESENDS: Int = 2
 
         /**
          * `ORDER BY author_minute DESC, author DESC, op_id DESC`: the same three values on every device. A post is
@@ -572,11 +606,12 @@ internal class PostStore {
             "SELECT channel_id, direction, peer, delete_at_minute FROM ch_reveal WHERE delete_at_minute <= ? " +
                 "ORDER BY delete_at_minute, channel_id, direction, peer LIMIT ?"
 
-        const val OP: String = "SELECT operation_id, channel_id, purpose, ref FROM ch_outbound_op WHERE operation_id = ?"
+        const val OP: String =
+            "SELECT operation_id, channel_id, purpose, ref, blob, deadline_hour, resends FROM ch_outbound_op WHERE operation_id = ?"
         const val OPS_FOR: String =
-            "SELECT operation_id, channel_id, purpose, ref FROM ch_outbound_op WHERE channel_id = ? AND purpose = ? AND ref = ? " +
+            "SELECT operation_id, channel_id, purpose, ref, blob, deadline_hour, resends FROM ch_outbound_op WHERE channel_id = ? AND purpose = ? AND ref = ? " +
                 "ORDER BY operation_id"
         const val OPS_OF: String =
-            "SELECT operation_id, channel_id, purpose, ref FROM ch_outbound_op WHERE channel_id = ? AND purpose = ? ORDER BY operation_id"
+            "SELECT operation_id, channel_id, purpose, ref, blob, deadline_hour, resends FROM ch_outbound_op WHERE channel_id = ? AND purpose = ? ORDER BY operation_id"
     }
 }

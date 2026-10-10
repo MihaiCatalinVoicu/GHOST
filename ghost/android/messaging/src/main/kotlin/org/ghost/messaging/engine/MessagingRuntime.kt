@@ -168,6 +168,7 @@ class MessagingRuntime(
             actor = object : ChannelActor {
                 override fun <T> call(body: () -> T): T = actor.call(body)
             },
+            checkpoint = checkpoint,
         )
     }
 

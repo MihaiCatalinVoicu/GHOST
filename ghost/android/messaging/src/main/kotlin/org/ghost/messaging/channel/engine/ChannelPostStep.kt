@@ -340,7 +340,7 @@ internal class ChannelPostStep(
             OutboundBlob(OperationId(operationId), NamespaceId(generation.namespaceId), blob, ttl, deadlineEpochSeconds = deadline),
         )
         val purpose = if (fields.kind == KIND_POST || fields.kind == KIND_REACTION) OpPurpose.POST else OpPurpose.REQUEST
-        stores.posts.insertOp(tx, operationId, c, purpose, fields.opId)
+        stores.posts.insertOp(tx, operationId, c, purpose, fields.opId, blob, DmTime.ceilHour(deadline))
         when (fields.kind) {
             KIND_POST -> {
                 val deleteAt = DmTimers.senderExpireMinute(now, fields.timerCode)
