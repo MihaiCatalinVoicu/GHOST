@@ -41,7 +41,8 @@
 //!
 //! **The closed list.** [`CLOSED_LIST`] is §10.2's table; G-M6 checks both directions — no export
 //! outside the list, every entry marked [`Availability::Exported`] exported by every library it
-//! reads — and that function 16 (`revealSeal`/`revealOpen`, slice S9) is **not** exported yet.
+//! reads. Function 16 (`revealSeal`/`revealOpen`, slice S9) is exported since S9; its `dmHandle`
+//! argument names a DM context of the same process (the identity key never crosses to Kotlin).
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -100,10 +101,11 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     (15, "rejoinRequest", Availability::Exported),
     (15, "joinVerify", Availability::Exported),
     // Function 16 is the reveal of §6.9 and §19.17 (HPKE to the per-leaf box keys, the card
-    // through the DM context's `dmHandle`): slice S9. Reserved here so that exporting it early —
-    // or under any other name — fails G-M6.
-    (16, "revealSeal", Availability::Declared("S9")),
-    (16, "revealOpen", Availability::Declared("S9")),
+    // through the DM context's `dmHandle`): slice S9. The identity-key signature and the strict
+    // verification of both signatures and the card are `ghost-client-dm`'s (ADR-35's X-21 rule);
+    // `dmHandle` names a DM context on the same process.
+    (16, "revealSeal", Availability::Exported),
+    (16, "revealOpen", Availability::Exported),
     (17, "contentEncode", Availability::Exported),
     (17, "contentDecode", Availability::Exported),
     (18, "roster", Availability::Exported),
@@ -281,6 +283,17 @@ pub const FUNCTION_CODES: &[(&str, &[Code])] = &[
             Code::InvalidKeyPackage,
             Code::WrongPurpose,
             Code::BadSignature,
+            Code::CryptoUnavailable,
+        ],
+    ),
+    ("revealSeal", &[Code::NonCanonical, Code::CryptoUnavailable]),
+    (
+        "revealOpen",
+        &[
+            Code::NonCanonical,
+            Code::NotOpen,
+            Code::BadSignature,
+            Code::StateCorrupt,
             Code::CryptoUnavailable,
         ],
     ),
@@ -583,6 +596,9 @@ pub enum Field {
     TrialSender = 0x7d,
     /// `contentEncode`: the canonical `ChannelContent` bytes.
     Encoded = 0x7e,
+    /// A contact card v2 (131 bytes; §6.9's reveal: `revealOpen`'s verified card, the offer
+    /// `Messaging.addContact` takes).
+    Card = 0x7f,
 }
 
 impl Field {
@@ -714,6 +730,7 @@ impl Field {
         Field::Candidate,
         Field::TrialSender,
         Field::Encoded,
+        Field::Card,
     ];
 
     /// The tags that may repeat in one field list: the lists of the wire. Kotlin's `MlsField`
@@ -2426,6 +2443,77 @@ pub fn join_verify(
     Ok(r.into_bytes())
 }
 
+/// fn 16 `revealSeal(h, dmHandle, channelId, recipientP, recipientBoxPk, minute, opId)` (§6.9):
+/// the HPKE-sealed `RevealPayload` for [recipient]. [dm_handle] names the DM context whose
+/// identity key signs `sig_id` and whose own card v2 the payload carries (`ghost-client-dm`'s
+/// `reveal_identity_material`, ADR-35's X-21 rule); a closed or foreign handle on either side is
+/// `CRYPTO_UNAVAILABLE`. A non-canonical recipient box key is `NON_CANONICAL` (the F9 §22.8.2
+/// rule, as for a leaf's key).
+#[allow(clippy::too_many_arguments)]
+pub fn reveal_seal(
+    env: &mut JNIEnv,
+    handle: jlong,
+    dm_handle: jlong,
+    channel_id: &JByteArray,
+    recipient_p: &JByteArray,
+    recipient_box_pk: &JByteArray,
+    minute: jint,
+    op_id: &JByteArray,
+) -> MlsResult<Vec<u8>> {
+    let channel_id = fixed::<32>(env, channel_id)?;
+    let recipient_p = fixed::<32>(env, recipient_p)?;
+    let recipient_box_pk = fixed::<32>(env, recipient_box_pk)?;
+    let minute = uint(minute)?;
+    let op_id = fixed::<16>(env, op_id)?;
+    let (enc, ct) = with_channel(handle, &channel_id, |ctx, ch| {
+        ctx.reveal_seal(
+            ch,
+            |transcript| ghost_client_dm::jni::reveal_identity_material(dm_handle, transcript).ok(),
+            recipient_p,
+            recipient_box_pk,
+            minute,
+            op_id,
+        )
+    })?;
+    let mut r = Tlv::ok();
+    r.put(Field::HpkeEnc, &enc);
+    r.put(Field::Ciphertext, &ct);
+    Ok(r.into_bytes())
+}
+
+/// fn 16 `revealOpen(h, channelId, boxEnv, enc, ct, opId, senderP)` (§6.9): one HPKE open with
+/// the member's box key of the post's epoch, then every binding M must verify (see
+/// [`MlsContext::reveal_open`]). `NOT_OPEN` is the expected answer of every non-recipient — one
+/// open per reveal post, counted and dropped; `BAD_SIGNATURE` is a forgery, refused with nothing
+/// returned; a [box_env] that does not open is `STATE_CORRUPT`. On `Ok`: the author's verified
+/// card and pseudonym (the peer of the recipient's `ch_reveal` row and the offer
+/// `Messaging.addContact` takes).
+#[allow(clippy::too_many_arguments)]
+pub fn reveal_open(
+    env: &mut JNIEnv,
+    handle: jlong,
+    channel_id: &JByteArray,
+    box_env: &JByteArray,
+    enc: &JByteArray,
+    ct: &JByteArray,
+    op_id: &JByteArray,
+    sender_p: &JByteArray,
+) -> MlsResult<Vec<u8>> {
+    let channel_id = fixed::<32>(env, channel_id)?;
+    let box_env = bytes(env, box_env)?;
+    let enc = fixed::<32>(env, enc)?;
+    let ct = bytes(env, ct)?;
+    let op_id = fixed::<16>(env, op_id)?;
+    let sender_p = fixed::<32>(env, sender_p)?;
+    let opened = with_channel(handle, &channel_id, |ctx, ch| {
+        ctx.reveal_open(ch, &box_env, enc, &ct, op_id, sender_p)
+    })?;
+    let mut r = Tlv::ok();
+    r.put(Field::Pseudonym, &opened.p_author);
+    r.put(Field::Card, &opened.card);
+    Ok(r.into_bytes())
+}
+
 /// fn 17 `contentEncode(fields)`: the canonical `ChannelContent` (§5.5).
 pub fn content_encode(env: &mut JNIEnv, fields: &JByteArray) -> MlsResult<Vec<u8>> {
     let content = content_in(&bytes(env, fields)?)?;
@@ -2828,6 +2916,42 @@ pub mod entry {
         })
     }
 
+    /// `revealSeal`
+    #[allow(clippy::too_many_arguments)]
+    pub fn reveal_seal<'l>(
+        mut env: JNIEnv<'l>,
+        _c: JClass<'l>,
+        h: jlong,
+        dm: jlong,
+        a: JByteArray<'l>,
+        b: JByteArray<'l>,
+        c: JByteArray<'l>,
+        minute: jint,
+        d: JByteArray<'l>,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::reveal_seal(env, h, dm, &a, &b, &c, minute, &d)
+        })
+    }
+
+    /// `revealOpen`
+    #[allow(clippy::too_many_arguments)]
+    pub fn reveal_open<'l>(
+        mut env: JNIEnv<'l>,
+        _c: JClass<'l>,
+        h: jlong,
+        a: JByteArray<'l>,
+        b: JByteArray<'l>,
+        c: JByteArray<'l>,
+        d: JByteArray<'l>,
+        e: JByteArray<'l>,
+        f: JByteArray<'l>,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::reveal_open(env, h, &a, &b, &c, &d, &e, &f)
+        })
+    }
+
     /// `contentEncode`
     pub fn content_encode<'l>(
         mut env: JNIEnv<'l>,
@@ -3225,6 +3349,40 @@ macro_rules! export_jni {
             $crate::jni::entry::join_verify(env, class, h, a, b, c, d, generation)
         }
 
+        /// `MlsNative.revealSeal` (fn 16, §6.9; slice S9).
+        #[no_mangle]
+        #[allow(clippy::too_many_arguments)]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_MlsNative_revealSeal<'l>(
+            env: ::jni::JNIEnv<'l>,
+            class: ::jni::objects::JClass<'l>,
+            h: ::jni::sys::jlong,
+            dm: ::jni::sys::jlong,
+            a: ::jni::objects::JByteArray<'l>,
+            b: ::jni::objects::JByteArray<'l>,
+            c: ::jni::objects::JByteArray<'l>,
+            minute: ::jni::sys::jint,
+            d: ::jni::objects::JByteArray<'l>,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::reveal_seal(env, class, h, dm, a, b, c, minute, d)
+        }
+
+        /// `MlsNative.revealOpen` (fn 16, §6.9; slice S9).
+        #[no_mangle]
+        #[allow(clippy::too_many_arguments)]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_MlsNative_revealOpen<'l>(
+            env: ::jni::JNIEnv<'l>,
+            class: ::jni::objects::JClass<'l>,
+            h: ::jni::sys::jlong,
+            a: ::jni::objects::JByteArray<'l>,
+            b: ::jni::objects::JByteArray<'l>,
+            c: ::jni::objects::JByteArray<'l>,
+            d: ::jni::objects::JByteArray<'l>,
+            e: ::jni::objects::JByteArray<'l>,
+            f: ::jni::objects::JByteArray<'l>,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::reveal_open(env, class, h, a, b, c, d, e, f)
+        }
+
         /// `MlsNative.contentEncode` (fn 17).
         #[no_mangle]
         pub extern "system" fn Java_org_ghost_crypto_bridge_MlsNative_contentEncode<'l>(
@@ -3339,8 +3497,8 @@ mod tests {
         names
     }
 
-    /// G-M6's Rust half: the symbols the export macro writes are exactly §10.2's list minus the
-    /// reserved function 16, all of class `MlsNative`, each once.
+    /// G-M6's Rust half: the symbols the export macro writes are exactly §10.2's list — with
+    /// function 16 exported since slice S9 — all of class `MlsNative`, each once.
     #[test]
     fn the_export_macro_writes_exactly_the_exported_entries_of_the_closed_list() {
         let emitted = emitted();
@@ -3354,15 +3512,9 @@ mod tests {
         assert_eq!(emitted, expected);
         assert_eq!(
             emitted.len(),
-            25,
-            "§10.2 lists 25 names besides function 16's two"
+            27,
+            "§10.2 lists 27 names: the 25 of S2b plus function 16's two (S9)"
         );
-        for reserved in ["revealSeal", "revealOpen"] {
-            assert!(
-                !emitted.iter().any(|e| e.ends_with(reserved)),
-                "{reserved} is slice S9's"
-            );
-        }
     }
 
     #[test]
@@ -3387,7 +3539,10 @@ mod tests {
             .filter(|(_, _, a)| *a != Availability::Exported)
             .map(|(n, name, _)| (*n, *name))
             .collect();
-        assert_eq!(declared, vec![(16, "revealSeal"), (16, "revealOpen")]);
+        assert!(
+            declared.is_empty(),
+            "every function of §10.2 is exported; {declared:?} is still declared"
+        );
     }
 
     #[test]

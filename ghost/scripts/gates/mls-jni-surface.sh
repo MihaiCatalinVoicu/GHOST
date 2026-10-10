@@ -4,13 +4,14 @@
 # (`dm-jni-surface.sh`) applied to the channel surface.
 #
 #   the exported `Java_org_ghost_crypto_bridge_MlsNative_*` symbols of the shipped library equal
-#   §10.2's list minus the reserved function 16; the host library's equal that plus its one test
-#   entry (`MlsVectors.run`)
+#   §10.2's list's Exported entries; the host library's equal that plus its one test entry
+#   (`MlsVectors.run`)
 #
 # The list is the Rust constant `CLOSED_LIST` of `client-core/mls/src/jni.rs`, so the gate and the
 # code cannot drift. Entries marked `Availability::Declared("Sn")` are **reserved**: function 16
-# (`revealSeal`, `revealOpen`, the reveal of §6.9) is slice S9's, and a build that writes or exports
-# it early fails here, as does any symbol the list does not name.
+# (`revealSeal`, `revealOpen`, the reveal of §6.9) was slice S9's reservation and is `Exported`
+# since S9 landed — while any entry stays Declared, a build that writes or exports it early fails
+# here, as does any symbol the list does not name (a function beyond the list's maximum included).
 #
 # Halves:
 #   1. **Sources.** Every `MlsNative` entry point the workspace writes is on the list and marked

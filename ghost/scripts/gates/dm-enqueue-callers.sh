@@ -142,6 +142,16 @@
 # it is called), `set` a restricted call. `ALLOWED_FILES` is unchanged: no DM file funds anything
 # (and `Funding.set` throws for a namespace that is not a channel's, so none could).
 #
+# **Phase 10, review of S9 (2026-10-10, design §19.48).** The full verification ran this gate on
+# the tree for the first time since S8, and it failed on four real hits — S8's channel resends
+# (§19.45) named two private helpers `resend`, which `STEP_TRIGGERS` matches by name under the
+# premise that the step objects' entry points "are unique to these two step objects". Neither S8
+# nor S9 had this gate in its verification list (S8's §19.46 and S9's §19.47 name
+# `ch-enqueue-callers.sh`, G-M5 — this gate's channel-engine exemption covers the restricted and
+# removal calls, not the step rule). The fix is on the code's side, deliberately: the channel
+# engine's helpers are `ChannelOutcomeStep.resendOp` and `ChannelRejoinStep.resendJoin` now, the
+# premise is restored, and this gate's rules are byte-identical to S8's.
+#
 # **What this does not do, and who does** (Phase 10 review of S1a). The allowlist is shared by every
 # restricted call, so `Funding.set` is accepted in the four files that may enqueue: harmless while no
 # DM file calls it, but it would be wrong for a channel step in this module — CH-SETTLE is allowed

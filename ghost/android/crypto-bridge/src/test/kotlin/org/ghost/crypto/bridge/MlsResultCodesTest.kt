@@ -116,7 +116,7 @@ class MlsResultCodesTest {
                     .map { spelling[it.groupValues[1]] ?: error("no name() arm for ${it.groupValues[1]}") }
                     .toSet()
             }
-        assertEquals("FUNCTION_CODES has a row per exported function", 25, declared.size)
+        assertEquals("FUNCTION_CODES has a row per exported function", 27, declared.size)
 
         val dir = File("src/main/kotlin/org/ghost/crypto/bridge").canonicalFile
         val arms = LinkedHashMap<String, Set<String>>()
@@ -145,7 +145,7 @@ class MlsResultCodesTest {
             .map { Triple(it.groupValues[1].toInt(), it.groupValues[2], it.groupValues[3] == "Exported") }
             .toList()
         val exported = list.filter { it.third }.map { it.second }.toSet()
-        assertEquals(setOf("revealSeal", "revealOpen"), list.filter { !it.third }.map { it.second }.toSet())
+        assertEquals("every entry of §10.2 is exported (function 16 since slice S9)", emptySet<String>(), list.filter { !it.third }.map { it.second }.toSet())
         val declared = Regex("""internal external fun (\w+)""")
             .findAll(File("src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt").readText())
             .map { it.groupValues[1] }
@@ -173,7 +173,7 @@ class MlsResultCodesTest {
             assertEquals("${m.groupValues[1]} returns a byte array", "jbyteArray", m.groupValues[3])
             m.groupValues[1] to types.drop(2).map { jvm[it] ?: error("${m.groupValues[1]}: unmapped JNI type $it") }
         }
-        assertEquals(25, exported.size)
+        assertEquals(27, exported.size)
         val natives = MlsNative::class.java.declaredMethods.filter { java.lang.reflect.Modifier.isNative(it.modifiers) }
         assertEquals(exported.keys, natives.map { it.name }.toSet())
         for (method in natives) {
@@ -191,7 +191,7 @@ class MlsResultCodesTest {
         val defined = MlsCode.entries.map { it.wire }.toSet()
         for (b in 0..0xff) if (b !in defined) assertNull(MlsCode.fromWire(b))
         assertNull(MlsField.fromTag(0))
-        assertNull(MlsField.fromTag(0x7f))
+        assertNull(MlsField.fromTag(0x80))
         assertEquals((1..MlsField.entries.size).toList(), MlsField.entries.map { it.tag })
     }
 
@@ -230,7 +230,7 @@ class MlsResultCodesTest {
         assertEquals(MlsCode.INTERNAL, MlsReply.decode(ByteArray(0)).code)
         assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0x42)).code)
         assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0, 0x29, 0, 0)).code)
-        assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0, 0x7f, 0, 0, 0, 0)).code)
+        assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0, 0x80.toByte(), 0, 0, 0, 0)).code)
         assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0, 0x29, 0, 0, 0, 9, 1)).code)
         // A repeated scalar, a repeated list item is fine.
         assertEquals(MlsCode.STATE_CORRUPT, MlsReply.decode(byteArrayOf(0, 0x29, 0, 0, 0, 1, 0, 0x29, 0, 0, 0, 1, 1)).code)

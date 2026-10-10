@@ -21,6 +21,7 @@ import org.ghost.messaging.port.ExpiryWake
 import org.ghost.messaging.port.KeyWrapper
 import org.ghost.messaging.port.NativeDmCrypto
 import org.ghost.messaging.port.NativeDmEnvelopes
+import org.ghost.messaging.store.ContactStore
 import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncListener
@@ -161,6 +162,11 @@ class MessagingRuntime(
                 random = random,
                 esSlots = esSlots,
                 counters = ChannelCounters(),
+                // §6.9: revealSeal signs with the DM context's identity key (the handle names it;
+                // the key never crosses to Kotlin), and an opened reveal offers the author's card
+                // through the DM layer's addContact — CardSource.LINK, trust unverified (§19.17).
+                dmContext = keys,
+                contactOffer = { card, source -> contactSteps.addContact(card, source) },
             ),
             sync = ChannelSyncPorts(
                 stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, stores.inbox, stores.funding,

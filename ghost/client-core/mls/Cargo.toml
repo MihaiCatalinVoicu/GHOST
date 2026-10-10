@@ -16,7 +16,7 @@ default = []
 # The closed JNI surface `MlsNative` of §10.2 and the `export_jni!` macro `ghost-client-net` and
 # `ghost-dm-host` invoke (§10.1; slice S2b). Off by default so the crate stays testable without a
 # JVM; the shipped `ghost-client-net` enables it (G-M2 allows this one feature in a shipped graph).
-jni-bridge = ["dep:jni"]
+jni-bridge = ["dep:jni", "ghost-client-dm/jni-bridge"]
 # The vector-replay entry point of the JDK replay (§12.2's Kotlin half; slice S2b): the case runner
 # `testvec::run` and, with `jni-bridge`, the one extra JNI symbol
 # `Java_org_ghost_crypto_bridge_MlsVectors_run`. Only `ghost-dm-host` enables it — the library the
@@ -53,6 +53,11 @@ serde_json = { workspace = true }
 # The closed JNI surface (§10.2), behind `jni-bridge`; the version `ghost-client-net` and
 # `ghost-client-dm` already use (no new crate in the shipped graph).
 jni = { workspace = true, optional = true }
+# The reveal of §6.9 (slice S9): the identity-key signature and the strict verification of the two
+# reveal signatures and the contact card live in `ghost-client-dm` (ADR-35's X-21 rule: exactly one
+# production signer and verifier per artifact type). Design §10.1 names this dependency; the crate
+# is already in every graph that ships or hosts this one, so no new crate anywhere.
+ghost-client-dm = { path = "../dm" }
 
 [dev-dependencies]
 hex = { workspace = true }

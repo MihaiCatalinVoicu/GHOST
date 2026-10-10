@@ -247,6 +247,23 @@ internal class ChannelJoinStep(
                     }
                 }
                 stores.epochs.insert(tx, channelId, joined.epoch.epoch, joined.epoch.kEnv, joined.epoch.rEp)
+                // §19.17 (slice S9): a completed rejoin or restore replaced the member's own leaf —
+                // its fresh KeyPackage carried a fresh box key, inserted (current) at resync or
+                // accept time. The admission commit settled joined.epoch - 1, the last epoch whose
+                // tree held the old leaf: every other still-current box key — the old leaf's, and
+                // an abandoned earlier attempt's — is retired with that epoch, and the sweep
+                // deletes it when the epoch's retention ends (PC-18's forward secrecy). A first
+                // join finds only its own key and retires nothing.
+                if (joined.epoch.epoch >= 1) {
+                    val ownBox = joined.roster.firstOrNull { it.leaf == joined.leaf }?.boxPk
+                    if (ownBox != null) {
+                        for (key in stores.members.boxKeys(tx.sql, channelId, day)) {
+                            if (key.lastEpoch == null && !key.boxPk.contentEquals(ownBox)) {
+                                stores.members.retireBoxKey(tx, channelId, key.boxPk, joined.epoch.epoch - 1)
+                            }
+                        }
+                    }
+                }
                 stores.channels.setPosition(tx, channelId, g.generation, joined.epoch.epoch)
                 // The admission commit is the last committer commit the branch reflects (CO-12's clock,
                 // as at a join).
