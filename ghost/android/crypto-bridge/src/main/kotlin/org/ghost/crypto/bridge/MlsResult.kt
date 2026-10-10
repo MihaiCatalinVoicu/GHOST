@@ -274,6 +274,7 @@ enum class MlsField(val tag: Int, val repeatable: Boolean = false, val record: B
     CANDIDATE(0x7c),
     TRIAL_SENDER(0x7d, repeatable = true),
     ENCODED(0x7e),
+    CARD(0x7f),
     ;
 
     companion object {

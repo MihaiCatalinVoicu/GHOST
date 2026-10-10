@@ -9,6 +9,9 @@
 //! - [`ext`]: `GhostChannelContext`, `GhostLeaf`, `GhostBootstrap`, `GhostKpBind`,
 //!   `GhostCommitAad`, `ChannelOrder` (§5.3 … §5.5, §19.2).
 //! - [`content`]: `ChannelContent` v1 (§5.5).
+//! - [`reveal`]: the reveal of §6.9 — the `RevealPayload`, the two signatures and the HPKE seal
+//!   to the per-leaf box keys (slice S9); the identity-key signature and the strict verification
+//!   live in `ghost-client-dm` (ADR-35's X-21 rule).
 //! - [`canonical`]: the canonical KeyPackage and leaves (395 B; §6.2.4 (B), S0-4, S0-5, Q42 (a)).
 //! - [`invite`], [`join`]: `ChannelInviteV2` with the password layer (§19.28, §19.29) and the join
 //!   codecs (§5.6).
@@ -39,6 +42,7 @@ pub mod join;
 pub mod kv;
 pub mod provider;
 pub mod result;
+pub mod reveal;
 pub mod seal;
 #[cfg(feature = "test-vectors")]
 pub mod testvec;

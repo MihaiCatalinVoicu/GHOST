@@ -411,7 +411,9 @@ internal class ChannelPostStep(
                 val stored = ChannelCrypto.contentDecode(plain).valueOrNull()
                 plain.fill(0)
                 stored ?: continue
-                val handshake = stored.kind != KIND_POST && stored.kind != KIND_REACTION
+                // The handshake TTL is the administrative posts' (§19.21: INVITE_ISSUED and
+                // LEAVE); a REVEAL (kind 5, §6.9) is a normal post for the TTL and re-times like one.
+                val handshake = stored.kind == KIND_INVITE_ISSUED || stored.kind == KIND_LEAVE
                 try {
                     env.database.transaction { tx ->
                         val fresh = stores.channels.channel(tx.sql, channel.channelId) ?: return@transaction

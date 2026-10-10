@@ -2004,6 +2004,7 @@ dependencies = [
  "argon2",
  "chacha20poly1305 0.11.0",
  "ed25519-dalek 2.2.0",
+ "ghost-client-dm",
  "ghost-host-rng",
  "hex",
  "hkdf 0.13.0",

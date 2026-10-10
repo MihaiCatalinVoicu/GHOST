@@ -125,8 +125,17 @@ internal class ChannelCounters {
         /** An application message deferred behind a gap while its namespace is under pressure (§19.38). */
         GAP_DEFERRED,
 
-        /** A post kind this slice consumes without effect (LEAVE: S6; REVEAL: S9). */
-        DEFERRED_KIND,
+        /** A `REVEAL` addressed to another member's box key: one HPKE open, nothing inside, counted and
+         * dropped (§6.9 "what members learn": the author revealed to someone — no recipient identity). */
+        REVEAL_NOT_FOR_ME,
+
+        /** A `REVEAL` whose box key opened but a binding failed: bad card, `sig_id`, `sig_ps`, `P_author`
+         * not the MLS sender, or `P_M` not the opener — a forgery, refused with nothing kept (§6.9). */
+        REVEAL_FORGED,
+
+        /** A `REVEAL` of an epoch whose box key this member no longer holds within retention: the attempt
+         * fails closed (§19.17) — counted, nothing learned of the payload. */
+        REVEAL_NO_KEY,
 
         /** A Welcome that fails the committers anchor, OpenMLS, §5.3's validity or the bootstrap (§6.2.5). */
         INVALID_WELCOME,
@@ -320,6 +329,21 @@ internal class ChannelEnv(
     val random: DmRandom,
     private val esSlots: EsSlots,
     val counters: ChannelCounters,
+    /**
+     * The DM context (§6.9's `revealSeal` takes its handle: the identity key that signs `sig_id`
+     * and the own card the reveal carries stay native, ADR-35's X-21 rule). Null-handle while the
+     * DM context is closed — a reveal then answers `CRYPTO_UNAVAILABLE`, like a post.
+     */
+    val dmContext: org.ghost.messaging.port.DmContext,
+    /**
+     * What an opened reveal (§6.9) does with the author's verified card: the DM layer's
+     * `addContact(card, source)` — the engine names [org.ghost.messaging.store.ContactStore.Source.LINK]
+     * (§19.17: the existing source for a card received through another channel; there is no
+     * `CHANNEL_REVEAL` and its dm_contact CHECK is frozen), trust `unverified`. Called on the
+     * actor thread after the receive transaction commits (it opens a transaction of its own);
+     * the card is a bearer secret the caller zeroes once offered.
+     */
+    val contactOffer: (ByteArray, org.ghost.messaging.store.ContactStore.Source) -> Unit,
 ) {
     private val resolver = RelaySetResolver(esSlots)
 

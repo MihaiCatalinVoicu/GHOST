@@ -253,6 +253,41 @@ internal class ChannelClient(
     /** `ps` for a channel: what `:identity` derives from the root (here from the client's name, so a reboot keeps it). */
     val seeds = ChannelSeeds { channelId -> ChannelWorld.sha256("seed:$name:" + ChannelWorld.hex(channelId)) }
 
+    /**
+     * The DM context §6.9's `revealSeal` signs with: the world's stand-in for the DM stack's
+     * context, opened lazily over an identity derived from the client's name (so every client's
+     * card and identity key differ and a reboot keeps them). Null-handle while locked, like the
+     * DM context's.
+     */
+    private var dmHandle: Long? = null
+    private val dmContext = object : org.ghost.messaging.port.DmContext {
+        override fun handleOrNull(): Long? = if (unlocked) openDm() else null
+        override fun stateKeyWrapped(): ByteArray? = null
+    }
+
+    private fun openDm(): Long? {
+        dmHandle?.let { return it }
+        val opened = org.ghost.crypto.bridge.DmSessions.openContext(
+            ChannelWorld.sha256("dm-branch"),
+            // The identity persists across reboots, like the pseudonym seed (a reboot changes the
+            // random streams, never the identity): a revealed card must verify as the same
+            // identity after the device crashed and came back.
+            ChannelWorld.sha256("identity:$name"),
+            ChannelWorld.sha256("dm-state:$name"),
+        )
+        dmHandle = opened
+        return opened
+    }
+
+    /** The own contact card v2 (through the DM context): what a reveal of this client carries, and what a recipient's offer compares against. */
+    fun ownCard(): ByteArray? {
+        val h = openDm() ?: return null
+        return org.ghost.crypto.bridge.DmSessions.ownCard(h, 0)?.card
+    }
+
+    /** The (card, source) pairs the contact offer of §6.9 received (a copy each; the engine zeroes its own). */
+    val offeredCards = ArrayList<Pair<ByteArray, org.ghost.messaging.store.ContactStore.Source>>()
+
     val channelStores = ChannelStores()
     val counters = ChannelCounters()
     val contexts = ChannelContexts(database, channelStores, FakeKeyWrapper(), random, seeds)
@@ -278,7 +313,11 @@ internal class ChannelClient(
         slots = (0 until world.slotCount).map { i ->
             EsSlot(i, relayIds.getValue(OwnerWorld.onion(i)), OwnerWorld.operatorId(i % world.operators))
         }
-        env = ChannelEnv(database, channelStores, contexts, keys, clock, random, esSlots, counters)
+        env = ChannelEnv(
+            database, channelStores, contexts, keys, clock, random, esSlots, counters,
+            dmContext = dmContext,
+            contactOffer = { card, source -> offeredCards.add(card.copyOf() to source) },
+        )
         val checkpoint = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(this.sql) { } }
         this.checkpoint = checkpoint
         engine = ChannelEngine(
@@ -353,10 +392,14 @@ internal class ChannelClient(
     /** What a crash leaves of the client: the native context's memory (the process died). */
     fun die() {
         contexts.close()
+        dmHandle?.let { org.ghost.crypto.bridge.DmSessions.closeContext(it) }
+        dmHandle = null
     }
 
     override fun close() {
         contexts.close()
+        dmHandle?.let { org.ghost.crypto.bridge.DmSessions.closeContext(it) }
+        dmHandle = null
         ownExecutor?.close()
     }
 

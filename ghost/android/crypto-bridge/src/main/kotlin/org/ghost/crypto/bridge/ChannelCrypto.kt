@@ -954,6 +954,81 @@ class ChannelCrypto private constructor(private val handle: Long) {
         override fun toString(): String = "Roster(epoch=$epoch, members=${members.size})"
     }
 
+    /** What `revealSeal` returns (fn 16, §6.9): the sealed payload, for the REVEAL post's content. */
+    class RevealSealed(
+        /** The HPKE KEM output (32). */
+        val hpkeEnc: ByteArray,
+        /** The HPKE ciphertext (the sealed 360-byte payload + 16). */
+        val ciphertext: ByteArray,
+    ) {
+        override fun toString(): String = "RevealSealed(${ciphertext.size} bytes)"
+    }
+
+    /**
+     * `revealSeal` (fn 16, §6.9): the `RevealPayload` — the own card v2 and the two signatures,
+     * HPKE-sealed to [recipientBoxPk]. [dmHandle] names the DM context whose identity key signs
+     * `sig_id` and whose own card the payload carries; a closed or foreign handle on either side
+     * is `CRYPTO_UNAVAILABLE` (Kotlin never holds the identity key, ADR-35's X-21 rule).
+     */
+    fun revealSeal(
+        channelId: ByteArray,
+        dmHandle: Long,
+        recipientP: ByteArray,
+        recipientBoxPk: ByteArray,
+        minute: Int,
+        opId: ByteArray,
+    ): MlsOutcome<RevealSealed> {
+        val reply = mlsCall {
+            MlsNative.revealSeal(handle, dmHandle, channelId, recipientP, recipientBoxPk, minute, opId)
+        }
+        return when (reply.code) {
+            MlsCode.OK -> MlsOutcome.Ok(
+                RevealSealed(reply.fields.bytes(MlsField.HPKE_ENC), reply.fields.bytes(MlsField.CIPHERTEXT)),
+            )
+            MlsCode.NON_CANONICAL, MlsCode.CRYPTO_UNAVAILABLE -> refused(reply)
+            else -> mlsUnexpected(reply.code, "revealSeal")
+        }
+    }
+
+    /** What `revealOpen` returns (fn 16, §6.9): the verified author and the author's card. */
+    class RevealOpened(
+        /** `P_author`, verified to equal the post's MLS sender. */
+        val author: ByteArray,
+        /** The author's DM contact card v2 (131 bytes), signature-verified. */
+        val card: ByteArray,
+    ) {
+        override fun toString(): String = "RevealOpened(card=${card.size} bytes)"
+    }
+
+    /**
+     * `revealOpen` (fn 16, §6.9): one HPKE open with the member's box key of the post's epoch.
+     * `NOT_OPEN` is the expected answer of every non-recipient (counted and dropped, one open per
+     * reveal post); `BAD_SIGNATURE` is a forgery — refused with nothing returned. On `Ok`, the
+     * author's card and pseudonym: the peer of the recipient's `ch_reveal` row and the offer
+     * `Messaging.addContact` takes.
+     */
+    fun revealOpen(
+        channelId: ByteArray,
+        boxEnv: ByteArray,
+        hpkeEnc: ByteArray,
+        ciphertext: ByteArray,
+        opId: ByteArray,
+        senderP: ByteArray,
+    ): MlsOutcome<RevealOpened> {
+        val reply = mlsCall {
+            MlsNative.revealOpen(handle, channelId, boxEnv, hpkeEnc, ciphertext, opId, senderP)
+        }
+        return when (reply.code) {
+            MlsCode.OK -> MlsOutcome.Ok(
+                RevealOpened(reply.fields.bytes(MlsField.PSEUDONYM), reply.fields.bytes(MlsField.CARD)),
+            )
+            MlsCode.NON_CANONICAL, MlsCode.NOT_OPEN, MlsCode.BAD_SIGNATURE, MlsCode.STATE_CORRUPT,
+            MlsCode.CRYPTO_UNAVAILABLE,
+            -> refused(reply)
+            else -> mlsUnexpected(reply.code, "revealOpen")
+        }
+    }
+
     /** `roster` (fn 18). */
     fun roster(channelId: ByteArray, rows: List<MlsRow>, day: Int): MlsOutcome<Roster> {
         val reply = mlsCall { MlsNative.roster(handle, channelId, MlsRow.encode(rows), day) }

@@ -67,6 +67,7 @@ internal class ChannelEngine(
     val postStep = ChannelPostStep(env, sync)
     val createStep = ChannelCreateStep(env, sync)
     val inviteStep = ChannelInviteStep(env, postStep)
+    val revealStep = ChannelRevealStep(env, postStep)
     val acceptStep = ChannelAcceptStep(env, sync)
     val livenessStep = ChannelLivenessStep(env)
     val joinStep = ChannelJoinStep(env, sync, livenessStep)
@@ -140,6 +141,14 @@ internal class ChannelEngine(
      */
     fun leave(channel: ChannelId): ChannelPostStep.LeaveResult =
         actor.call { postStep.leave(channel.toByteArray()) }
+
+    /**
+     * `CH-REVEAL` (§6.9): the member reveals its pseudonym to [member] — the sealed card and the
+     * transferable proof to that member alone; every other member sees a normal post it cannot
+     * open (what members learn: the author revealed to someone).
+     */
+    fun reveal(channel: ChannelId, member: ByteArray): ChannelRevealStep.RevealResult =
+        actor.call { revealStep.reveal(channel.toByteArray(), member) }
 
     /** §19.13 item 3: a committer of rank ≥ 1 drops its own key from `committers` and `funders` (a pass at once). */
     fun resign(channel: ChannelId): RemoveResult =

@@ -629,6 +629,13 @@ internal class ChannelSettleStep(
                 stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
                 stores.members.insertBoxKey(tx, c, merge.ownBoxPk, boxEnv)
             }
+        } else if (settled.standing != STANDING_MEMBER) {
+            // §19.17 (slice S9): this merge took the member's own leaf out of the tree — a removal
+            // or a replacement (a foreign winner; an own winner never removes itself, §19.13). The
+            // current box key is the old leaf's: it is kept only until the retention of this epoch,
+            // the last whose tree held the leaf, ends — the sweep's deleteRetiredBefore then takes
+            // it, so a later compromise opens no reveal addressed to the old leaf (PC-18).
+            stores.members.currentBoxKey(tx.sql, c)?.let { stores.members.retireBoxKey(tx, c, it.boxPk, e) }
         } else if (!winner.own && merge.own != null && merge.own.rank == NOT_A_COMMITTER) {
             // CO-9: the self-update lost the tie-break — the retry fires at the next session after 24 h
             // (day-granular, what `ch_schedule.next_selfupdate_day` can say). A FAILED op (no copy could

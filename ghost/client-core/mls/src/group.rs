@@ -162,6 +162,12 @@ impl ChannelHandle {
         self.signer.public()
     }
 
+    /// A GHOST-level signature under the channel's pseudonym key (§6.9's `sig_ps`; the same
+    /// signer as `sponsor_sig` and `rejoin_sig`).
+    pub fn sign_raw(&self, message: &[u8]) -> [u8; 64] {
+        self.signer.sign_raw(message)
+    }
+
     fn credential(&self) -> CredentialWithKey {
         let p = self.pseudonym();
         CredentialWithKey {

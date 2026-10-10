@@ -24,7 +24,7 @@ use crate::olm::pickle::ChainPosition;
 use crate::olm::session::{self, Slot, StoredSession};
 use crate::provenance::{CardSource, KeyProvenance, SealKey};
 use crate::result::DmCode;
-use crate::{bundle, card, codec, pq, revocation, safety, seal, wrap};
+use crate::{bundle, card, codec, pq, revocation, safety, seal, sign, wrap};
 use jni::objects::{JByteArray, JClass};
 use jni::sys::{jbyteArray, jint, jlong};
 use jni::JNIEnv;
@@ -889,6 +889,31 @@ pub fn ctx_close(handle: jlong) -> Result<Vec<u8>, DmCode> {
         return Err(DmCode::CryptoUnavailable);
     }
     Ok(Reply::ok().into_bytes())
+}
+
+/// Phase 10 design §6.9 (slice S9): what `ghost-client-mls`'s `revealSeal` needs of this context —
+/// `sig_id`, the `ghost1` identity key's Ed25519 signature over the reveal's id transcript, and the
+/// own contact card v2 of the card index Phase 9 issues ([`card::CARD_INDEX_PHASE_9`], the card
+/// `ownCard` hands out). The signature is made here, not in the MLS crate, because ADR-35's X-21
+/// rule gives the identity key exactly one production signer ([`sign::sign`], over the seed this
+/// context holds and Kotlin never sees); the card is this context's own card, not a fresh bearer
+/// secret, so the card the recipient's `addContact` dedups against (R-E3) is the card the author
+/// gives out everywhere. A closed or foreign handle is [`DmCode::CryptoUnavailable`].
+pub fn reveal_identity_material(
+    handle: jlong,
+    message: &[u8],
+) -> Result<([u8; sign::SIGNATURE_BYTES], [u8; card::CARD_BYTES]), DmCode> {
+    quiet_panics();
+    with_context(handle, |context| {
+        let sig = sign::sign(context.identity_seed.as_bytes(), message);
+        let card_secret = derive::derive_card_secret(&context.messaging, card::CARD_INDEX_PHASE_9);
+        let card = card::build(
+            context.identity_seed.as_bytes(),
+            card::CARD_INDEX_PHASE_9,
+            &card_secret,
+        );
+        Ok((sig, card.encode()))
+    })
 }
 
 /// §2.6 function 2: `ownCard(h, cardIndex)`. The card, its two namespaces, the recognition keys

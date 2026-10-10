@@ -10,6 +10,7 @@ import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.ChannelStore
+import org.ghost.messaging.channel.store.Direction
 import org.ghost.messaging.channel.store.GenerationStore
 import org.ghost.messaging.channel.store.InviteStore
 import org.ghost.messaging.channel.store.JoinStore
@@ -426,6 +427,11 @@ internal class ChannelReceiveStep(
         day: Long,
     ): Int? {
         val opened = env.contexts.open(channelId) ?: return 0
+        // The opened reveals of the batch that committed: the card offer runs after the
+        // transaction (it opens one of its own — `Messaging.addContact`), so the row and the
+        // offer cannot disagree, and a rolled-back batch offers nothing. Cleared at every batch
+        // attempt: the queue holds at most one batch's cards.
+        pendingOffers.clear()
         val done = env.database.transaction { tx ->
             val channel = stores.channels.channel(tx.sql, channelId)
             // A resync_needed member keeps receiving (CO-11: progress — messages opened, a commit
@@ -496,10 +502,11 @@ internal class ChannelReceiveStep(
                                 applyPost(tx, channel, epoch, item, claimed[index].blob, content, seenKey, now, day)
                             ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, judge(), day)
                             // §6.6: a committer records a member's LEAVE as pending work (removed at its
-                            // next pass); REVEAL is slice S9's (the box keys).
+                            // next pass); REVEAL is slice S9's (§6.9: one HPKE open per member, the
+                            // recipient verifies and is offered the author's card).
                             ChannelPostStep.KIND_LEAVE -> applyLeave(tx, channel, item, judge(), day)
                             ChannelPostStep.KIND_REVEAL ->
-                                env.counters.count(ChannelCounters.Reason.DEFERRED_KIND)
+                                applyReveal(tx, channel, epoch, item, claimed[index].blob, seenKey, now, day, opened)
                             else -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
                         }
                     }
@@ -518,9 +525,25 @@ internal class ChannelReceiveStep(
             }
             claimed.size
         }
+        // The batch committed: make the offers of the reveals it opened (each card is a bearer
+        // secret — zeroed here once the offer has its copy).
+        while (true) {
+            val card = pendingOffers.removeFirstOrNull() ?: break
+            try {
+                // §19.17: the card enters as source `link`, trust `unverified` — the corrected
+                // CardSource (no CHANNEL_REVEAL exists; a new value would mark the contact for
+                // good as "came from a channel").
+                env.contactOffer(card, org.ghost.messaging.store.ContactStore.Source.LINK)
+            } finally {
+                card.fill(0)
+            }
+        }
         if (done == claimed.size) for (r in claimed) peekOrder.forget(r.key)
         return done
     }
+
+    /** The opened reveals of the batch being applied (at most one batch's; see [applyBatch]). */
+    private val pendingOffers = ArrayDeque<ByteArray>()
 
     private fun applyPost(
         tx: SyncTransaction,
@@ -628,6 +651,98 @@ internal class ChannelReceiveStep(
             tx, channel.channelId, org.ghost.messaging.channel.store.RequestKind.LEAVE, item.sender,
             null, day + ChannelPostStep.LEAVE_REQUEST_DAYS, day,
         )
+    }
+
+    /**
+     * §6.9 (slice S9): every member tries **its box key of the post's epoch** on each `REVEAL` —
+     * one HPKE open per reveal post. The opener is the member whose key the author sealed to:
+     * it verifies both signatures, `P_author` = the post's MLS sender, `P_M` = its own key (all
+     * native, fn 16), records the `ch_reveal(direction = in, peer = P_author)` row with the
+     * deletion deadline the REVEAL post's timer gives it (§8.5, like an unread post), and queues
+     * the author's card for the `addContact` offer ([ChannelEnv.contactOffer]). Every other
+     * member counts and drops silently — what members learn is that the author revealed to
+     * *someone*, never to whom (L8-C8; a reveal that names its recipient in content is mutant PC-9).
+     *
+     * Dedup: the op-id seen tag (§6.3.4 layer 4), like a post's — a re-delivered or re-encrypted
+     * copy is counted `DUPLICATE` and never re-opened. No box key of the post's epoch within
+     * retention fails closed, counted [ChannelCounters.Reason.REVEAL_NO_KEY] (§19.17). An open
+     * that fails is [ChannelCounters.Reason.REVEAL_NOT_FOR_ME]; a binding that fails is
+     * [ChannelCounters.Reason.REVEAL_FORGED] — in both cases nothing of the payload is kept.
+     */
+    private fun applyReveal(
+        tx: SyncTransaction,
+        channel: ChannelStore.ChannelRow,
+        epoch: Long,
+        item: ChannelCrypto.Item.App,
+        blob: InboundBlob,
+        seenKey: ByteArray,
+        now: Long,
+        day: Long,
+        opened: ChannelContexts.Opened,
+    ) {
+        val f = item.content
+        val enc = f.hpkeEnc
+        val ct = f.ciphertext
+        if (enc == null || enc.size != KEY_BYTES || ct == null || ct.isEmpty() || ct.size > MAX_REVEAL_CT ||
+            f.opId.size != ChannelPostStep.OP_ID_BYTES || f.timerCode !in 0..DmTimers.TIMER_MAX
+        ) {
+            return env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
+        }
+        val c = channel.channelId
+        val tag = ChannelTags.opTag(seenKey, c, item.sender, f.opId)
+        if (stores.posts.isSeen(tx.sql, c, tag, day)) {
+            env.counters.count(ChannelCounters.Reason.DUPLICATE)
+            return
+        }
+        val timer = ChannelTime.shorterTimer(f.timerCode, channel.timerCode)
+        val authorSeconds = f.authorMinute * DmTime.MINUTE
+        val deleteAt = DmTimers.unreadDeadlineMinute(now, blob.relayExpiryHour, timer)
+        if (blob.relayExpiryHour <= now || (deleteAt != null && deleteAt <= now)) {
+            env.counters.count(ChannelCounters.Reason.EXPIRED_WHILE_HELD)
+            return
+        }
+        // The one key of the post's epoch: the eligible key the replacement of whose leaf came
+        // first — the retired key whose last epoch still covers the post's, not a later or the
+        // current one (a member holds one leaf per epoch; the current key is eligible for every
+        // later epoch and must not shadow the epoch's own). None within retention fails closed,
+        // counted (§19.17 — the sweep retires a key with the epoch that replaced the leaf and
+        // deletes it when the last epoch whose tree held it leaves retention).
+        val key = stores.members.boxKeys(tx.sql, c, day)
+            .filter { it.lastEpoch == null || it.lastEpoch >= epoch }
+            .minByOrNull { it.lastEpoch ?: Long.MAX_VALUE }
+        if (key == null) {
+            env.counters.count(ChannelCounters.Reason.REVEAL_NO_KEY)
+            return seen(tx, c, tag, authorSeconds, timer)
+        }
+        when (val o = opened.crypto.revealOpen(c, key.skEnv, enc, ct, f.opId, item.sender)) {
+            is MlsOutcome.Ok -> {
+                stores.posts.putReveal(tx, c, Direction.IN, o.value.author, deleteAt)
+                pendingOffers.addLast(o.value.card)
+                seen(tx, c, tag, authorSeconds, timer)
+            }
+            is MlsOutcome.Refused -> when (o.code) {
+                MlsCode.NOT_OPEN -> {
+                    env.counters.count(ChannelCounters.Reason.REVEAL_NOT_FOR_ME)
+                    seen(tx, c, tag, authorSeconds, timer)
+                }
+                MlsCode.BAD_SIGNATURE, MlsCode.NON_CANONICAL -> {
+                    env.counters.count(ChannelCounters.Reason.REVEAL_FORGED)
+                    seen(tx, c, tag, authorSeconds, timer)
+                }
+                // A box envelope that does not open is local state that does not load: counted,
+                // dropped — deferring the blob would not repair the envelope.
+                MlsCode.STATE_CORRUPT, MlsCode.CRYPTO_UNAVAILABLE -> {
+                    env.counters.count(ChannelCounters.Reason.STATE_CORRUPT)
+                    seen(tx, c, tag, authorSeconds, timer)
+                }
+                else -> throw IllegalStateException("channel revealOpen returned ${o.code}")
+            }
+        }
+    }
+
+    /** The op-id seen tag of a processed reveal: layer 4 drops every later copy (§6.3.4). */
+    private fun seen(tx: SyncTransaction, c: ByteArray, tag: ByteArray, authorSeconds: Long, timer: Int) {
+        stores.posts.markSeen(tx, c, tag, DmTimers.seenUntilDay(authorSeconds, ChannelTime.postTtl(timer)))
     }
 
     /** Who may sponsor an invite in the current context (§6.2.1, Q46 (b)): its members and whether each may invite. */
@@ -1200,6 +1315,9 @@ internal class ChannelReceiveStep(
 
         /** §5.5: a reaction's grapheme is at most 32 bytes (`ch_reaction.grapheme_env` is 29 … 60). */
         const val MAX_GRAPHEME: Int = 32
+
+        /** §5.5: a reveal's ciphertext is at most 512 bytes (the sealed 360-byte payload + 16). */
+        const val MAX_REVEAL_CT: Int = 512
 
         /** The consumer tail stops claiming with fewer than two seconds left (Phase 9 §21.12 point 1). */
         const val TAIL_RESERVE_MILLIS: Long = 2_000

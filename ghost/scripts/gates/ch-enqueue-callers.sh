@@ -31,7 +31,7 @@
 # points that reach those calls — `ChannelPostStep.compose`/`encryptPending`/`retryPost`, `ChannelPassStep.admit`/`removeMember`/
 # `runScheduledPasses`/`scheduleAtSessionStart`, `ChannelSettleStep.settleDue`, `ChannelSweepStep.sweepJoins` — are
 # written only in the files that declare them, in `ChannelEngine.kt` (the user actions and the actor's pass, whose
-# time-triggered steps it gates) and in `ChannelInviteStep.kt` (CH-INVITE's post). A receive or join step that held a
+# time-triggered steps it gates) and in `ChannelInviteStep.kt` (CH-INVITE's post) and `ChannelRevealStep.kt` (CH-REVEAL's post, §6.9). A receive or join step that held a
 # step object and called one would reach `Outbox.enqueue` without writing a restricted call; this rule refuses it,
 # and it reads **every** production source of `:messaging` and `:app`, not only the channel package.
 #
@@ -40,7 +40,7 @@
 # `ChannelEngine.post`, none of them on the second rule's list). The classes of the steps that may make a restricted
 # call, the engine that holds them all and the actor's view of its pass are named — as a type, a constructor call, an
 # import or a property — only in the files that hold them: `ChannelPostStep` (and a property `postStep`) in
-# `ChannelEngine.kt`, `ChannelInviteStep.kt` and `ChannelPassStep.kt`; every other step class (and its property) in
+# `ChannelEngine.kt`, `ChannelInviteStep.kt`, `ChannelRevealStep.kt` and `ChannelPassStep.kt`; every other step class (and its property) in
 # `ChannelEngine.kt`; `ChannelEngine` in `MessagingRuntime.kt`, which assembles the stack; `ChannelPassSteps` in
 # `ChannelEngine.kt`, `DmActor.kt` and `MessagingRuntime.kt`; each in its own file. A file that cannot name a step
 # cannot hold one, whatever it calls it. A companion constant (`ChannelPostStep.KIND_POST`) is not a mention.
@@ -108,11 +108,11 @@ ENGINE_DIR_GLOB='android/messaging/src/*/org/ghost/messaging/channel/engine/*'
 
 # The second rule's entry points and the files that may write them.
 CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins|sweepDrains|sweepRequests|switchDue|renewDue|resync|sweepRejoins'
-CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt ChannelRejoinStep.kt'
+CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelRevealStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt ChannelRejoinStep.kt'
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.
 CH_HOLDERS='
-ChannelPostStep postStep|ChannelEngine.kt ChannelInviteStep.kt ChannelPassStep.kt
+ChannelPostStep postStep|ChannelEngine.kt ChannelInviteStep.kt ChannelPassStep.kt ChannelRevealStep.kt
 ChannelPassStep passStep|ChannelEngine.kt
 ChannelSettleStep settleStep|ChannelEngine.kt
 ChannelSweepStep sweepStep|ChannelEngine.kt
@@ -123,6 +123,7 @@ ChannelAcceptStep acceptStep|ChannelEngine.kt
 ChannelRejoinStep rejoinStep|ChannelEngine.kt
 ChannelOutcomeStep channelOutcomeStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt
+ChannelRevealStep revealStep|ChannelEngine.kt
 ChannelEngine|MessagingRuntime.kt
 ChannelPassSteps|ChannelEngine.kt DmActor.kt MessagingRuntime.kt
 '

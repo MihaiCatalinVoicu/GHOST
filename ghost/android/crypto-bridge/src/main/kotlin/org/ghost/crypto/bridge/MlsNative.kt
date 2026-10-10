@@ -13,9 +13,8 @@ package org.ghost.crypto.bridge
  * side and comes back as [MlsCode.INTERNAL], which the facade turns into
  * `IllegalStateException`.
  *
- * Function 16 (`revealSeal`, `revealOpen`, the reveal of §6.9) is slice S9's: it is on the
- * native closed list as reserved and is **not** declared here, so a library that exported it
- * early would fail G-M6 rather than be called.
+ * Function 16 (`revealSeal`, `revealOpen`, the reveal of §6.9) landed in slice S9: both are on
+ * the native closed list as exported, and declared here; G-M6 checks both directions.
  *
  * **Loading.** On a device the code is inside `libghost_client_net.so`, the library the DM surface
  * and the network module load too; JVM tests load the host build `ghost-dm-host` from the path in
@@ -282,6 +281,33 @@ object MlsNative {
         invitePk: ByteArray,
         member: ByteArray,
         generation: Int,
+    ): ByteArray?
+
+    // Function 16 (§6.9, slice S9): `dmHandle` names a DM context of the same process — the
+    // identity key that signs sig_id never crosses to Kotlin (ADR-35's X-21 rule); `minute` is
+    // the caller's trusted minute.
+    @JvmStatic
+    @JvmName("revealSeal")
+    internal external fun revealSeal(
+        handle: Long,
+        dmHandle: Long,
+        channelId: ByteArray,
+        recipientP: ByteArray,
+        recipientBoxPk: ByteArray,
+        minute: Int,
+        opId: ByteArray,
+    ): ByteArray?
+
+    @JvmStatic
+    @JvmName("revealOpen")
+    internal external fun revealOpen(
+        handle: Long,
+        channelId: ByteArray,
+        boxEnv: ByteArray,
+        enc: ByteArray,
+        ct: ByteArray,
+        opId: ByteArray,
+        senderP: ByteArray,
     ): ByteArray?
 
     // Function 17.
