@@ -288,6 +288,13 @@ internal class ChannelClient(
     /** The (card, source) pairs the contact offer of §6.9 received (a copy each; the engine zeroes its own). */
     val offeredCards = ArrayList<Pair<ByteArray, org.ghost.messaging.store.ContactStore.Source>>()
 
+    /**
+     * What the world's contact offer answers — the stand-in for the DM layer's availability at
+     * the offer (§19.48 FIX 3): `NOT_ACTIVATED`/`CRYPTO_UNAVAILABLE` stand for a locked or wiped
+     * DM library, which the receive counts `REVEAL_OFFER_FAILED`.
+     */
+    var offerOutcome: org.ghost.messaging.engine.ContactSteps.AddResult = org.ghost.messaging.engine.ContactSteps.AddResult.ADDED
+
     val channelStores = ChannelStores()
     val counters = ChannelCounters()
     val contexts = ChannelContexts(database, channelStores, FakeKeyWrapper(), random, seeds)
@@ -316,7 +323,10 @@ internal class ChannelClient(
         env = ChannelEnv(
             database, channelStores, contexts, keys, clock, random, esSlots, counters,
             dmContext = dmContext,
-            contactOffer = { card, source -> offeredCards.add(card.copyOf() to source) },
+            contactOffer = { card, source ->
+                offeredCards.add(card.copyOf() to source)
+                offerOutcome
+            },
         )
         val checkpoint = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(this.sql) { } }
         this.checkpoint = checkpoint

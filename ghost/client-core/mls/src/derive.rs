@@ -17,10 +17,30 @@ use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+// The reveal's HPKE KDF id (RFC 9180 §7.2's 0x0001), imported under a suite-selector alias. It is
+// not a derivation — it only *selects* the KDF for the `CH-REVEAL` HPKE suite (§6.9 point 2) —
+// but G-M3 rule 2 reads any bare `Hkdf…` identifier as one, and this `use` line is the one place
+// the gate exempts the word (review of S9, FIX 1: the suite constant below keeps every such name
+// inside this typed module).
+use openmls_traits::types::HpkeKdfType::HkdfSha256 as RevealSuiteKdf;
+use openmls_traits::types::{HpkeAeadType, HpkeConfig, HpkeKemType};
+
 use crate::result::{Code, MlsError, MlsResult};
 
 /// Length of every derived channel secret.
 pub const SECRET_BYTES: usize = 32;
+
+/// The `CH-REVEAL` HPKE suite as a constant (§6.9 point 2): RFC 9180 base mode, KEM 0x0020
+/// (DHKEM X25519), KDF 0x0001, AEAD 0x0003 (ChaCha20-Poly1305) — the design's explicit suite,
+/// not the MLS ciphersuite's derived one. A **selector, not a derivation**: it takes no key
+/// input and derives nothing, so §5.2 rule (1) does not apply; it lives in this typed module so
+/// no `Hkdf…` identifier is named outside it (G-M3 rule 2; review of S9, FIX 1 — `src/reveal.rs`
+/// imports this instead of spelling the suite).
+pub(crate) const REVEAL_HPKE_SUITE: HpkeConfig = HpkeConfig(
+    HpkeKemType::DhKem25519,
+    RevealSuiteKdf,
+    HpkeAeadType::ChaCha20Poly1305,
+);
 
 // Labels (§5.2, §5.6, §19.28.3). Each is used by exactly one function below.
 pub const LABEL_EPOCH: &str = "ghost/v1/ch/epoch";

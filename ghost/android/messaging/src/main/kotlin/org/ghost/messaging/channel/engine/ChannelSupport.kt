@@ -137,6 +137,12 @@ internal class ChannelCounters {
          * fails closed (§19.17) — counted, nothing learned of the payload. */
         REVEAL_NO_KEY,
 
+        /** A reveal whose offer the DM context refused (`addContact` answered `NOT_ACTIVATED` or
+         * `CRYPTO_UNAVAILABLE` — a locked or wiped DM library at the offer): the opened card is
+         * lost with the offer, counted (§19.48 FIX 3); the author can reveal again, the same loss
+         * shape as the crash-between edge (§19.47). */
+        REVEAL_OFFER_FAILED,
+
         /** A Welcome that fails the committers anchor, OpenMLS, §5.3's validity or the bootstrap (§6.2.5). */
         INVALID_WELCOME,
 
@@ -341,9 +347,12 @@ internal class ChannelEnv(
      * (§19.17: the existing source for a card received through another channel; there is no
      * `CHANNEL_REVEAL` and its dm_contact CHECK is frozen), trust `unverified`. Called on the
      * actor thread after the receive transaction commits (it opens a transaction of its own);
-     * the card is a bearer secret the caller zeroes once offered.
+     * the card is a bearer secret the caller zeroes once offered. The result is what `addContact`
+     * answered: a DM context that is not there (`NOT_ACTIVATED`/`CRYPTO_UNAVAILABLE` — a locked
+     * or wiped DM library) loses the card with the offer, and the receive counts it
+     * [ChannelCounters.Reason.REVEAL_OFFER_FAILED] (§19.48 FIX 3).
      */
-    val contactOffer: (ByteArray, org.ghost.messaging.store.ContactStore.Source) -> Unit,
+    val contactOffer: (ByteArray, org.ghost.messaging.store.ContactStore.Source) -> org.ghost.messaging.engine.ContactSteps.AddResult,
 ) {
     private val resolver = RelaySetResolver(esSlots)
 

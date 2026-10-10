@@ -429,117 +429,150 @@ internal class ChannelReceiveStep(
         val opened = env.contexts.open(channelId) ?: return 0
         // The opened reveals of the batch that committed: the card offer runs after the
         // transaction (it opens one of its own — `Messaging.addContact`), so the row and the
-        // offer cannot disagree, and a rolled-back batch offers nothing. Cleared at every batch
-        // attempt: the queue holds at most one batch's cards.
-        pendingOffers.clear()
-        val done = env.database.transaction { tx ->
-            val channel = stores.channels.channel(tx.sql, channelId)
-            // A resync_needed member keeps receiving (CO-11: progress — messages opened, a commit
-            // merged — returns it to active; §6.11); the departed and pre-join states do not read.
-            if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING &&
-                    channel.state != ChannelState.RESYNC_NEEDED)
-            ) {
-                for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.UNROUTED)
-                return@transaction claimed.size
-            }
-            val stored = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
-            // §6.5 "What a removed member keeps": a removed (or replaced) member keeps listing the old
-            // namespace until the drain ends — the fetch stays, the rows are dropped (§19.8 (b): no
-            // reflexes). It merges nothing and inserts nothing.
-            if (channel.state == ChannelState.REMOVED || channel.state == ChannelState.REPLACED) {
+        // offer cannot disagree, and a rolled-back batch offers nothing. Discarded (zeroized)
+        // at every batch attempt: the queue holds at most one batch's cards.
+        discardPendingOffers()
+        val done = try {
+            val d = env.database.transaction { tx ->
+                val channel = stores.channels.channel(tx.sql, channelId)
+                // A resync_needed member keeps receiving (CO-11: progress — messages opened, a commit
+                // merged — returns it to active; §6.11); the departed and pre-join states do not read.
+                if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING &&
+                        channel.state != ChannelState.RESYNC_NEEDED)
+                ) {
+                    for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.UNROUTED)
+                    return@transaction claimed.size
+                }
+                val stored = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
+                // §6.5 "What a removed member keeps": a removed (or replaced) member keeps listing the old
+                // namespace until the drain ends — the fetch stays, the rows are dropped (§19.8 (b): no
+                // reflexes). It merges nothing and inserts nothing.
+                if (channel.state == ChannelState.REMOVED || channel.state == ChannelState.REPLACED) {
+                    for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
+                    return@transaction claimed.size
+                }
+                val received = try {
+                    opened.crypto.receive(channelId, stored, epoch, claimed.map { it.body }, day.toInt())
+                } catch (e: IllegalStateException) {
+                    // `INTERNAL` (a caught Rust panic) or a reply the facade could not decode: retried blob by blob.
+                    return@transaction null
+                }
+                val items = when (received) {
+                    is MlsOutcome.Ok -> received.value
+                    is MlsOutcome.Refused -> when (received.code) {
+                        MlsCode.CRYPTO_UNAVAILABLE -> return@transaction 0
+                        MlsCode.STATE_CORRUPT -> {
+                            for (r in claimed) sync.inbox.defer(tx, r.blob.namespace, r.blob.hash, STATE_CORRUPT_DEFER_SECONDS)
+                            env.counters.count(ChannelCounters.Reason.STATE_CORRUPT)
+                            return@transaction 0
+                        }
+                        else -> {
+                            for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.NON_CANONICAL)
+                            return@transaction claimed.size
+                        }
+                    }
+                }
+                // One item per message, in order (§10.2 fn 6): another count is the facade's contract broken, INTERNAL.
+                if (items.items.size != claimed.size) return@transaction null
+                stores.mls.apply(tx, channelId, MlsRows.changes(items.changes))
+                // The context an INVITE_ISSUED is judged against, read once and only when the batch holds one (§19.38).
+                var inviters: Inviters? = null
+                val judge = { inviters ?: readInviters(opened, channelId, stored, day).also { inviters = it } }
+                // Posts and records first, reactions second (§19.35 F-4): a reaction of a lower leaf to a post of a higher one
+                // sits before its target in the peek order.
+                val reactions = ArrayList<ChannelCrypto.Item.App>()
+                val foreignSenders = LinkedHashMap<String, ByteArray>()
+                for ((index, item) in items.items.withIndex()) {
+                    when (item) {
+                        is ChannelCrypto.Item.App -> {
+                            peekOrder.decrypted(channelId, epoch, item.senderLeaf, item.seq)
+                            // CO-11 (b)/CO-12: a foreign sender of the member's current epoch, first
+                            // opened in this batch (§19.34.1 item 1: counted once, when first opened).
+                            if (epoch == channel.epoch && !item.sender.contentEquals(opened.pseudonym)) {
+                                foreignSenders[item.sender.toList().toString()] = item.sender
+                            }
+                            // §6.7's live-leaf check: the last epoch with an authenticated message from a
+                            // member's current leaf (read by the rejoin admission at committers; kept at
+                            // every member — only committers read it, the row is local, §19.43).
+                            if (!item.sender.contentEquals(opened.pseudonym)) {
+                                stores.members.noteMemberSeen(tx, channelId, item.sender, epoch)
+                            }
+                            when (item.content.kind) {
+                                ChannelPostStep.KIND_REACTION -> reactions += item
+                                ChannelPostStep.KIND_POST ->
+                                    applyPost(tx, channel, epoch, item, claimed[index].blob, content, seenKey, now, day)
+                                ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, judge(), day)
+                                // §6.6: a committer records a member's LEAVE as pending work (removed at its
+                                // next pass); REVEAL is slice S9's (§6.9: one HPKE open per member, the
+                                // recipient verifies and is offered the author's card).
+                                ChannelPostStep.KIND_LEAVE -> applyLeave(tx, channel, item, judge(), day)
+                                ChannelPostStep.KIND_REVEAL ->
+                                    applyReveal(tx, channel, epoch, item, claimed[index].blob, seenKey, now, day, opened)
+                                else -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
+                            }
+                        }
+                        is ChannelCrypto.Item.Own -> env.counters.count(ChannelCounters.Reason.FORGED_OWN)
+                        is ChannelCrypto.Item.Proposal -> env.counters.count(ChannelCounters.Reason.PROPOSAL)
+                        is ChannelCrypto.Item.Commit -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
+                        is ChannelCrypto.Item.Failed -> env.counters.count(ChannelCounters.Reason.UNDECRYPTABLE)
+                    }
+                }
+                for (item in reactions) applyReaction(tx, channel, item, content)
                 for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
-                return@transaction claimed.size
-            }
-            val received = try {
-                opened.crypto.receive(channelId, stored, epoch, claimed.map { it.body }, day.toInt())
-            } catch (e: IllegalStateException) {
-                // `INTERNAL` (a caught Rust panic) or a reply the facade could not decode: retried blob by blob.
-                return@transaction null
-            }
-            val items = when (received) {
-                is MlsOutcome.Ok -> received.value
-                is MlsOutcome.Refused -> when (received.code) {
-                    MlsCode.CRYPTO_UNAVAILABLE -> return@transaction 0
-                    MlsCode.STATE_CORRUPT -> {
-                        for (r in claimed) sync.inbox.defer(tx, r.blob.namespace, r.blob.hash, STATE_CORRUPT_DEFER_SECONDS)
-                        env.counters.count(ChannelCounters.Reason.STATE_CORRUPT)
-                        return@transaction 0
-                    }
-                    else -> {
-                        for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.NON_CANONICAL)
-                        return@transaction claimed.size
-                    }
+                liveness?.noteOpened(tx, channelId, foreignSenders.values.toList(), content, day)
+                // §19.38: the rows a gap had deferred under pressure come back once the `seq` they waited for decrypted.
+                for (ns in peekOrder.reofferDue(channelId)) {
+                    if (sync.inbox.reofferDeferred(tx, NamespaceId(ns.toByteArray())) > 0) reoffered = true
                 }
+                claimed.size
             }
-            // One item per message, in order (§10.2 fn 6): another count is the facade's contract broken, INTERNAL.
-            if (items.items.size != claimed.size) return@transaction null
-            stores.mls.apply(tx, channelId, MlsRows.changes(items.changes))
-            // The context an INVITE_ISSUED is judged against, read once and only when the batch holds one (§19.38).
-            var inviters: Inviters? = null
-            val judge = { inviters ?: readInviters(opened, channelId, stored, day).also { inviters = it } }
-            // Posts and records first, reactions second (§19.35 F-4): a reaction of a lower leaf to a post of a higher one
-            // sits before its target in the peek order.
-            val reactions = ArrayList<ChannelCrypto.Item.App>()
-            val foreignSenders = LinkedHashMap<String, ByteArray>()
-            for ((index, item) in items.items.withIndex()) {
-                when (item) {
-                    is ChannelCrypto.Item.App -> {
-                        peekOrder.decrypted(channelId, epoch, item.senderLeaf, item.seq)
-                        // CO-11 (b)/CO-12: a foreign sender of the member's current epoch, first
-                        // opened in this batch (§19.34.1 item 1: counted once, when first opened).
-                        if (epoch == channel.epoch && !item.sender.contentEquals(opened.pseudonym)) {
-                            foreignSenders[item.sender.toList().toString()] = item.sender
-                        }
-                        // §6.7's live-leaf check: the last epoch with an authenticated message from a
-                        // member's current leaf (read by the rejoin admission at committers; kept at
-                        // every member — only committers read it, the row is local, §19.43).
-                        if (!item.sender.contentEquals(opened.pseudonym)) {
-                            stores.members.noteMemberSeen(tx, channelId, item.sender, epoch)
-                        }
-                        when (item.content.kind) {
-                            ChannelPostStep.KIND_REACTION -> reactions += item
-                            ChannelPostStep.KIND_POST ->
-                                applyPost(tx, channel, epoch, item, claimed[index].blob, content, seenKey, now, day)
-                            ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, judge(), day)
-                            // §6.6: a committer records a member's LEAVE as pending work (removed at its
-                            // next pass); REVEAL is slice S9's (§6.9: one HPKE open per member, the
-                            // recipient verifies and is offered the author's card).
-                            ChannelPostStep.KIND_LEAVE -> applyLeave(tx, channel, item, judge(), day)
-                            ChannelPostStep.KIND_REVEAL ->
-                                applyReveal(tx, channel, epoch, item, claimed[index].blob, seenKey, now, day, opened)
-                            else -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
-                        }
-                    }
-                    is ChannelCrypto.Item.Own -> env.counters.count(ChannelCounters.Reason.FORGED_OWN)
-                    is ChannelCrypto.Item.Proposal -> env.counters.count(ChannelCounters.Reason.PROPOSAL)
-                    is ChannelCrypto.Item.Commit -> env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
-                    is ChannelCrypto.Item.Failed -> env.counters.count(ChannelCounters.Reason.UNDECRYPTABLE)
-                }
-            }
-            for (item in reactions) applyReaction(tx, channel, item, content)
-            for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
-            liveness?.noteOpened(tx, channelId, foreignSenders.values.toList(), content, day)
-            // §19.38: the rows a gap had deferred under pressure come back once the `seq` they waited for decrypted.
-            for (ns in peekOrder.reofferDue(channelId)) {
-                if (sync.inbox.reofferDeferred(tx, NamespaceId(ns.toByteArray())) > 0) reoffered = true
-            }
-            claimed.size
+            // The batch committed: make the offers of the reveals it opened.
+            offerPendingCards()
+            d
+        } finally {
+            // FIX 2 (review of S9, §19.48): both non-crash abort paths land here with cards
+            // still queued — the transaction threw after `applyReveal` queued one (a
+            // StorageFull on a later item: the offer loop never ran), or the offer threw
+            // mid-drain (the in-flight card is zeroed by offerPendingCards' own finally). A
+            // card is a bearer secret — the remaining ones are zeroized here, never just
+            // dropped by the next batch's discard.
+            discardPendingOffers()
         }
-        // The batch committed: make the offers of the reveals it opened (each card is a bearer
-        // secret — zeroed here once the offer has its copy).
+        if (done == claimed.size) for (r in claimed) peekOrder.forget(r.key)
+        return done
+    }
+
+    /**
+     * The committed batch's offers, in order (§19.17: the card enters as source `link`, trust
+     * `unverified` — the corrected CardSource; no `CHANNEL_REVEAL` exists, a new value would mark
+     * the contact for good as "came from a channel"). Each card is a bearer secret — zeroed in
+     * the `finally` once the offer has its copy. An offer the DM context refuses
+     * (`NOT_ACTIVATED`/`CRYPTO_UNAVAILABLE` — a locked or wiped DM library) loses the card with
+     * the offer: counted [ChannelCounters.Reason.REVEAL_OFFER_FAILED]; the author can reveal
+     * again (§19.48 FIX 3 — the same loss shape as the crash edge of §19.47).
+     */
+    private fun offerPendingCards() {
         while (true) {
             val card = pendingOffers.removeFirstOrNull() ?: break
             try {
-                // §19.17: the card enters as source `link`, trust `unverified` — the corrected
-                // CardSource (no CHANNEL_REVEAL exists; a new value would mark the contact for
-                // good as "came from a channel").
-                env.contactOffer(card, org.ghost.messaging.store.ContactStore.Source.LINK)
+                val offered = env.contactOffer(card, org.ghost.messaging.store.ContactStore.Source.LINK)
+                if (offered == org.ghost.messaging.engine.ContactSteps.AddResult.NOT_ACTIVATED ||
+                    offered == org.ghost.messaging.engine.ContactSteps.AddResult.CRYPTO_UNAVAILABLE
+                ) {
+                    env.counters.count(ChannelCounters.Reason.REVEAL_OFFER_FAILED)
+                }
             } finally {
                 card.fill(0)
             }
         }
-        if (done == claimed.size) for (r in claimed) peekOrder.forget(r.key)
-        return done
+    }
+
+    /** Zeroizes every card still queued — a batch that aborted before its offers, or mid-offer (FIX 2 of §19.48). */
+    private fun discardPendingOffers() {
+        while (true) {
+            val card = pendingOffers.removeFirstOrNull() ?: break
+            card.fill(0)
+        }
     }
 
     /** The opened reveals of the batch being applied (at most one batch's; see [applyBatch]). */

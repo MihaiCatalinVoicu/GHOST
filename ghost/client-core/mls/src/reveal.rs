@@ -20,11 +20,12 @@
 //! every other plaintext this crate handles.
 
 use openmls_traits::crypto::OpenMlsCrypto;
-use openmls_traits::types::{HpkeAeadType, HpkeCiphertext, HpkeConfig, HpkeKdfType, HpkeKemType};
+use openmls_traits::types::HpkeCiphertext;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::canonical;
+use crate::derive::REVEAL_HPKE_SUITE;
 use crate::group::{ChannelHandle, KeyClass, MlsContext};
 use crate::result::{Code, MlsError, MlsResult};
 
@@ -56,14 +57,9 @@ pub const LABEL_PS: &[u8] = b"ghost/v1/ch/reveal-ps";
 /// The HPKE `info` prefix.
 pub const LABEL_INFO: &[u8] = b"ghost/v1/ch/reveal";
 
-/// The reveal's HPKE: RFC 9180 base mode, KEM 0x0020 (DHKEM X25519, HKDF-SHA256), KDF 0x0001
-/// (HKDF-SHA256), AEAD 0x0003 (ChaCha20-Poly1305) — the design's explicit suite, not the MLS
-/// ciphersuite's derived one (§6.9 point 2).
-pub const REVEAL_HPKE: HpkeConfig = HpkeConfig(
-    HpkeKemType::DhKem25519,
-    HpkeKdfType::HkdfSha256,
-    HpkeAeadType::ChaCha20Poly1305,
-);
+// The reveal's HPKE suite (KEM 0x0020/KDF 0x0001/AEAD 0x0003) is [`derive::REVEAL_HPKE_SUITE`]:
+// spelled in the typed derivation module, not here, so no `Hkdf…` identifier is named outside
+// it (G-M3 rule 2; review of S9, FIX 1).
 
 fn nc() -> MlsError {
     MlsError::new(Code::NonCanonical)
@@ -234,7 +230,7 @@ impl MlsContext {
         let sealed = self
             .crypto()
             .hpke_seal(
-                REVEAL_HPKE,
+                REVEAL_HPKE_SUITE,
                 &recipient_box_pk,
                 &info(&channel_id),
                 &op_id,
@@ -270,7 +266,7 @@ impl MlsContext {
         let opened = self
             .crypto()
             .hpke_open(
-                REVEAL_HPKE,
+                REVEAL_HPKE_SUITE,
                 &HpkeCiphertext {
                     kem_output: enc.to_vec().into(),
                     ciphertext: ciphertext.to_vec().into(),

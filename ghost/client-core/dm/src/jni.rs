@@ -773,8 +773,14 @@ fn remove_context(registry: &mut Registry, handle: i64) -> bool {
 /// foreign handle (§2.5).
 ///
 /// The guard is held across the body on purpose: the alternative is to copy the context's secrets
-/// out of the map, and DM calls arrive on one actor thread (§2.7), so nothing waits on it. What
-/// the guard must not do is latch a panic, which is [`registry_lock`]'s job.
+/// out of the map. Since Phase 10's channels this is also what makes **cross-actor** calls safe —
+/// the channel actor calls `reveal_identity_material` (§6.9's `revealSeal`), so DM calls no longer
+/// arrive on one actor thread (review of S9, FIX 4): the registry mutex serialises every caller,
+/// and the crate dependency is one-way — `ghost-client-mls` may run under this guard,
+/// `ghost-client-dm` never calls into it — so the lock order is acyclic. A `ctxClose` racing a
+/// call loses the slot to the guard: the call answers `CRYPTO_UNAVAILABLE`. The cost is latency
+/// coupling — a channel pass that opens a reveal waits behind whatever DM call holds the guard.
+/// What the guard must not do is latch a panic, which is [`registry_lock`]'s job.
 fn with_context<T>(
     handle: jlong,
     body: impl FnOnce(&DmContext) -> Result<T, DmCode>,

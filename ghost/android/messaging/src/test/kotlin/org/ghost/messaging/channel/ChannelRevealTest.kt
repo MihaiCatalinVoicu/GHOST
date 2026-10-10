@@ -6,11 +6,17 @@ import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.engine.ChannelCounters
 import org.ghost.messaging.channel.engine.ChannelRevealStep
 import org.ghost.messaging.channel.store.ChannelState
+import org.ghost.messaging.engine.ContactSteps
 import org.ghost.messaging.engine.DmTime
+import org.ghost.storage.JdbcSqlExecutor
+import org.ghost.storage.MigrationRunner
+import org.ghost.storage.SqlExecutor
+import org.ghost.storage.StorageFullException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -36,7 +42,11 @@ import org.junit.rules.TemporaryFolder
  *    opens with the retired key while the old epoch is within retention, and the key is deleted
  *    with that epoch's retention — a later compromise opens nothing;
  *  - the retention (§8.5): `ch_reveal` rows follow the REVEAL post's timer and the sweep takes them;
- *  - the refusals: a non-member recipient, the member itself, a locked identity.
+ *  - the refusals: a non-member recipient, the member itself, a locked identity;
+ *  - the aborted batch (FIX 2 of §19.48): a `StorageFull` rollback after the card was queued
+ *    never offers, and the blob's re-delivery does not double-offer;
+ *  - the refused offer (FIX 3 of §19.48): a DM context that is not there (`NOT_ACTIVATED`) loses
+ *    the card with the offer, counted `REVEAL_OFFER_FAILED`, and the author can reveal again.
  *
  * The signature forgeries (a wrong identity key, a wrong pseudonym key, a claimed MLS sender that
  * is not `P_author`) are native-level refusals — Kotlin never holds either signing key, so a JVM
@@ -276,6 +286,105 @@ class ChannelRevealTest {
         assertEquals(ChannelRevealStep.RevealResult.REVEALED, dave.engine.reveal(id, p(owner, id)))
         w.quiesce()
         assertEquals(1, owner.offeredCards.size)
+    }
+
+    /**
+     * FIX 2 of §19.48 (review of S9): a batch that rolls back **after** `applyReveal` queued the
+     * card — a `StorageFullException` on a later write of the same transaction — never offers and
+     * leaves no row; the blob's re-delivery does not double-offer. The queued card's zeroization
+     * on this abort path is the receive step's `finally` ([FullAfterRevealInsertSqlExecutor]
+     * cannot see it — a heap probe is overkill), so the fail-without-fix half of this check is
+     * recorded done-by-inspection in §19.48.
+     */
+    @Test
+    fun aRolledBackBatchNeverOffersAndARedeliveryDoesNotDoubleOffer() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        // Dave's database answers SQLITE_FULL at the first write after the reveal's ch_reveal
+        // insert: the receive transaction rolls back with the card already queued at the step.
+        val daveSql = FullAfterRevealInsertSqlExecutor(
+            JdbcSqlExecutor(":memory:").also { MigrationRunner(it).migrate() },
+        )
+        val dave = w.client("dave", sql = daveSql)
+        val id = ChannelScenes.channelOf(w, owner, dave)
+        assertEquals(ChannelRevealStep.RevealResult.REVEALED, owner.engine.reveal(id, p(dave, id)))
+        w.pump()
+
+        daveSql.armed = true
+        assertThrows(StorageFullException::class.java) { dave.hintPass() }
+        daveSql.armed = false
+        assertTrue("a rolled-back batch offers nothing", dave.offeredCards.isEmpty())
+        assertTrue("the row rolled back with its transaction", revealRows(dave, id).isEmpty())
+
+        // SQLITE_FULL is a state of the device, not of the blob (§13.1): it was not consumed.
+        // The re-delivered reveal opens and offers exactly once.
+        dave.hintPass()
+        assertEquals("the re-delivery offers once — no double-offer", 1, dave.offeredCards.size)
+        assertArrayEquals(owner.ownCard(), dave.offeredCards[0].first)
+        assertEquals(listOf("in" to pHex(owner, id)), revealRows(dave, id))
+    }
+
+    /**
+     * FIX 3 of §19.48 (review of S9): an opened reveal whose offer the DM context refuses
+     * (`addContact` answers `NOT_ACTIVATED` — a locked or wiped DM library) loses the card with
+     * the offer: counted `REVEAL_OFFER_FAILED`, the row standing, and the author can reveal
+     * again — the same loss shape as the crash-between edge of §19.47.
+     */
+    @Test
+    fun anOfferTheDmContextRefusesIsCountedAndTheAuthorCanRevealAgain() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val dave = w.client("dave").apply { offerOutcome = ContactSteps.AddResult.NOT_ACTIVATED }
+        val id = ChannelScenes.channelOf(w, owner, dave)
+
+        assertEquals(ChannelRevealStep.RevealResult.REVEALED, owner.engine.reveal(id, p(dave, id)))
+        w.quiesce()
+        assertEquals("the offer was attempted and refused by the DM layer", 1, dave.offeredCards.size)
+        assertEquals(1, dave.counters[ChannelCounters.Reason.REVEAL_OFFER_FAILED])
+        assertEquals(
+            "the loss is the offer's, not the open's — the row stands",
+            listOf("in" to pHex(owner, id)),
+            revealRows(dave, id),
+        )
+
+        // A fresh reveal is a fresh op id: no retry of the lost card, and the refusal is counted
+        // every time it happens.
+        assertEquals(ChannelRevealStep.RevealResult.REVEALED, owner.engine.reveal(id, p(dave, id)))
+        w.quiesce()
+        assertEquals(2, dave.offeredCards.size)
+        assertEquals(2, dave.counters[ChannelCounters.Reason.REVEAL_OFFER_FAILED])
+    }
+
+    /**
+     * A [SqlExecutor] that throws [StorageFullException] at the first write after the receive
+     * inserted the reveal's `ch_reveal` row (`putReveal`'s INSERT goes through [exec]): the
+     * receive transaction rolls back with the card already queued at the step — abort path (a)
+     * of FIX 2 (§19.48).
+     */
+    private class FullAfterRevealInsertSqlExecutor(val delegate: JdbcSqlExecutor) : SqlExecutor {
+        /** When true, the first [execUpdate] after a `ch_reveal` insert fails with `SQLITE_FULL`. */
+        var armed: Boolean = false
+        private var sawRevealInsert = false
+
+        override fun exec(sql: String, args: List<Any?>) {
+            if (sql.startsWith("INSERT INTO ch_reveal")) sawRevealInsert = true
+            delegate.exec(sql, args)
+        }
+
+        override fun execUpdate(sql: String, args: List<Any?>): Int {
+            if (armed && sawRevealInsert) throw StorageFullException(IllegalStateException("[SQLITE_FULL] regression test"))
+            return delegate.execUpdate(sql, args)
+        }
+
+        override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) = delegate.query(sql, args, onRow)
+
+        override fun <T> transaction(block: () -> T): T = delegate.transaction(block)
+
+        override val inTransaction: Boolean get() = delegate.inTransaction
+
+        override var userVersion: Int
+            get() = delegate.userVersion
+            set(value) {
+                delegate.userVersion = value
+            }
     }
 
     /** The first index of [needle] in [haystack], or null. */

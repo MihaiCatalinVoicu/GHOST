@@ -36,10 +36,18 @@ import java.security.GeneralSecurityException
  * [SelfContext] (its content key) and the recognition and provisional keys (§13.7's "zeroize the
  * Kotlin-side key material").
  *
- * **Threading.** Both run on the DM actor (§7.9 point 3: "the DM actor is the only thread that
- * calls `DmNative` session functions; the context handle is not shared with other threads");
- * [handleOrNull] is read by the steps on that same thread, and is `@Volatile` only so a status read
- * from another thread sees a closed context as closed.
+ * **Threading (corrected by the review of S9, FIX 4).** [open] and [close] run on the DM actor,
+ * but since Phase 10's channels they are **not** the only callers of the native context: the
+ * channel actor calls `revealSeal` → `reveal_identity_material` (§6.9's reveal), so DM-native
+ * session functions arrive on more than one actor thread. The invariant that makes this safe is
+ * the native side's, not this class's: the DM crate's registry mutex serialises every call that
+ * holds a context (a `ctxClose` racing a call simply loses the slot — the answer is
+ * `CRYPTO_UNAVAILABLE`, §13.2), and the dependency between the two crates is one-way —
+ * `ghost-client-mls` may run under the DM registry guard, `ghost-client-dm` never calls into the
+ * MLS crate — so the lock order is acyclic and no deadlock is possible. What this coupling costs
+ * is latency: a channel receive that opens a reveal waits on the registry behind whatever DM
+ * call holds it. [handleOrNull] is read by steps on either actor, and is `@Volatile` only so a
+ * status read from another thread sees a closed context as closed.
  *
  * **A state key that no longer unwraps** — the Keystore key was deleted by a device reset, or an
  * authentication-bound key is outside its window — leaves the context **closed**
