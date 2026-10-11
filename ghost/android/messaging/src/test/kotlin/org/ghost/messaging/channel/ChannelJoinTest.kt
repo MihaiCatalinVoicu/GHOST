@@ -11,6 +11,7 @@ import org.ghost.messaging.channel.ChannelAdmissionTest.Companion.invite
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.engine.DmTime
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -193,6 +194,48 @@ class ChannelJoinTest {
         assertEquals(1, owner.counters[Reason.JOIN_REFUSED])
         assertEquals(0L, owner.count("ch_join_request"))
         assertEquals("one admission", 3, w.clients.count { it.channel(id)?.state == ChannelState.ACTIVE })
+    }
+
+    /**
+     * D12 / §12.5's "removed client re-invited": a removed member is not a member — a plain invite
+     * re-admits it as a fresh join, and the seed-derived pseudonym returns unchanged (the schema's
+     * `removed -> joining` trigger; S10's SCN-M20 choreography, F-S10-3's close).
+     */
+    @Test
+    fun aRemovedMemberAcceptsAPlainInviteAndReturnsWithTheSamePseudonym() = ChannelWorld().use { w ->
+        val (owner, bob, id) = withMember(w)
+        val bobPseudonym = bob.contexts.open(id.toByteArray())!!.pseudonym
+        assertEquals(
+            org.ghost.messaging.channel.engine.ChannelEngine.RemoveResult.REMOVED,
+            owner.engine.remove(id, bobPseudonym),
+        )
+        w.quiesce()
+        w.advance(6 * DmWorld.HOUR)
+        owner.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.REMOVED, bob.channel(id)!!.state)
+
+        // The return: a fresh invite, accepted as a plain join (not a restore — the pseudonym is
+        // not a current member), admitted by the owner's pass, and the pseudonym is D12-stable.
+        assertEquals(AcceptResult.PENDING, bob.engine.accept(invite(owner, id), null))
+        assertEquals(1L, bob.count("ch_join", "type = 'join'"))
+        assertEquals(ChannelState.JOINING, bob.channel(id)!!.state)
+        w.quiesce()
+        admitPending(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.ACTIVE, bob.channel(id)!!.state)
+        assertArrayEquals("the same pseudonym returns (D12)", bobPseudonym, bob.contexts.open(id.toByteArray())!!.pseudonym)
+        assertEquals(owner.channel(id)!!.epoch, bob.channel(id)!!.epoch)
+        ChannelScenes.post(bob, id, "am revenit")
+        w.quiesce()
+        assertTrue(owner.displayed(id).contains("am revenit"))
+        assertTrue(bob.integrity().isEmpty())
     }
 
     @Test

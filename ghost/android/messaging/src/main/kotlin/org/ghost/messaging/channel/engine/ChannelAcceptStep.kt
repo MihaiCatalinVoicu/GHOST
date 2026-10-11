@@ -87,10 +87,16 @@ internal class ChannelAcceptStep(
         // §6.2.2 step 2: an invite for a channel the client is already a member of serves a restore
         // when the channel is `resync_needed`, `reinvite_needed` or `replaced` (the member's
         // pseudonym is a current member; the admission is an invite-authorized swap, §6.12) — and
-        // re-enters `joining` like a `join_expired` channel does. Every other state is `ALREADY_MEMBER`.
+        // re-enters `joining` like a `join_expired` channel does. A channel the client left or was
+        // removed from is **not** a membership either (D12): a plain invite re-admits it as a fresh
+        // join, returning with the same seed-derived pseudonym (the schema's `left`/`removed` ->
+        // `joining` trigger; SCN-M20's "removed client re-invited", built in S10). Every other
+        // state is `ALREADY_MEMBER`.
         val restore = existing != null && (existing.state == ChannelState.RESYNC_NEEDED ||
             existing.state == ChannelState.REINVITE_NEEDED || existing.state == ChannelState.REPLACED)
-        if (existing != null && existing.state != ChannelState.JOIN_EXPIRED && !restore) {
+        val rejoinable = existing != null && (existing.state == ChannelState.JOIN_EXPIRED ||
+            existing.state == ChannelState.LEFT || existing.state == ChannelState.REMOVED)
+        if (existing != null && !rejoinable && !restore) {
             return AcceptResult.ALREADY_MEMBER
         }
         if (existing == null && env.database.transaction { tx -> env.liveChannels(tx.sql) } >= ChannelEnv.MAX_CHANNELS) {
@@ -145,6 +151,15 @@ internal class ChannelAcceptStep(
                 } else {
                     if (fresh.state == ChannelState.JOIN_EXPIRED) {
                         stores.channels.transition(tx, channelId, ChannelState.JOIN_EXPIRED, ChannelState.JOINING)
+                        stores.channels.setPosition(tx, channelId, parsed.generation, 0)
+                        stores.channels.setPolicy(tx, channelId, timerCode, parsed.sizeClass, parsed.kdfCode != 0, nameEnv)
+                    } else if (fresh.state == ChannelState.LEFT || fresh.state == ChannelState.REMOVED) {
+                        // The removed (or left) member's re-entry (D12, §12.5's "removed client
+                        // re-invited"): a plain invite re-admits the pseudonym as a fresh join —
+                        // the position and policy the join writes come from the Welcome, like the
+                        // expired join's, and the stale state moves to `joining` (the schema's
+                        // `left`/`removed -> joining` trigger).
+                        stores.channels.transition(tx, channelId, fresh.state, ChannelState.JOINING)
                         stores.channels.setPosition(tx, channelId, parsed.generation, 0)
                         stores.channels.setPolicy(tx, channelId, timerCode, parsed.sizeClass, parsed.kdfCode != 0, nameEnv)
                     } else if (fresh.state == ChannelState.RESYNC_NEEDED || fresh.state == ChannelState.REINVITE_NEEDED ||

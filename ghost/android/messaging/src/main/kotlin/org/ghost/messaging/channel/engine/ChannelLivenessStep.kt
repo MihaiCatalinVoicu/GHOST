@@ -338,8 +338,14 @@ internal class ChannelLivenessStep(
         /** CO-12: the 9-day clocks (the weekly PCS commit plus two days). */
         const val STALE_DAYS: Long = 9
 
-        /** At most this many window senders are remembered (the progress env is bounded by the column). */
-        const val MAX_TRACKED_SENDERS: Int = 7
+        /**
+         * At most this many window senders are remembered. The progress env is bounded by the
+         * column (`ch_liveness.progress_env` ≤ 256): the sealed record is 38 bytes of framing
+         * (version, count, day, flag, nonce, tag) plus 32 per sender, so 7 senders seal to 262
+         * bytes and break the bound — SCN-M20 (20 clients, slice S10) reached 7 distinct window
+         * senders at the first try (F-S10-2).
+         */
+        const val MAX_TRACKED_SENDERS: Int = 6
 
         /** `Progress.lastForeignMessageDay`'s sentinel: no foreign message has opened yet (real days are > 0). */
         const val NO_FOREIGN_MESSAGE_DAY: Long = 0
