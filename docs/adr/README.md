@@ -79,6 +79,17 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-59](ADR-59-wallet-sync.md) | Wallet Sync fără issuer: seed-ul wallet-ului local în Keystore + blob criptat client-side din seed pe relay-uri (**aprobat** 2026-10-04; varianta cu issuer respinsă) |
 | [ADR-60](ADR-60-version-migration-wipe.md) | Migrare între versiuni: `kill_flag` în manifestul semnat comandă ștergerea locală automată și, opțional, dezinstalarea (**aprobat** 2026-10-04; reziduu acceptat) |
 
+## Propuse (Faza 10)
+
+Propuse 2026-09-25 (design `docs/design/faza10-forum.md`, Anexa A; rundele 10d și 10e din §19.27 … §19.29 le-au corectat), aplicate în Faza 10 și depuse aici de felia S12 (2026-10-11), în așteptarea deciziei proprietarului (Q1 a designului; valorile implicite s-au aplicat cu aprobarea proprietarului 2026-09-27). Notele rundei 10e sunt deja în textele de mai jos. **Notă la ADR-13:** punctul „primul client care observă pragul" e retras de ADR-42; primitivele Fazei 10 sunt rolurile, scoaterea, evacuarea, evidența sponsorilor și simularea pragului. **Notă la ADR-04:** pseudonimul e stabil pe viața canalului (ADR-43). **Notă la ADR-12:** canalele rămân pe suita clasică 0x0003 până la îndeplinirea condițiilor din design Faza 10 §4.4.
+
+| ADR | Titlu |
+|---|---|
+| [ADR-40](ADR-40-forum-openmls-client-core.md) | Forumul pe OpenMLS 0.9.0 în `client-core`: bibliotecă, furnizor, adaptor de stocare, suita clasică, JNI închis |
+| [ADR-41](ADR-41-canale-oarbe-pentru-relee.md) | Canale oarbe pentru relee: sigiliu exterior pe epocă, generații, chei comune de citire și depunere, rotație la scoatere, finanțatori |
+| [ADR-42](ADR-42-ordinea-commiturilor-fara-server.md) | Ordinea commit-urilor fără server și guvernanța minimă |
+| [ADR-43](ADR-43-invitatii-dezvaluire-istoric-pseudonim.md) | Invitații în canal, dezvăluire opt-in, istoric „none", pseudonim stabil |
+
 ## Retrase
 
 | ADR | Titlu | Stare |
