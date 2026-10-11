@@ -360,6 +360,16 @@ internal object ChannelM20 {
         val swapPseudonym = pseudonymOf(swap, id)
         quietClocks(swap, id)
         val currentNs = generationNs(owner, id, owner.channel(id)!!.generation)
+        // The frozen-ness the TTL-death argument stands on (pinned below, review finding F-3):
+        // the old stack's epoch and the newest ch_epoch row it holds before the blind window.
+        // (The row COUNT is not pinned: the subject's own CH-SWEEP deletes epochs past their
+        // retention day as its clock advances — honest, and not the arrival of anything new.)
+        val swapFrozenEpoch = swap.channel(id)!!.epoch
+        val swapFrozenMaxRowEpoch = swap.database.transaction { tx ->
+            var m = -1L
+            tx.sql.query("SELECT max(epoch) FROM ch_epoch WHERE channel_id = ?", listOf(id.toByteArray())) { m = it.long(0) }
+            m
+        }
         // The subject's blindness is per-client (SILENT_ORPHAN): EXPIRE_LOG's serve-skip is
         // blob-level — it would withhold the honest window traffic from every listener, not only
         // the dark subject (F-S10-3 was exactly that: the forced commits reached nobody, the
@@ -379,9 +389,35 @@ internal object ChannelM20 {
             pcs(byName(MODERATOR))
         }
         settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
-        // The subject's missed commits die at the relays past their TTL (what EXPIRE_LOG models):
-        // the online members hold their copies fetched; the subject's share is un-fetched, and the
-        // relay copies are gone — the subject cannot catch up when it returns.
+        // F-3's first pin: the old stack missed the lead's forced commits while dark. For a
+        // non-committer (the base variant's swap subject) that means total frozen-ness — no
+        // epoch arrived, its newest held epoch row did not move. The owner-restore variant's
+        // dark subject is rank 0: its own pending self-update settles at itself (CO-4), so its
+        // epoch number can move on its own branch — the honest pin there is that it did NOT
+        // merge the lead's forced commits: its authenticator diverged from the lead's.
+        if (config.variant == Variant.OWNER_RESTORE) {
+            assertTrue(
+                "the dark owner stayed on its own branch (it missed the lead's forced commits)",
+                !epochAuthenticator(swap, id).contentEquals(epochAuthenticator(lead(), id)),
+            )
+        } else {
+            assertEquals("the old stack's epoch did not move while dark", swapFrozenEpoch, swap.channel(id)!!.epoch)
+            assertEquals(
+                "the old stack's newest ch_epoch row did not move through the blind window",
+                swapFrozenMaxRowEpoch,
+                swap.database.transaction { tx ->
+                    var m = -1L
+                    tx.sql.query("SELECT max(epoch) FROM ch_epoch WHERE channel_id = ?", listOf(id.toByteArray())) { m = it.long(0) }
+                    m
+                },
+            )
+        }
+        // The subject's missed commits die at the relays past their TTL — the removeAll below is
+        // NOT the death: the serve predicate never serves a blob with now >= storedAt + ttl
+        // (ModelChannelRelay.serve), so the copies the blind subject never fetched became
+        // unservable on their own. The removeAll is only the relay's GC of those already-
+        // unservable rows (the explicit death EXPIRE_LOG models at pump), keeping the model
+        // honest about what a listing would return.
         w.relay.stored.removeAll { it.namespace.contentEquals(currentNs) && w.now >= it.storedAt + it.ttl }
         val swapDarkEpoch = swap.channel(id)!!.epoch
         repeat(3) {
@@ -417,6 +453,14 @@ internal object ChannelM20 {
 
         // The return: a fresh invite, accepted by the restored stack — a copy of the dark device's
         // database (the row-holding restore of F-S7-2) under a new name with the same seed.
+        // Which is only honest because the missed commits are unrecoverable — pinned (F-3): every
+        // commit of the blind window's namespace is past its TTL now, so the serve predicate
+        // withholds it from everyone, not only from the blind subject.
+        assertTrue(
+            "the missed commits are past their TTL before the blind window lifts",
+            w.relay.stored.filter { it.namespace.contentEquals(currentNs) && it.purpose == "commit" }
+                .all { w.now >= it.storedAt + it.ttl },
+        )
         w.relay.modes = emptySet()
         w.relay.silentOrphan = { _, _ -> false }
         w.pump()
@@ -553,6 +597,33 @@ internal object ChannelM20 {
             for (row in rows) {
                 assertTrue("an expired post is not displayed (T25)", row.deleteAtMinute == null || row.deleteAtMinute > c.clock.now)
             }
+        }
+
+        // The cross-member display comparison (review finding F-2): on every member the scenario
+        // converges (T41's membership rule: the ALL cast, ACTIVE, at the anchor's epoch) the
+        // displayed page — post ids, newest first — is the anchor's. The re-invited removed client
+        // is a join by design (no history backfill, T39's lens), so its page is the anchor's
+        // without the posts of the epochs before its re-add. The restored stack is out of scope:
+        // the choreography never drives it past its return's epoch — switch/settleToAnchor/
+        // converged iterate the ALL cast, so its post-return convergence was never asserted
+        // (found by this comparison: it sits ACTIVE two epochs behind at the end). Driving it is
+        // a choreography follow-up (F-S10-7, §19.50); the continuously-converged members are
+        // compared here.
+        val displayAnchor = displayedPage(lead(), id)
+        val readdEpoch = byName(MODERATOR_REMOVED).channel(id)!!.epoch
+        for (name in ALL) {
+            if (name == swapName) continue
+            val c = byName(name)
+            if (c.channel(id)?.state != ChannelState.ACTIVE) continue
+            if (c.channel(id)!!.epoch != lead().channel(id)!!.epoch) continue
+            if (name == MODERATOR_REMOVED) {
+                assertEquals(
+                    "the re-added member displays the anchor's page from its re-add epoch",
+                    displayAnchor.filter { it.second >= readdEpoch }, displayedPage(c, id),
+                )
+                continue
+            }
+            assertEquals("$name displays the anchor's page", displayAnchor, displayedPage(c, id))
         }
 
         report.postsStored = w.relay.stored.count { it.purpose == "post" && !it.injected }
@@ -772,7 +843,15 @@ internal object ChannelM20 {
             // claimed epochs' winners differ on the two branches, §6.7's fork case) and the side
             // converges back.
             assertNotEquals(epochAuthenticator(sideB.first(), id), epochAuthenticator(owner, id))
-            for (b in sideB) resyncBack(world, ::byName, id, owner, b)
+            for (b in sideB) {
+                // The recovery must be the rejoin path, loudly asserted (review finding F-4):
+                // resyncBack returns the engine's verdict — REQUESTED is the rejoin; a regression
+                // routing side B through the stale clock's reinvite (REINVITE_NEEDED) fails here.
+                assertEquals(
+                    "${b.name} recovers by rejoin, not reinvite",
+                    ChannelRejoinStep.ResyncResult.REQUESTED, resyncBack(world, ::byName, id, owner, b),
+                )
+            }
             admitUntil(world, ::byName, id, owner, sideBNames)
             // The owner's branch lived through the resync window: compare against its current
             // authenticator (c20 is still on its dead branch here — it rejoins below).
@@ -799,9 +878,23 @@ internal object ChannelM20 {
                 "the one-member side found its branch dead",
                 alone.channel(id)!!.state == ChannelState.RESYNC_NEEDED || alone.channel(id)!!.staleSuspected,
             )
-            resyncBack(world, ::byName, id, owner, alone)
+            // F-4, for the alone member: its recovery is the reinvite path, and it is pinned —
+            // the review asked for the rejoin path's no-sponsor-row shape, but at this
+            // choreography's timing (the alone member's branch died at the fork, then 14 fixed
+            // quiet-day advances before its resync) the honest engine verdict is the stale
+            // clock's REINVITE_NEEDED, never REQUESTED: its 14-day bound from last progress has
+            // expired, while side B's (above) has not. resyncBack asserts the restore's sponsor
+            // row at accept time — the window in which that evidence exists (a completed join
+            // deletes every ch_join row). A regression moving this recovery to the rejoin path
+            // fails loudly on the pin, exactly the review's property in the honest direction.
+            assertEquals(
+                "the alone member's resync is the stale clock's reinvite (its 14-day bound expired)",
+                ChannelRejoinStep.ResyncResult.REINVITE_NEEDED, resyncBack(world, ::byName, id, owner, alone),
+            )
             admitUntil(world, ::byName, id, owner, listOf("c20"))
             assertEquals("the alone member rejoined", ChannelState.ACTIVE, alone.channel(id)!!.state)
+            // (F-4's row evidence is asserted inside resyncBack, at the moment it exists — a
+            // completed join deletes every ch_join row, so nothing of it survives here.)
             // Catch the rejoiner up across any commits the live branch made during its resync, then
             // the authenticators must agree.
             var aloneCatchGuard = 0
@@ -871,6 +964,13 @@ internal object ChannelM20 {
         report.t41Checks++
     }
 
+    /** The displayed page's identity (review F-2): post ids, newest first, each with its epoch. */
+    private fun displayedPage(client: ChannelClient, id: ChannelId): List<Pair<String, Long>> =
+        client.database.transaction { tx ->
+            client.channelStores.posts.page(tx.sql, id.toByteArray(), client.clock.now, 500)
+                .map { ModelChannelRelay.hex(it.opId) to it.epoch }
+        }
+
     /** Ranks 0 and 1 commit on one epoch; one winner everywhere (SCN-CD's race at M20 scale). */
     private fun concurrentRace(
         w: ChannelWorld,
@@ -907,7 +1007,11 @@ internal object ChannelM20 {
      * The scripted resync of [member] after the fingerprint comparison: inside the committers'
      * 14-day drain bound the rejoin request is admitted by the owner's passes; past it the honest
      * answer is `reinvite_needed` and the return is a fresh invite admitted as a restore (§6.7's
-     * stale clock, F-S10-1).
+     * stale clock, F-S10-1). Returns [ChannelRejoinStep.ResyncResult.REQUESTED] when the rejoin
+     * path was taken — the caller can assert it, so a regression routing the recovery through the
+     * reinvite path fails loudly (review finding F-4); the path's row evidence is asserted here,
+     * at the moment it exists (a completed join deletes every `ch_join` row, so nothing of it
+     * survives to the caller).
      */
     private fun resyncBack(
         w: ChannelWorld,
@@ -915,17 +1019,28 @@ internal object ChannelM20 {
         id: ChannelId,
         owner: ChannelClient,
         member: ChannelClient,
-    ) {
+    ): ChannelRejoinStep.ResyncResult {
         val result = member.engine.resync(id)
         if (result == ChannelRejoinStep.ResyncResult.REQUESTED) {
+            // The rejoin path, at the moment its rows exist: the rejoin row the request just
+            // wrote, and no sponsor row — a restore (the reinvite path) would write one.
+            assertEquals(
+                "${member.name} took the rejoin path (its rejoin row, no sponsor row)",
+                1L, member.count("ch_join", "type = 'rejoin'"),
+            )
+            assertEquals(
+                "${member.name}'s rejoin wrote no sponsor row",
+                0L, member.count("ch_join", "type = 'restore'"),
+            )
             w.pump()
-            return
+            return result
         }
         assertEquals("${member.name}'s resync is the stale clock's reinvite", ChannelRejoinStep.ResyncResult.REINVITE_NEEDED, result)
         val back = ChannelAdmissionTest.invite(owner, id)
         assertEquals(AcceptResult.PENDING, member.engine.accept(back, null))
         assertEquals(1L, member.count("ch_join", "type = 'restore'"))
         w.quiesce()
+        return result
     }
 
     /** The committer's passes until every named member is active at the anchor's epoch (fork rejoins). */

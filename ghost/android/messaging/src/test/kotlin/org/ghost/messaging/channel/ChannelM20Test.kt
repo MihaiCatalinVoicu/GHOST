@@ -113,6 +113,56 @@ class ChannelM20Test {
         }
     }
 
+    /**
+     * F-1's regression probe: a later epoch's `K_ep` leaked into the dump **without** its
+     * `ch_epoch` row (the envelopes copied into `mls_kv` — any 28…4 MiB blob — and the rows,
+     * the held posts and the recognition keys of those epochs deleted) must be caught by the
+     * oracle's envelope sweep: the leaked keys open later epochs' blobs while recognition
+     * matched nothing — the leak is invisible to the hint pre-filter, so the recognition-driven
+     * sweep of the un-widened oracle (32/60-byte values only) never tried it and reported 0
+     * opens. The leak is built from the anchor's own retained envelopes at the end (its
+     * retention holds the epochs past c10's removal): same context, so its `k_env` values
+     * open — the shape a real leak of a member's wrapped epoch keys would have.
+     */
+    @Test
+    fun theRemovedMemberOracleCatchesALeakedLaterEpochKeyWithoutItsRow() {
+        val dir = folder.newFolder("m20-oracle-leak")
+        val built = ChannelM20.build(ChannelM20.Config(seed = ChannelM20.SEEDS[0], dbDir = dir))
+        built.world.use { w ->
+            val c = built.id.toByteArray()
+            val anchor = built.anchor
+            // The probe's cutoff: c10's removing epoch. The anchor held every generation, so
+            // what must be zero is opens of epochs after the cutoff (P-C4(a)'s shape).
+            val cutoff = built.report.subjects.first { it.kind == "moderator-removal" }.removedAtEpoch
+            val heldGeneration = anchor.channel(built.id)!!.generation
+            val tampered = File(dir, "leaked.db")
+            ChannelM20.snapshotOpenDb(anchor, tampered)
+            org.ghost.storage.JdbcSqlExecutor(tampered.absolutePath).use { ex ->
+                // The leak: the cutoff's later epochs' k_env envelopes in mls_kv, with no
+                // ch_epoch row...
+                ex.exec(
+                    "INSERT INTO mls_kv(channel_id, k, v_env) " +
+                        "SELECT channel_id, CAST('leak-' || epoch AS BLOB), k_env FROM ch_epoch " +
+                        "WHERE channel_id = ? AND epoch > ?",
+                    listOf(c, cutoff),
+                )
+                // ...and no held posts, so the only way the dump opens later blobs is the
+                // envelope sweep itself.
+                ex.exec("DELETE FROM ch_epoch WHERE channel_id = ? AND epoch > ?", listOf(c, cutoff))
+                ex.exec("DELETE FROM ch_post WHERE channel_id = ? AND epoch > ?", listOf(c, cutoff))
+            }
+            val seized = w.client("seized-leak", sql = ChannelWorld.restore(tampered), boot = 9, seedName = anchor.name)
+            val maps = blobMaps(w, built)
+            val r = RemovedMemberOracle.run(
+                seized, anchor.name, "leaked-epoch-keys (probe)", built.id, w.relay.stored,
+                cutoff, heldGeneration, maps.first, maps.second,
+            )
+            assertTrue("the leaked keys open later epochs' blobs: " + r.line(), r.openedLaterEpoch > 0)
+            assertTrue("the leak is invisible to recognition: " + r.line(), r.recognisedLater == 0)
+            assertTrue("the report must fail: " + r.line(), !r.passed)
+        }
+    }
+
     /** T39 over the wave joiners: nothing of the epochs before a join opens at the joiner. */
     @Test
     fun theJoinerOracleOpensNothingBeforeTheJoins() {
@@ -164,12 +214,24 @@ class ChannelM20Test {
                     }
                 }
             }
-            assertTrue(commits > 10 && welcomes >= 19)
+            // The tip-pinned floors (review finding F-6): the commit count varies by one across
+            // JVM runs of one seed (52, 53, 52 measured at the tip, §19.50 — the choreography is
+            // seeded, one cadence commit's timing is a native-draw side), so the gate is a floor,
+            // not an exact pin; the Welcomes are exact.
+            assertTrue("at least the tip-pinned commit count (§19.50), got $commits", commits >= TipPinnedCommits)
+            assertTrue("at least the tip-pinned Welcome count (§19.50), got $welcomes", welcomes >= TipPinnedWelcomes)
             ChannelReport.line("channel sizes: PASS $commits commits within the floor, $welcomes Welcomes under the cap")
         }
     }
 
     private companion object {
+        /** The tip-pinned size floors: the commit count drifts with host load (the swap window's
+         *  guard-bounded rounds) — measured at the tip at seed `0x5eed_c101`: 53, 52 and 51
+         *  commits across runs, 21 Welcomes each — so the gate is a floor at the minimum
+         *  observed, not an exact pin (review finding F-6, §19.50). */
+        const val TipPinnedCommits: Int = 51
+        const val TipPinnedWelcomes: Int = 21
+
         /** The seal's overhead over the sealed body: salt + hint + the AEAD tag. */
         const val ChannelRecognitionOverhead: Int = 16 + 16 + 16
 
