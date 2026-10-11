@@ -1,6 +1,7 @@
 package org.ghost.messaging.dmworld
 
 import org.ghost.messaging.DmWorld
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -135,6 +136,41 @@ class DmPrivacyWorldTest {
         val result = Seizure.oneReply(PrivacySeeds.ALL[0])
         PrivacyReport.line(result.line())
         assertTrue(result.line(), result.passed)
+    }
+
+    /**
+     * HIGH mode over the behaviour world (Phase 10 §19.10's debt, built in S11): the same world in
+     * HIGH — every store waits its `not_before_minute` at the outbox until a later session's round
+     * reaches it ([ViewRelay.delayedStores]) — green over the exact joins, after a final flush
+     * past the delay ([PrivacyWorld.flushHighDelays], named in the line, §15 item 10a). The JD
+     * checks compare shapes, joins and recorded truth, never bytes, so a delayed store is the same
+     * store to them. S-DM statistics stay out (SMALL refuses S-DM3's floor, as the mutant kills).
+     */
+    @Test
+    fun thePrivacyWorldIsGreenInHighMode() {
+        requireNative()
+        PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.SMALL, PrivacySeeds.ALL[0], highMode = true)).use { world ->
+            world.run()
+            world.flushHighDelays()
+            var waiting = 0
+            for (c in world.clients.indices) waiting += world.relay.waitingPastNotBefore(world.clients[c].device, world.now)
+            assertEquals("no op waits past its not_before after the flush", 0, waiting)
+            assertTrue("HIGH mode's delays were exercised", world.relay.delayedStores > 0)
+            val failures = ArrayList<String>()
+            val joins = Joins(world)
+            for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9())) {
+                if (!result.passed) failures += result.failureMessage()
+                if (result.scanned == 0L) failures += "${result.id} scanned nothing"
+            }
+            val byOp = world.relay.events.groupingBy { it.op }.eachCount()
+            val line = "dm privacy world HIGH mode: ${if (failures.isEmpty()) "PASS" else "FAIL"} " +
+                "N=${world.config.clients}, ${world.config.days} days: ${world.relay.delayedStores} distinct ops delayed by " +
+                "not_before and stored by a later round (flushed past the delay), " +
+                "${byOp[ViewOp.STORE] ?: 0} stores, ${byOp[ViewOp.GET] ?: 0} gets, " +
+                "${byOp[ViewOp.REGISTER] ?: 0} registrations; JD1 … JD7, JD9 ${if (failures.isEmpty()) "green" else failures.joinToString("; ")}"
+            PrivacyReport.line(line)
+            assertTrue(line, failures.isEmpty())
+        }
     }
 
     private companion object {

@@ -1,0 +1,14 @@
+GHOST channel exit scenario (Phase 10 design §12.5, SCN-M20; slice S10)
+mode: STANDARD (this scenario predates the S11 harness debts; the privacy world runs
+STANDARD and HIGH — §12.7, S11; each line names what it compared, §15 item 10a)
+channel SCN-M20: PASS seed 0x5eed_c101 base: 20 clients, 200 posts (12 reactions), 25 epochs, 5 generations; 4 seizure subjects, 19 joiners; t41 checks 9; wall 130.0 s
+channel SCN-M20: PASS seed 0x5eed_c102 base: 20 clients, 198 posts (11 reactions), 24 epochs, 5 generations; 4 seizure subjects, 19 joiners; t41 checks 9; wall 131.2 s
+channel SCN-M20: PASS seed 0x5eed_c103 base: 20 clients, 201 posts (13 reactions), 25 epochs, 5 generations; 4 seizure subjects, 19 joiners; t41 checks 9; wall 129.7 s
+channel SCN-M20: PASS seed 0x5eed_c101 owner_restore: 20 clients, 196 posts (10 reactions), 26 epochs, 5 generations; 5 seizure subjects, 20 joiners; t41 checks 9; wall 141.5 s
+channel SCN-M20 fork: PASS seed 0x5eed_c101: 4 members split_suspected, 6 rejoined, t41 checks 4; wall 91.0 s
+channel T38 moderator-removal: PASS c10: 318 blobs, 228 stored values (32 B) recognised, 10 envelopes tried (3 of 60 B, 7 of 68 B), 151 matches, 151 opened: later epochs 0, later generations 0, the removing epoch 1 (L8-C18, reported), earlier 112, join traffic 38 (L8-C5, allowed); dump residue: 0 epoch rows, 0 generation rows, 0 posts
+channel T38 leave: PASS c11: 318 blobs, 250 stored values (32 B) recognised, 12 envelopes tried (3 of 60 B, 9 of 68 B), 130 matches, 130 opened: later epochs 0, later generations 0, the removing epoch 2 (L8-C18, reported), earlier 128, join traffic 0; dump residue: 0/0/0
+channel T38 idle-eviction: PASS c12: 318 blobs, 231 stored values (32 B) recognised, 11 envelopes tried (3 of 60 B, 8 of 68 B), 125 matches, 125 opened: later epochs 0, later generations 0, the removing epoch 1, earlier 124, join traffic 0; dump residue: 0/0/0
+channel T38 device-swap (restore): PASS c7-old: 318 blobs, 180 stored values (32 B) recognised, 4 envelopes tried (3 of 60 B, 1 of 68 B), 52 matches, 52 opened: later epochs 0, later generations 0, the removing epoch 0, earlier 49, join traffic 3; dump residue: 0/0/0
+channel T39 joiner: PASS 14 joiners with history: 318 blobs, 0 opened before the join, 38 join traffic (the declared exception)
+channel sizes: PASS 53 commits within the floor, 21 Welcomes under the cap

@@ -442,6 +442,13 @@ class DmDevice(
          */
         val stores: SyncStores? = null,
         /**
+         * The privacy mode of the device's own `SyncStores` (S11's HIGH-mode debt, §19.10): HIGH
+         * stamps each enqueue `not_before_minute` up to 10 min ahead and the world's relay model
+         * honours it ([org.ghost.messaging.dmworld.ViewRelay.delayedStores]). The default keeps
+         * every world of S6 … S10 byte for byte (STANDARD).
+         */
+        val privacyMode: PrivacyMode = PrivacyMode.STANDARD,
+        /**
          * Wraps the `Capabilities` and `Namespaces` ports the DM steps (SEND, EST-START, the
          * contact KEEPER, RECV) reach the sync stores through — **not** the owner steps' own ports,
          * and not the stores the sync and entitlement engines use. The privacy mutant PM-1 of the
@@ -517,7 +524,7 @@ class DmDevice(
     val database: SyncDatabase = harness?.stores?.database ?: SyncDatabase(sql)
     val clock: MovableClock = harness?.clock ?: MovableClock(startSeconds)
     val stores: SyncStores =
-        harness?.stores ?: SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
+        harness?.stores ?: SyncStores(database, clock, FixedRandomSources()) { harness?.privacyMode ?: PrivacyMode.STANDARD }
     // One stream per device: see `SequentialRandom`. Two devices sharing a stream produced a
     // `message_id` on one that was the 16-byte prefix of a `seen_key` on the other, which the T25
     // physical scan reads as a message surviving its own deletion.

@@ -116,6 +116,33 @@ internal class ModelChannelRelay {
     var expiryFor: (Stored) -> Long = { it.storedAt + it.ttl }
 
     /**
+     * The relay-side event log of the effective view (design §2.1, §12.7's "every capture event"):
+     * the register calls of the world's registration step ([RelayEvent.Register], with the
+     * credential each presented), the lists and gets of every serve round ([RelayEvent.Listed],
+     * [RelayEvent.Fetched], with the READ credential presented and the circuit each ran on) and the
+     * circuits themselves ([RelayEvent.Circuit]). Built in S11 with the harness debts (§19.10):
+     * JC-3's scope counts, JC-7's "every value the relay was shown" and the twins' circuit-close
+     * comparison read it. Stores stay in [stored] (the suites read them).
+     */
+    val events = ArrayList<RelayEvent>()
+
+    /**
+     * HIGH mode's send delays, honoured (§19.10's debt): an op whose `not_before_minute` lies
+     * ahead of the round's minute is **not** collected — it waits for a later round, exactly what
+     * Phase 7's work lane does (`OutboxStore.dueForAttempt`'s not-before clause). Counted per
+     * **distinct op** (an op whose not-before lies k rounds ahead counts once, not k times — the
+     * review of S11, §19.52 FIX 8); the privacy report's JC-6 line names the delay rule it checked.
+     */
+    val delayedStores: Int get() = delayedOps.size
+
+    /** The distinct ops a round left at the outbox for their not-before minute ([delayedStores]). */
+    private val delayedOps = HashSet<String>()
+
+    /** Registration rows skipped at the relay (a relay outside the client's slot table), counted for JC-3's line. */
+    var registerSkipped: Int = 0
+        private set
+
+    /**
      * Phase 7's `FETCHED_CAP` at each client (§19.38), or null for none: a blob of a namespace is fetched only while the
      * client holds fewer due fetched rows of it than the cap — `InboxStore.fetchedLoad`'s count (a deferred row, or one
      * the poison guard backed off, does not count) — and is otherwise left at the relay for a later round, unserved.
@@ -140,6 +167,10 @@ internal class ModelChannelRelay {
         /** The op's purpose at its author (`post`, `commit`, `welcome`, `join`, `request`), or the injection's label. */
         val purpose: String?,
         val injected: Boolean = false,
+        /** The op's `not_before_minute` at its enqueue (JC-6's send-delay rule); −1 for an injected blob. */
+        val notBeforeMinute: Long = -1,
+        /** The DEPOSIT credential a store presents (JC-3's store scope), null for an injected blob. */
+        val storeCredential: ByteArray? = null,
     ) {
         override fun toString(): String = "Stored($purpose from $from)"
     }
@@ -180,12 +211,25 @@ internal class ModelChannelRelay {
         out.served += served
         out.sequence = sequence
         out.withheld = withheld
+        out.events += events
+        out.delayedOps += delayedOps
+        out.registerSkipped = registerSkipped
         return out
     }
 
     /** An adversary's blob, stored now in [namespace] and served like any other (or first, under FAKE_WELCOME). */
     fun inject(namespace: ByteArray, ciphertext: ByteArray, now: Long, label: String, ttl: Long = 7 * DmWorld.DAY) {
-        stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, ADVERSARY, label, injected = true)
+        stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, ADVERSARY, label, injected = true, notBeforeMinute = -1)
+    }
+
+    /**
+     * A client's own bytes injected directly (the twins' staged-own-commit pattern: the bytes are
+     * the client's own op's, attributed to it like an enqueued store — serve() never hands a
+     * client its own blobs back, the own-tombstone behaviour — while [Stored.injected] stays true
+     * so hostile-mode orderings and the trace can still tell an injection from an outbox collect).
+     */
+    fun injectAs(client: ChannelClient, namespace: ByteArray, ciphertext: ByteArray, now: Long, label: String, ttl: Long = 7 * DmWorld.DAY) {
+        stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, client.name, label, injected = true, notBeforeMinute = -1)
     }
 
     /**
@@ -195,11 +239,36 @@ internal class ModelChannelRelay {
      */
     fun resurrect(now: Long, which: (Stored) -> Boolean): Int {
         val again = stored.filter(which).map {
-            Stored(it.namespace, it.hash, it.ciphertext, now, it.ttl, it.from, it.purpose, it.injected)
+            Stored(it.namespace, it.hash, it.ciphertext, now, it.ttl, it.from, it.purpose, it.injected, it.notBeforeMinute, it.storeCredential)
         }
         for (blob in again) served.removeAll { key -> key.startsWith(hex(blob.namespace) + hex(blob.hash) + "@") }
         stored += again
         return again.size
+    }
+
+    /** One relay-visible event of the effective view ([ModelChannelRelay.events], design §2.1). */
+    sealed class RelayEvent {
+        /** One `registerKey` call of the world's registration step, with the credential it presented. */
+        class Register(
+            val client: String,
+            val namespace: ByteArray,
+            val slot: Int,
+            val period: Long,
+            val kind: String,
+            val verifier: ByteArray,
+            val credential: ByteArray?,
+            val credentialKind: String,
+            val at: Long,
+        ) : RelayEvent()
+
+        /** A list of [namespace] on one circuit of a serve round, with the READ credential presented. */
+        class Listed(val client: String, val namespace: ByteArray, val slot: Int, val circuit: Int, val credential: ByteArray?, val at: Long) : RelayEvent()
+
+        /** A fetch of [blobHash] after a list, on the same circuit. */
+        class Fetched(val client: String, val namespace: ByteArray, val slot: Int, val circuit: Int, val blobHash: ByteArray, val credential: ByteArray?, val at: Long) : RelayEvent()
+
+        /** One circuit of a client's serve round: opened when the round reached it, closed when it ended. */
+        class Circuit(val client: String, val circuit: Int, val openedAt: Long, val closedAt: Long, val namespaces: List<ByteArray>) : RelayEvent()
     }
 
     /** One round: every client's pending stores reach the relay, then every stored blob reaches every listener. */
@@ -212,6 +281,7 @@ internal class ModelChannelRelay {
         }
         var moved = 0
         for (c in clients) moved += serve(c, now)
+        for (c in clients) moved += register(c, now)
         return moved
     }
 
@@ -224,16 +294,24 @@ internal class ModelChannelRelay {
     private fun collect(client: ChannelClient, now: Long) {
         val rows = ArrayList<Array<Any?>>()
         client.sql.query(
-            "SELECT o.operation_id, o.namespace_id, o.ciphertext, o.ttl_seconds, c.purpose FROM outbox_op o " +
+            "SELECT o.operation_id, o.namespace_id, o.ciphertext, o.ttl_seconds, o.not_before_minute, c.purpose FROM outbox_op o " +
                 "LEFT JOIN ch_outbound_op c ON c.operation_id = o.operation_id " +
                 "WHERE o.outcome = 'pending' AND o.ciphertext IS NOT NULL ORDER BY o.rowid",
-        ) { rows += arrayOf(it.blob(0), it.blob(1), it.blob(2), it.long(3), if (it.isNull(4)) null else it.string(4)) }
+        ) { rows += arrayOf(it.blob(0), it.blob(1), it.blob(2), it.long(3), it.long(4), if (it.isNull(5)) null else it.string(5)) }
         for (row in rows) {
             val operation = row[0] as ByteArray
             val namespace = row[1] as ByteArray
             val ciphertext = row[2] as ByteArray
             val ttl = row[3] as Long
-            val purpose = row[4] as String?
+            val notBefore = row[4] as Long
+            val purpose = row[5] as String?
+            // HIGH mode's send delay (§19.10): the op waits at the outbox until its not-before
+            // minute — it is collected by a later round, never stored early. (The column holds
+            // minute-aligned epoch seconds, `Time.floorMinute`'s unit.)
+            if (notBefore > now - Math.floorMod(now, DmWorld.MINUTE)) {
+                delayedOps += hex(operation) + "@" + client.name
+                continue
+            }
             val key = hex(operation) + "@" + client.name
             if (!collected.add(key)) continue
             val outcome = outcomeFor(client, purpose)
@@ -241,13 +319,75 @@ internal class ModelChannelRelay {
                 if (Mode.DROP_WELCOME in modes && purpose == "welcome") {
                     dropped++
                 } else {
-                    stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, client.name, purpose)
+                    val deposit = client.slots.firstOrNull()?.let { capabilityOf(client, it.relay.value, namespace, "write") }
+                    stored += Stored(
+                        namespace, sha256(ciphertext), ciphertext, now, ttl, client.name, purpose,
+                        notBeforeMinute = notBefore, storeCredential = deposit,
+                    )
                     if (Mode.COPY_JOIN in modes && purpose == "join") copyJoin(namespace, ciphertext, now, ttl, client.name)
                     if (Mode.COPY_NAMESPACE in modes && purpose == "post") copyInto(namespace, ciphertext, now, ttl, client.name, "post-copy")
                 }
             }
             release(client, operation, outcome, now)
         }
+    }
+
+    /**
+     * The `:sync` work lane's registration step, at the relay side (§4.8; the ViewRelay recipe of
+     * the DM privacy world): a client's pending `relay_key_registration` row whose period is the
+     * current or the next week is a `registerKey` call on that relay — one [RelayEvent.Register]
+     * with the credential the lane would present (the registration capability of a funded
+     * namespace, the write capability of an unfunded one, §7.5) — and the row is `done` with its
+     * validity (the ViewRelay recipe). S11's harness debt: JC-3's scope counts and JC-7's shown
+     * values read these events; before them the world's relays saw no registration at all.
+     */
+    private fun register(client: ChannelClient, now: Long): Int {
+        val week = Math.floorDiv(now - DmWorld.WEEK_ORIGIN, DmWorld.WEEK)
+        val rows = ArrayList<Array<Any>>()
+        client.sql.query(
+            "SELECT relay_id, namespace_id, period_id, kind, verifier FROM relay_key_registration " +
+                "WHERE state = 'pending' ORDER BY relay_id, namespace_id, period_id, kind",
+        ) { r -> rows += arrayOf(r.long(0), r.blob(1), r.long(2), r.string(3), r.blob(4)) }
+        var n = 0
+        for (row in rows) {
+            val relay = row[0] as Long
+            val namespace = row[1] as ByteArray
+            val period = row[2] as Long
+            if (period != week && period != week + 1) continue
+            val slot = client.slots.firstOrNull { it.relay.value == relay }?.slot
+            if (slot == null) {
+                // The row names a relay outside the client's slot table (a retired relay's row
+                // kept by the GC): the work lane would skip it too. Counted for the report.
+                registerSkipped++
+                continue
+            }
+            var funded = false
+            client.sql.query("SELECT 1 FROM sync_namespace_fund WHERE namespace_id = ?", listOf(namespace)) { funded = true }
+            val kind = row[3] as String
+            val credentialKind = if (funded) "register" else "write"
+            val credential = capabilityOf(client, relay, namespace, credentialKind)
+            events += RelayEvent.Register(
+                client.name, namespace, slot, period, kind, row[4] as ByteArray, credential, credentialKind, now,
+            )
+            val validUntil = DmWorld.WEEK_ORIGIN + (period + 2) * DmWorld.WEEK + 3_600
+            client.sql.exec(
+                "UPDATE relay_key_registration SET state = 'done', inflight = 0, lease_hour = NULL, " +
+                    "valid_until_hour = ? WHERE relay_id = ? AND namespace_id = ? AND period_id = ? AND kind = ?",
+                listOf(validUntil, relay, namespace, period, kind),
+            )
+            n++
+        }
+        return n
+    }
+
+    /** The usable capability token of [kind] the client holds for (relay, namespace), if any. */
+    private fun capabilityOf(client: ChannelClient, relay: Long, namespace: ByteArray, kind: String): ByteArray? {
+        var token: ByteArray? = null
+        client.sql.query(
+            "SELECT token FROM relay_capability WHERE relay_id = ? AND namespace_id = ? AND kind = ? AND state = 'usable'",
+            listOf(relay, namespace, kind),
+        ) { token = it.blob(0) }
+        return token
     }
 
     /** COPY_JOIN: the request into every other namespace the relay knows (the seal binds the namespace, CS-S3). */
@@ -258,7 +398,7 @@ internal class ModelChannelRelay {
     private fun copyInto(namespace: ByteArray, ciphertext: ByteArray, now: Long, ttl: Long, from: String, label: String) {
         val others = stored.map { hex(it.namespace) }.toSet() - hex(namespace)
         for (other in others) {
-            stored += Stored(unhex(other), sha256(ciphertext), ciphertext, now, ttl, from, label)
+            stored += Stored(unhex(other), sha256(ciphertext), ciphertext, now, ttl, from, label, notBeforeMinute = -1)
             copies++
         }
     }
@@ -279,6 +419,8 @@ internal class ModelChannelRelay {
 
     // -------------------------------------------------------------------------------------------- read side
 
+    private val circuitNo = HashMap<String, Int>()
+
     private fun serve(client: ChannelClient, now: Long): Int {
         val listening = HashSet<String>()
         val namespaces = ArrayList<NamespaceId>()
@@ -288,53 +430,77 @@ internal class ModelChannelRelay {
             namespaces += NamespaceId(raw)
         }
         if (listening.isEmpty()) return 0
-        var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
-        // FAKE_WELCOME: the adversary's blobs first; otherwise in the order they were stored.
-        candidates = if (Mode.FAKE_WELCOME in modes) candidates.sortedBy { !it.injected } else candidates
-        if (Mode.REORDER_ACROSS_EPOCH in modes) {
-            // A stable key sort: the same set reaches every client, in the test's order (§12.1).
-            candidates = candidates.sortedBy(orderKey)
-        }
-        if (Mode.SHUFFLE in modes) {
-            // Each blob's key is drawn once, then sorted: a selector that drew a new key at every comparison broke the
-            // comparator's contract, and TimSort refused a round of 150 blobs (the review of S4).
-            val keyed = candidates.map { it to hex(sha256(it.hash + (shuffle++).toByte())) }
-            candidates = keyed.sortedBy { it.second }.map { it.first }
-        }
+        val circuit = circuitNo.merge(client.name, 1, Int::plus)!!
+        val openedAt = now
         var moved = 0
-        for (blob in candidates) {
-            if (hold(blob) || holdAt(client.name, blob)) {
-                withheld++
-                continue
+        try {
+            var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
+            // FAKE_WELCOME: the adversary's blobs first; otherwise in the order they were stored.
+            candidates = if (Mode.FAKE_WELCOME in modes) candidates.sortedBy { !it.injected } else candidates
+            if (Mode.REORDER_ACROSS_EPOCH in modes) {
+                // A stable key sort: the same set reaches every client, in the test's order (§12.1).
+                candidates = candidates.sortedBy(orderKey)
             }
-            if (Mode.EXPIRE_LOG in modes && expireLog(blob)) {
-                withheld++
-                continue
+            if (Mode.SHUFFLE in modes) {
+                // Each blob's key is drawn once, then sorted: a selector that drew a new key at every comparison broke the
+                // comparator's contract, and TimSort refused a round of 150 blobs (the review of S4).
+                val keyed = candidates.map { it to hex(sha256(it.hash + (shuffle++).toByte())) }
+                candidates = keyed.sortedBy { it.second }.map { it.first }
             }
-            if (Mode.SILENT_ORPHAN in modes && silentOrphan(client.name, blob)) {
-                continue
-            }
-            if (Mode.FORK in modes) {
-                // A null subset serves the blob to every listener (the honest traffic); a named
-                // subset is the fork: only it ever sees the blob.
-                val subset = forkServing(blob)
-                if (subset != null && client.name !in subset) continue
-            }
-            if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
-            val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
-            if (key !in served && atCap(client, blob.namespace, now)) continue
-            val fresh = served.add(key)
-            if (!fresh && Mode.REPEATS !in modes) continue
-            if (insert(client, blob, now)) moved++
-            if (Mode.REPEATS in modes) {
-                repeat(relayCount - 1) {
-                    repeatsOffered++
-                    if (insert(client, blob, now)) moved++ else repeatsRefused++
+            for (ns in namespaces) {
+                // The read lane lists every relay of the set with the namespace's READ credential (§2.1).
+                for (slot in client.slots) {
+                    events += RelayEvent.Listed(
+                        client.name, ns.toByteArray(), slot.slot, circuit,
+                        capabilityOf(client, slot.relay.value, ns.toByteArray(), "read"), now,
+                    )
                 }
             }
+            val handledThisRound = HashSet<String>()
+            for (blob in candidates) {
+                if (hold(blob) || holdAt(client.name, blob)) {
+                    withheld++
+                    continue
+                }
+                if (Mode.EXPIRE_LOG in modes && expireLog(blob)) {
+                    withheld++
+                    continue
+                }
+                if (Mode.SILENT_ORPHAN in modes && silentOrphan(client.name, blob)) {
+                    continue
+                }
+                if (Mode.FORK in modes) {
+                    // A null subset serves the blob to every listener (the honest traffic); a named
+                    // subset is the fork: only it ever sees the blob.
+                    val subset = forkServing(blob)
+                    if (subset != null && client.name !in subset) continue
+                }
+                if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
+                val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
+                if (key !in served && atCap(client, blob.namespace, now)) continue
+                val fresh = served.add(key)
+                if (!fresh && Mode.REPEATS !in modes) continue
+                if (handledThisRound.add(key)) {
+                    // The fetch is one GET on the circuit, from the first relay of the set that listed it.
+                    val slot = client.slots.first()
+                    events += RelayEvent.Fetched(
+                        client.name, blob.namespace, slot.slot, circuit, blob.hash,
+                        capabilityOf(client, slot.relay.value, blob.namespace, "read"), now,
+                    )
+                }
+                if (insert(client, blob, now)) moved++
+                if (Mode.REPEATS in modes) {
+                    repeat(relayCount - 1) {
+                        repeatsOffered++
+                        if (insert(client, blob, now)) moved++ else repeatsRefused++
+                    }
+                }
+            }
+            onListed(client, namespaces)
+            return moved
+        } finally {
+            events += RelayEvent.Circuit(client.name, circuit, openedAt, now, namespaces.map { it.toByteArray() })
         }
-        onListed(client, namespaces)
-        return moved
     }
 
     /**

@@ -7,6 +7,7 @@ import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.ChannelScenes.get
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
 import org.ghost.storage.JdbcSqlExecutor
+import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.store.StoreLimits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -145,6 +146,49 @@ class ChannelReorderTest {
         val shown = bob.displayed(id).toSet()
         for (i in 24..29) assertTrue("b$i", "b$i" in shown)
         for (i in 10..23) assertTrue("b$i", "b$i" !in shown)
+    }
+
+    /**
+     * RO-C's HIGH-delay half, deferred to S11 (§19.37 row 47, §19.10's debt): a burst of 40 in
+     * HIGH mode — each op's `not_before_minute` is stamped ahead at the enqueue (the harness's
+     * fixed 5-minute draw of the 10-minute window) and the relay honours it
+     * ([ModelChannelRelay.delayedStores], per distinct op), so the first round stores nothing —
+     * `storedEarly == 0`, the strengthened shape of the review of S11 (§19.52 FIX 6) — and a
+     * round past the delay stores the rest; the burst itself is delivered complete, in order,
+     * like the STANDARD half. The send-delay rule itself (store minute ≥ not_before minute) is
+     * checked op by op: ops are collected in rowid order, so the i-th stored post is the i-th
+     * post op.
+     */
+    @Test
+    fun aBurstOfFortyWithHighSendDelaysStoresNothingEarlyAndLosesNothing() = ChannelWorld().use { w ->
+        val owner = w.client("owner", privacyMode = PrivacyMode.HIGH)
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        for (i in 0 until 40) ChannelScenes.post(owner, id, "b$i")
+        w.pump()
+        val storedEarly = ChannelScenes.postsOf(w, owner).size
+        // Every op's delay is the fixed 5-minute draw (FixedRandomSources.sendDelay's 0.5 of the
+        // 10-minute window), stamped ahead of the pump's minute: the first round stores nothing.
+        assertEquals("HIGH mode's 5-minute delay holds the whole burst at the first round", 0, storedEarly)
+        assertTrue("the relay counted the distinct delayed ops", w.relay.delayedStores >= 40 - storedEarly)
+        // Past the delay every op is stored, at or after its not_before (each Stored carries its
+        // op's not_before_minute, minute-aligned epoch seconds — Time.floorMinute's unit).
+        w.advance(11 * DmWorld.MINUTE)
+        w.quiesce()
+        val stored = ChannelScenes.postsOf(w, owner)
+        assertEquals(40, stored.size)
+        for (blob in stored) {
+            assertTrue(
+                "a store at ${blob.storedAt} honoured its not_before ${blob.notBeforeMinute}",
+                blob.storedAt >= blob.notBeforeMinute,
+            )
+        }
+        // The burst is delivered complete and in one order: PostStore's page is ordered by
+        // (author_minute, author, op_id) — the same three values on every device (§6.3.3's order
+        // is the receive path's; display order never depended on arrival).
+        assertEquals(40, bob.displayed(id).size)
+        assertEquals(0, bob[Reason.UNDECRYPTABLE])
+        assertEquals("one order everywhere: bob's display is the owner's", owner.displayed(id), bob.displayed(id))
     }
 
     /**

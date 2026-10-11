@@ -64,6 +64,26 @@ internal class ChannelWorld(
         private set
 
     /**
+     * Every KeyPackage ref the world saw published, by channel (hex channel id → hex refs): the
+     * joiner's `ch_join` row is deleted when its join completes, so JC-1/JC-2's KeyPackage
+     * material is recorded at the accept ([recordKeyPackage], the review of S11, §19.52 FIX 2/3 —
+     * the ref is the KeyPackage's stored hash, the value JC-1's convention hashes).
+     */
+    private val keyPackageRefs = LinkedHashMap<String, LinkedHashSet<String>>()
+
+    /** Records [client]'s just-published KeyPackage ref for [id] (its `ch_join` row lives until the join completes). */
+    fun recordKeyPackage(client: ChannelClient, id: ChannelId) {
+        client.sql.query("SELECT kp_ref FROM ch_join WHERE channel_id = ?", listOf(id.toByteArray())) {
+            keyPackageRefs.getOrPut(ModelChannelRelay.hex(id.toByteArray())) { LinkedHashSet() } +=
+                ModelChannelRelay.hex(it.blob(0))
+        }
+    }
+
+    /** Every KeyPackage ref recorded for [id] ([recordKeyPackage]). */
+    fun keyPackageRefsOf(id: ChannelId): List<ByteArray> =
+        keyPackageRefs[ModelChannelRelay.hex(id.toByteArray())]?.map { ModelChannelRelay.unhex(it) } ?: emptyList()
+
+    /**
      * A new client, named; its database in memory, or in the file [path] (which the client then owns and closes: what a
      * crash enumeration freezes, [ChannelWorld.restore]), or over the executor [sql] the caller owns.
      *
@@ -80,8 +100,15 @@ internal class ChannelWorld(
         /** The receive step's peek window: a narrower one puts the client's passes under pressure (§19.38). */
         peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
         seedName: String? = null,
+        /**
+         * The privacy mode of the client's `:sync` stores (S11's HIGH-mode debt, §19.10): HIGH
+         * delays each store by U[0, 10 min] at the enqueue (`outbox_op.not_before_minute`) and the
+         * relay honours it ([ModelChannelRelay.delayedStores]); the default keeps every world of
+         * S4 … S10 byte for byte (STANDARD).
+         */
+        privacyMode: PrivacyMode = PrivacyMode.STANDARD,
     ): ChannelClient {
-        val client = ChannelClient(this, name, sql, boot, path, peekLimit, seedName)
+        val client = ChannelClient(this, name, sql, boot, path, peekLimit, seedName, privacyMode)
         clients.removeAll { it.name == name }
         clients += client
         return client
@@ -102,13 +129,23 @@ internal class ChannelWorld(
      * Relay rounds and hint-triggered passes of every client until nothing moves, at most [rounds] rounds: the
      * outcomes come back, the blobs are received, the settles that are due run. Returns the number of rounds that moved
      * something.
+     *
+     * HIGH mode's send delays (§19.10): an op whose `not_before_minute` lies ahead waits at the
+     * outbox ([ModelChannelRelay.delayedStores]); when nothing else moves and ops are still
+     * pending, the world advances past the delay (at most 10 min) and takes another round —
+     * what production's next pair event does at its own minute.
      */
     fun quiesce(rounds: Int = 12): Int {
         var moving = 0
+        var waited = false
         repeat(rounds) {
             val moved = pump()
             for (c in clients) c.hintPass()
             if (moved == 0 && relay.pendingOps(clients) == 0) return moving
+            if (moved == 0 && !waited) {
+                waited = true
+                advance(11 * DmWorld.MINUTE)
+            }
             moving++
         }
         return moving
@@ -238,6 +275,8 @@ internal class ChannelClient(
      * stays its own (a new device never reuses another's draws).
      */
     seedName: String? = null,
+    /** See [ChannelWorld.client]: HIGH mode's send delays at the enqueue (S11, §19.10). */
+    privacyMode: PrivacyMode = PrivacyMode.STANDARD,
 ) : AutoCloseable {
 
     private val seedOf: String = seedName ?: name
@@ -255,7 +294,7 @@ internal class ChannelClient(
     val dbPath: String? = if (sql == null) (path ?: ":memory:").takeIf { it != ":memory:" } else null
     val database = SyncDatabase(this.sql)
     val clock = MovableClock(world.now)
-    val stores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
+    val stores = SyncStores(database, clock, FixedRandomSources()) { privacyMode }
     val random = SequentialRandom(0, "channel-$name" + if (boot > 0) "-b$boot" else "")
 
     var slots: List<EsSlot>
