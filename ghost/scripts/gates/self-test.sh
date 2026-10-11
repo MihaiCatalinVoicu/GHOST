@@ -380,6 +380,33 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere" "SCN-A ran no timeout-after-apply run"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator" "SCN-B reported no stores, so its timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report" "no report at"
+# Phase 10 S11 (design §13.1's `ch-report-check.sh` row): the channel gates' report check. The
+# positive fixtures are a complete gate report and the PR-scale one; the negatives are the ways a
+# report could look complete while its run measured nothing — a FAIL line (the single change of
+# fail-line.txt), the privacy half missing, the mutant count missing, a mutant count above the
+# registered one (the single change of wrong-mutant-count.txt), and a PR-scale report standing
+# in for the gate's. (Amended §19.52 FIX 9: the FAIL-line and mutant-count negatives are strict
+# single-change fixtures — the old fail-line.txt changed both at once.)
+CHR="$HARNESS/ch-report"
+chr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description, $5 = the violation (fail)
+  local err fails
+  if err="$(bash "$DIR/ch-report-check.sh" "$CHR/$2" "$3" 2>&1 >/dev/null)"; then got=pass; else got=fail; fi
+  fails="$(grep -E '^CH-REPORT-FAIL: ' <<<"$err" || true)"
+  if [ "$got" != "$1" ]; then
+    echo "SELF-TEST FAIL: ch-report-check $4 ($got)" >&2; rc=1
+  elif [ "$1" = fail ] && { [ -z "${5:-}" ] || ! grep -qF -- "$5" <<<"$fails"; }; then
+    echo "SELF-TEST FAIL: ch-report-check $4 (failed, but not with \"${5:-<no violation named>}\")" >&2; rc=1
+  else
+    echo "self-test ok: ch-report-check $4"
+  fi
+}
+chr_case pass pass-gate.txt gate "accepts a complete gate report"
+chr_case pass pass-pr.txt pr "accepts a complete PR-scale report"
+chr_case fail pass-pr.txt gate "rejects a PR-scale report as the gate's" "the gate report does not hold all three pinned seeds"
+chr_case fail fail-line.txt gate "rejects a report with a FAIL line" "a channel line reports FAIL"
+chr_case fail wrong-mutant-count.txt gate "rejects a mutant count above the registered one" "the mutant line is not"
+chr_case fail missing-privacy.txt gate "rejects a report without the privacy half" "no JC-1 line or not a PASS"
+chr_case fail missing-mutants.txt gate "rejects a report without the mutant count" "the mutant line is not"
 # Phase 9 S13 (design §9.5, §16.2): the `pq-model` comparison, proven without ProVerif. A fake
 # replays recorded outputs; every negative fixture is a way a model run could look green while it
 # decided nothing: a flipped result, `cannot be proved`, a query removed from a model, a query added

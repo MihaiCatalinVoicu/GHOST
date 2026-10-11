@@ -84,8 +84,9 @@ internal enum class PrivacyScale(val clients: Int, val days: Int) {
  *    second band straddling the 4/16 KiB boundary of R-B1 so JD4 and NI-DM2's mutant can bite;
  *  - a periodic job every 1–4 hours (JobScheduler's period, stretched by Doze and the standby
  *    buckets), and foreground sessions of a few minutes while a user writes, scans or reads.
- *  **Not modelled:** key changes, restores, clock offsets, the ES slot-table change, HIGH mode,
- *  hostile modes but WITHHOLD_ALL_BUNDLES ([PrivacyWorldConfig.withholdAllBundles], a variant world
+ *  **Not modelled:** key changes, restores, clock offsets, the ES slot-table change, HIGH mode's
+ *  pair-event gating (send delays themselves are honoured since Phase 10's S11 — [config]'s
+ *  `highMode`; §19.10), hostile modes but WITHHOLD_ALL_BUNDLES ([PrivacyWorldConfig.withholdAllBundles], a variant world
  *  of its own, §22.21) and the PQ-C cadence as a behaviour (the engine runs it on its own).
  *
  * **The triggers are production's** (phase review MD-2 and MD-3, design §22.36; until then every
@@ -185,6 +186,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
                 sql = sql,
                 clock = clock,
                 bootIndex = 0,
+                privacyMode = if (config.highMode) org.ghost.sync.api.PrivacyMode.HIGH else org.ghost.sync.api.PrivacyMode.STANDARD,
                 decorate = { native ->
                     val mutated = config.mutant?.envelopes?.invoke(this@PrivacyWorld, index, native) ?: native
                     RecordingEnvelopes(mutated, index, truth)
@@ -396,6 +398,20 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
             while (hinted.isNotEmpty()) flushHints(hinted.first())
         }
         now = maxOf(now, second)
+    }
+
+    /**
+     * A final flush past HIGH mode's send delays (§19.10, S11): advances the clock 15 minutes —
+     * beyond the maximum delay — and runs one plain relay round per client, so no op the
+     * behaviour enqueued is still waiting at the outbox when the checks run ([ViewRelay]'s
+     * not-before honouring is the production rule; the flush is the world admitting its horizon
+     * moved). A HIGH-mode world calls this before its checks; the report line names it
+     * (§15 item 10a). STANDARD worlds need nothing past [run].
+     */
+    fun flushHighDelays() {
+        check(config.highMode) { "flushHighDelays is a HIGH-mode world's tail" }
+        runUntil(now + 15 * DmWorld.MINUTE)
+        for (index in clients.indices) round(index, sessionStart = false)
     }
 
     private var installed = false
@@ -974,6 +990,13 @@ internal class PrivacyWorldConfig(
      * variant of §21.7 point 6 and PM-31's detector; §22.21).
      */
     val withholdAllBundles: Boolean = false,
+    /**
+     * HIGH mode (Phase 10 §19.10's debt, built in S11): every client runs its `:sync` stores in
+     * HIGH, so each store's `not_before_minute` lies up to 10 min ahead and [ViewRelay] leaves
+     * the op at the outbox until a later session's round reaches it ([ViewRelay.delayedStores]).
+     * STANDARD (the default) keeps every world of Phase 9 byte for byte.
+     */
+    val highMode: Boolean = false,
 ) {
     companion object {
         fun of(
@@ -981,6 +1004,7 @@ internal class PrivacyWorldConfig(
             seed: Long,
             mutant: PrivacyMutant? = null,
             withholdAllBundles: Boolean = false,
+            highMode: Boolean = false,
         ): PrivacyWorldConfig =
             PrivacyWorldConfig(
                 seed = seed,
@@ -989,6 +1013,7 @@ internal class PrivacyWorldConfig(
                 mutant = mutant,
                 longPercent = if (scale == PrivacyScale.SMALL) 5 else 1,
                 withholdAllBundles = withholdAllBundles,
+                highMode = highMode,
             )
     }
 }

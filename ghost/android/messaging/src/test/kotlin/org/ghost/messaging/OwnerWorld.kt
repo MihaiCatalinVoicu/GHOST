@@ -890,7 +890,7 @@ class FixedRandomSources : RandomSources {
 
     override fun readBreaker(relay: RelayId, index: Long): Double = 0.5
 
-    override fun sendDelay(): Double = 0.0
+    override fun sendDelay(): Double = 0.5
 
     override fun selection(): Double = 0.5
 

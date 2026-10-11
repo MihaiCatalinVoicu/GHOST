@@ -89,9 +89,12 @@ internal class StoreCause(
  *
  * **What it does not model, declared in §22.16:** the credential-selection and capability layers of
  * the redeem lane (no token is ever redeemed, so JD3's redemption half and JD8 have no events),
- * send delays (every world here is STANDARD), circuits' open and close minutes, relay refusals and
- * every hostile mode but one: **WITHHOLD_ALL_BUNDLES** ([withholdBundles]) exists since the S11b
- * slice for the JD7 variant that bounds the attempts (§21.7 point 6, PM-31; §22.21).
+ * circuits' open and close minutes, relay refusals and every hostile mode but one:
+ * **WITHHOLD_ALL_BUNDLES** ([withholdBundles]) exists since the S11b slice for the JD7 variant that
+ * bounds the attempts (§21.7 point 6, PM-31; §22.21). **Send delays are honoured since S11 of
+ * Phase 10** ([delayedStores]; a HIGH-mode world passes `DmDevice.HarnessOverride.privacyMode`,
+ * §19.10's debt) — the pair-event gating itself is the sync engine's, proven by `:sync`'s
+ * `SendDelayTest`, not replayed by this model.
  */
 internal class ViewRelay(private val now: () -> Long) {
 
@@ -156,6 +159,31 @@ internal class ViewRelay(private val now: () -> Long) {
     var closedPastDeadline: Int = 0
         private set
 
+    /**
+     * HIGH mode's send delays, honoured (§19.10's debt, built in S11): an op whose
+     * `not_before_minute` lies ahead of the round's minute is left at the outbox for a later
+     * session — the store waits for the next pair event at or after its not-before, exactly what
+     * Phase 7's work lane does. Counted per **distinct op** (an op waiting k rounds counts once,
+     * not k times — the review of S11, §19.52 FIX 8); a world must quiesce past the delay (the
+     * world's clock advancing) before its last round, or stores are still waiting by construction.
+     */
+    val delayedStores: Int get() = delayedOps.size
+
+    /** The distinct ops a round left at the outbox for their not-before minute ([delayedStores]). */
+    private val delayedOps = HashSet<String>()
+
+    /**
+     * Ops still waiting at the outbox for their not-before minute at the world's end: a floor a
+     * HIGH-mode world asserts 0 on after its last virtual advance (the delay is at most 10 min).
+     */
+    fun waitingPastNotBefore(device: DmDevice, nowSeconds: Long): Int {
+        var n = 0
+        device.sql.query(
+            "SELECT not_before_minute FROM outbox_op WHERE outcome = 'pending' AND ciphertext IS NOT NULL",
+        ) { if (it.long(0) > nowSeconds - Math.floorMod(nowSeconds, 60)) n++ }
+        return n
+    }
+
     fun beginSession(client: Int) {
         session.merge(client, 1, Int::plus)
     }
@@ -174,10 +202,13 @@ internal class ViewRelay(private val now: () -> Long) {
         val slotOf = slotMap(device)
         val ops = ArrayList<Array<Any?>>()
         device.sql.query(
-            "SELECT operation_id, namespace_id, ciphertext, ttl_seconds, deadline_hour FROM outbox_op " +
+            "SELECT operation_id, namespace_id, ciphertext, ttl_seconds, deadline_hour, not_before_minute FROM outbox_op " +
                 "WHERE outcome = 'pending' AND ciphertext IS NOT NULL ORDER BY rowid",
         ) { r ->
-            ops += arrayOf(r.blob(0), r.blob(1), r.blob(2), r.long(3), if (r.isNull(4)) null else r.long(4))
+            ops += arrayOf(
+                r.blob(0), r.blob(1), r.blob(2), r.long(3),
+                if (r.isNull(4)) null else r.long(4), r.long(5),
+            )
         }
         var n = 0
         for (row in ops) {
@@ -186,6 +217,14 @@ internal class ViewRelay(private val now: () -> Long) {
             val blob = row[2] as ByteArray
             val ttl = row[3] as Long
             val deadline = row[4] as Long?
+            val notBefore = row[5] as Long
+            // HIGH mode's send delay (§19.10): the store waits at the outbox for its not-before
+            // minute — a later round (a later session) stores it, never earlier. (The column
+            // holds minute-aligned epoch seconds, `Time.floorMinute`'s unit.)
+            if (notBefore > now() - Math.floorMod(now(), 60)) {
+                delayedOps += "$client:${hex(operation)}"
+                continue
+            }
             // Decided here either way, so the cause recorded at the enqueue is needed no more.
             val recorded = causes.remove("$client:${hex(operation)}")
             if (deadline != null && deadline <= now()) {

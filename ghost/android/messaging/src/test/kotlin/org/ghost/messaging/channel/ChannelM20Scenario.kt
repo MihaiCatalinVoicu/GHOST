@@ -1337,8 +1337,8 @@ internal object ChannelReport {
             if (!started) {
                 file.writeText(
                     "GHOST channel exit scenario (Phase 10 design §12.5, SCN-M20; slice S10)\n" +
-                        "mode: STANDARD (HIGH mode, the redeem lane and circuit timing are S11's, §19.33; " +
-                        "each line names what it compared, §15 item 10a)\n",
+                        "mode: STANDARD (this scenario predates the S11 harness debts; the privacy world runs\n" +
+                        "STANDARD and HIGH — §12.7, S11; each line names what it compared, §15 item 10a)\n",
                 )
                 started = true
             }

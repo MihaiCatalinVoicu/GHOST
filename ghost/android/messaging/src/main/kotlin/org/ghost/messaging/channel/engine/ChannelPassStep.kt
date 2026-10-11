@@ -380,6 +380,12 @@ internal class ChannelPassStep(
         // the committers/funders update rides along when a removed member is a committer or a funder) or
         // the context change of a resignation or a transfer. With no work the pass builds nothing here;
         // the PCS commit below is a cadence decision, not a default.
+        // §19.7 (c) / Q28 (built in S11 for NI-CH5): the pass's commit carries the rotation flag when
+        // an invite of the current generation expired unconsumed. The 14-day spacing is approximated
+        // by per-generation arming (an armed rotation moves the metadata to the new generation, which
+        // holds no expired invites; the strict window needs a rotation-history row — F-S11-3, §19.51),
+        // and the 28-day age half stays open (it would re-pin SCN-M20's choreography — F-S11-2).
+        val rotate = inviteExpiryRotation(channelId, day, snapshot)
         val removeWork = buildList {
             removeTarget?.let { add(it) }
             addAll(leaves)
@@ -391,6 +397,7 @@ internal class ChannelPassStep(
                 opened, snapshot, rows, admissions, swaps, refused, now, day,
                 removes = removeWork,
                 context = context ?: if (removeWork.isNotEmpty()) removeContext(roster.context, removeWork) else null,
+                rotate = rotate,
             )
         } else {
             null
@@ -403,9 +410,36 @@ internal class ChannelPassStep(
         val lastOwn = snapshot.schedule?.lastOwnCommitDay
         val pcsDue = lastOwn != null && day - lastOwn >= ChannelTime.pcsDays(snapshot.channel.timerCode)
         if (!pcsDue || removeTarget != null || resign || transferTo != null) return Result.NOTHING
-        val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null)
+        val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null, rotate = rotate)
             ?: return Result.NOTHING
         return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, seenKey)
+    }
+
+    /**
+     * §19.7 (c)'s invite-expiry half of the rotation rule: an invite of the current generation
+     * expired unconsumed (`expiry_day` reached, never consumed, never voided) and no generation
+     * drains. Never while a drain — the arming reads the rows before this pass's sweep deletes
+     * the expired record (`runPass` runs the scheduled passes first).
+     */
+    private fun inviteExpiryRotation(channelId: ByteArray, day: Long, snapshot: Snapshot): Boolean {
+        val expired = env.database.transaction { tx ->
+            var found = false
+            tx.sql.query(
+                "SELECT 1 FROM ch_invite_issued WHERE channel_id = ? AND consumed = 0 AND void = 0 AND expiry_day <= ? LIMIT 1",
+                listOf(channelId, day),
+            ) { found = true }
+            found
+        }
+        if (!expired) return false
+        val draining = env.database.transaction { tx ->
+            var found = false
+            tx.sql.query(
+                "SELECT 1 FROM ch_generation WHERE channel_id = ? AND state = 'draining' LIMIT 1",
+                listOf(channelId),
+            ) { found = true }
+            found
+        }
+        return !draining
     }
 
     /** A native call found the context or the content key gone: the pass answers [Result.UNAVAILABLE]. */
@@ -797,6 +831,8 @@ internal class ChannelPassStep(
         day: Long,
         removes: List<ByteArray>,
         context: ChannelPolicy?,
+        /** §19.7 (c)'s invite-expiry rotation (the pass's arming, [inviteExpiryRotation]). */
+        rotate: Boolean = false,
     ): Built? {
         val c = snapshot.channel.channelId
         val floor = ChannelTime.floor(snapshot.channel.sizeClass)
@@ -840,6 +876,7 @@ internal class ChannelPassStep(
                 removes = removes,
                 swaps = swaps.map { Triple(it.member, it.verified.keyPackage, it.evidence) },
                 context = context,
+                rotate = rotate,
                 commitMinute = Math.floorDiv(now, DmTime.MINUTE),
                 floor = floor.toLong(),
                 generation = snapshot.generation.generation,

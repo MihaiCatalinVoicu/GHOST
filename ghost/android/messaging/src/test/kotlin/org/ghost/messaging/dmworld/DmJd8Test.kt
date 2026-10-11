@@ -81,6 +81,57 @@ class DmJd8Test {
         assertTrue("$line\n  renewal: ${renewal.line()}\n  registration: ${registration.line()}", detected == 2)
     }
 
+    /**
+     * S11's moved exit (§14's S11 row, §19.10's debt): a DM world with **HIGH mode and the
+     * redeem lane** green. The world is JD8's entitlement world — the real entitlement engine,
+     * the real redeem lane against the model redeem relays, the real work lane with the
+     * pair-event gating — with every client's `:sync` stores in HIGH: each store waits its
+     * `not_before_minute` and is stored only at the pair's next event.
+     *
+     * What is asserted: the world runs green to its horizon (the idle twin — activations,
+     * renewals, jobs — completes; HIGH mode's send delays honoured throughout) and the redeem
+     * lane redeems and registers for every token holder's own namespaces. What is reported, not
+     * asserted: JD8's exact twin equality — the active twin's contact establishment rides the
+     * STANDARD choreography, and HIGH mode's establishment timing is the F9-narrowed shape
+     * (§22.16 item 13: the DM world's own HIGH halves were deferred there; "a fetch is the
+     * pair's next read event like any read", the attempts run out inside the scenario's fixed
+     * window). When the twins do reach their variable the equality is asserted whole; when the
+     * unreached reason is that narrowing, the line names it (§15 item 10a: each line names what
+     * it compared). Recorded as F-S11-6, §19.51.
+     */
+    @Test
+    fun aDmWorldWithHighModeAndTheRedeemLaneIsGreen() {
+        requireNative()
+        val result = Jd8.run(SEED, "high mode", null, everyCommit = true, mode = org.ghost.sync.api.PrivacyMode.HIGH)
+        for (d in Jd8.timingDetail(result)) println("JD8 HIGH: $d")
+        val idle = result.idle
+        val holders = listOf("alice", "bob", "carol", "erin")
+        val problems = ArrayList<String>()
+        if (idle.failure != null) problems += "the idle twin's world failed: ${idle.failure}"
+        for (h in holders) {
+            val calls = idle.calls[h].orEmpty()
+            val redeems = calls.count { it.kind == org.ghost.sync.harness.CallKind.REDEEM }
+            val registers = calls.count { it.kind == org.ghost.sync.harness.CallKind.REGISTER }
+            if (redeems < 1) problems += "$h: the redeem lane redeemed nothing in HIGH mode"
+            if (registers < 1) problems += "$h: the renewal registered nothing in HIGH mode"
+        }
+        // The exact twin equality, whole when the twins reached their variable.
+        val equalityHolds = result.passed
+        val unreached = result.unreached
+        if (unreached.isEmpty() && !equalityHolds) problems += "the twins reached their variable and differed: ${result.differences}"
+        val line = "dm JD8 HIGH mode: ${if (problems.isEmpty()) "PASS" else "FAIL"} the entitlement world with HIGH mode's send " +
+            "delays green: the world runs to its horizon, the redeem lane redeemed and registered for every token holder " +
+            "(idle twin ${idle.seenCount} relay calls, ${idle.calls.values.flatten().count { it.kind == org.ghost.sync.harness.CallKind.REDEEM }} redemptions, " +
+            "${idle.calls.values.flatten().count { it.kind == org.ghost.sync.harness.CallKind.REGISTER }} registrations); " +
+            (if (unreached.isEmpty())
+                "the twins' traces identical: ${if (equalityHolds) "yes" else "no — " + result.differences}"
+            else
+                "the twins' exact-equality clause names its unreached reason (the F9-narrowed HIGH-establishment shape, F-S11-6): ${unreached.joinToString("; ")}") +
+            (if (problems.isEmpty()) "" else "; " + problems.joinToString("; "))
+        PrivacyReport.line(line)
+        assertTrue(line, problems.isEmpty())
+    }
+
     /** JD8 failed, and only its timing clause did: the twins reached their variable and every count agrees. */
     private fun timingAlone(r: Jd8.Result): Boolean =
         !r.passed && r.unreached.isEmpty() && r.differences.isEmpty() && r.foreign.isEmpty() && r.coverage.isEmpty() && r.timing.pairs > 0

@@ -270,7 +270,7 @@ internal object ChannelAdversary {
         v.crypto.keyPackage(id.toByteArray(), 1, v.day.toInt())
     }
 
-    /** Injects [built]'s sealed blob into the relay as [label], stored now. */
+    /** Injects [built]'s sealed blob into the relay as the adversary's own (the forged-Welcome, replay and hostile modes: the bytes reach every listener, the author included — FORGE_OWN is the engine's fence for an own-copy back). */
     fun inject(w: ChannelWorld, member: ChannelClient, id: ChannelId, built: Built, label: String) {
         w.relay.inject(namespace(member, id), built.blob, w.now, label)
     }

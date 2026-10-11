@@ -15,6 +15,7 @@ import org.ghost.sync.api.Capabilities
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.Namespaces
+import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.harness.CallInfo
 import org.ghost.sync.harness.CallKind
 import org.ghost.sync.harness.ClientSpec
@@ -105,6 +106,13 @@ internal class Jd8Twin(
     val active: Boolean,
     private val entMutation: EntMutation?,
     private val everyCommit: Boolean,
+    /**
+     * HIGH mode (Phase 10 §19.10's debt, built in S11): every client's `:sync` stores run HIGH —
+     * each store waits its `not_before_minute` and is stored only at the pair's next event, by the
+     * real work lane (the pair-event gating is the engine's, `SendDelayTest`'s, run for real here).
+     * STANDARD keeps the report's twins byte for byte.
+     */
+    private val mode: PrivacyMode = PrivacyMode.STANDARD,
 ) : EntDmScenario(if (active) "JD8/active" else "JD8/idle") {
     lateinit var carolDm: EntDmClient
     lateinit var erinDm: EntDmClient
@@ -147,7 +155,7 @@ internal class Jd8Twin(
         dm.decorateNamespaces = entMutation?.decorateNamespaces
         val rewrite = entMutation?.rewrite?.invoke(w)
         fun client(name: String, armed: Boolean, genesis: Boolean, branch: Int): EntDmClient {
-            val c = w.client(ClientSpec(name, armed = armed, rewrite = rewrite))
+            val c = w.client(ClientSpec(name, armed = armed, mode = mode, rewrite = rewrite))
             c.directory(*relays.toTypedArray())
             return dm.attach(ent.attach(c, genesis), branch)
         }
@@ -681,15 +689,22 @@ internal object Jd8 {
 
     /**
      * JD8 over a twin pair of [seed]: unmutated ([mutation] null) or mutated, with the entitlement
-     * world's every-commit check on or off (see [Jd8Twin]). Cached per seed, [label] and [everyCommit].
+     * world's every-commit check on or off (see [Jd8Twin]). Cached per seed, [label], [everyCommit]
+     * and [mode].
      */
-    fun run(seed: Long, label: String, mutation: EntMutation?, everyCommit: Boolean): Result =
-        cache.computeIfAbsent("${java.lang.Long.toHexString(seed)}|$label|$everyCommit") {
-            Result(twin(seed, false, mutation, everyCommit), twin(seed, true, mutation, everyCommit))
+    fun run(
+        seed: Long,
+        label: String,
+        mutation: EntMutation?,
+        everyCommit: Boolean,
+        mode: PrivacyMode = PrivacyMode.STANDARD,
+    ): Result =
+        cache.computeIfAbsent("${java.lang.Long.toHexString(seed)}|$label|$everyCommit|$mode") {
+            Result(twin(seed, false, mutation, everyCommit, mode), twin(seed, true, mutation, everyCommit, mode))
         }
 
-    fun twin(seed: Long, active: Boolean, mutation: EntMutation?, everyCommit: Boolean): Twin {
-        val s = Jd8Twin(active, mutation, everyCommit)
+    fun twin(seed: Long, active: Boolean, mutation: EntMutation?, everyCommit: Boolean, mode: PrivacyMode = PrivacyMode.STANDARD): Twin {
+        val s = Jd8Twin(active, mutation, everyCommit, mode)
         val started = System.nanoTime()
         World(s.name, seed, JournalMode.WAL).use { w ->
             var failure: String? = null

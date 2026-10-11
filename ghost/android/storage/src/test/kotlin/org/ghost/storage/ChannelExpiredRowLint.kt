@@ -712,6 +712,16 @@ object ChannelSweepQueries {
             listOf(L.CH), rows = 1,
         ),
         sweep(
+            "aDrainingGenerationBlockingTheInviteExpiryRotation",
+            // Slice S11 (§19.7 (c)): the invite-expiry rotation never arms while a generation
+            // drains — the probe reads the draining row even after its drain ended (the row
+            // blocks until the sweep deletes it, the same honest shape as CH-SWITCH's
+            // end-or-defer read above). Judged by the sweep contract: it names the expired
+            // drain of the fixture's channel and nothing once the sweep has deleted the row.
+            "SELECT 1 FROM ch_generation WHERE channel_id = ? AND state = 'draining' LIMIT 1",
+            listOf(L.CH), rows = 1,
+        ),
+        sweep(
             "oneBatchOfExpiredEpochs",
             "SELECT channel_id, epoch FROM ch_epoch WHERE keep_until_day < ? ORDER BY keep_until_day, channel_id, epoch LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
@@ -735,6 +745,17 @@ object ChannelSweepQueries {
             "SELECT channel_id, invite_id, invite_pk, sponsor, sponsor_sig, committers_digest, pw_version, consumed, void, " +
                 "expiry_day FROM ch_invite_issued WHERE expiry_day < ? ORDER BY expiry_day, channel_id, invite_id LIMIT ?",
             listOf(TODAY, 500L), rows = 1,
+        ),
+        sweep(
+            "anExpiredUnconsumedInviteArmingTheRotation",
+            // Slice S11 (§19.7 (c)): the pass's invite-expiry rotation arm reads the expired
+            // unconsumed invite before this pass's sweep deletes the record (the scheduled
+            // passes run first). Judged by the sweep contract, like theDrainingGeneration-
+            // WhateverItsDeadline: it names the fixture's expired issued invite (expiry_day
+            // <= the pass's day, boundary included) and nothing once the sweep has deleted it;
+            // the live rows of the fixture are on later days, so the read names no live row.
+            "SELECT 1 FROM ch_invite_issued WHERE channel_id = ? AND consumed = 0 AND void = 0 AND expiry_day <= ? LIMIT 1",
+            listOf(L.CH, TODAY - 1), rows = 1,
         ),
         sweep(
             "oneBatchOfExpiredOwnInvites",

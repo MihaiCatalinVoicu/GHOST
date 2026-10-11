@@ -20,6 +20,7 @@ internal object ChannelScenes {
         for (j in joiners) {
             val link = ChannelAdmissionTest.invite(owner, id)
             assertEquals(AcceptResult.PENDING, j.engine.accept(link, null))
+            w.recordKeyPackage(j, id)
         }
         w.quiesce()
         w.admissionPass(owner)
@@ -36,6 +37,7 @@ internal object ChannelScenes {
         val link = ChannelAdmissionTest.invite(owner, id)
         w.quiesce()
         assertEquals(AcceptResult.PENDING, joiner.engine.accept(link, null))
+        w.recordKeyPackage(joiner, id)
         w.quiesce()
         w.advance(6 * DmWorld.HOUR)
         w.admissionPass(owner)
