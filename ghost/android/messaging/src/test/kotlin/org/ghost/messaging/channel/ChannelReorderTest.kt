@@ -7,10 +7,15 @@ import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.ChannelScenes.get
 import org.ghost.messaging.channel.engine.ChannelAd
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
+import org.ghost.messaging.channel.engine.ChannelReceiveStep
 import org.ghost.storage.JdbcSqlExecutor
+import org.ghost.storage.MigrationRunner
+import org.ghost.storage.SqlExecutor
+import org.ghost.storage.StorageFullException
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.store.StoreLimits
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -263,6 +268,80 @@ class ChannelReorderTest {
         assertTrue("the cap bound, and the gaps were deferred", carol[Reason.GAP_DEFERRED] > 0)
         assertEquals("one order (CS-C6)", allTexts(bob, id), allTexts(carol, id))
         assertEquals(emptyList<String>(), carol.integrity())
+    }
+
+    /**
+     * §19.55a (the review of S13a, finding 1): a store failure mid-pass (SQLITE_FULL at the first claim of the
+     * deferrals phase) must leave the peek cursor **cleared**, not advanced — the pass drained nothing past the
+     * failure, and the actor swallows pass exceptions, so nothing else would repair a wrongly-advanced cursor and
+     * the come-back deferrals would stay hidden from the window. Without the fix the faulted pass sees
+     * `interrupted` and `leftUnprocessed` false and re-marks the namespaces it swept: [ChannelReceiveStep.cursorSize]
+     * stays non-zero and this test fails. The fail-without-fix half is exercised, not by inspection: the same
+     * StorageFull seam as [ChannelRevealTest]'s FIX 2 test.
+     */
+    @Test
+    fun aStoreFailureMidPassClearsThePeekCursor() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        // Carol's database answers SQLITE_FULL at the first claim it sees while armed — the offer counter's
+        // UPDATE inside `Inbox.claimOne`, which the round's deferrals phase reaches first.
+        val carolSql = FullOnFirstClaimSqlExecutor(
+            JdbcSqlExecutor(":memory:").also { MigrationRunner(it).migrate() },
+        )
+        val carol = w.client("carol", sql = carolSql)
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.holdAt = { client, s -> client == "carol" && s.purpose == "post" }
+        for (i in 0 until 900) ChannelScenes.post(owner, id, "p$i")
+        w.quiesce(rounds = 100)
+        assertEquals(900, allTexts(bob, id).size)
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SHUFFLE)
+        w.relay.fetchedCap = StoreLimits.FETCHED_CAP
+        w.relay.holdAt = { _, _ -> false }
+        // Fetch to the fetched cap without running passes, then one clean pass under pressure advances the cursor.
+        var pumped = 0
+        while (carol.count("inbox_blob", "state = 'fetched'") < StoreLimits.FETCHED_CAP && pumped < 20) {
+            w.pump()
+            pumped++
+        }
+        carol.hintPass()
+        assertTrue("a clean pass advanced the cursor", carol.engine.receiveStep.cursorSize > 0)
+        // Refetch to the cap (the deferrals freed it), so the faulted pass is pressured and WOULD advance the
+        // cursor without the fix; it fails at its first claim — before anything was consumed or deferred.
+        var guard = 0
+        while (w.pump() > 0 && guard++ < 25) Unit
+        carolSql.armed = true
+        assertThrows(StorageFullException::class.java) { carol.hintPass() }
+        assertEquals("a mid-pass failure clears the cursor", 0, carol.engine.receiveStep.cursorSize)
+    }
+
+    /**
+     * A [SqlExecutor] that throws [StorageFullException] at the first claim it sees while [armed] — the offer
+     * counter's `UPDATE inbox_blob SET offers …` inside `Inbox.claimOne` ([updateExactly] routes through
+     * [execUpdate]), which the round's deferrals phase reaches before any batch.
+     */
+    private class FullOnFirstClaimSqlExecutor(val delegate: JdbcSqlExecutor) : SqlExecutor {
+        var armed: Boolean = false
+
+        override fun exec(sql: String, args: List<Any?>) = delegate.exec(sql, args)
+
+        override fun execUpdate(sql: String, args: List<Any?>): Int {
+            if (armed && sql.startsWith("UPDATE inbox_blob SET offers")) {
+                throw StorageFullException(IllegalStateException("[SQLITE_FULL] regression test"))
+            }
+            return delegate.execUpdate(sql, args)
+        }
+
+        override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) = delegate.query(sql, args, onRow)
+
+        override fun <T> transaction(block: () -> T): T = delegate.transaction(block)
+
+        override val inTransaction: Boolean get() = delegate.inTransaction
+
+        override var userVersion: Int
+            get() = delegate.userVersion
+            set(value) {
+                delegate.userVersion = value
+            }
     }
 
     /**

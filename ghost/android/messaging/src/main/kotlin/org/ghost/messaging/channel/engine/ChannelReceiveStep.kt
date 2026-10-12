@@ -120,6 +120,9 @@ internal class ChannelReceiveStep(
     internal var openedBlobs: Int = 0
         private set
 
+    /** Test/debug visibility (§19.55a): how many namespaces the peek cursor currently covers — a mid-pass failure clears it. */
+    internal val cursorSize: Int get() = cursors.size
+
     /**
      * Reactions whose post is not on the device yet, `(channel ‖ target ‖ author)` → the reaction (§19.38): a reaction can
      * arrive in an earlier batch than its post, or while its post is held behind a gap. Bounded (the eldest is dropped
@@ -224,40 +227,41 @@ internal class ChannelReceiveStep(
         // the inbox holds due (the peek), the cursor-skipped rows included: a due deferred row counts against the cap.
         val windowFull = peeked.size >= peekLimit
         val dueByNamespace = peeked.groupingBy { it.namespace.toByteArray().toList() }.eachCount()
-        val classified = env.database.transaction { tx -> window.map { classify(tx, it, day) } }
         var consumed = 0
         var leftUnprocessed = false
         var interrupted = false
+        var failed = false
         val apps = ArrayList<ChannelPeekOrder.Entry<Opened>>()
         val commits = ArrayList<Opened>()
         val joins = ArrayList<Classified>()
         val welcomes = ArrayList<Classified>()
         val unknown = ArrayList<Classified>()
-        for (c in classified) {
-            when (val k = c.kind) {
-                is Kind.Epoch -> when (val r = openEpoch(c, k.epoch, day)) {
-                    OpenResult.Consumed -> consumed++
-                    OpenResult.Left -> leftUnprocessed = true
-                    is OpenResult.Ok -> {
-                        val o = r.opened
-                        when (o.contentType) {
-                            CONTENT_APPLICATION -> {
-                                val pressure = windowFull || (dueByNamespace[c.namespace] ?: 0) >= fetchedCap
-                                apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, c.namespace, o, pressure)
+        try {
+            val classified = env.database.transaction { tx -> window.map { classify(tx, it, day) } }
+            for (c in classified) {
+                when (val k = c.kind) {
+                    is Kind.Epoch -> when (val r = openEpoch(c, k.epoch, day)) {
+                        OpenResult.Consumed -> consumed++
+                        OpenResult.Left -> leftUnprocessed = true
+                        is OpenResult.Ok -> {
+                            val o = r.opened
+                            when (o.contentType) {
+                                CONTENT_APPLICATION -> {
+                                    val pressure = windowFull || (dueByNamespace[c.namespace] ?: 0) >= fetchedCap
+                                    apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, c.namespace, o, pressure)
+                                }
+                                CONTENT_COMMIT -> commits += o
+                                // §6.3.2, §19.16: a proposal is dropped before `process_message`, never stored.
+                                else -> if (drop(c, ChannelCounters.Reason.PROPOSAL)) consumed++
                             }
-                            CONTENT_COMMIT -> commits += o
-                            // §6.3.2, §19.16: a proposal is dropped before `process_message`, never stored.
-                            else -> if (drop(c, ChannelCounters.Reason.PROPOSAL)) consumed++
                         }
                     }
+                    Kind.Join -> joins += c
+                    Kind.Welcome -> welcomes += c
+                    Kind.Unknown -> unknown += c
                 }
-                Kind.Join -> joins += c
-                Kind.Welcome -> welcomes += c
-                Kind.Unknown -> unknown += c
             }
-        }
-        val plan = peekOrder.plan(apps, present, now, skipped)
-        try {
+            val plan = peekOrder.plan(apps, present, now, skipped)
             for ((entry, waitingFor) in plan.deferrals) {
                 if (outOfTime(deadlineMonotonicMillis)) {
                     interrupted = true
@@ -311,12 +315,18 @@ internal class ChannelReceiveStep(
                 consumed += unmatched(c, now)
             }
             return consumed
+        } catch (e: Exception) {
+            // §19.55a (the review of S13a): the round died mid-flight — a store refusal, a busy database — and the
+            // pass drained nothing past the failure. The actor swallows pass exceptions, so nothing else would clear
+            // the cursor: it must not advance on this pass's account. The exception itself is untouched (rethrown).
+            failed = true
+            throw e
         } finally {
             // S13a: the cursor advances only when the pass drained its full window under pressure — no row left
-            // unopened and no deadline cut. Deferring is draining (the rows left the window) and a by-key claim-back
-            // touches only remembered rows the skip left out; both keep the cursor. Anything else rederives from the
-            // start (empty = the pre-S13a behavior).
-            val advance = !interrupted && !leftUnprocessed &&
+            // unopened, no deadline cut, no failure. Deferring is draining (the rows left the window) and a by-key
+            // claim-back touches only remembered rows the skip left out; both keep the cursor. Anything else
+            // rederives from the start (empty = the pre-S13a behavior).
+            val advance = !interrupted && !failed && !leftUnprocessed &&
                 (windowFull || dueByNamespace.values.any { it >= fetchedCap })
             if (advance) {
                 for (ns in namespaces) cursors[ns] = Unit

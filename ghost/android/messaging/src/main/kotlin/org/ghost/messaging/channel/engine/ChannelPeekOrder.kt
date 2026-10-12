@@ -102,9 +102,12 @@ internal class ChannelPeekOrder {
 
     /**
      * The batches to decrypt, in order — per channel and epoch ascending, each sorted by `(leaf, seq)` and cut at 32 — with
-     * the held entries left out and the deferred ones named. [present] is every peeked blob's key, so a blob that left the
-     * inbox stops being remembered (a deferred one is remembered until it is back, consumed, or long overdue). The rows a
-     * re-offer brought back that the window does not show are entries too, with a null value.
+     * the held entries left out and the deferred ones named. [present] is the **window's** keys — the peeked blobs the
+     * caller classified; a blob the caller's peek cursor left out (S13a's [skipped]) is deliberately NOT in it, so
+     * `gapDeferred.keys.removeAll(present)` below cannot drop a skipped row: it stays remembered and re-enters through
+     * the by-key entries. A blob that left the inbox stops being remembered (a deferred one is remembered until it is
+     * back, consumed, or long overdue). The rows a re-offer or the cursor brought back that the window does not show
+     * are entries too, with a null value.
      */
     fun <T> plan(entries: List<Entry<T>>, present: Set<List<Byte>>, now: Long, skipped: Set<List<Byte>> = emptySet()): Plan<T> {
         // A deferred row back in view is an ordinary entry again; a deferral long overdue lost its row (consumed
