@@ -552,6 +552,10 @@ internal class ChannelSettleStep(
                     ownRotation = winner.own,
                     switchHour = switchHour,
                 )
+                // The rotation history (§19.7 (c); slice S13c, §19.54 row 12, F-S11-3): the day the rotation's
+                // switch hour falls on, keyed by the generation it opened; a removal-driven rotation is marked,
+                // the 14-day spacing binds the routine ones alone.
+                stores.generations.recordRotation(tx, c, g.generation, DmTime.day(switchHour), removal = winner.removes)
             }
             if (winner.rank < NOT_A_COMMITTER) stores.channels.setLastCommitterCommitDay(tx, c, day)
             // CO-11 (b): a foreign winner's merge is progress for every member that merged it.

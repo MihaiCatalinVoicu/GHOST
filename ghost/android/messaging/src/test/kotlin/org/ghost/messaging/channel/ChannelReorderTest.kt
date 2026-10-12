@@ -5,6 +5,7 @@ import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AcceptResult
 import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.ChannelScenes.get
+import org.ghost.messaging.channel.engine.ChannelAd
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
 import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.sync.api.PrivacyMode
@@ -25,13 +26,21 @@ import org.junit.rules.TemporaryFolder
  * under a false `order` (RESEAL_ORDER, MM-35); a post of the next epoch that arrives before its commit settles (deferred,
  * re-offered by the settle, §7.5 item 6); a committer posting while its own non-removing commit is pending (§19.13); and
  * (§19.38) a backlog of 300 posts behind Phase 7's fetched cap and one wider than the peek window, neither of which may
- * lose a post.
+ * lose a post; and (§19.54 row 3, S13a) a 900-post backlog behind the fetched cap, draining in bounded rounds with every
+ * post opened a bounded number of times — the peek cursor's fail-without-fix shape.
  *
  * **Not here, and why** (§19.37): "bursts of 40 over 3 relays with HIGH delays" needs HIGH mode's send delays in the
  * world, a Phase 9 harness debt moved to S11 (§19.33 item B3) — the burst over SHUFFLE is [ChannelPostsTest]'s; posts
  * after the next commit **beyond** retention (REORDER_ACROSS_EPOCH) need 16 epochs of commits, which S5's passes make.
  */
 class ChannelReorderTest {
+
+    /**
+     * The average native opens per backlog blob the 900-post cursor test bounds ([aNineHundredPostBacklogBehindTheFetchedCapDrainsInBoundedRoundsOpeningEachPostOnce]):
+     * a blob is opened once on first sight, and the cursor's by-key deferrals open a taken row once more — measured
+     * 2 303 opens for 900 posts (2.56 each) with the cursor, 29 113 (32 each) with it disabled.
+     */
+    private val MAX_OPENED_PER_POST = 3
 
     @get:Rule
     val folder = TemporaryFolder()
@@ -194,17 +203,66 @@ class ChannelReorderTest {
     /**
      * Relay rounds and passes until [done]: each round a relay round with its hint passes, another hint pass of every
      * client, then a minute and a time-triggered pass of every client — at most [rounds] times, an hour less than the
-     * pressure hold of §19.38 when [rounds] is 59, so nothing here waits a hold out.
+     * pressure hold of §19.38 when [rounds] is 59, so nothing here waits a hold out. True when [done] came true.
      */
-    private fun drain(w: ChannelWorld, rounds: Int = 59, done: () -> Boolean) {
+    private fun drain(w: ChannelWorld, rounds: Int = 59, done: () -> Boolean): Boolean {
         repeat(rounds) {
-            if (done()) return
+            if (done()) return true
             w.quiesce()
             for (c in w.clients) c.hintPass()
-            if (done()) return
+            if (done()) return true
             w.advance(DmWorld.MINUTE)
             for (c in w.clients) c.timePass()
         }
+        return done()
+    }
+
+    /** Every shown post's text ([ChannelClient.displayed] pages at 500; a 900-post backlog needs more). */
+    private fun allTexts(c: ChannelClient, id: ChannelId): List<String> = c.database.transaction { tx ->
+        c.channelStores.posts.page(tx.sql, id.toByteArray(), c.clock.now, 2000).map { row ->
+            val text = c.content.open(row.bodyEnv, ChannelAd.postBody(row.opId)) ?: error("a post body that does not open")
+            String(text, Charsets.UTF_8)
+        }
+    }
+
+    /**
+     * §19.54 row 3 (slice S13a, the peek cursor — Q-F4-13's relief valve): carol is away while the owner writes 900
+     * posts; the relay then serves them scrambled behind Phase 7's fetched cap. Over successive passes the backlog
+     * drains within the bounded rounds and every post is shown exactly once, and the receive step opens the backlog's
+     * blobs natively at most [MAX_OPENED_PER_POST] times each on average (once on first sight; the cursor leaves a
+     * remembered gap deferral out of the window, and it is taken or deferred again by its key — never re-opened pass
+     * after pass). Without the cursor the same early window is re-opened every pass: measured on this scenario, 29 113
+     * opens against 2 303 — 12.6× —, the cost driver §19.54 row 3 names (0 losses either way, the peek of 512 and the
+     * deferral machinery hold; the deviation the cursor relieves is the re-reading). [ChannelReceiveStep.openedBlobs]
+     * is the step's test/debug counter.
+     */
+    @Test
+    fun aNineHundredPostBacklogBehindTheFetchedCapDrainsInBoundedRoundsOpeningEachPostOnce() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.holdAt = { client, s -> client == "carol" && s.purpose == "post" }
+        val texts = (0 until 900).map { "p$it" }
+        for (t in texts) ChannelScenes.post(owner, id, t)
+        w.quiesce(rounds = 100)
+        assertEquals("bob, with no backlog, shows them all", 900, allTexts(bob, id).size)
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SHUFFLE)
+        w.relay.fetchedCap = StoreLimits.FETCHED_CAP
+        w.relay.holdAt = { _, _ -> false }
+        val openedBefore = carol.engine.receiveStep.openedBlobs
+        val drained = drain(w) { allTexts(carol, id).size == 900 }
+        val opened = carol.engine.receiveStep.openedBlobs - openedBefore
+        assertTrue("the backlog drained within the bounded rounds", drained)
+        assertEquals(texts.toSet(), allTexts(carol, id).toSet())
+        assertEquals("none fell out of the ratchet's range", 0, carol[Reason.UNDECRYPTABLE])
+        assertTrue(
+            "every backlog blob opened at most ~$MAX_OPENED_PER_POST times (measured 2 303 with the cursor, 29 113 without)",
+            opened <= 900 * MAX_OPENED_PER_POST,
+        )
+        assertTrue("the cap bound, and the gaps were deferred", carol[Reason.GAP_DEFERRED] > 0)
+        assertEquals("one order (CS-C6)", allTexts(bob, id), allTexts(carol, id))
+        assertEquals(emptyList<String>(), carol.integrity())
     }
 
     /**

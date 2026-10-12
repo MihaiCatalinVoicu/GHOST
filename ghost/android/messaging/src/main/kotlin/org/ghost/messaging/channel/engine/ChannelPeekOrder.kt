@@ -34,6 +34,17 @@ package org.ghost.messaging.channel.engine
  * be the lowest one fetched), and a gap is decrypted past only after [PRESSURE_HOLD_SECONDS] (a post that never comes: a
  * failed send, F-S4-9; a sender's earlier posts consumed by a process that has since restarted), measured from the
  * earliest `first_seen` of what the gap holds back, which a deferral keeps.
+ *
+ * **The peek cursor (slice S13a, §19.54 row 3 — Q-F4-13's relief valve).** A pass that drained its full window under
+ * pressure leaves, in the receive step, a per-namespace cursor (in memory, cleared with the context). A deferred row
+ * may come back into the due set before its gap fills — its deferral ended, or a decrypt of the `seq` it waits for
+ * re-offered its namespace ([reofferDue]). The next pass leaves a row the cursor covers, that this object still
+ * remembers as a gap deferral within its grace ([isDeferredInGrace]), out of its window — but not out of the plan:
+ * [plan]'s [skipped] argument hands it over as a **by-key entry**, so the caller takes it (claimed by key, wherever
+ * the window is) or defers it again. Neither path re-opens it in the window — that is the relief. A row this object
+ * does *not* remember (a deferral past its grace, a row a pass left unopened) is re-examined from the start, which
+ * resets the cursor — after a restart or a lock the map is empty and everything is re-derived from the beginning,
+ * matching the behavior before the cursor existed.
  */
 internal class ChannelPeekOrder {
 
@@ -95,7 +106,7 @@ internal class ChannelPeekOrder {
      * inbox stops being remembered (a deferred one is remembered until it is back, consumed, or long overdue). The rows a
      * re-offer brought back that the window does not show are entries too, with a null value.
      */
-    fun <T> plan(entries: List<Entry<T>>, present: Set<List<Byte>>, now: Long): Plan<T> {
+    fun <T> plan(entries: List<Entry<T>>, present: Set<List<Byte>>, now: Long, skipped: Set<List<Byte>> = emptySet()): Plan<T> {
         // A deferred row back in view is an ordinary entry again; a deferral long overdue lost its row (consumed
         // elsewhere, its namespace removed) and is forgotten.
         gapDeferred.keys.removeAll(present)
@@ -107,7 +118,10 @@ internal class ChannelPeekOrder {
         // A deferral wakes the actor when it falls due (the rows come back then, if nothing re-offered them earlier).
         holdEnds = gapDeferred.values.filter { !it.reoffered }.minOfOrNull { it.until }
         val sticky = gapDeferred.values.mapTo(HashSet()) { it.sender }
-        val remote = gapDeferred.entries.filter { it.value.reoffered }.map { (key, d) ->
+        // Rows the caller left out of the window ([skipped]: deferrals its peek cursor covers) join the reoffered
+        // ones as by-key entries — the plan takes them (claimed by key wherever the window is) or defers them again;
+        // neither path re-opens them in the window (S13a, §19.54 row 3).
+        val remote = gapDeferred.entries.filter { it.value.reoffered || it.key in skipped }.map { (key, d) ->
             Entry<T>(d.channelId, d.epoch, d.leaf, d.seq, key, d.namespace, null, pressure = true)
         }
         val byEpoch = LinkedHashMap<List<Byte>, MutableList<Entry<T>>>()
@@ -160,6 +174,18 @@ internal class ChannelPeekOrder {
         return Plan(out, deferrals)
     }
 
+    /**
+     * S13a (§19.54 row 3): does the plan still remember [key] as a gap deferral within its grace — the receive
+     * step's peek cursor may leave such a row out of its window (no classification, no native open); the row is
+     * offered back through the [Plan] **by its key** and either taken (its `seq` has come due) or deferred again,
+     * so the frontier can never wait on a row the window hides. A deferral past its grace is not remembered: the
+     * row is re-examined from the start.
+     */
+    fun isDeferredInGrace(key: List<Byte>, now: Long): Boolean {
+        val d = gapDeferred[key] ?: return false
+        return now <= d.until + DEFERRAL_GRACE_SECONDS
+    }
+
     /** The second the earliest gap hold or deferral of the last pass ends (the actor's next wake), or null. */
     fun holdEnds(): Long? = holdEnds
 
@@ -203,6 +229,7 @@ internal class ChannelPeekOrder {
         }
         return out
     }
+
 
     /** A post of [leaf] with [seq] decrypted in [epoch]: the next one expected is `seq + 1`. */
     fun decrypted(channelId: ByteArray, epoch: Long, leaf: Long, seq: Long) {

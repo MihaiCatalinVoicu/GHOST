@@ -19,7 +19,7 @@ import org.junit.Test
  * Every column whose name looks like a time must therefore be in one of four declared sets:
  *
  *  - [timeColumnsOfMigration4] and [timeColumnsOfMigration5], the exact enumeration R-M3 gives;
- *  - [ChannelSchema.timeColumns], [ChannelSchema.epochColumns] and [ChannelSchema.notTimes], the 30 time
+ *  - [ChannelSchema.timeColumns], [ChannelSchema.epochColumns] and [ChannelSchema.notTimes], the 35 time
  *    columns, the nine epoch counters and the two timer codes migration 7 adds (Phase 10 design §9;
  *    [ChannelSchemaIntrospectionTest] owns what each of them enforces, and this test only requires that
  *    the whole database holds nothing else);

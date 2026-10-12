@@ -125,6 +125,63 @@ class ChannelPostsTest {
         assertEquals(owner.count("ch_reaction"), carol.count("ch_reaction"))
     }
 
+    /**
+     * F-S4-16's fix over the engine (slice S13c, §19.54 row 6): ten posts of one author inside one minute
+     * read back in `seq` order — the author's send order, newest first — at **every** member, not in `op_id`
+     * order. At the author's device the rows carry the `seq` the encryption drew; at the others the receive
+     * step stores the `seq` of the decrypted `ChannelOrder`, so all three pages are the same. The store-level
+     * twin (op ids run against the seqs, so the failure is deterministic) is
+     * [org.ghost.messaging.channel.store.PostStoreTest]'s ten-in-a-minute test — the mutant's named killer.
+     */
+    @Test
+    fun tenPostsOfOneAuthorInOneMinuteReadBackInSeqOrderAtEveryMember() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        val texts = (0 until 10).map { "ordine $it" }
+        for (text in texts) ChannelScenes.post(bob, id, text)
+        w.quiesce()
+        val expected = texts.reversed()
+        for (m in listOf(owner, bob, carol)) {
+            assertEquals("the author's posts of one minute, in seq order, at ${m.name}", expected, m.displayed(id))
+        }
+    }
+
+    /**
+     * F-S4-10 over the engine (slice S13c, §19.54 rows 2 and 6): a retried post takes the retry's `seq`
+     * (and epoch and minute) — its order is the retry's, so a post retried in the same minute sorts by the
+     * `seq` the retry drew, ahead of the posts that came between the attempt and the retry. The first copy
+     * never reached a relay (a `failed` op, `storedThoughFailed` false), so every member holds the retry's
+     * copy; the `seq` hole the lost attempt left holds the members' copies for the 12-minute gap hold, which
+     * is why the order is asserted after it.
+     */
+    @Test
+    fun aRetriedPostSortsByItsRetrySeq() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.outcomeFor = { client, purpose -> if (client.name == "bob" && purpose == "post") "failed" else "sent" }
+        ChannelScenes.post(bob, id, "first")
+        w.quiesce()
+        assertEquals(1L, bob.count("ch_post", "state = 'failed'"))
+        w.relay.outcomeFor = { _, _ -> "sent" }
+        ChannelScenes.post(bob, id, "second")
+        w.quiesce()
+        assertEquals(PostResult.QUEUED, bob.engine.retry(id, PostId(ChannelScenes.opIdOf(bob, id, "first"))))
+        w.quiesce()
+        // the author's own page already: the retry's seq (2) outranks "second" (1) inside the same minute
+        assertEquals(listOf("first", "second"), bob.displayed(id))
+        w.advance(13 * DmWorld.MINUTE)
+        for (m in listOf(owner, carol)) m.timePass()
+        w.quiesce()
+        for (m in listOf(owner, bob, carol)) {
+            assertEquals("the retry's order everywhere, at ${m.name}", listOf("first", "second"), m.displayed(id))
+        }
+        assertEquals(emptyList<String>(), owner.integrity())
+    }
+
     @Test
     fun aResurrectedPostAndACopyIntoAnotherNamespaceShowNothingNew() = ChannelWorld().use { w ->
         val owner = w.client("owner")

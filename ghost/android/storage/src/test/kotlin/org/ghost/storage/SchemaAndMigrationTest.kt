@@ -248,16 +248,17 @@ class SchemaAndMigrationTest {
             MigrationRunner(db).verifyIntegrity()
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            // Migration 7: 37 rules and 25 guards since slice S4 added `mls_self` (36 and 24 before, §19.37).
-            assertEquals(34 + 6 + 16 + 18 + 4 + 37 + 25 + 4, Schema.expectedTriggers.size)
+            // Migration 7: 38 rules and 26 guards since slice S13c added `ch_rotation_history` (37 and 25 since
+            // slice S4 added `mls_self`, 36 and 24 before, §19.37).
+            assertEquals(34 + 6 + 16 + 18 + 4 + 38 + 26 + 4, Schema.expectedTriggers.size)
             assertTrue(Schema.expectedTables.containsAll(v3Tables))
             assertTrue(Schema.expectedTables.containsAll(v4Tables))
             assertTrue(Schema.expectedTables.containsAll(v5Tables))
             assertTrue(Schema.expectedTables.containsAll(v6Tables))
             assertTrue(Schema.expectedTables.containsAll(v7Tables))
-            assertEquals(27, v7Tables.size)
-            assertEquals(37, v7Triggers.size)
-            assertEquals(25, v7Guards.size)
+            assertEquals(28, v7Tables.size)
+            assertEquals(38, v7Triggers.size)
+            assertEquals(26, v7Guards.size)
             assertEquals(4, v7RowidChecks.size)
             assertEquals(v3Triggers, Schema.expectedTriggers.filter { it.startsWith("ent_") }.toSet())
             assertTrue(Schema.expectedTriggers.containsAll(v3GuardsOfV2Tables))
@@ -996,8 +997,8 @@ class SchemaAndMigrationTest {
                 listOf(channel, ByteArray(32) { 1 }),
             )
             val insertPost =
-                "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, timer_code, epoch, body_env, state, author_minute) " +
-                    "VALUES (?, ?, 'in', ?, 1, 4, 0, ?, 'unread', ?)"
+                "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, timer_code, epoch, seq, body_env, state, author_minute) " +
+                    "VALUES (?, ?, 'in', ?, 1, 4, 0, 0, ?, 'unread', ?)"
             // Minute granularity is enforced by the schema (ADR-08).
             db.rejects(CHECK_FAILED, insertPost, ByteArray(16), channel, ByteArray(32), ByteArray(40), 61L)
             // Foreign key: a post for an unknown channel is rejected.

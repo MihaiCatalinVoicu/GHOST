@@ -33,12 +33,15 @@ class PostStoreTest {
         by: Int = i,
         relay: Long? = null,
         timer: Int = 4,
+        seq: Long = 0,
     ) = w.tx {
-        insertIncomingIfAbsent(it, id(i), w.ch, author(by), 1, null, timer, 0, chBytes(60, i), authorMinute, deleteAt, relay)
+        insertIncomingIfAbsent(
+            it, id(i), w.ch, author(by), 1, null, timer, 0, seq, chBytes(60, i), authorMinute, deleteAt, relay,
+        )
     }
 
-    private fun PostStore.outgoing(w: StoreWorld, i: Int, authorMinute: Long = now - 3_600, deleteAt: Long? = now + 3_600) = w.tx {
-        insertOutgoing(it, id(i), w.ch, author(0), 1, null, 4, 0, chBytes(60, i), authorMinute, deleteAt)
+    private fun PostStore.outgoing(w: StoreWorld, i: Int, authorMinute: Long = now - 3_600, deleteAt: Long? = now + 3_600, seq: Long = 0) = w.tx {
+        insertOutgoing(it, id(i), w.ch, author(0), 1, null, 4, 0, seq, chBytes(60, i), authorMinute, deleteAt)
     }
 
     @Test
@@ -55,14 +58,34 @@ class PostStoreTest {
         // a page of two, and the page before the second one's cursor: no post twice, none missed
         val first = w.stores.posts.page(w.db, w.ch, now, 2)
         assertEquals(listOf(3, 1), first.map { it.opId[0].toInt() })
-        val cursor = PostStore.PostCursor(first.last().authorMinute, first.last().author, first.last().opId)
+        val last = first.last()
+        val cursor = PostStore.PostCursor(last.authorMinute, last.author, last.epoch, last.seq, last.opId)
         assertEquals(listOf(4, 2, 5), w.stores.posts.pageBefore(w.db, w.ch, now, 50, cursor).map { it.opId[0].toInt() })
         assertEquals(listOf(4, 2), w.stores.posts.pageBefore(w.db, w.ch, now, 2, cursor).map { it.opId[0].toInt() })
-        assertEquals(emptyList<Int>(), w.stores.posts.pageBefore(w.db, w.ch, now, 50, PostStore.PostCursor(0, chBytes(32, 0), id(0))).map { it.opId[0].toInt() })
+        assertEquals(emptyList<Int>(), w.stores.posts.pageBefore(w.db, w.ch, now, 50, PostStore.PostCursor(0, chBytes(32, 0), 0, 0, id(0))).map { it.opId[0].toInt() })
         // another channel's posts are not on this page
         w.channel(w.ch2)
-        w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(9), w.ch2, author(1), 1, null, 4, 0, chBytes(60, 9), now - 60, now + 3_600, null) }
+        w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(9), w.ch2, author(1), 1, null, 4, 0, 0, chBytes(60, 9), now - 60, now + 3_600, null) }
         assertEquals(5, w.stores.posts.page(w.db, w.ch, now, 50).size)
+    }
+
+    /**
+     * F-S4-16's fix (slice S13c, §19.54 row 6): ten posts of one author inside one minute read back in `seq`
+     * order — the order's fourth term — at every member. The op ids run **against** the seqs on purpose
+     * (post `i` carries seq `10 − i`), so an order that ignores `seq` falls back to `op_id` and this test
+     * fails deterministically: it is the mutant's ("`seq` not in the order") named killer. The same shape
+     * over the engine is [org.ghost.messaging.channel.ChannelPostsTest]'s ten-in-a-minute test.
+     */
+    @Test
+    fun tenPostsOfOneAuthorInOneMinuteReadBackInSeqOrder() = StoreWorld().use { w ->
+        w.channel()
+        for (i in 1..10) w.stores.posts.incoming(w, i, authorMinute = now - 60, by = 7, seq = (11 - i).toLong())
+        val expected = (1..10).toList() // seq 10 … 1 descending: post 1 (seq 10) first
+        assertEquals(expected, w.stores.posts.page(w.db, w.ch, now, 50).map { it.opId[0].toInt() })
+        // the cursor continues the same order: the page before the fourth post's cursor starts at the fifth
+        val fourth = w.stores.posts.page(w.db, w.ch, now, 50)[3]
+        val cursor = PostStore.PostCursor(fourth.authorMinute, fourth.author, fourth.epoch, fourth.seq, fourth.opId)
+        assertEquals((5..10).toList(), w.stores.posts.pageBefore(w.db, w.ch, now, 50, cursor).map { it.opId[0].toInt() })
     }
 
     @Test
@@ -114,7 +137,7 @@ class PostStoreTest {
         w.stores.posts.incoming(w, 6, deleteAt = now + 3_600, relay = now)                       // E exactly now: gone
         val live = setOf(3, 4)
         assertEquals(live, w.stores.posts.page(w.db, w.ch, now, 50).map { it.opId[0].toInt() }.toSet())
-        val cursor = PostStore.PostCursor(now + 60, chBytes(32, 0xFF), id(0xFF))
+        val cursor = PostStore.PostCursor(now + 60, chBytes(32, 0xFF), Long.MAX_VALUE, Long.MAX_VALUE, id(0xFF))
         assertEquals(live, w.stores.posts.pageBefore(w.db, w.ch, now, 50, cursor).map { it.opId[0].toInt() }.toSet())
         for (gone in listOf(1, 2, 5, 6)) assertNull(gone.toString(), w.stores.posts.post(w.db, id(gone), now))
         for (alive in live) assertEquals(alive.toString(), id(alive).toList(), w.stores.posts.post(w.db, id(alive), now)!!.opId.toList())
@@ -190,14 +213,15 @@ class PostStoreTest {
             w.tx { w.stores.posts.setState(it, id(1), PostState.UNREAD, PostState.READ) }
         }.error)
         assertTrue(w.tx { w.stores.posts.setState(it, id(2), PostState.QUEUED, PostState.FAILED) })
-        assertTrue(w.tx { w.stores.posts.retry(it, id(2), 4, 2, now - 60, now + 600) })
+        assertTrue(w.tx { w.stores.posts.retry(it, id(2), 4, 9, 2, now - 60, now + 600) })
         val retried = w.stores.posts.post(w.db, id(2), now)!!
         assertEquals(PostState.QUEUED, retried.state)
         assertEquals(4L, retried.epoch)
+        assertEquals("a retry takes the retry's seq (F-S4-10, §19.54 row 6)", 9L, retried.seq)
         assertEquals(2, retried.timerCode)
         assertEquals(now - 60, retried.authorMinute)
         assertEquals("a retry never extends the life of a post", now + 600, retried.deleteAtMinute)
-        assertFalse("only a failed post is retried", w.tx { w.stores.posts.retry(it, id(1), 5, 2, now, now + 600) })
+        assertFalse("only a failed post is retried", w.tx { w.stores.posts.retry(it, id(1), 5, 3, 2, now, now + 600) })
         assertEquals(PostState.SENT, w.stores.posts.post(w.db, id(1), now)!!.state)
     }
 
@@ -213,7 +237,7 @@ class PostStoreTest {
         val live = listOf(3, 4, 6)
         assertEquals(3, w.stores.posts.page(w.db, w.ch, now, 50).size)
         assertEquals(live.toSet(), w.stores.posts.page(w.db, w.ch, now, 50).map { it.opId[0].toInt() }.toSet())
-        val cursor = PostStore.PostCursor(now + 60, chBytes(32, 0xFF), id(0xFF))
+        val cursor = PostStore.PostCursor(now + 60, chBytes(32, 0xFF), Long.MAX_VALUE, Long.MAX_VALUE, id(0xFF))
         assertEquals(live.toSet(), w.stores.posts.pageBefore(w.db, w.ch, now, 50, cursor).map { it.opId[0].toInt() }.toSet())
         for (expired in listOf(1, 2, 5)) assertNull(expired.toString(), w.stores.posts.post(w.db, id(expired), now))
         for (alive in live) assertEquals(alive.toString(), id(alive).toList(), w.stores.posts.post(w.db, id(alive), now)!!.opId.toList())
@@ -237,9 +261,9 @@ class PostStoreTest {
         assertTrue(w.stores.posts.incoming(w, 1))
         val before = w.stores.posts.post(w.db, id(1), now)!!
         // a second post with the same id from another author, an expired row that holds the id, an own post's id
-        assertFalse(w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(1), w.ch, author(9), 1, null, 4, 0, chBytes(60, 9), now, now + 60, null) })
+        assertFalse(w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(1), w.ch, author(9), 1, null, 4, 0, 0, chBytes(60, 9), now, now + 60, null) })
         w.stores.posts.outgoing(w, 2, deleteAt = now - 60)
-        assertFalse(w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(2), w.ch, author(9), 1, null, 4, 0, chBytes(60, 9), now, now + 60, null) })
+        assertFalse(w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(2), w.ch, author(9), 1, null, 4, 0, 0, chBytes(60, 9), now, now + 60, null) })
         assertArrayEquals(before.bodyEnv, w.stores.posts.post(w.db, id(1), now)!!.bodyEnv)
         assertEquals(2L, w.count("ch_post"))
         // an own post inserted twice is a bug and says so
@@ -415,10 +439,10 @@ class PostStoreTest {
     fun noPostShowsABodyAnAuthorOrAReplyTargetInItsToString() = StoreWorld().use { w ->
         w.channel()
         val body = chBytes(60, 0x33)
-        w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(1), w.ch, author(1), 1, id(7), 4, 0, body, now, now + 60, null) }
+        w.tx { w.stores.posts.insertIncomingIfAbsent(it, id(1), w.ch, author(1), 1, id(7), 4, 0, 0, body, now, now + 60, null) }
         val post = w.stores.posts.post(w.db, id(1), now)!!
         assertRedacted(post, body, author(1), id(7), id(1), w.ch)
-        assertRedacted(PostStore.PostCursor(now, author(1), id(1)), author(1), id(1))
+        assertRedacted(PostStore.PostCursor(now, author(1), 0, 0, id(1)), author(1), id(1))
         assertRedacted(w.stores.posts.page(w.db, w.ch, now, 1).single(), body)
         assertArrayEquals(id(7), post.replyTo)
     }

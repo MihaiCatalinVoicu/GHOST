@@ -112,7 +112,7 @@ class ChannelEphemeralTest {
             // an expired outgoing post (its deadline an hour ago) with a pending retry whose
             // fail-after is two hours ahead — only the cascade names the pair
             bob.channelStores.posts.insertOutgoing(
-                tx, op, c, me, 1, null, 1, 1, ByteArray(60), hour - 2 * DmWorld.HOUR, hour - DmWorld.HOUR,
+                tx, op, c, me, 1, null, 1, 1, 0, ByteArray(60), hour - 2 * DmWorld.HOUR, hour - DmWorld.HOUR,
             )
             bob.channelStores.posts.insertPending(tx, op, c, 1, ByteArray(60), hour + 2 * DmWorld.HOUR)
         }
@@ -415,7 +415,7 @@ class ChannelEphemeralTest {
                 owner.channelStores.posts.insertIncomingIfAbsent(
                     tx,
                     byteArrayOf(i.toByte(), (i shr 8).toByte()) + ByteArray(14) { 0x5a }, id.toByteArray(),
-                    ByteArray(32) { 0x5b }, 1, null, 0, 1, ByteArray(29) { 0x5c }, minute, null, hourAgo,
+                    ByteArray(32) { 0x5b }, 1, null, 0, 1, 0, ByteArray(29) { 0x5c }, minute, null, hourAgo,
                 )
             }
         }

@@ -22,10 +22,15 @@ import org.ghost.sync.api.SyncTransaction
  * and requires the two to be indistinguishable. The sweep's own reads (`expiredPosts`, `expiredPending`,
  * `expiredReveals`) name the opposite set and are judged by the mirror contract.
  *
- * **The order of the posts of a channel** is `(author_minute, author, op_id)`, newest first: every member
- * holds the same three values for a post, so every member shows the same order ("one order everywhere",
- * §12.5) and neither a local counter nor the rowid enters it. §9 lists no `sort_minute` or `minute_index` for
- * channels, which is the one place this differs from `dm_message` (recorded in §19.35, F-2).
+ * **The order of the posts of a channel** is `(author_minute, author, epoch, seq, op_id)`, newest first:
+ * every member holds the same five values for a post — the author minute and the author by the content,
+ * the epoch and the `seq` by the decryption's `ChannelOrder` (§5.5), the op id by the key — so every
+ * member shows the same order ("one order everywhere", §12.5) and neither a local counter nor the rowid
+ * enters it. `seq` is the per-epoch ratchet the engine already tracked in memory (§19.35 F-2); stored
+ * since slice S13c (§19.54 row 6, F-S4-16) it finally gives an author's posts of one minute their own
+ * order, and a retried post its retry's place (F-S4-10: the retry's `seq` and epoch are stored).
+ * §9 lists no `sort_minute` or `minute_index` for channels, which is the one place this differs from
+ * `dm_message` (recorded in §19.35, F-2).
  *
  * **Every write goes through the caller's [SyncTransaction]**; no `REPLACE`, no upsert (G-DM4).
  */
@@ -41,6 +46,8 @@ internal class PostStore {
         val replyTo: ByteArray?,
         val timerCode: Int,
         val epoch: Long,
+        /** The post's per-epoch ratchet seq (§19.35 F-2; slice S13c, §19.54 row 6): the `ChannelOrder` of the AAD. */
+        val seq: Long,
         val bodyEnv: ByteArray,
         val state: PostState,
         val authorMinute: Long,
@@ -51,8 +58,8 @@ internal class PostStore {
         override fun toString(): String = "PostRow(state=${state.sql})"
     }
 
-    /** The place after which [PostStore.pageBefore] continues: the three values the order is made of. */
-    class PostCursor(val authorMinute: Long, val author: ByteArray, val opId: ByteArray) {
+    /** The place after which [PostStore.pageBefore] continues: the five values the order is made of. */
+    class PostCursor(val authorMinute: Long, val author: ByteArray, val epoch: Long, val seq: Long, val opId: ByteArray) {
         override fun toString(): String = "PostCursor(redacted)"
     }
 
@@ -98,7 +105,10 @@ internal class PostStore {
             PAGE_BEFORE,
             listOf(
                 channelId, nowMinute, nowMinute,
-                cursor.authorMinute, cursor.authorMinute, cursor.author, cursor.authorMinute, cursor.author, cursor.opId,
+                cursor.authorMinute, cursor.authorMinute, cursor.author,
+                cursor.authorMinute, cursor.author, cursor.epoch,
+                cursor.authorMinute, cursor.author, cursor.epoch, cursor.seq,
+                cursor.authorMinute, cursor.author, cursor.epoch, cursor.seq, cursor.opId,
                 limit.toLong(),
             ),
         )
@@ -127,7 +137,8 @@ internal class PostStore {
         return next
     }
 
-    /** Inserts an outgoing post in `queued` (`CH-POST`): its countdown starts at this commit (§8.2). */
+    /** Inserts an outgoing post in `queued` (`CH-POST`): its countdown starts at this commit (§8.2). [seq] is the
+     *  `ChannelOrder` the encryption drew (`nextOwnSeq`, in the same transaction). */
     fun insertOutgoing(
         tx: SyncTransaction,
         opId: ByteArray,
@@ -137,13 +148,14 @@ internal class PostStore {
         replyTo: ByteArray?,
         timerCode: Int,
         epoch: Long,
+        seq: Long,
         bodyEnv: ByteArray,
         authorMinute: Long,
         deleteAtMinute: Long?,
     ) {
-        checkPost(opId, channelId, author, kind, replyTo, timerCode, epoch, bodyEnv, authorMinute, deleteAtMinute, null)
+        checkPost(opId, channelId, author, kind, replyTo, timerCode, epoch, seq, bodyEnv, authorMinute, deleteAtMinute, null)
         insertPost(
-            tx, opId, channelId, Direction.OUT, author, kind, replyTo, timerCode, epoch, bodyEnv, PostState.QUEUED,
+            tx, opId, channelId, Direction.OUT, author, kind, replyTo, timerCode, epoch, seq, bodyEnv, PostState.QUEUED,
             authorMinute, deleteAtMinute, null,
         )
     }
@@ -165,18 +177,23 @@ internal class PostStore {
         replyTo: ByteArray?,
         timerCode: Int,
         epoch: Long,
+        /** The `seq` of the decrypted `ChannelOrder` (§5.5): the author's own ratchet value, so every member
+         *  stores the same order. **Defaults to 0 as the seam of the parallel receive slice** (S13c's other
+         *  half): `ChannelReceiveStep.applyPost` passes `item.seq`; until it does, an incoming post sorts
+         *  within its `(author_minute, author, epoch)` by `op_id` alone, exactly as before this column. */
+        seq: Long = 0,
         bodyEnv: ByteArray,
         authorMinute: Long,
         deleteAtMinute: Long?,
         relayExpiryHour: Long?,
     ): Boolean {
-        checkPost(opId, channelId, author, kind, replyTo, timerCode, epoch, bodyEnv, authorMinute, deleteAtMinute, relayExpiryHour)
+        checkPost(opId, channelId, author, kind, replyTo, timerCode, epoch, seq, bodyEnv, authorMinute, deleteAtMinute, relayExpiryHour)
         return tx.sql.execUpdate(
-            "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
-                "author_minute, delete_at_minute, relay_expiry_hour) SELECT ?, ?, 'in', ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ? " +
+            "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
+                "author_minute, delete_at_minute, relay_expiry_hour) SELECT ?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ? " +
                 "WHERE NOT EXISTS (SELECT 1 FROM ch_post WHERE op_id = ?)",
             listOf(
-                opId, channelId, author, kind.toLong(), replyTo, timerCode.toLong(), epoch, bodyEnv, authorMinute,
+                opId, channelId, author, kind.toLong(), replyTo, timerCode.toLong(), epoch, seq, bodyEnv, authorMinute,
                 deleteAtMinute, relayExpiryHour, opId,
             ),
         ) == 1
@@ -184,7 +201,7 @@ internal class PostStore {
 
     private fun checkPost(
         opId: ByteArray, channelId: ByteArray, author: ByteArray, kind: Int, replyTo: ByteArray?, timerCode: Int,
-        epoch: Long, bodyEnv: ByteArray, authorMinute: Long, deleteAtMinute: Long?, relayExpiryHour: Long?,
+        epoch: Long, seq: Long, bodyEnv: ByteArray, authorMinute: Long, deleteAtMinute: Long?, relayExpiryHour: Long?,
     ) {
         Fields.bytes("ch_post.op_id", opId, 16)
         Fields.bytes("ch_post.channel_id", channelId, 32)
@@ -193,6 +210,7 @@ internal class PostStore {
         Fields.bytesOrNull("ch_post.reply_to", replyTo, 16)
         Fields.rangeInt("ch_post.timer_code", timerCode, 0, 5)
         Fields.nonNegative("ch_post.epoch", epoch)
+        Fields.u32("ch_post.seq", seq)
         Fields.bytesBetween("ch_post.body_env", bodyEnv, 29, MAX_BODY)
         Fields.minute("ch_post.author_minute", authorMinute)
         Fields.minuteOrNull("ch_post.delete_at_minute", deleteAtMinute)
@@ -201,15 +219,15 @@ internal class PostStore {
 
     private fun insertPost(
         tx: SyncTransaction, opId: ByteArray, channelId: ByteArray, direction: Direction, author: ByteArray, kind: Int,
-        replyTo: ByteArray?, timerCode: Int, epoch: Long, bodyEnv: ByteArray, state: PostState, authorMinute: Long,
+        replyTo: ByteArray?, timerCode: Int, epoch: Long, seq: Long, bodyEnv: ByteArray, state: PostState, authorMinute: Long,
         deleteAtMinute: Long?, relayExpiryHour: Long?,
     ) {
         val changed = tx.sql.execUpdate(
-            "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
-                "author_minute, delete_at_minute, relay_expiry_hour) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? " +
+            "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
+                "author_minute, delete_at_minute, relay_expiry_hour) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? " +
                 "WHERE NOT EXISTS (SELECT 1 FROM ch_post WHERE op_id = ?)",
             listOf(
-                opId, channelId, direction.sql, author, kind.toLong(), replyTo, timerCode.toLong(), epoch, bodyEnv,
+                opId, channelId, direction.sql, author, kind.toLong(), replyTo, timerCode.toLong(), epoch, seq, bodyEnv,
                 state.sql, authorMinute, deleteAtMinute, relayExpiryHour, opId,
             ),
         )
@@ -267,17 +285,19 @@ internal class PostStore {
         ) == 1
     }
 
-    /** The user's retry of a failed post: it is queued again, re-encrypted under the epoch, timer and minute then current. */
-    fun retry(tx: SyncTransaction, opId: ByteArray, epoch: Long, timerCode: Int, authorMinute: Long, deleteAtMinute: Long?): Boolean {
+    /** The user's retry of a failed post: it is queued again, re-encrypted under the epoch, the `seq`, the timer
+     *  and the minute then current — the row's order is the retry's (F-S4-10, slice S13c, §19.54 row 6). */
+    fun retry(tx: SyncTransaction, opId: ByteArray, epoch: Long, seq: Long, timerCode: Int, authorMinute: Long, deleteAtMinute: Long?): Boolean {
         Fields.nonNegative("ch_post.epoch", epoch)
+        Fields.u32("ch_post.seq", seq)
         Fields.rangeInt("ch_post.timer_code", timerCode, 0, 5)
         Fields.minute("ch_post.author_minute", authorMinute)
         Fields.minuteOrNull("ch_post.delete_at_minute", deleteAtMinute)
         return tx.sql.execUpdate(
-            "UPDATE ch_post SET state = 'queued', epoch = ?, timer_code = ?, author_minute = ?, " +
+            "UPDATE ch_post SET state = 'queued', epoch = ?, seq = ?, timer_code = ?, author_minute = ?, " +
                 "delete_at_minute = CASE WHEN delete_at_minute IS NULL THEN ? ELSE min(delete_at_minute, COALESCE(?, delete_at_minute)) END " +
                 "WHERE op_id = ? AND state = 'failed' AND direction = 'out'",
-            listOf(epoch, timerCode.toLong(), authorMinute, deleteAtMinute, deleteAtMinute, opId),
+            listOf(epoch, seq, timerCode.toLong(), authorMinute, deleteAtMinute, deleteAtMinute, opId),
         ) == 1
     }
 
@@ -310,12 +330,13 @@ internal class PostStore {
         replyTo = if (r.isNull(5)) null else r.blob(5),
         timerCode = r.long(6).toInt(),
         epoch = r.long(7),
-        bodyEnv = r.blob(8),
-        state = PostState.of(r.string(9)),
-        authorMinute = r.long(10),
-        displayedMinute = if (r.isNull(11)) null else r.long(11),
-        deleteAtMinute = if (r.isNull(12)) null else r.long(12),
-        relayExpiryHour = if (r.isNull(13)) null else r.long(13),
+        seq = r.long(8),
+        bodyEnv = r.blob(9),
+        state = PostState.of(r.string(10)),
+        authorMinute = r.long(11),
+        displayedMinute = if (r.isNull(12)) null else r.long(12),
+        deleteAtMinute = if (r.isNull(13)) null else r.long(13),
+        relayExpiryHour = if (r.isNull(14)) null else r.long(14),
     )
 
     // ------------------------------------------------------------------------------- ch_reaction
@@ -530,28 +551,31 @@ internal class PostStore {
         const val MAX_RESENDS: Int = 2
 
         /**
-         * `ORDER BY author_minute DESC, author DESC, op_id DESC`: the same three values on every device. A post is
-         * live when **both** of its deadlines are ahead (a NULL is no deadline): `delete_at_minute`, and the relay
-         * expiry `relay_expiry_hour` of an unread post (§8.2).
+         * `ORDER BY author_minute DESC, author DESC, epoch DESC, seq DESC, op_id DESC`: the same five values on
+         * every device — the minute and the author by the content, the epoch and the `seq` by the decryption's
+         * `ChannelOrder`, the op id by the key. A post is live when **both** of its deadlines are ahead (a NULL
+         * is no deadline): `delete_at_minute`, and the relay expiry `relay_expiry_hour` of an unread post (§8.2).
          */
         const val PAGE: String =
-            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
+            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
                 "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
-                "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
+                "ORDER BY author_minute DESC, author DESC, epoch DESC, seq DESC, op_id DESC LIMIT ?"
 
         const val PAGE_BEFORE: String =
-            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
+            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
                 "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
                 "AND (author_minute < ? OR (author_minute = ? AND author < ?) " +
-                "OR (author_minute = ? AND author = ? AND op_id < ?)) " +
-                "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
+                "OR (author_minute = ? AND author = ? AND epoch < ?) " +
+                "OR (author_minute = ? AND author = ? AND epoch = ? AND seq < ?) " +
+                "OR (author_minute = ? AND author = ? AND epoch = ? AND seq = ? AND op_id < ?)) " +
+                "ORDER BY author_minute DESC, author DESC, epoch DESC, seq DESC, op_id DESC LIMIT ?"
 
         const val POST_BY_ID: String =
-            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
+            "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
                 "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)"

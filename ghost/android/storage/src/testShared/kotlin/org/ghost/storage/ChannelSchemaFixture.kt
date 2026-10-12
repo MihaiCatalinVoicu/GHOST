@@ -16,30 +16,32 @@ internal object ChannelSchema {
 
     /**
      * The 26 tables of §9 and `mls_self`, the one-row table of the wrapped channel state key that slice S4 amended into
-     * migration 7 (§10.4 "State key"; §19.35 F-9, §19.37).
+     * migration 7 (§10.4 "State key"; §19.35 F-9, §19.37), and `ch_rotation_history`, the row-per-rotation table of
+     * §19.7 (c)'s spacing that slice S13c amended into it (§19.54 row 12, F-S11-3).
      */
     val tables: Set<String> = setOf(
         "ch_channel", "ch_liveness", "ch_schedule", "ch_generation", "ch_epoch", "ch_epoch_log", "ch_candidate",
         "ch_fork_signal", "mls_kv", "mls_global_kv", "ch_post", "ch_reaction", "ch_pending_post", "ch_outbound_op",
         "ch_seen", "ch_reveal", "ch_join", "ch_join_request", "ch_invite_issued", "ch_kp_seen", "ch_member_seen",
-        "ch_invite_own", "ch_sponsor", "ch_member_refresh", "ch_request", "ch_box_key", "mls_self",
+        "ch_invite_own", "ch_sponsor", "ch_member_refresh", "ch_request", "ch_box_key", "mls_self", "ch_rotation_history",
     )
 
     /** The two tables written with `INSERT OR IGNORE`, whose rows carry no rule: no REPLACE guard. */
     val unguarded: Set<String> = setOf("ch_seen", "ch_kp_seen")
 
     /**
-     * The 37 state-machine, write-once and bound triggers: the 29 of the first version of migration 7, the seven the
+     * The 38 state-machine, write-once and bound triggers: the 29 of the first version of migration 7, the seven the
      * review of S3 added (the end of a drain, a global row's day, a join, an own invite, and the three that keep a
-     * pending post, a join request and a KeyPackage tag in the channel that bounds it) and `mls_self_fixed` (slice S4:
-     * the state key is written once and never changed).
+     * pending post, a join request and a KeyPackage tag in the channel that bounds it), `mls_self_fixed` (slice S4:
+     * the state key is written once and never changed) and `ch_rotation_history_append_only` (slice S13c, §19.54
+     * row 12: a rotation a member merged is a fact of the channel's history).
      */
     val rules: Set<String> = setOf(
         "ch_channel_identity", "ch_channel_state",
         "ch_generation_identity", "ch_generation_state", "ch_generation_drain", "ch_generation_one_current_insert",
         "ch_generation_one_current_update", "ch_generation_one_draining_insert", "ch_generation_one_draining_update",
         "ch_epoch_limit", "ch_epoch_anchor_insert", "ch_epoch_anchor_update", "ch_epoch_identity", "ch_epoch_final",
-        "ch_epoch_log_limit", "ch_epoch_log_append_only",
+        "ch_epoch_log_limit", "ch_epoch_log_append_only", "ch_rotation_history_append_only",
         "ch_candidate_limit", "ch_candidate_identity", "ch_fork_signal_limit", "ch_fork_signal_append_only",
         "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit", "ch_pending_post_channel",
         "ch_join_request_limit", "ch_join_request_channel", "ch_join_fixed", "ch_invite_own_fixed",
@@ -52,9 +54,10 @@ internal object ChannelSchema {
         "mls_kv_rowid_positive", "mls_kv_rowid_fixed", "ch_join_request_rowid_positive", "ch_join_request_rowid_fixed",
     )
 
-    /** The 25 REPLACE guards: every table but [unguarded]. */
+    /** The 26 REPLACE guards: every table but [unguarded]. */
     val guards: Set<String> = setOf(
         "ch_channel_no_replace", "ch_liveness_no_replace", "ch_schedule_no_replace", "ch_generation_no_replace",
+        "ch_rotation_history_no_replace",
         "ch_epoch_no_replace", "ch_epoch_log_no_replace", "ch_candidate_no_replace", "ch_fork_signal_no_replace",
         "mls_kv_no_replace", "mls_global_kv_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
         "ch_pending_post_no_replace", "ch_outbound_op_no_replace", "ch_reveal_no_replace", "ch_join_no_replace",
@@ -76,10 +79,10 @@ internal object ChannelSchema {
     val withoutRowidTables: Set<String> = tables - rowidTables
 
     /**
-     * Every time column of §9, as `table.column`: 34 of them (33 before slice S8 amended `ch_outbound_op` with the
-     * op's deadline, §5.8, §19.45). The introspection tests require the database to hold exactly these (a column
-     * that matches the time-like rule and is not here fails, and so does one here that no table has), each with
-     * the granularity its suffix names.
+     * Every time column of §9, as `table.column`: 35 of them (33 before slice S8 amended `ch_outbound_op` with the
+     * op's deadline, §5.8, §19.45; 34 before slice S13c added the rotation history's day, §19.54 row 12). The
+     * introspection tests require the database to hold exactly these (a column that matches the time-like rule and
+     * is not here fails, and so does one here that no table has), each with the granularity its suffix names.
      */
     val timeColumns: Set<String> = setOf(
         "ch_channel.last_committer_commit_day",
@@ -88,6 +91,8 @@ internal object ChannelSchema {
         "ch_generation.switch_hour", "ch_generation.drain_until_day",
         "ch_epoch.anchor_minute", "ch_epoch.final_day", "ch_epoch.keep_until_day",
         "ch_epoch_log.final_day",
+        // Slice S13c (§19.54 row 12): the day a rotation's switch hour falls on, what §19.7 (c)'s spacing reads.
+        "ch_rotation_history.rotated_day",
         "ch_candidate.first_seen_minute", "ch_candidate.store_hour",
         "ch_fork_signal.first_seen_day",
         "mls_global_kv.delete_after_day",
@@ -133,13 +138,16 @@ internal object ChannelSchema {
 
     /**
      * Integer columns that are neither a time nor an epoch and carry `typeof` beside a range: the
-     * generation counters (`u32`), the commit rank, the own sequence number, the liveness counters, the
-     * password version, the content kind of a pending post, the op's resend count (slice S8, §19.45:
-     * Phase 7's "at most twice") and the two timer codes.
+     * generation counters (`u32`), the commit rank, the own sequence number, the post's ratchet `seq`
+     * (slice S13c, §19.54 row 6: the `ChannelOrder` of the AAD, `own_seq`'s bound, one per post), the
+     * liveness counters, the password version, the content kind of a pending post, the op's resend
+     * count (slice S8, §19.45: Phase 7's "at most twice") and the two timer codes.
      */
     val counterColumns: Set<String> = setOf(
         "ch_channel.generation", "ch_generation.generation", "ch_join.generation", "ch_join_request.generation",
-        "ch_candidate.rank", "ch_epoch.own_seq",
+        "ch_candidate.rank", "ch_epoch.own_seq", "ch_post.seq",
+        // Slice S13c (§19.54 row 12): the generation a rotation opened, the history's key.
+        "ch_rotation_history.generation",
         "ch_liveness.unopenable_count", "ch_liveness.unopenable_operators", "ch_liveness.sessions",
         "ch_invite_issued.pw_version", "ch_pending_post.kind", "ch_outbound_op.resends",
         "ch_channel.timer_code", "ch_post.timer_code",
@@ -155,6 +163,8 @@ internal object ChannelSchema {
         // Slice S6 (§19.41): the member's own commit opened the generation (its funding is the rotating
         // committer's at the switch, §6.5).
         "ch_generation.own_rotation",
+        // Slice S13c (§19.54 row 12): the rotation carried a removal (the spacing binds the non-removal ones).
+        "ch_rotation_history.removal",
     )
 
     /**
@@ -169,7 +179,8 @@ internal object ChannelSchema {
      * test until it is written here beside the rule that allows it. **Slice S4's amendments** (§19.37):
      * `ch_channel.committers_digest` (F-S4-2), `ch_generation.open_epoch` (F-S4-7), `ch_candidate.removes` (§19.35
      * F-1), the invite state of `ch_join` (`ns`, `jk_env`, `r_join`, `committers_digest`; §19.35 F-8) and
-     * `mls_self` (F-9).
+     * `mls_self` (F-9). **Slice S13c's** (§19.54 rows 6 and 12): `ch_post.seq` (F-S4-16) and `ch_rotation_history`
+     * (F-S11-3).
      */
     val columns: Map<String, String> = mapOf(
         "ch_channel" to "channel_id state split_suspected partition_suspected stale_suspected pw_required suite " +
@@ -179,6 +190,7 @@ internal object ChannelSchema {
         "ch_schedule" to "channel_id next_selfupdate_day last_own_commit_day? next_pass_minute?",
         "ch_generation" to "channel_id generation namespace_id state g_env jk_env r_join open_epoch own_rotation " +
             "switch_hour? drain_until_day?",
+        "ch_rotation_history" to "channel_id generation rotated_day removal",
         "ch_epoch" to "channel_id epoch state k_env r_ep winner_hash? own_seq anchor_minute? final_day? keep_until_day?",
         "ch_epoch_log" to "channel_id epoch winner_hash final_day",
         "ch_candidate" to "channel_id epoch hash sender rank own verified body_env welcome_env? box_env? " +
@@ -186,7 +198,7 @@ internal object ChannelSchema {
         "ch_fork_signal" to "channel_id epoch hash first_seen_day",
         "mls_kv" to "channel_id k v_env",
         "mls_global_kv" to "k v_env channel_id delete_after_day?",
-        "ch_post" to "op_id channel_id direction author kind reply_to? timer_code epoch body_env state author_minute " +
+        "ch_post" to "op_id channel_id direction author kind reply_to? timer_code epoch seq body_env state author_minute " +
             "displayed_minute? delete_at_minute? relay_expiry_hour?",
         "ch_reaction" to "target author channel_id grapheme_env",
         "ch_pending_post" to "op_id channel_id kind content_env fail_after_hour",
@@ -212,7 +224,7 @@ internal object ChannelSchema {
 internal fun chBytes(size: Int, fill: Int) = ByteArray(size) { fill.toByte() }
 
 /**
- * A migrated database with row builders for the 27 tables: [put] inserts a valid row built from the
+ * A migrated database with row builders for the 28 tables: [put] inserts a valid row built from the
  * table's defaults and the overrides, after the parent rows it needs. [sql] returns the statement, so a
  * test can embed a literal (`3.5`) in place of a bound value.
  */
@@ -254,7 +266,7 @@ internal class ChannelFixture(
             "mls_global_kv" to linkedMapOf("k" to chBytes(20, 14), "v_env" to chBytes(100, 15), "channel_id" to CH),
             "ch_post" to linkedMapOf(
                 "op_id" to POST, "channel_id" to CH, "direction" to "in", "author" to chBytes(32, 17), "kind" to 1L,
-                "timer_code" to 4L, "epoch" to 0L, "body_env" to chBytes(50, 18), "state" to "unread",
+                "timer_code" to 4L, "epoch" to 0L, "seq" to 0L, "body_env" to chBytes(50, 18), "state" to "unread",
                 "author_minute" to 600L,
             ),
             "ch_reaction" to linkedMapOf(
@@ -306,6 +318,9 @@ internal class ChannelFixture(
                 "channel_id" to CH, "box_pk" to chBytes(32, 42), "sk_env" to chBytes(60, 43),
             ),
             "mls_self" to linkedMapOf("id" to 1L, "state_key_wrapped" to chBytes(48, 0x66)),
+            "ch_rotation_history" to linkedMapOf(
+                "channel_id" to CH, "generation" to 1L, "rotated_day" to 20_000L, "removal" to 0L,
+            ),
         )
 
         init {

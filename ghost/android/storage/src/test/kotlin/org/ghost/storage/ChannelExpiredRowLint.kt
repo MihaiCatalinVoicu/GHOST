@@ -304,13 +304,13 @@ object ChannelDaoQueries {
         )
 
     private const val POST_COLUMNS =
-        "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
+        "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, seq, body_env, state, " +
             "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post "
 
     private const val POST_PAGE = POST_COLUMNS +
         "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
         "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
-        "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
+        "ORDER BY author_minute DESC, author DESC, epoch DESC, seq DESC, op_id DESC LIMIT ?"
 
     private const val POST_BY_ID = POST_COLUMNS +
         "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
@@ -364,9 +364,18 @@ object ChannelDaoQueries {
             POST_COLUMNS + "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
                 "AND (author_minute < ? OR (author_minute = ? AND author < ?) " +
-                "OR (author_minute = ? AND author = ? AND op_id < ?)) " +
-                "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?",
-            listOf(CH, NOW, NOW, NOW, NOW, L.key(0xFF), NOW, L.key(0xFF), L.id(0xFF), 50L), rows = 6,
+                "OR (author_minute = ? AND author = ? AND epoch < ?) " +
+                "OR (author_minute = ? AND author = ? AND epoch = ? AND seq < ?) " +
+                "OR (author_minute = ? AND author = ? AND epoch = ? AND seq = ? AND op_id < ?)) " +
+                "ORDER BY author_minute DESC, author DESC, epoch DESC, seq DESC, op_id DESC LIMIT ?",
+            listOf(
+                CH, NOW, NOW,
+                NOW, NOW, L.key(0xFF), NOW, L.key(0xFF), Long.MAX_VALUE,
+                NOW, L.key(0xFF), Long.MAX_VALUE, Long.MAX_VALUE,
+                NOW, L.key(0xFF), Long.MAX_VALUE, Long.MAX_VALUE, L.id(0xFF),
+                50L,
+            ),
+            rows = 6,
         ),
         read("onePostById", POST_BY_ID, listOf(L.id(0x11), NOW, NOW), rows = 1),
         hides("anExpiredPostById", POST_BY_ID, listOf(L.id(0xE1), NOW, NOW), "ch_post", "op_id = ?", listOf(L.id(0xE1))),

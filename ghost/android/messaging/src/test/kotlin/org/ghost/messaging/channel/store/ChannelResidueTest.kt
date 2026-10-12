@@ -72,10 +72,10 @@ class ChannelResidueTest {
             // posts: three expired, one with a reaction, a pending one and a revealed one
             // post 1 is expired by its relay expiry E alone: its own deadline is an hour ahead (the review of S3 wrote
             // the row the other way round, where both deadlines were past and the sweep could not tell E from the rest)
-            s.posts.insertIncomingIfAbsent(tx, id(1), w.ch, key(0x81), 1, null, 4, 1, canary, now - 7_200, now + 3_600, now - 3_600)
-            s.posts.insertIncomingIfAbsent(tx, id(2), w.ch, key(0x82), 1, id(1), 4, 1, chBytes(60, 2), now - 7_140, now - 120, null)
+            s.posts.insertIncomingIfAbsent(tx, id(1), w.ch, key(0x81), 1, null, 4, 1, 0, canary, now - 7_200, now + 3_600, now - 3_600)
+            s.posts.insertIncomingIfAbsent(tx, id(2), w.ch, key(0x82), 1, id(1), 4, 1, 0, chBytes(60, 2), now - 7_140, now - 120, null)
             s.posts.markDisplayed(tx, id(2), now - 7_020, now - 60)
-            s.posts.insertOutgoing(tx, id(3), w.ch, key(0x80), 1, null, 4, 1, chBytes(60, 3), now - 7_080, now - 3_600)
+            s.posts.insertOutgoing(tx, id(3), w.ch, key(0x80), 1, null, 4, 1, 0, chBytes(60, 3), now - 7_080, now - 3_600)
             s.posts.setState(tx, id(3), PostState.QUEUED, PostState.SENT)
             s.posts.putReaction(tx, id(1), key(0x82), w.ch, chBytes(30, 5))
             s.posts.insertPending(tx, id(4), w.ch, 1, chBytes(60, 4), now - 3_600)
@@ -200,7 +200,7 @@ class ChannelResidueTest {
             for ((i, n) in (60 downTo 1).withIndex()) {
                 val channel = if (i % 2 == 0) w.ch else w.ch2
                 val deleteAt = if (i % 3 == 0) now - 60 else now + 3_600
-                w.stores.posts.insertIncomingIfAbsent(tx, id(n), channel, key(i), 1, null, 4, 1, chBytes(60, n), now - 3_600, deleteAt, null)
+                w.stores.posts.insertIncomingIfAbsent(tx, id(n), channel, key(i), 1, null, 4, 1, 0, chBytes(60, n), now - 3_600, deleteAt, null)
             }
         }
         val expired = w.stores.posts.expiredPosts(w.db, now, 500)
@@ -224,10 +224,10 @@ class ChannelResidueTest {
     fun aReadPostOfATimerOffChannelLivesOnWithNoTimeButItsAuthorMinute() = StoreWorld().use { w ->
         w.channel()
         w.tx { tx ->
-            w.stores.posts.insertIncomingIfAbsent(tx, id(1), w.ch, key(1), 1, null, 0, 1, chBytes(60, 1), now - 7_200, null, now + 3_600)
+            w.stores.posts.insertIncomingIfAbsent(tx, id(1), w.ch, key(1), 1, null, 0, 1, 0, chBytes(60, 1), now - 7_200, null, now + 3_600)
             w.stores.posts.markDisplayed(tx, id(1), now - 3_540, null)
-            w.stores.posts.insertIncomingIfAbsent(tx, id(2), w.ch, key(2), 1, null, 0, 1, chBytes(60, 2), now - 7_200, null, now - 3_600)
-            w.stores.posts.insertIncomingIfAbsent(tx, id(3), w.ch, key(3), 1, null, 0, 1, chBytes(60, 3), now - 7_200, null, now + 3_600)
+            w.stores.posts.insertIncomingIfAbsent(tx, id(2), w.ch, key(2), 1, null, 0, 1, 0, chBytes(60, 2), now - 7_200, null, now - 3_600)
+            w.stores.posts.insertIncomingIfAbsent(tx, id(3), w.ch, key(3), 1, null, 0, 1, 0, chBytes(60, 3), now - 7_200, null, now + 3_600)
         }
         assertEquals(listOf(2), w.stores.posts.expiredPosts(w.db, now, 10).map { it[0].toInt() })
         w.tx { tx -> for (post in w.stores.posts.expiredPosts(w.db, now, 10)) w.stores.posts.deletePost(tx, post) }

@@ -387,11 +387,10 @@ internal class ChannelPassStep(
         // the committers/funders update rides along when a removed member is a committer or a funder) or
         // the context change of a resignation or a transfer. With no work the pass builds nothing here;
         // the PCS commit below is a cadence decision, not a default.
-        // §19.7 (c) / Q28 (built in S11 for NI-CH5): the pass's commit carries the rotation flag when
-        // an invite of the current generation expired unconsumed. The 14-day spacing is approximated
-        // by per-generation arming (an armed rotation moves the metadata to the new generation, which
-        // holds no expired invites; the strict window needs a rotation-history row — F-S11-3, §19.51),
-        // and the 28-day age half stays open (it would re-pin SCN-M20's choreography — F-S11-2).
+        // §19.7 (c) / Q28 (built in S11 for NI-CH5; the spacing made strict in S13c): the pass's commit carries the
+        // rotation flag when an invite of the current generation expired unconsumed and the 14-day window since the
+        // newest non-removal rotation has passed (the history row of §19.54 row 12 — F-S11-3 closed). The 28-day age
+        // half stays open (it would re-pin SCN-M20's choreography — F-S11-2).
         val rotate = inviteExpiryRotation(channelId, day, snapshot)
         val removeWork = buildList {
             removeTarget?.let { add(it) }
@@ -424,9 +423,14 @@ internal class ChannelPassStep(
 
     /**
      * §19.7 (c)'s invite-expiry half of the rotation rule: an invite of the current generation
-     * expired unconsumed (`expiry_day` reached, never consumed, never voided) and no generation
-     * drains. Never while a drain — the arming reads the rows before this pass's sweep deletes
-     * the expired record (`runPass` runs the scheduled passes first).
+     * expired unconsumed (`expiry_day` reached, never consumed, never voided), no generation
+     * drains, and the channel's newest **non-removal** rotation is at least 14 days old (Q28's
+     * "at most one non-removal rotation per 14 days", strictly: the history row of §19.54 row 12
+     * replaces the per-generation approximation — F-S11-3 closes; a removal does not move the
+     * window). Never while a drain — the arming reads the rows before this pass's sweep deletes
+     * the expired record (`runPass` runs the scheduled passes first). An event inside the window
+     * is refused (the expired invite's row is swept; the rotation it asked for is absorbed by the
+     * spacing, §19.55's S13c row).
      */
     private fun inviteExpiryRotation(channelId: ByteArray, day: Long, snapshot: Snapshot): Boolean {
         val expired = env.database.transaction { tx ->
@@ -446,7 +450,9 @@ internal class ChannelPassStep(
             ) { found = true }
             found
         }
-        return !draining
+        if (draining) return false
+        val last = env.database.transaction { tx -> stores.generations.lastRoutineRotationDay(tx.sql, channelId) }
+        return last == null || day - last >= ROTATION_SPACING_DAYS
     }
 
     /** A native call found the context or the content key gone: the pass answers [Result.UNAVAILABLE]. */
@@ -1067,6 +1073,9 @@ internal class ChannelPassStep(
     companion object {
         /** CO-8: a scheduled pass at most once per 6 hours. */
         const val PASS_SPACING_SECONDS: Long = 6 * DmTime.HOUR
+
+        /** §19.7 (c), Q28: at most one non-removal rotation per 14 days, strictly (slice S13c, §19.54 row 12). */
+        const val ROTATION_SPACING_DAYS: Long = 14
 
         /** CO-8: a pass `U[0, 5 min]` after the session's catch-up. */
         const val MAX_JITTER_MINUTES: Long = 5

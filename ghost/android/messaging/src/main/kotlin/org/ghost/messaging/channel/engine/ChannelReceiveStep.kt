@@ -43,7 +43,12 @@ import java.security.MessageDigest
  *     and counted when evicted); a batch whose `receive` throws (`INTERNAL`) is retried blob by blob, and a blob that
  *     throws alone is left to the poison guard. A namespace **under pressure** — a full window, or as many due rows as
  *     `FETCHED_CAP` — defers the entries a gap holds instead of holding them in place (§19.38, [ChannelPeekOrder]), and a
- *     batch that decrypts the `seq` they wait for re-offers them; the round is then repeated (≤ [RECEIVE_ROUNDS]).
+ *     batch that decrypts the `seq` they wait for re-offers them; the round is then repeated (≤ [RECEIVE_ROUNDS]). A pass
+ *     that drains its full window under pressure leaves a per-namespace **peek cursor** (§19.54 row 3, S13a, the relief
+ *     valve for receive-under-pressure): a remembered gap deferral the cursor covers that comes back into the due set is
+ *     left out of the next window — it is still claimed back **by key**, wherever the window is; the cursor is in memory
+ *     (cleared with the context, empty after a restart = from the start), LRU-bounded like the deferral backoff, and any
+ *     pass that is partial, gap-filled or leaves a row unopened resets it.
  *  2. **Commits**, alone: for the current epoch a validation run (CO-2, native), recorded as a candidate with its sighting
  *     and its relay store hour, its removal-hold mark (§19.35 F-1) and the CO-4 anchor of the epoch, within the bounds of
  *     §6.3.5 (one per sender, the lowest hash; the best 8 by `(rank, hash)`); for a retained past epoch a **late
@@ -93,6 +98,27 @@ internal class ChannelReceiveStep(
     private val backoff = object : LinkedHashMap<List<Byte>, Int>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, Int>?): Boolean = size > MAX_BACKOFF_ENTRIES
     }
+
+    /**
+     * The namespaces whose peek window a pass **drained fully under pressure** (§19.54 row 3, S13a — Q-F4-13's
+     * relief valve): the namespace's fetched-and-deferred rows sit at the front of every later peek (the inbox peeks
+     * in fetch order; a deferred row keeps its fetch position), so the next pass leaves a row [ChannelPeekOrder]
+     * still remembers as a gap deferral within its grace out of the window — it is claimed back by key wherever the
+     * window is (§19.38's invariant, untouched). A deferral past its grace, or a row the pass left unopened, is
+     * re-examined from the start. In memory like [backoff] — a restart or a lock rederives it conservatively
+     * (empty = from the start, the pre-S13a behavior) —, forgotten LRU-boundedly, and cleared with the context.
+     */
+    private val cursors = object : LinkedHashMap<List<Byte>, Unit>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, Unit>?): Boolean = size > MAX_CURSOR_ENTRIES
+    }
+
+    /**
+     * Test/debug visibility (S13a): how many epoch blobs the passes opened natively ([openEpoch] and the by-key
+     * re-open [openClaimed]); the RO-C backlog suites bound it — a backlog post is opened once (twice when it waited
+     * behind a gap and came back by its key), never re-opened pass after pass.
+     */
+    internal var openedBlobs: Int = 0
+        private set
 
     /**
      * Reactions whose post is not on the device yet, `(channel ‖ target ‖ author)` → the reaction (§19.38): a reaction can
@@ -172,17 +198,36 @@ internal class ChannelReceiveStep(
         val peeked = sync.inbox.peek(Consumer.CHANNEL, peekLimit)
         if (peeked.isEmpty()) {
             peekOrder.idle(env.now())
+            cursors.clear()
             return 0
         }
         val now = env.now()
         val day = DmTime.day(now)
-        val present = peeked.map { it.namespace.toByteArray().toList() + it.hash.toByteArray().toList() }.toSet()
+        // S13a (§19.54 row 3): a remembered gap deferral of a namespace the cursor swept is left out of the
+        // window (no classification, no native open) and handed to the plan by its key — taken or deferred again
+        // there. The cursor itself advances only when the pass drains its full window under pressure (the finally).
+        val namespaces = HashSet<List<Byte>>()
+        val skipped = HashSet<List<Byte>>()
+        val window = ArrayList<PeekedBlob>(peeked.size)
+        for (b in peeked) {
+            val ns = b.namespace.toByteArray().toList()
+            namespaces += ns
+            if (cursors.containsKey(ns) && peekOrder.isDeferredInGrace(ns + b.hash.toByteArray().toList(), now)) {
+                skipped += ns + b.hash.toByteArray().toList()
+                continue
+            }
+            window += b
+        }
+        val present = window.map { it.namespace.toByteArray().toList() + it.hash.toByteArray().toList() }.toSet()
         // §19.38: a full window may hide the next blob of a sender, and a namespace at Phase 7's fetched cap fetches no
-        // further blob until rows are consumed — under either, a gap is deferred, not held in place.
+        // further blob until rows are consumed — under either, a gap is deferred, not held in place. Pressure reads what
+        // the inbox holds due (the peek), the cursor-skipped rows included: a due deferred row counts against the cap.
         val windowFull = peeked.size >= peekLimit
         val dueByNamespace = peeked.groupingBy { it.namespace.toByteArray().toList() }.eachCount()
-        val classified = env.database.transaction { tx -> peeked.map { classify(tx, it, day) } }
+        val classified = env.database.transaction { tx -> window.map { classify(tx, it, day) } }
         var consumed = 0
+        var leftUnprocessed = false
+        var interrupted = false
         val apps = ArrayList<ChannelPeekOrder.Entry<Opened>>()
         val commits = ArrayList<Opened>()
         val joins = ArrayList<Classified>()
@@ -192,7 +237,7 @@ internal class ChannelReceiveStep(
             when (val k = c.kind) {
                 is Kind.Epoch -> when (val r = openEpoch(c, k.epoch, day)) {
                     OpenResult.Consumed -> consumed++
-                    OpenResult.Left -> Unit
+                    OpenResult.Left -> leftUnprocessed = true
                     is OpenResult.Ok -> {
                         val o = r.opened
                         when (o.contentType) {
@@ -211,48 +256,81 @@ internal class ChannelReceiveStep(
                 Kind.Unknown -> unknown += c
             }
         }
-        val plan = peekOrder.plan(apps, present, now)
-        for ((entry, waitingFor) in plan.deferrals) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            val opened = entry.value
-            val deferred = if (opened != null) {
-                deferClaimed(opened.c, ChannelPeekOrder.GAP_DEFER_SECONDS)
+        val plan = peekOrder.plan(apps, present, now, skipped)
+        try {
+            for ((entry, waitingFor) in plan.deferrals) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                val opened = entry.value
+                val deferred = if (opened != null) {
+                    deferClaimed(opened.c, ChannelPeekOrder.GAP_DEFER_SECONDS)
+                } else {
+                    deferKey(entry.key, ChannelPeekOrder.GAP_DEFER_SECONDS)
+                }
+                if (deferred) {
+                    peekOrder.deferred(entry, waitingFor, now + ChannelPeekOrder.GAP_DEFER_SECONDS)
+                    env.counters.count(ChannelCounters.Reason.GAP_DEFERRED)
+                }
+            }
+            for (batch in plan.batches) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += applicationBatch(batch, now, day)
+            }
+            for (o in commits) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += commit(o, now, day)
+            }
+            val committers = HashMap<List<Byte>, Boolean>()
+            for (c in joins) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += joinRequest(c, committers, now, day)
+            }
+            for (c in welcomes) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += welcome(c)
+            }
+            for (c in unknown) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += unmatched(c, now)
+            }
+            return consumed
+        } finally {
+            // S13a: the cursor advances only when the pass drained its full window under pressure — no row left
+            // unopened and no deadline cut. Deferring is draining (the rows left the window) and a by-key claim-back
+            // touches only remembered rows the skip left out; both keep the cursor. Anything else rederives from the
+            // start (empty = the pre-S13a behavior).
+            val advance = !interrupted && !leftUnprocessed &&
+                (windowFull || dueByNamespace.values.any { it >= fetchedCap })
+            if (advance) {
+                for (ns in namespaces) cursors[ns] = Unit
             } else {
-                deferKey(entry.key, ChannelPeekOrder.GAP_DEFER_SECONDS)
-            }
-            if (deferred) {
-                peekOrder.deferred(entry, waitingFor, now + ChannelPeekOrder.GAP_DEFER_SECONDS)
-                env.counters.count(ChannelCounters.Reason.GAP_DEFERRED)
+                cursors.clear()
             }
         }
-        for (batch in plan.batches) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += applicationBatch(batch, now, day)
-        }
-        for (o in commits) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += commit(o, now, day)
-        }
-        val committers = HashMap<List<Byte>, Boolean>()
-        for (c in joins) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += joinRequest(c, committers, now, day)
-        }
-        for (c in welcomes) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += welcome(c)
-        }
-        for (c in unknown) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += unmatched(c, now)
-        }
-        return consumed
     }
 
-    /** Forgets what the passes kept in memory (the backoffs, the held reactions): the context closed. */
+    /** Forgets what the passes kept in memory (the backoffs, the held reactions, the peek cursors): the context closed. */
     fun clear() {
         backoff.clear()
         heldReactions.clear()
+        cursors.clear()
     }
 
     // ------------------------------------------------------------------------------------ classification
@@ -297,6 +375,7 @@ internal class ChannelReceiveStep(
 
     /** Opens a mode-0x11 blob in memory (no write); a forged or non-canonical seal is consumed and counted. */
     private fun openEpoch(c: Classified, epoch: Long, day: Long): OpenResult {
+        openedBlobs++
         val channel = c.channel ?: return OpenResult.Left
         val generation = c.generation ?: return OpenResult.Left
         val epochRow = env.database.transaction { tx -> stores.epochs.epoch(tx.sql, channel.channelId, epoch, day) }
@@ -352,7 +431,9 @@ internal class ChannelReceiveStep(
                         consumed++
                         peekOrder.forget(e.key)
                     }
-                    Claim.Gone -> peekOrder.forget(e.key)
+                    Claim.Gone -> {
+                        peekOrder.forget(e.key)
+                    }
                     is Claim.Held -> {
                         if (o != null) {
                             claimed += Ready(e.key, o.body, r.blob)
@@ -396,6 +477,7 @@ internal class ChannelReceiveStep(
      * was opened as this message before it was deferred, so anything else is a store that changed under it.
      */
     private fun openClaimed(channelId: ByteArray, e: ChannelPeekOrder.Entry<Opened>, blob: InboundBlob, day: Long): Reopened {
+        openedBlobs++
         val epochRow = env.database.transaction { tx -> stores.epochs.epoch(tx.sql, channelId, e.epoch, day) } ?: return Reopened.Bad
         val opened = env.contexts.open(channelId) ?: return Reopened.Unavailable
         return when (
@@ -625,6 +707,7 @@ internal class ChannelReceiveStep(
             replyTo = replyTo,
             timerCode = timer,
             epoch = epoch,
+            seq = item.seq,
             bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), text),
             authorMinute = authorSeconds,
             deleteAtMinute = deleteAt,
@@ -1345,6 +1428,9 @@ internal class ChannelReceiveStep(
 
         /** The blobs whose deferral backoff is remembered (the least recently used one is forgotten first). */
         const val MAX_BACKOFF_ENTRIES: Int = 4_096
+
+        /** The peek cursors of §19.54 row 3 (S13a): same bound and shape as [MAX_BACKOFF_ENTRIES]. */
+        const val MAX_CURSOR_ENTRIES: Int = 4_096
 
         /** The reactions held for a post that has not arrived (§19.38). */
         const val MAX_HELD_REACTIONS: Int = 256

@@ -5,7 +5,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The CHECK and foreign-key constraints of the 27 channel tables (Phase 10 design §9 and slice S4's `mls_self`), **executed**: every
+ * The CHECK and foreign-key constraints of the 28 channel tables (Phase 10 design §9 and slice S4's `mls_self`,
+ * slice S13c's `ch_rotation_history`), **executed**: every
  * length, closed list, range and coupling a table declares refuses the value just outside it and accepts
  * the value just inside it (slice S3). The `typeof` and grid checks of the integer columns are
  * [ChannelSchemaIntrospectionTest]'s; the triggers are [ChannelTriggersTest]'s.
@@ -162,6 +163,17 @@ class ChannelSchemaConstraintsTest {
         // The relay expiry is a deadline of an unread post only: a display forgets it, and a read post has none.
         add(refused("ch_post", "a read post with a relay expiry", "state" to "read", "relay_expiry_hour" to 3_600L))
         add(accepted("ch_post", "an unread post of a timer-off channel: a relay expiry and no deadline", "timer_code" to 0L, "relay_expiry_hour" to 3_600L))
+        // Slice S13c (§19.54 row 6): the ratchet seq, `own_seq`'s `u32` bound, written at insert, never updated.
+        add(refused("ch_post", "a negative seq", "seq" to -1L))
+        add(refused("ch_post", "a seq of 2^32", "seq" to 4_294_967_296L))
+        add(accepted("ch_post", "the first seq of an epoch", "seq" to 0L))
+        add(accepted("ch_post", "the largest seq", "seq" to 4_294_967_295L))
+        // ---- ch_rotation_history (slice S13c, §19.54 row 12): one row per rotation, keyed by the generation it opened
+        add(refused("ch_rotation_history", "a rotation of generation 0 (the founding generation is no rotation)", "generation" to 0L))
+        add(accepted("ch_rotation_history", "the first rotation's row"))
+        add(refused("ch_rotation_history", "a removal flag of 2", "removal" to 2L))
+        add(accepted("ch_rotation_history", "a removal rotation's row", "removal" to 1L))
+        add(refused("ch_rotation_history", "a negative day", "rotated_day" to -1L))
         // ---- ch_reaction
         addAll(between("ch_reaction", "grapheme_env", 29, 60))
         addAll(exact("ch_reaction", "author", 32))

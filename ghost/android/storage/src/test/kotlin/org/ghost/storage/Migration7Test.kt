@@ -9,7 +9,7 @@ import org.junit.Test
 
 /**
  * Migration 7 (Phase 10 design §9, "Migration 7 (channels)"; slice S3) on a **populated v6 database**:
- * the four v1 channel tables go behind their guard, the 26 channel tables arrive empty, and not a row
+ * the four v1 channel tables go behind their guard, the 28 channel tables arrive empty, and not a row
  * of any other table moves; an interruption at any statement leaves v6 as it was; an older app and a
  * half-migrated database are refused.
  *
@@ -212,9 +212,10 @@ class Migration7Test {
             Pair(db.schemaSnapshot(), db.dump())
         }
         assertTrue(
-            "step 0 (11), 31 tables and indexes, 37 rules, 25 guards and 4 rowid triggers are 108 statements (105 before slice " +
-                "S4 added `mls_self`, its rule and its guard, §19.37); a change is deliberate: ${v7.statements.size}",
-            v7.statements.size == 108,
+            "step 0 (11), 32 tables and indexes, 38 rules, 26 guards and 4 rowid triggers are 111 statements (105 before " +
+                "slice S4 added `mls_self`, its rule and its guard, §19.37; 108 before slice S13c added `ch_rotation_history`, " +
+                "its rule and its guard, §19.54 row 12); a change is deliberate: ${v7.statements.size}",
+            v7.statements.size == 111,
         )
         for (i in v7.statements.indices) {
             populatedV6().use { db ->
