@@ -18,6 +18,7 @@ use ghost_client_mls::group::{
     Anchor, ChannelHandle, CommitRequest, GenerationValues, KeyClass, MlsContext, Winner,
 };
 use ghost_client_mls::invite;
+use ghost_client_mls::join::InviteCandidate;
 use ghost_client_mls::join::{JoinAuth, WelcomeBlob};
 use ghost_client_mls::kv::{ChangeSet, Scope, WrappedRow, WrappedRows};
 use ghost_client_mls::seal::{self, Order};
@@ -217,7 +218,10 @@ fn main() {
                         owner.ctx.join_verify(
                             &channel,
                             &body,
-                            Some(&inv.issued.invite_pk),
+                            &[InviteCandidate {
+                                invite_id: inv.issued.invite_id,
+                                invite_pk: inv.issued.invite_pk,
+                            }],
                             None,
                             g.generation,
                         )

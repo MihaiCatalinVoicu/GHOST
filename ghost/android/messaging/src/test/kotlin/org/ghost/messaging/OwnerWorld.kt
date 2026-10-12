@@ -102,6 +102,8 @@ class OwnerWorld(
                 override fun handleOrNull(): Long? = null
 
                 override fun stateKeyWrapped(): ByteArray? = null
+
+                override fun channelScheduleKey(): ByteArray? = null
             },
         )
 

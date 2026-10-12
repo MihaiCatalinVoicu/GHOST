@@ -36,7 +36,7 @@ class ReleaseSmokeTest {
     private fun bytes(value: Int, size: Int) = ByteArray(size) { value.toByte() }
 
     private fun context(branch: Int): Long = requireNotNull(
-        DmSessions.openContext(bytes(branch, 32), bytes(branch + 1, 32), bytes(branch + 2, 32)),
+        DmSessions.openContext(bytes(branch, 32), bytes(branch + 1, 32), bytes(branch + 2, 32))?.handle,
     ) { "ctxOpen" }
 
     @Test

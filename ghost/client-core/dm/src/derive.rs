@@ -115,6 +115,11 @@ pub enum DmLabel {
     InboxRead(u16, u8),
     /// The publication schedule key of card index i.
     Schedule(u16),
+    /// CO-9's channel self-update schedule key `K_sched` (§6.4 of the Phase 10 design,
+    /// owner decision Q-F5-6 of §19.54): `HKDF(m, "ghost/v1/dm/channel-schedule")` — one key
+    /// for every channel of the identity, no parameters. Consumed by the channel engine
+    /// (`ChannelSchedule`), which is why the label names the channel schedule, not a card.
+    ChannelSchedule,
 }
 
 impl DmLabel {
@@ -126,6 +131,7 @@ impl DmLabel {
             DmLabel::Card(_) => "ghost/v1/dm/card",
             DmLabel::InboxRead(..) => "ghost/v1/dm/inbox-read",
             DmLabel::Schedule(_) => "ghost/v1/dm/schedule",
+            DmLabel::ChannelSchedule => "ghost/v1/dm/channel-schedule",
         }
     }
 
@@ -133,7 +139,7 @@ impl DmLabel {
     pub fn info(self) -> Vec<u8> {
         let mut info = self.label().as_bytes().to_vec();
         match self {
-            DmLabel::OlmIdentity | DmLabel::OlmAccountSigning => {}
+            DmLabel::OlmIdentity | DmLabel::OlmAccountSigning | DmLabel::ChannelSchedule => {}
             DmLabel::Card(index) | DmLabel::Schedule(index) => {
                 info.extend_from_slice(&index.to_be_bytes())
             }
@@ -146,12 +152,13 @@ impl DmLabel {
     }
 
     /// Every seed-level label string.
-    pub const LABELS: [&'static str; 5] = [
+    pub const LABELS: [&'static str; 6] = [
         "ghost/v1/dm/olm-identity",
         "ghost/v1/dm/olm-account-signing",
         "ghost/v1/dm/card",
         "ghost/v1/dm/inbox-read",
         "ghost/v1/dm/schedule",
+        "ghost/v1/dm/channel-schedule",
     ];
 }
 
@@ -262,6 +269,17 @@ pub fn derive_inbox_read_secret(
 /// `S_i`, the bundle publication schedule key (§3.1, §5.4).
 pub fn derive_schedule_key(m: &MessagingBranch, card_index: u16) -> [u8; SECRET_BYTES] {
     hkdf32(m.as_bytes(), None, &DmLabel::Schedule(card_index).info())
+}
+
+/// `K_sched = HKDF(m, "ghost/v1/dm/channel-schedule")` (Phase 10 design §6.4 CO-9; owner
+/// decision Q-F5-6 of §19.54, closing finding F-S5-6): the key of the channel self-update
+/// schedule's slot PRF `HMAC(K_sched, channel_id ‖ u32_be(period))`. One value for the whole
+/// identity — no channel or card parameter — so a seed restore re-derives the same key and a
+/// member keeps its slot (the S5b2 build keyed the PRF by `dm_self`'s random seen key, which a
+/// restore regenerated). Computed at `ctxOpen` and handed to Kotlin through that call's reply;
+/// the slot MAC itself is computed in Kotlin like `ChannelTags`' (G-M3 rule 4's exception shape).
+pub fn derive_channel_schedule_key(m: &MessagingBranch) -> [u8; SECRET_BYTES] {
+    hkdf32(m.as_bytes(), None, &DmLabel::ChannelSchedule.info())
 }
 
 /// Label of the weekly bundle-publication offset (§5.4).
@@ -416,6 +434,7 @@ mod tests {
         let _: fn(&MessagingBranch, u16) -> CardSecret = derive_card_secret;
         let _: fn(&MessagingBranch, u16, u8) -> [u8; 32] = derive_inbox_read_secret;
         let _: fn(&MessagingBranch, u16) -> [u8; 32] = derive_schedule_key;
+        let _: fn(&MessagingBranch) -> [u8; 32] = derive_channel_schedule_key;
         let _: fn(&CardSecret, CardLabel) -> [u8; 32] = derive_card_value;
         let _: fn(&CardSecret) -> [u8; 32] = derive_inbox_namespace;
         let _: fn(&CardSecret) -> [u8; 32] = derive_bundle_namespace;
@@ -433,10 +452,11 @@ mod tests {
 
     /// The names [`derivation_key_inputs_are_typed`] pins, in one list the enumeration below
     /// compares with the sources.
-    const PINNED_DERIVATIONS: [&str; 12] = [
+    const PINNED_DERIVATIONS: [&str; 13] = [
         "derive_bundle_namespace",
         "derive_card_secret",
         "derive_card_value",
+        "derive_channel_schedule_key",
         "derive_inbox_namespace",
         "derive_inbox_read_secret",
         "derive_olm_account_signing",
@@ -661,6 +681,23 @@ mod tests {
             u64::from(publication_offset(&key)),
             expected - expected % 60
         );
+    }
+
+    /// The golden vector of `K_sched` (owner decision Q-F5-6 of §19.54, closing F-S5-6):
+    /// `HKDF-SHA256(ikm = m, salt = ∅, info = "ghost/v1/dm/channel-schedule", L = 32)` at
+    /// `m = 00 01 … 1f`, recomputed independently (RFC 5869 test-vector style). A renamed label,
+    /// a changed salt or another parameter lands on different bytes — the killer a silent drift
+    /// of the schedule key needs, because the slot PRF's output is scheduling metadata no peer
+    /// ever checks.
+    #[test]
+    fn channel_schedule_key_golden() {
+        let key = derive_channel_schedule_key(&branch());
+        assert_eq!(
+            hex::encode(key),
+            "7053449f2f16fdf3dd75b4b3045e77f07884561d57333e3002cad46bdaddf759"
+        );
+        // No parameters: the key is one per identity, unlike the card schedule key S_i.
+        assert_eq!(key, derive_channel_schedule_key(&branch()));
     }
 
     #[test]

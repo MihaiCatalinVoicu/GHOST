@@ -100,7 +100,7 @@ class ChannelCryptoNativeTest {
         assertTrue(ChannelRecognition.matches(blob, g.rJoin, ChannelCrypto.MODE_JOIN))
         val opened = sponsor.crypto.open(channel, g.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, g.ns, ChannelCrypto.MODE_JOIN, blob).ok()
         assertArrayEquals(body, opened.body)
-        val verified = sponsor.crypto.joinVerify(channel, opened.body, built.invitePk, null, g.generation.toInt()).ok()
+        val verified = sponsor.crypto.joinVerify(channel, opened.body, built.inviteId + built.invitePk, null, g.generation.toInt()).ok()
         assertArrayEquals(joiner.p, verified.pseudonym)
         assertArrayEquals(kp.kpRef, verified.kpRef)
         val evidence = AdmitEvidence(

@@ -901,16 +901,22 @@ class ChannelCrypto private constructor(private val handle: Long) {
         override fun toString(): String = "JoinVerified(type=$requestType)"
     }
 
-    /** `joinVerify` (fn 15): [invitePk] for a join or restore, [member] for a rejoin. */
+    /**
+     * `joinVerify` (fn 15, slice S13b): [invites] is the concatenation of the live invites'
+     * `INVITE_ID(16) ‖ invite_pk(32)` records (empty for a rejoin); [member] for a rejoin. The
+     * request names its invite before the signature check: the claimed id is read from the
+     * authenticated body and the signature is verified under that invite's key, in one pass —
+     * `BAD_SIGNATURE` also when the named invite is not in [invites].
+     */
     fun joinVerify(
         channelId: ByteArray,
         body: ByteArray,
-        invitePk: ByteArray?,
+        invites: ByteArray,
         member: ByteArray?,
         generation: Int,
     ): MlsOutcome<JoinVerified> {
         val reply = mlsCall {
-            MlsNative.joinVerify(handle, channelId, body, invitePk ?: NO_BYTES, member ?: NO_BYTES, generation)
+            MlsNative.joinVerify(handle, channelId, body, invites, member ?: NO_BYTES, generation)
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(

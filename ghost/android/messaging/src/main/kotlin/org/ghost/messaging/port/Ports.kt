@@ -123,4 +123,18 @@ interface DmContext {
      * Null when the context is closed, like [handleOrNull].
      */
     fun stateKeyWrapped(): ByteArray?
+
+    /**
+     * CO-9's channel self-update schedule key `K_sched` (Phase 10 design §6.4; owner decision
+     * Q-F5-6 of §19.54, slice S13b): `HKDF(m, "ghost/v1/dm/channel-schedule")`, 32 bytes, derived
+     * natively at `ctxOpen` and cached here. The channel engine's `ChannelSchedule` keys the slot
+     * PRF `HMAC(K_sched, channel_id ‖ u32_be(period))` with it; the MAC itself is computed in
+     * Kotlin like `ChannelTags`' (G-M3 rule 4's exception shape). One key per identity — no
+     * channel parameter — and re-derivable from the seed, so a restore keeps the member's slot
+     * (the S5b2 seen-key deviation F-S5-6, closed by S13b).
+     *
+     * A **copy** the caller zeroes, like the seen key from `ChannelLocalKeys`; null when the
+     * context is closed, like [handleOrNull].
+     */
+    fun channelScheduleKey(): ByteArray?
 }

@@ -278,6 +278,13 @@ enum class DmField(val tag: Int) {
 
     /** A received `seal_root_pq` value, 1 166 bytes (§7.1), handed back to `pqRootOpen`. */
     SEAL_ROOT_PQ_TLV(0x3f),
+
+    /**
+     * CO-9's channel self-update schedule key `K_sched` (Phase 10 design §6.4; owner decision
+     * Q-F5-6 of §19.54, slice S13b): `HKDF(m, "ghost/v1/dm/channel-schedule")`, returned by
+     * `ctxOpen`. The channel engine's `ChannelSchedule` keys the slot PRF with it.
+     */
+    CHANNEL_SCHEDULE_KEY(0x40),
     ;
 
     companion object {

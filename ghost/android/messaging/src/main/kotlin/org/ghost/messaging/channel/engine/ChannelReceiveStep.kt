@@ -1012,14 +1012,16 @@ internal class ChannelReceiveStep(
     // -------------------------------------------------------------------------------------- join requests
 
     /**
-     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and finds the invite it names: `joinVerify` (§10.2
-     * fn 15) needs the invite's public key before it says which invite the request names (finding F-S4-3 of §19.37), so
-     * the request is verified under each distinct `invite_pk` of the live invites the member holds, and then bound to the
-     * record whose `invite_id` is **the one the invitee signed** (`auth.INVITE_ID`; §19.38: binding it to the first record
-     * that merely shares the key let any member plant a record under a lower id and capture the request). A request
-     * refused for its KeyPackage, purpose or binding is consumed and counted; one no held invite signs is **deferred** —
-     * the `INVITE_ISSUED` may arrive later — until its relay expiry. A request for a spent or void invite, a second request
-     * for one invite and a 65th request are ignored (§6.2.4, §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`),
+     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and names the invite it names: since slice
+     * S13b (fn 15, owner decision Q-F4-14 of §19.54) `joinVerify` reads the claimed `invite_id` from the
+     * authenticated body — it is inside the invite signature — looks the invite up in the live set, and
+     * verifies under that invite's key, one native call per request; the request is bound to the record
+     * whose `invite_id` is the one the invitee signed (`auth.INVITE_ID` — a request naming a wrong invite
+     * fails the signature, so a planted record under another id captures nothing and costs no verification).
+     * A request refused for its KeyPackage, purpose or binding is consumed and counted; one no held invite
+     * signs — `BAD_SIGNATURE` at the named-invite lookup — is **deferred**: the `INVITE_ISSUED` may arrive
+     * later — until its relay expiry. A request for a spent or void invite, a second request for one invite
+     * and a 65th request are ignored (§6.2.4, §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`),
      * on the stored request.
      */
     private fun joinRequest(c: Classified, committers: MutableMap<List<Byte>, Boolean>, now: Long, day: Long): Int {
@@ -1048,19 +1050,26 @@ internal class ChannelReceiveStep(
         }
         val invites = env.database.transaction { tx -> stores.invites.issuedOf(tx.sql, channel.channelId, day) }
         var found: Pair<InviteStore.IssuedRow, ChannelCrypto.JoinVerified>? = null
-        // One verification per key: records that share an `invite_pk` cost one `joinVerify` together.
-        for (sharing in invites.groupBy { it.invitePk.toList() }.values) {
-            when (val v = opened.crypto.joinVerify(channel.channelId, body, sharing.first().invitePk, null, generation.generation.toInt())) {
+        if (invites.isNotEmpty()) {
+            // fn 15 (S13b): the request names its invite before the signature check — one native
+            // call over the whole live set; the key is chosen by the id inside the signature.
+            val inviteSet = ByteArray(invites.size * (INVITE_ID_BYTES + KEY_BYTES))
+            invites.forEachIndexed { i, inv ->
+                inv.inviteId.copyInto(inviteSet, i * (INVITE_ID_BYTES + KEY_BYTES))
+                inv.invitePk.copyInto(inviteSet, i * (INVITE_ID_BYTES + KEY_BYTES) + INVITE_ID_BYTES)
+            }
+            when (val v = opened.crypto.joinVerify(channel.channelId, body, inviteSet, null, generation.generation.toInt())) {
                 is MlsOutcome.Ok -> {
-                    val signed = v.value.auth.bytesOrNull(MlsField.INVITE_ID) ?: continue
-                    val invite = sharing.firstOrNull { it.inviteId.contentEquals(signed) } ?: continue
-                    found = invite to v.value
-                    break
+                    val signed = v.value.auth.bytesOrNull(MlsField.INVITE_ID)
+                    val invite = signed?.let { id -> invites.firstOrNull { it.inviteId.contentEquals(id) } }
+                    if (invite != null) found = invite to v.value
                 }
                 is MlsOutcome.Refused -> when (v.code) {
-                    MlsCode.BAD_SIGNATURE -> continue
+                    // No held invite by that id (an `INVITE_ISSUED` may arrive later) or the
+                    // signature is not the named invite's: the rejoin fallback below decides.
+                    MlsCode.BAD_SIGNATURE -> Unit
                     MlsCode.CRYPTO_UNAVAILABLE -> return 0
-                    // The KeyPackage, its purpose or its form is refused whatever the invite (decoded before the signature).
+                    // The KeyPackage, its purpose or its binding is refused whatever the invite (decoded before the signature).
                     else -> return if (drop(c, ChannelCounters.Reason.JOIN_REFUSED)) 1 else 0
                 }
             }
@@ -1075,7 +1084,7 @@ internal class ChannelReceiveStep(
             for (member in members) {
                 when (
                     val v = opened.crypto.joinVerify(
-                        channel.channelId, body, null, member.pseudonym, generation.generation.toInt(),
+                        channel.channelId, body, ByteArray(0), member.pseudonym, generation.generation.toInt(),
                     )
                 ) {
                     is MlsOutcome.Ok -> {

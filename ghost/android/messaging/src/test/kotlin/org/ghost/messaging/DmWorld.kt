@@ -548,7 +548,7 @@ class DmDevice(
     internal val sessionStateKey: ByteArray = (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() }).copyOf()
 
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */
-    private val handle: Long? = if (DmWorld.nativeAvailable()) {
+    private val openedContext: DmSessions.OpenedContext? = if (DmWorld.nativeAvailable()) {
         DmSessions.openContext(
             messagingBranch = seeds?.messagingBranch ?: ByteArray(32) { branch.toByte() },
             identitySeed = seeds?.identitySeed ?: ByteArray(32) { identityBranch.toByte() },
@@ -557,6 +557,8 @@ class DmDevice(
     } else {
         null
     }
+
+    private val handle: Long? = openedContext?.handle
 
     /** The DM context's handle, for the crash worlds' test-library hooks (`DmEquivalence`, §22.37). */
     internal val nativeHandle: Long? get() = handle
@@ -568,6 +570,9 @@ class DmDevice(
         override fun handleOrNull(): Long? = handle
 
         override fun stateKeyWrapped(): ByteArray? = if (handle != null) stateKey else null
+
+        override fun channelScheduleKey(): ByteArray? =
+            if (handle != null) openedContext?.channelScheduleKey?.copyOf() else null
     }
 
     val crypto: org.ghost.messaging.port.DmCrypto =
@@ -824,7 +829,7 @@ class DmDevice(
             messagingBranch = seeds?.messagingBranch ?: ByteArray(32) { branch.toByte() },
             identitySeed = seeds?.identitySeed ?: ByteArray(32) { identityBranch.toByte() },
             sessionStateKey = seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() },
-        )
+        )?.handle
     } else {
         null
     }

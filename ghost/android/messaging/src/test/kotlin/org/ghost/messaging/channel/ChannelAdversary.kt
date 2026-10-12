@@ -73,7 +73,8 @@ internal object ChannelAdversary {
         val body = openRequest(forger, id, requestBlob)
         val invite = forger.database.transaction { tx -> forger.channelStores.invites.issuedOf(tx.sql, c, v.day) }
             .firstOrNull { it.sponsor.contentEquals(v.p) } ?: error("the forger sponsored no invite")
-        val verified = v.crypto.joinVerify(c, body, invite.invitePk, null, v.generation.toInt()).ok()
+        // fn 15 (S13b): the request names its invite; the set carries `INVITE_ID ‖ invite_pk`.
+        val verified = v.crypto.joinVerify(c, body, invite.inviteId + invite.invitePk, null, v.generation.toInt()).ok()
         // The fork: a group of the forger's alone, under the channel's id, in rows the forger keeps to itself.
         val policy = ChannelPolicy(c, 0, 4, 0, 0, 1, 63, 0, ByteArray(0), listOf(v.p), listOf(v.p))
         val created = v.crypto.groupCreate(c, policy, v.day.toInt()).ok()

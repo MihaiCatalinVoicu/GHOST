@@ -67,13 +67,13 @@ class DmPqSpyNativeTest {
     private fun bytes(value: Int, size: Int) = ByteArray(size) { value.toByte() }
 
     private fun context(branch: Int): Long {
-        val handle = DmSessions.openContext(
+        val opened = DmSessions.openContext(
             messagingBranch = bytes(branch, 32),
             identitySeed = bytes(branch + 1, 32),
             sessionStateKey = bytes(branch + 2, 32),
         )
-        assertNotNull("ctxOpen", handle)
-        return handle!!
+        assertNotNull("ctxOpen", opened)
+        return opened!!.handle
     }
 
     /**

@@ -12,7 +12,7 @@ use ghost_client_mls::ext::{
 };
 use ghost_client_mls::group::{Anchor, ContextKept, KeyClass, ReceiveItem};
 use ghost_client_mls::invite;
-use ghost_client_mls::join::{JoinAuth, WelcomeBlob};
+use ghost_client_mls::join::{InviteCandidate, JoinAuth, WelcomeBlob};
 use ghost_client_mls::kv::WrappedRows;
 use ghost_client_mls::provider::GhostProvider;
 use ghost_client_mls::seal::{self, Order};
@@ -337,7 +337,10 @@ fn a_restore_swap_rotates_and_the_restored_device_joins() {
         .join_verify(
             &w.channel_id,
             &body,
-            Some(&inv.issued.invite_pk),
+            &[InviteCandidate {
+                invite_id: inv.issued.invite_id,
+                invite_pk: inv.issued.invite_pk,
+            }],
             None,
             g.generation,
         )
@@ -412,13 +415,13 @@ fn a_rejoin_swap_keeps_the_generation() {
     let owner = &w.members[0];
     let v = owner
         .ctx
-        .join_verify(&w.channel_id, &body, None, Some(&m.p()), g.generation)
+        .join_verify(&w.channel_id, &body, &[], Some(&m.p()), g.generation)
         .unwrap();
     // The signature binds the generation of the namespace the request was sealed into.
     assert_eq!(
         owner
             .ctx
-            .join_verify(&w.channel_id, &body, None, Some(&m.p()), g.generation + 1)
+            .join_verify(&w.channel_id, &body, &[], Some(&m.p()), g.generation + 1)
             .err(),
         Some(MlsError::new(Code::BadSignature))
     );

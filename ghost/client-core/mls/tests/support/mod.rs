@@ -12,6 +12,7 @@ use ghost_client_mls::group::{
     MlsContext, ReceiveItem, Standing, Winner,
 };
 use ghost_client_mls::invite;
+use ghost_client_mls::join::InviteCandidate;
 use ghost_client_mls::join::WelcomeBlob;
 use ghost_client_mls::kv::{ChangeSet, Scope, WrappedRow, WrappedRows};
 use ghost_client_mls::seal::{self, Order};
@@ -195,7 +196,10 @@ impl World {
             .join_verify(
                 &self.channel_id,
                 &body,
-                Some(&out.issued.invite_pk),
+                &[InviteCandidate {
+                    invite_id: out.issued.invite_id,
+                    invite_pk: out.issued.invite_pk,
+                }],
                 None,
                 g.generation,
             )

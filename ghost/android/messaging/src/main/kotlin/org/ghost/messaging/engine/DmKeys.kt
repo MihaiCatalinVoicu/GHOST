@@ -97,9 +97,15 @@ class DmKeys(
     @Volatile
     private var wrapped: ByteArray? = null
 
+    /** `K_sched` of §6.4 (S13b): what `ctxOpen` derived from the branch, cached for [channelScheduleKey]. */
+    @Volatile
+    private var schedule: ByteArray? = null
+
     override fun handleOrNull(): Long? = handle
 
     override fun stateKeyWrapped(): ByteArray? = if (handle != null) wrapped?.copyOf() else null
+
+    override fun channelScheduleKey(): ByteArray? = if (handle != null) schedule?.copyOf() else null
 
     /** True while a context is open. */
     val isOpen: Boolean get() = handle != null
@@ -147,7 +153,8 @@ class DmKeys(
             // `finally` below is the second wipe, for the paths that return before it is called.
             val opened = DmSessions.openContext(branch, seed, stateKey) ?: return Opened.CRYPTO_UNAVAILABLE
             wrapped = wrappedKey
-            handle = opened
+            handle = opened.handle
+            schedule = opened.channelScheduleKey
             return Opened.OPENED
         } finally {
             branch?.fill(0)
@@ -165,6 +172,8 @@ class DmKeys(
         val open = handle ?: return
         handle = null
         wrapped = null
+        schedule?.fill(0)
+        schedule = null
         DmSessions.closeContext(open)
     }
 

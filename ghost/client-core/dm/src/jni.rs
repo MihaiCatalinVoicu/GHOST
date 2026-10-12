@@ -517,6 +517,12 @@ pub enum Field {
     /// peer_gen_id || xwing_ct`. `root_rand` alone keys nothing (§9.4), and the L0 it came out of
     /// was already on the caller's side of the boundary.
     SealRootPqTlv = 0x3f,
+    /// CO-9's channel self-update schedule key `K_sched = HKDF(m, "ghost/v1/dm/channel-schedule")`
+    /// (§6.4 of the Phase 10 design; owner decision Q-F5-6 of §19.54, slice S13b): returned by
+    /// `ctxOpen`, the one call that holds the MESSAGING branch `m`. Kotlin's channel engine keys
+    /// the slot PRF `HMAC(K_sched, channel_id ‖ u32_be(period))` with it — scheduling metadata,
+    /// never on the wire.
+    ChannelScheduleKey = 0x40,
 }
 
 impl Field {
@@ -588,6 +594,7 @@ impl Field {
         Field::RevocationReason,
         Field::PeerGenId,
         Field::SealRootPqTlv,
+        Field::ChannelScheduleKey,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -657,6 +664,7 @@ impl Field {
             Field::RevocationReason => 0x3d,
             Field::PeerGenId => 0x3e,
             Field::SealRootPqTlv => 0x3f,
+            Field::ChannelScheduleKey => 0x40,
         }
     }
 }
@@ -864,7 +872,12 @@ fn day(today: jint) -> Result<u32, DmCode> {
 // entry point inside `ghost-client-net`, so the closed list stays visible there (§2.3).
 // -------------------------------------------------------------------------------------------
 
-/// §2.6 function 1: `ctxOpen(messagingBranch32, identitySeed32, sessionStateKey32) -> handle`.
+/// §2.6 function 1: `ctxOpen(messagingBranch32, identitySeed32, sessionStateKey32) -> handle,
+/// K_sched`. `K_sched` is `HKDF(m, "ghost/v1/dm/channel-schedule")` (Phase 10 design §6.4 CO-9;
+/// owner decision Q-F5-6 of §19.54, slice S13b) — derived here, at the one call that holds the
+/// MESSAGING branch `m`, because `ghost-client-dm` never calls into `ghost-client-mls` (the
+/// one-way dependency the reveal of §6.9 already relies on): the channel engine's `ChannelSchedule`
+/// keys its slot PRF with the returned 32 bytes.
 pub fn ctx_open(
     env: &mut JNIEnv,
     messaging_branch: &JByteArray,
@@ -874,6 +887,7 @@ pub fn ctx_open(
     let messaging = MessagingBranch::from_bytes(fixed::<32>(env, messaging_branch)?);
     let identity_seed = IdentitySeed::from_bytes(fixed::<32>(env, identity_seed)?);
     let state_key = StateKey::from_bytes(fixed::<32>(env, state_key)?);
+    let channel_schedule_key = derive::derive_channel_schedule_key(&messaging);
     let context = DmContext {
         olm_identity: derive::derive_olm_identity(&messaging),
         olm_signing: derive::derive_olm_account_signing(&messaging),
@@ -884,6 +898,7 @@ pub fn ctx_open(
     let handle = insert_context(context);
     Ok(Reply::ok()
         .field(Field::Handle, &handle.to_be_bytes())
+        .field(Field::ChannelScheduleKey, &channel_schedule_key)
         .into_bytes())
 }
 

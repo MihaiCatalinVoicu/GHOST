@@ -35,13 +35,13 @@ class DmRevocationNativeTest {
     }
 
     private fun context(branch: Int): Long {
-        val handle = DmSessions.openContext(
+        val opened = DmSessions.openContext(
             messagingBranch = ByteArray(32) { branch.toByte() },
             identitySeed = ByteArray(32) { (branch + 1).toByte() },
             sessionStateKey = ByteArray(32) { (branch + 2).toByte() },
         )
-        assertNotNull("ctxOpen", handle)
-        return handle!!
+        assertNotNull("ctxOpen", opened)
+        return opened!!.handle
     }
 
     /**

@@ -307,18 +307,20 @@ internal object MlsRows {
 /**
  * Seeds `ch_schedule` for a channel that has just become `active` (`CH-CREATE`, `CH-JOIN`): the PCS clock's
  * `last_own_commit_day` is [day] (the member's leaf is fresh), the self-update slot is [day]'s period's
- * ([ChannelSchedule]). False when the seen key is unavailable (the caller's transaction is unaffected; the
- * session-start scheduler seeds lazily then).
+ * ([ChannelSchedule]). False when `K_sched` is unavailable — the DM context is closed; the caller's
+ * transaction is unaffected; the session-start scheduler seeds lazily then.
  */
 internal fun seedSchedule(env: ChannelEnv, tx: org.ghost.sync.api.SyncTransaction, channelId: ByteArray, day: Long): Boolean {
-    val seenKey = env.keys.seenKey() ?: return false
+    // CO-9's slot is keyed by `K_sched` (§6.4, owner decision Q-F5-6, slice S13b), the DM context's
+    // MESSAGING-branch derivation — not the seen key.
+    val scheduleKey = env.dmContext.channelScheduleKey() ?: return false
     try {
         env.stores.channels.putSchedule(
-            tx, channelId, ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), seenKey), day, null,
+            tx, channelId, ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), scheduleKey), day, null,
         )
         return true
     } finally {
-        seenKey.fill(0)
+        scheduleKey.fill(0)
     }
 }
 

@@ -115,7 +115,9 @@ internal class ChannelPassStep(
     fun scheduleAtSessionStart() {
         val now = env.now()
         val day = DmTime.day(now)
-        val seenKey = env.keys.seenKey() ?: return
+        // CO-9's slot (§6.4) is keyed by `K_sched` (Q-F5-6, slice S13b), not the seen key — a
+        // seed restore keeps the slot only under `K_sched`.
+        val scheduleKey = env.dmContext.channelScheduleKey() ?: return
         try {
             val channels = env.database.transaction { tx -> stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) }
             for (channel in channels) {
@@ -125,7 +127,7 @@ internal class ChannelPassStep(
                     env.database.transaction { tx ->
                         stores.channels.putSchedule(
                             tx, channel.channelId,
-                            ChannelSchedule.slotDay(channel.channelId, ChannelSchedule.period(day), seenKey), day, null,
+                            ChannelSchedule.slotDay(channel.channelId, ChannelSchedule.period(day), scheduleKey), day, null,
                         )
                     }
                     continue
@@ -145,7 +147,7 @@ internal class ChannelPassStep(
                 }
             }
         } finally {
-            seenKey.fill(0)
+            scheduleKey.fill(0)
         }
     }
 
@@ -213,10 +215,14 @@ internal class ChannelPassStep(
         val day = DmTime.day(now)
         val content = env.keys.content() ?: return Result.UNAVAILABLE
         val seenKey = env.keys.seenKey() ?: return Result.UNAVAILABLE
+        // CO-9's slot PRF is keyed by `K_sched` (§6.4; owner decision Q-F5-6, slice S13b), not the
+        // seen key: `K_sched` survives a seed restore, the seen key does not.
+        val scheduleKey = env.dmContext.channelScheduleKey() ?: return Result.UNAVAILABLE
         try {
-            return passWith(channelId, content, seenKey, now, day, removeTarget, resign, transferTo)
+            return passWith(channelId, content, seenKey, scheduleKey, now, day, removeTarget, resign, transferTo)
         } finally {
             seenKey.fill(0)
+            scheduleKey.fill(0)
         }
     }
 
@@ -224,6 +230,7 @@ internal class ChannelPassStep(
         channelId: ByteArray,
         content: org.ghost.messaging.store.ContentCipher,
         seenKey: ByteArray,
+        scheduleKey: ByteArray,
         now: Long,
         day: Long,
         removeTarget: ByteArray?,
@@ -271,7 +278,7 @@ internal class ChannelPassStep(
 
         if (rank == NOT_A_COMMITTER) {
             // CO-9: the self-update is the only commit a rank-255 member makes.
-            return selfUpdate(opened, content, snapshot, rows, roster.ownRefreshEpoch(p), seenKey, now, day, roster.members.size)
+            return selfUpdate(opened, content, snapshot, rows, roster.ownRefreshEpoch(p), scheduleKey, now, day, roster.members.size)
         }
 
         // ---- the committer's pass: admissions, the user-action Remove, or the PCS commit.
@@ -403,7 +410,7 @@ internal class ChannelPassStep(
             null
         }
         if (built != null) {
-            return writeCommit(channelId, opened, content, snapshot, built, refused, now, day, rank, selfUpdate = false, seenKey)
+            return writeCommit(channelId, opened, content, snapshot, built, refused, now, day, rank, selfUpdate = false, scheduleKey)
         }
         if (refused.isNotEmpty()) return writeRefusals(channelId, refused)
         // No admissions, a refused Remove, or nothing: the PCS commit (§6.8), only on the cadence.
@@ -412,7 +419,7 @@ internal class ChannelPassStep(
         if (!pcsDue || removeTarget != null || resign || transferTo != null) return Result.NOTHING
         val empty = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null, rotate = rotate)
             ?: return Result.NOTHING
-        return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, seenKey)
+        return writeCommit(channelId, opened, content, snapshot, empty, emptyList(), now, day, rank, selfUpdate = false, scheduleKey)
     }
 
     /**
@@ -444,6 +451,17 @@ internal class ChannelPassStep(
 
     /** A native call found the context or the content key gone: the pass answers [Result.UNAVAILABLE]. */
     private class CryptoUnavailable : Exception()
+
+    /**
+     * fn 15's (S13b) invite set for one invite — the `INVITE_ID(16) ‖ invite_pk(32)` record
+     * `joinVerify` looks the request's claimed id up in before choosing the verification key.
+     */
+    private fun inviteSetOf(invite: org.ghost.messaging.channel.store.InviteStore.IssuedRow): ByteArray {
+        val set = ByteArray(48)
+        invite.inviteId.copyInto(set)
+        invite.invitePk.copyInto(set, 16)
+        return set
+    }
 
     /** §6.2.4 (B), unchanged from S4: the join admission of one request. */
     private fun admitJoin(
@@ -478,7 +496,7 @@ internal class ChannelPassStep(
             refused += Refusal(request, null, 0)
             return
         }
-        val verified = when (val v = opened.crypto.joinVerify(channelId, body, invite.invitePk, null, request.generation.toInt())) {
+        val verified = when (val v = opened.crypto.joinVerify(channelId, body, inviteSetOf(invite), null, request.generation.toInt())) {
             is MlsOutcome.Ok -> v.value
             is MlsOutcome.Refused -> {
                 if (v.code == MlsCode.CRYPTO_UNAVAILABLE) throw CryptoUnavailable()
@@ -561,7 +579,7 @@ internal class ChannelPassStep(
             refused += Refusal(request, null, 0)
             return
         }
-        val verified = when (val v = opened.crypto.joinVerify(channelId, body, invite.invitePk, null, request.generation.toInt())) {
+        val verified = when (val v = opened.crypto.joinVerify(channelId, body, inviteSetOf(invite), null, request.generation.toInt())) {
             is MlsOutcome.Ok -> v.value
             is MlsOutcome.Refused -> {
                 if (v.code == MlsCode.CRYPTO_UNAVAILABLE) throw CryptoUnavailable()
@@ -649,7 +667,7 @@ internal class ChannelPassStep(
         }
         // The signature is bound to the generation of the namespace the request was recorded from.
         val verified = when (
-            val v = opened.crypto.joinVerify(channelId, body, null, member, request.generation.toInt())
+            val v = opened.crypto.joinVerify(channelId, body, ByteArray(0), member, request.generation.toInt())
         ) {
             is MlsOutcome.Ok -> v.value
             is MlsOutcome.Refused -> {
@@ -744,7 +762,7 @@ internal class ChannelPassStep(
         snapshot: Snapshot,
         rows: List<org.ghost.crypto.bridge.MlsRow>,
         ownRefreshEpoch: Long,
-        seenKey: ByteArray,
+        scheduleKey: ByteArray,
         now: Long,
         day: Long,
         memberCount: Int,
@@ -758,14 +776,14 @@ internal class ChannelPassStep(
             env.database.transaction { tx ->
                 stores.channels.putSchedule(
                     tx, snapshot.channel.channelId,
-                    ChannelSchedule.nextSlotDay(snapshot.channel.channelId, day, seenKey), schedule.lastOwnCommitDay, schedule.nextPassMinute,
+                    ChannelSchedule.nextSlotDay(snapshot.channel.channelId, day, scheduleKey), schedule.lastOwnCommitDay, schedule.nextPassMinute,
                 )
             }
             return Result.NOTHING
         }
         val built = buildCommit(opened, snapshot, rows, ArrayList(), ArrayList(), ArrayList(), now, day, emptyList(), null)
             ?: return Result.NOTHING
-        return writeCommit(snapshot.channel.channelId, opened, content, snapshot, built, emptyList(), now, day, NOT_A_COMMITTER, selfUpdate = true, seenKey)
+        return writeCommit(snapshot.channel.channelId, opened, content, snapshot, built, emptyList(), now, day, NOT_A_COMMITTER, selfUpdate = true, scheduleKey)
     }
 
     /** CO-14: `refresh_epoch > e − k`, `k = min(8, n)` — true when the rule would refuse the commit. */
@@ -971,7 +989,7 @@ internal class ChannelPassStep(
         day: Long,
         rank: Int,
         selfUpdate: Boolean,
-        seenKey: ByteArray,
+        scheduleKey: ByteArray,
     ): Result {
         val committed = built.committed
         val epoch = snapshot.epoch.epoch
@@ -1024,9 +1042,9 @@ internal class ChannelPassStep(
                 stores.channels.putSchedule(
                     tx, channelId,
                     nextSelfupdateDay = if (selfUpdate) {
-                        ChannelSchedule.nextSlotDay(channelId, day, seenKey)
+                        ChannelSchedule.nextSlotDay(channelId, day, scheduleKey)
                     } else {
-                        schedule?.nextSelfupdateDay ?: ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), seenKey)
+                        schedule?.nextSelfupdateDay ?: ChannelSchedule.slotDay(channelId, ChannelSchedule.period(day), scheduleKey)
                     },
                     lastOwnCommitDay = day,
                     nextPassMinute = schedule?.nextPassMinute,

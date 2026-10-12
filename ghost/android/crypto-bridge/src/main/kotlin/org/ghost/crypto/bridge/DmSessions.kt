@@ -243,6 +243,27 @@ object DmSessions {
     }
 
     /**
+     * What [openContext] returns: the context handle and CO-9's channel schedule key `K_sched`
+     * (Phase 10 design §6.4; owner decision Q-F5-6 of §19.54, slice S13b) — `HKDF(m,
+     * "ghost/v1/dm/channel-schedule")`, derived natively because `m` never lives on the JVM heap.
+     * The channel engine's `ChannelSchedule` keys its slot PRF with these 32 bytes; the key is
+     * re-derivable from the seed, so losing the copy is a re-open, not data loss.
+     */
+    class OpenedContext(
+        /** The context handle for every other function of §2.6. */
+        val handle: Long,
+        /** `K_sched`: the channel self-update schedule key, 32 bytes. */
+        val channelScheduleKey: ByteArray,
+    ) {
+        /** Zeroises [channelScheduleKey]; the handle is a number, nothing to wipe. */
+        fun clear() {
+            channelScheduleKey.fill(0)
+        }
+
+        override fun toString(): String = "OpenedContext(handle=$handle, channelScheduleKey=redacted)"
+    }
+
+    /**
      * Opens a DM context (§2.5). The three arrays are **zeroised here** after the call, which is
      * the "the Kotlin caller zeroises its arrays after the call (best effort)" of §2.5: best
      * effort because the JVM may have copied them during GC, which is exactly why the derived
@@ -253,7 +274,7 @@ object DmSessions {
         messagingBranch: ByteArray,
         identitySeed: ByteArray,
         sessionStateKey: ByteArray,
-    ): Long? = try {
+    ): OpenedContext? = try {
         // The availability check is **inside** the `try`: a missing or unloadable library is the
         // routine `CRYPTO_UNAVAILABLE` of §2.7, and it is the one path where the three arrays are
         // not consumed natively, so it is the one path that must not hand them back populated.
@@ -261,7 +282,10 @@ object DmSessions {
             null
         } else {
             val result = call { DmNative.ctxOpen(messagingBranch, identitySeed, sessionStateKey) }
-            if (result.isOk) result.i64(DmField.HANDLE) else null
+            if (result.isOk) OpenedContext(
+                handle = result.i64(DmField.HANDLE),
+                channelScheduleKey = result.bytes(DmField.CHANNEL_SCHEDULE_KEY),
+            ) else null
         }
     } finally {
         messagingBranch.fill(0)

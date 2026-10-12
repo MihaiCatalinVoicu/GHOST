@@ -63,7 +63,7 @@ use crate::group::{
     Anchor, ChannelHandle, CommitRequest, ContextKept, EpochKeys, GenerationValues, KeyClass,
     MlsContext, ReceiveItem, RosterEntry, SlotCredentials, Standing, Winner,
 };
-use crate::join::{JoinAuth, RequestType, WelcomeBlob};
+use crate::join::{InviteCandidate, JoinAuth, RequestType, WelcomeBlob};
 use crate::kv::{ChangeSet, Scope, WrappedRow, WrappedRows};
 use crate::result::{Code, Detail, MlsError, MlsResult};
 use crate::seal::{EpochContent, Order};
@@ -2379,32 +2379,40 @@ pub fn rejoin_request(
     Ok(r.into_bytes())
 }
 
-/// fn 15 `joinVerify(h, channelId, body, invitePk, member, generation)`: `invitePk` for a join or
-/// restore, `member` for a rejoin (null or empty when absent). The request's type, its canonical
-/// KeyPackage and what it carries, and the verified authorization.
+/// fn 15 `joinVerify(h, channelId, body, inviteSet, member, generation)` (slice S13b): `inviteSet`
+/// is the concatenation of the caller's live invites' `invite_id(16) ‖ invite_pk(32)` records
+/// (empty for a rejoin; any other length is `NON_CANONICAL`), `member` for a rejoin (null or empty
+/// when absent). The request's type, its canonical KeyPackage and what it carries, and the
+/// verified authorization — for a join or restore the request's claimed invite id is read from the
+/// authenticated body and verified under that invite's key, in one pass.
 #[allow(clippy::too_many_arguments)]
 pub fn join_verify(
     env: &mut JNIEnv,
     handle: jlong,
     channel_id: &JByteArray,
     body: &JByteArray,
-    invite_pk: &JByteArray,
+    invite_set: &JByteArray,
     member: &JByteArray,
     generation: jint,
 ) -> MlsResult<Vec<u8>> {
     let channel_id = fixed::<32>(env, channel_id)?;
     let body = bytes(env, body)?;
-    let invite_pk = opt_fixed32(env, invite_pk)?;
+    let invite_set = bytes(env, invite_set)?;
+    if !invite_set.len().is_multiple_of(48) {
+        return Err(MlsError::new(Code::NonCanonical));
+    }
+    let invites: Vec<InviteCandidate> = invite_set
+        .chunks_exact(48)
+        .map(|c| InviteCandidate {
+            invite_id: c[..16].try_into().expect("chunked by 48"),
+            invite_pk: c[16..].try_into().expect("chunked by 48"),
+        })
+        .collect();
     let member = opt_fixed32(env, member)?;
     let generation = uint(generation)?;
     let v = with_context(handle, |c| {
-        c.ctx.join_verify(
-            &channel_id,
-            &body,
-            invite_pk.as_ref(),
-            member.as_ref(),
-            generation,
-        )
+        c.ctx
+            .join_verify(&channel_id, &body, &invites, member.as_ref(), generation)
     })?;
     let mut r = Tlv::ok();
     r.u8(
