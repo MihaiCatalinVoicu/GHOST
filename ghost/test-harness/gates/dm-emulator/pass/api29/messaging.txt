@@ -1,4 +1,4 @@
-INSTRUMENTATION_RESULT: stream=dm-device: sqlcipher v3 -> v4 -> v5 ok
+INSTRUMENTATION_RESULT: stream=dm-device: sqlcipher v3 -> current ok
 dm-device: SCN-A one-scan flow to pair mode, order digests equal
 dm-device: SCN-B shuffled delivery, one rendered order
 dm-device: SCN-F five-minute timer swept, WAL 0 bytes

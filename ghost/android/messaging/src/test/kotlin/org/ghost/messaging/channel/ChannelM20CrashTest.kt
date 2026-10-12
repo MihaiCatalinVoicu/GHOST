@@ -63,6 +63,9 @@ class ChannelM20CrashTest {
         val executors: List<org.ghost.storage.JdbcSqlExecutor>,
         val frozen: Frozen,
         var committer: ChannelClient,
+        /** The run's folder: deleted by [closeAll] — the enumeration's hundreds of thaws would
+         *  otherwise fill the temp disk before the rule's per-test cleanup ever runs. */
+        val runDir: File,
     ) {
         fun reboot(boot: Int): ChannelClient {
             committer.die()
@@ -74,6 +77,7 @@ class ChannelM20CrashTest {
         fun closeAll() {
             world.close()
             for (e in executors) e.close()
+            runDir.deleteRecursively()
         }
     }
 
@@ -107,7 +111,9 @@ class ChannelM20CrashTest {
                 val executor = org.ghost.storage.JdbcSqlExecutor(copy.absolutePath)
                 executors += executor
                 crash = CrashingSqlExecutor(executor)
-                crash.armAt = armAt
+                // Unarmed through construction: the client's boot statements (its relay-directory
+                // upsert) are not the admitting pass's events — the enumeration's window is the
+                // pass alone (reset() then arm, so event 1 is the pass's first statement).
                 committer = world.client(name, sql = crash, boot = boot)
             } else {
                 val executor = org.ghost.storage.JdbcSqlExecutor(copy.absolutePath)
@@ -115,7 +121,9 @@ class ChannelM20CrashTest {
                 clients[name] = world.client(name, sql = executor, boot = boot)
             }
         }
-        return Thawed(world, clients, crash, executors, frozen, committer)
+        crash.reset()
+        crash.armAt = armAt
+        return Thawed(world, clients, crash, executors, frozen, committer, runDir)
     }
 
     /** The armed action: the committer's admitting pass (the session-start arm fired). */
@@ -132,11 +140,26 @@ class ChannelM20CrashTest {
         var guard = 0
         while (guard++ < 10) {
             world.quiesce()
+            val anchorEpoch = anchor.channel(id)!!.epoch
+            // Admission done means ACTIVE **at the anchor's epoch**: a floor-bounded wave is
+            // admitted in two passes (the excess on the retry), and the first pass's members
+            // stay one epoch behind until the retry's commit reaches them — ACTIVE alone
+            // would call it done with the wave still split across two epochs.
             val done = expectActive.all { name ->
-                world.clients.first { it.name == name }.channel(id)?.state == ChannelState.ACTIVE
+                val c = world.clients.first { it.name == name }.channel(id)
+                c?.state == ChannelState.ACTIVE && c.epoch == anchorEpoch
             }
             if (done && world.relay.pendingOps(world.clients) == 0) break
             // The admitting pass is a scheduled one (CO-8): re-arm it, let the window run, settle.
+            // A session start does not re-arm a pass whose spacing arm a previous pass left
+            // (scheduleAtSessionStart skips a set next_pass_minute), and a whole commit leaves
+            // the 6 h arm — the scenario's retry clears it first (the duePass pattern); the same
+            // clearArm the wave loop runs, or the deferred excess of a floor-bounded admission
+            // (MM-42's machinery admits a wave's excess on the retry) never runs.
+            anchor.database.transaction { tx ->
+                val row = anchor.channelStores.channels.schedule(tx.sql, id.toByteArray()) ?: return@transaction
+                anchor.channelStores.channels.putSchedule(tx, id.toByteArray(), row.nextSelfupdateDay, row.lastOwnCommitDay, null)
+            }
             anchor.sessionStart()
             world.advance(6 * DmWorld.MINUTE)
             world.pastSettleWindow()
@@ -171,23 +194,24 @@ class ChannelM20CrashTest {
         assertTrue("T41: $name's epoch_authenticator", expected.contentEquals(actual))
     }
 
-    /** OPEN (F-S10-6): the freeze points and the per-event enumeration are written, but the
-     *  enumeration's event count and the rebooted finish interact with the S10 close-out's
-     *  choreography (the per-client blindness and the settle-to-anchor rounds changed the admitting
-     *  pass's SQL-event window) — one probe cycle to re-anchor the reference count. The scenario
-     *  suites themselves are green (§19.49). */
-    @org.junit.Ignore("open: F-S10-6 — the crash singles' reference count needs re-anchoring after the S10 choreography close-out; the scenario suites are green")
+    /** The reference run anchors the event count on the current choreography (F-S10-6, §19.56):
+     *  the enumeration replays every event of the admitting pass — crash at each, reboot, the
+     *  wave admitted, T41, the invariants, the retried path, liveness. Anchored at the S13 tip:
+     *  wave-4 admission **264 events**, all green (seed `0x5eed_c101`, §19.56). */
     @Test
     fun aCrashAtEveryEventOfTheFourthWaveAdmissionLeavesTheWaveAdmitted() {
         val frozen = freeze(ChannelM20.StopAt.WAVE_ADMISSION, "m20-crash-wave")
-        val events = thaw(frozen, 1, null).run {
-            try {
-                act()
-                finish(listOf("c14", "c15", "c16", "c17"))
-            } finally {
-                closeAll()
-            }
-            crash.count
+        // The enumeration's window is the admitting pass alone (thaw resets the counter): the
+        // reference run's count is read after act(); the finish that proves liveness is not
+        // part of the enumeration.
+        val reference = thaw(frozen, 1, null)
+        var events = 0
+        try {
+            reference.act()
+            events = reference.crash.count
+            reference.finish(listOf("c14", "c15", "c16", "c17"))
+        } finally {
+            reference.closeAll()
         }
         ChannelReport.line("channel SCN-M20 crash singles: wave-4 admission $events events, all green")
         var ran = 0
@@ -210,23 +234,22 @@ class ChannelM20CrashTest {
         assertEquals(events, ran)
     }
 
-    /** OPEN (F-S10-6): the freeze points and the per-event enumeration are written, but the
-     *  enumeration's event count and the rebooted finish interact with the S10 close-out's
-     *  choreography (the per-client blindness and the settle-to-anchor rounds changed the admitting
-     *  pass's SQL-event window) — one probe cycle to re-anchor the reference count. The scenario
-     *  suites themselves are green (§19.49). */
-    @org.junit.Ignore("open: F-S10-6 — the crash singles' reference count needs re-anchoring after the S10 choreography close-out; the scenario suites are green")
+    /** The past-TTL rejoin single, anchored like the wave-4 single (F-S10-6, §19.56): crash at
+     *  every event of c13's rejoin-admitting pass, reboot, the rejoin completes at the live
+     *  epoch, T41 everywhere, liveness. Anchored at the S13 tip: past-TTL rejoin admission
+     *  **363 events**, all green (seed `0x5eed_c101`, §19.56). */
     @Test
     fun aCrashAtEveryEventOfThePastTtlRejoinAdmissionLeavesTheRejoinComplete() {
         val frozen = freeze(ChannelM20.StopAt.REJOIN_ADMISSION, "m20-crash-rejoin")
-        val events = thaw(frozen, 1, null).run {
-            try {
-                act()
-                finish(listOf(ChannelM20.PAST_TTL))
-            } finally {
-                closeAll()
-            }
-            crash.count
+        // The enumeration's window is the admitting pass alone (see the wave-4 single).
+        val reference = thaw(frozen, 1, null)
+        var events = 0
+        try {
+            reference.act()
+            events = reference.crash.count
+            reference.finish(listOf(ChannelM20.PAST_TTL))
+        } finally {
+            reference.closeAll()
         }
         ChannelReport.line("channel SCN-M20 crash singles: past-TTL rejoin admission $events events, all green")
         var ran = 0

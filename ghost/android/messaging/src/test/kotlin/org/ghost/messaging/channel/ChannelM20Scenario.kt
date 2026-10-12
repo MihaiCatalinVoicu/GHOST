@@ -514,11 +514,29 @@ internal object ChannelM20 {
         // The long dark window made every member's PCS cadence due at once: settle the restore
         // commit everywhere before the switch arms the committers again, then settle the cadence
         // wave it triggers — T41 is asserted only once every member holds the same epoch.
-        settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
-        switch(w, ::byName, id)
+        // The restored stack is driven with the cast in the base variant (F-S10-7: it is a
+        // rank-255 member — its scheduled passes build nothing, CO-1). In the owner-restore
+        // variant the restored stack holds RANK 0 with a stale view (it missed the commits of
+        // the dark window by design): driving its scheduled passes would have it admit the
+        // rejoin it never saw — a locally-valid, receivers-invalid swap (the live-leaf check
+        // reads the committer's own view) that re-arms the CO-13 hold and, settled at itself,
+        // forks it from the cast. That trap (F-S10-8, §19.56) is out of this choreography
+        // row's scope, so the owner-restore variant keeps the pre-drive scope for it: the
+        // helpers iterate the ALL cast and its post-switch convergence is not asserted, as
+        // before F-S10-7.
+        val driveRestored = config.variant == Variant.BASE
+        settleToAnchor(w, ::byName, id, exclude = setOf(swapName), driveRestored = driveRestored)
+        switch(w, ::byName, id, driveRestored = driveRestored)
         assertEquals("the restore moved the channel to generation 4", 4L, lead().channel(id)!!.generation)
-        settleToAnchor(w, ::byName, id, exclude = setOf(swapName))
-        converged(w, ::byName, id, report, exclude = setOf(swapName))
+        settleToAnchor(w, ::byName, id, exclude = setOf(swapName), driveRestored = driveRestored)
+        // The restored stack's log keeps its dead branch's rows from its frozen epoch on — the
+        // window's first own commit settled at itself at the frozen epoch (CO-4; the owner-restore
+        // variant, pinned above: its authenticator diverged from the lead's) — excused like the
+        // FORK variant's rejoined members, inside a window bounded by the frozen and the restore
+        // epochs; its common-branch rows (< the frozen epoch) and its live rows (>= the restore
+        // epoch) are checked like everyone's.
+        val restoredExcuse = mapOf("$swapName-new" to (swapFrozenEpoch until restoreEpoch))
+        converged(w, ::byName, id, report, exclude = setOf(swapName), logExcuse = restoredExcuse, driveRestored = driveRestored)
 
         // The past-TTL member: c13 goes dark, its missed commits die past TTL, it rejoins (the
         // rejoin does not rotate). The freeze point for the crash singles sits on the admitting pass.
@@ -563,7 +581,7 @@ internal object ChannelM20 {
         w.pump()
         lost.hintPass()
         assertTrue(lost.displayed(id).any { it.startsWith("after-the-rejoin-") })
-        converged(w, ::byName, id, report, exclude = setOf(swapName))
+        converged(w, ::byName, id, report, exclude = setOf(swapName), logExcuse = restoredExcuse, driveRestored = driveRestored)
 
         // The re-add: the moderator-removed client is re-invited and returns with the same pseudonym.
         val readded = byName(MODERATOR_REMOVED)
@@ -585,7 +603,7 @@ internal object ChannelM20 {
         report.joiners += Joiner(MODERATOR_REMOVED, readded.channel(id)!!.epoch)
 
         burst(20)
-        converged(w, ::byName, id, report, exclude = setOf(swapName))
+        converged(w, ::byName, id, report, exclude = setOf(swapName), logExcuse = restoredExcuse, driveRestored = driveRestored)
 
         // The display half of the channel's T25 cases at M20 scale: no member displays a post past
         // its timer (the physical scans are EP-C's, S8).
@@ -599,16 +617,18 @@ internal object ChannelM20 {
             }
         }
 
-        // The cross-member display comparison (review finding F-2): on every member the scenario
-        // converges (T41's membership rule: the ALL cast, ACTIVE, at the anchor's epoch) the
-        // displayed page — post ids, newest first — is the anchor's. The re-invited removed client
-        // is a join by design (no history backfill, T39's lens), so its page is the anchor's
-        // without the posts of the epochs before its re-add. The restored stack is out of scope:
-        // the choreography never drives it past its return's epoch — switch/settleToAnchor/
-        // converged iterate the ALL cast, so its post-return convergence was never asserted
-        // (found by this comparison: it sits ACTIVE two epochs behind at the end). Driving it is
-        // a choreography follow-up (F-S10-7, §19.50); the continuously-converged members are
-        // compared here.
+        // The cross-member display comparison (review finding F-2, widened by F-S10-7): on every
+        // member the scenario converges (T41's membership rule: the driven clients, ACTIVE, at
+        // the anchor's epoch — the helpers iterate the world's clients where the restored stack
+        // is driven, so it converges with the cast: switch gives it its session start, the
+        // settle rounds settle it, and its convergence is asserted like everyone's; not driven
+        // in the owner-restore variant, the F-S10-8 trap) the displayed page — post ids, newest
+        // first — is the anchor's. Two members legitimately hold less history: the re-invited
+        // removed client is a join by design (no history backfill, T39's lens), so its page is
+        // the anchor's without the posts of the epochs before its re-add; the restored stack
+        // re-entered with the old device's rows through its frozen epoch, so its page is the
+        // anchor's without the posts of the blind window's epochs — the choreography compares
+        // each with its declared exception, never a weakened anchor.
         val displayAnchor = displayedPage(lead(), id)
         val readdEpoch = byName(MODERATOR_REMOVED).channel(id)!!.epoch
         for (name in ALL) {
@@ -624,6 +644,22 @@ internal object ChannelM20 {
                 continue
             }
             assertEquals("$name displays the anchor's page", displayAnchor, displayedPage(c, id))
+        }
+        // The restored stack (F-S10-7): where it is driven (the base variant; the owner-restore
+        // variant's restored rank-0 stack is not — the F-S10-8 trap, see above) it converged
+        // with the cast, and its page is the anchor's minus exactly the blind window's epochs —
+        // the missed commits were unrecoverable by design (their TTL death is pinned above),
+        // so the gap is the declared shape, not a defect.
+        if (driveRestored) {
+            assertEquals(
+                "the restored stack converged with the cast (F-S10-7)",
+                lead().channel(id)!!.epoch, restored.channel(id)!!.epoch,
+            )
+            assertEquals(
+                "the restored stack displays the anchor's page minus the blind window's epochs",
+                displayAnchor.filter { it.second <= swapFrozenEpoch || it.second >= restoreEpoch },
+                displayedPage(restored, id),
+            )
         }
 
         report.postsStored = w.relay.stored.count { it.purpose == "post" && !it.injected }
@@ -918,9 +954,13 @@ internal object ChannelM20 {
     // ----------------------------------------------------------------------------------------------- helpers
 
     /**
-     * T41 at M20 scale: every active member named in [ALL] (minus [exclude]) holds the anchor's
-     * epoch, the same `epoch_authenticator` and the same per-epoch winner hashes (the anchor is the
-     * owner's side's live member — c2 while the owner is dark in the owner-restore variant).
+     * T41 at M20 scale: every active driven client (minus [exclude]) holds the anchor's
+     * epoch, the same `epoch_authenticator` and the same per-epoch winner hashes (the anchor is
+     * the owner's side's live member — c2 while the owner is dark in the owner-restore variant).
+     * The iteration is the world's clients, not the ALL cast: the restored stack is a world
+     * client beside the cast and is asserted with it where it is driven (F-S10-7; the base
+     * variant — the owner-restore variant's restored rank-0 stack is not driven, see
+     * [driveRestored]) — before the restore exists the two are the same set.
      */
     private fun converged(
         w: ChannelWorld,
@@ -932,31 +972,57 @@ internal object ChannelM20 {
          *  only the tip of their CURRENT branch must equal the anchor's (the per-epoch check
          *  stays for every member that never forked). */
         tipOnly: Boolean = false,
+        /** Per-member dead-branch windows [logExcuse]: client name → epoch range whose log rows
+         *  are the member's own dead branch's (settled while dark) and are excused, like the
+         *  FORK variant's rejoined members — every other row, inside and outside the window,
+         *  must still equal the anchor's. Only the restored stack passes this (F-S10-7): the
+         *  base variant's swap subject was frozen, its copy has no dead-branch rows. */
+        logExcuse: Map<String, LongRange> = emptyMap(),
+        /** False in the owner-restore variant: its restored stack is rank 0 and is not driven
+         *  (its stale view would admit the rejoin it missed — the F-S10-8 finding, §19.56);
+         *  the helpers then iterate the ALL cast, the pre-drive scope. */
+        driveRestored: Boolean = true,
     ) {
         val anchor = byName(if (exclude.contains(OWNER)) MODERATOR else OWNER)
         val anchorEpoch = anchor.channel(id)!!.epoch
         val anchorAuth = epochAuthenticator(anchor, id)
         val anchorLog = epochLog(anchor, id)
-        for (name in ALL) {
-            if (name in exclude) continue
-            val c = byName(name)
+        val driven = if (driveRestored) w.clients else w.clients.filter { it.name in ALL }
+        for (c in driven) {
+            if (c.name in exclude) continue
             if (c.channel(id)?.state != ChannelState.ACTIVE) continue
-            assertEquals("T41: $name at the anchor's epoch", anchorEpoch, c.channel(id)!!.epoch)
-            assertArrayEquals("T41: $name's epoch_authenticator", anchorAuth, epochAuthenticator(c, id))
+            assertEquals("T41: ${c.name} at the anchor's epoch", anchorEpoch, c.channel(id)!!.epoch)
+            assertArrayEquals("T41: ${c.name}'s epoch_authenticator", anchorAuth, epochAuthenticator(c, id))
             // The epoch log is what the member settled itself: a joiner's log starts at its join
-            // epoch and a re-added member's skips the epochs it was removed for — every logged
-            // winner must still equal the anchor's for that epoch (T41's substance: no divergent
-            // winner at any epoch the member settled).
+            // epoch, a re-added member's skips the epochs it was removed for, and the restored
+            // stack's skips the blind window's — every logged winner must still equal the
+            // anchor's for that epoch (T41's substance: no divergent winner at any epoch the
+            // member settled).
             val memberLog = epochLog(c, id)
             // tipOnly (the fork's recovery): a rejoined member's log keeps its dead branch's rows
             // and may hold no row of the new branch yet — the authenticator equality asserted
             // above is T41's substance for it.
             if (memberLog.isNotEmpty() && !tipOnly) {
                 val anchorByEpoch = anchorLog.toMap()
+                // The anchor's own history starts at its join epoch; a member may only exceed it
+                // at the beginning — the restored genesis stack's copied log holds the create
+                // epoch the anchor (a later join) never settled. Inside the anchor's span every
+                // logged winner must equal the anchor's; beyond its end nothing can be missing
+                // (the member is asserted at the anchor's epoch above, its log contiguous).
+                val anchorFirst = anchorLog.firstOrNull()?.first ?: Long.MAX_VALUE
                 for ((epoch, winner) in memberLog) {
+                    if (epoch in (logExcuse[c.name] ?: LongRange.EMPTY)) continue
+                    val expected = anchorByEpoch[epoch]
+                    if (expected == null) {
+                        assertTrue(
+                            "T41: ${c.name}'s winner of epoch $epoch predates the anchor's history",
+                            epoch < anchorFirst,
+                        )
+                        continue
+                    }
                     assertEquals(
-                        "T41: $name's winner of epoch $epoch",
-                        anchorByEpoch[epoch], winner,
+                        "T41: ${c.name}'s winner of epoch $epoch",
+                        expected, winner,
                     )
                 }
             }
@@ -1069,15 +1135,27 @@ internal object ChannelM20 {
      * a namespace's removal — the older drain's end at a second rotation — is refused while any
      * op of it is open, and the switch would defer for ever (the S6 suites' `collectOps` stand-in).
      */
-    /** Settle rounds until every active member (minus [exclude]) holds the anchor's epoch. */
-    private fun settleToAnchor(w: ChannelWorld, byName: (String) -> ChannelClient, id: ChannelId, exclude: Set<String> = emptySet()) {
+    /** Settle rounds until every active driven client (minus [exclude]) holds the anchor's epoch. */
+    private fun settleToAnchor(
+        w: ChannelWorld,
+        byName: (String) -> ChannelClient,
+        id: ChannelId,
+        exclude: Set<String> = emptySet(),
+        /** See [converged] — false in the owner-restore variant (the restored rank-0 stack is
+         *  not driven there, the F-S10-8 finding). */
+        driveRestored: Boolean = true,
+    ) {
         val anchor = byName(if (exclude.contains(OWNER)) MODERATOR else OWNER)
         val target = anchor.channel(id)!!.epoch
+        val driven = if (driveRestored) w.clients else w.clients.filter { it.name in ALL }
         var guard = 0
         while (guard++ < 80) {
-            val behind = ALL.any { name ->
-                name !in exclude && byName(name).channel(id)?.state == ChannelState.ACTIVE &&
-                    byName(name).channel(id)!!.epoch < target
+            // The driven clients, not the ALL cast: where the restored stack is driven it is
+            // settled with the cast (F-S10-7) — the settle rounds themselves are world-level
+            // and drive it already.
+            val behind = driven.any { c ->
+                c.name !in exclude && c.channel(id)?.state == ChannelState.ACTIVE &&
+                    c.channel(id)!!.epoch < target
             }
             if (!behind) return
             w.pastSettleWindow()
@@ -1128,9 +1206,13 @@ internal object ChannelM20 {
     }
 
 
-    private fun switch(w: ChannelWorld, byName: (String) -> ChannelClient, id: ChannelId) {
-        for (name in ALL) {
-            val c = byName(name)
+    private fun switch(w: ChannelWorld, byName: (String) -> ChannelClient, id: ChannelId, driveRestored: Boolean = true) {
+        // The driven clients, not the ALL cast: where the restored stack is driven it must
+        // process CH-SWITCH like the cast (a session start each — F-S10-7; without it it sits a
+        // generation behind, never listing the new namespace's commits). Not driven in the
+        // owner-restore variant (F-S10-8, see converged).
+        val driven = if (driveRestored) w.clients else w.clients.filter { it.name in ALL }
+        for (c in driven) {
             if (c.channel(id)?.state != ChannelState.ACTIVE) continue
             c.database.transaction { tx ->
                 tx.sql.exec("UPDATE outbox_op SET released = 1 WHERE released = 0 AND outcome <> 'pending'")
@@ -1138,14 +1220,12 @@ internal object ChannelM20 {
             }
         }
         w.advance(2 * DmWorld.HOUR + 60)
-        for (name in ALL) {
-            val c = byName(name)
+        for (c in driven) {
             if (c.channel(id)?.state != ChannelState.ACTIVE) continue
             c.sessionStart()
         }
         w.advance(6 * DmWorld.MINUTE)
-        for (name in ALL) {
-            val c = byName(name)
+        for (c in w.clients) {
             if (c.channel(id)?.state != ChannelState.ACTIVE) continue
             c.timePass()
         }
@@ -1153,8 +1233,7 @@ internal object ChannelM20 {
         // A member's pass can defer once (an unconsumed fetched row of the old namespace refuses
         // the removal; the row is consumed in the same pass and the next one switches).
         w.pump()
-        for (name in ALL) {
-            val c = byName(name)
+        for (c in w.clients) {
             if (c.channel(id)?.state != ChannelState.ACTIVE) continue
             c.hintPass()
         }

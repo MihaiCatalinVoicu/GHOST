@@ -9,7 +9,7 @@
 #   device.txt         the emulator's `sdk=` and `abi=` (the check refuses another API level or ABI);
 #   crypto-bridge.txt  the host/Android equivalence test on the x86_64 **test library**
 #                      (§15.9 item 7), with the commit the host fixture was recorded for;
-#   messaging.txt      `DeviceGateSuite`: SQLCipher v3 -> v4 -> v5, SCN-A, SCN-B, SCN-F with T25's
+#   messaging.txt      `DeviceGateSuite`: SQLCipher v3 -> current, SCN-A, SCN-B, SCN-F with T25's
 #                      WAL, the alarm scheduled and cancelled, SCN-D with the logcat scan (§15.9
 #                      items 2, 4, 5 and 6);
 #   app-smoke.txt      the release smoke test in the R8-shrunk release APK (§15.9 item 3).
