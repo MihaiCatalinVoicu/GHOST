@@ -359,6 +359,8 @@ class PqHealingWorldTest {
                     override fun handleOrNull(): Long = handle
 
                     override fun stateKeyWrapped(): ByteArray? = null
+
+                    override fun channelScheduleKey(): ByteArray? = null
                 }
                 var contactId: ByteArray? = null
                 var peer: ByteArray? = null

@@ -70,13 +70,13 @@ class DmSessionsNativeTest {
 
     /** Two contexts with different MESSAGING branches: two devices, one process. */
     private fun context(branch: Int): Long {
-        val handle = DmSessions.openContext(
+        val opened = DmSessions.openContext(
             messagingBranch = bytes(branch, 32),
             identitySeed = bytes(branch + 1, 32),
             sessionStateKey = bytes(branch + 2, 32),
         )
-        assertNotNull("ctxOpen", handle)
-        return handle!!
+        assertNotNull("ctxOpen", opened)
+        return opened!!.handle
     }
 
     private val today = 100
@@ -372,14 +372,14 @@ class DmSessionsNativeTest {
         val branch = bytes(0xe1, 32)
         val seed = bytes(0xe2, 32)
         val stateKey = bytes(0xe3, 32)
-        val handle = DmSessions.openContext(branch, seed, stateKey)
-        assertNotNull(handle)
+        val opened = DmSessions.openContext(branch, seed, stateKey)
+        assertNotNull(opened)
         try {
             assertArrayEquals(ByteArray(32), branch)
             assertArrayEquals(ByteArray(32), seed)
             assertArrayEquals(ByteArray(32), stateKey)
         } finally {
-            DmSessions.closeContext(handle!!)
+            DmSessions.closeContext(opened!!.handle)
         }
     }
 

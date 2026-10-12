@@ -2,6 +2,7 @@ package org.ghost.messaging.channel
 
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AcceptResult
+import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.api.PostId
 import org.ghost.messaging.api.PostResult
 import org.ghost.messaging.channel.ChannelScenes.get
@@ -112,6 +113,113 @@ class ChannelTransitionsTest {
         // and a retry of a post that is not an own failed one is refused
         assertEquals(PostResult.NOT_FAILED, bob.engine.retry(id, again))
         assertEquals(emptyList<String>(), bob.integrity())
+    }
+
+    /**
+     * §19.7 (c)'s spacing, strict (slice S13c, §19.54 row 12, F-S11-3): the rotation flag arms when an invite
+     * of the current generation expired unconsumed **and** the channel's newest non-removal rotation is at
+     * least 14 days old — the history row of the settle that merged each rotating winner, not the old
+     * per-generation approximation. The test isolates the spacing rule from the drain rule ("never while a
+     * generation drains", kept as is): the first attempt inside the window is refused while the rotation's
+     * drain is still out (both rules shut), then the draining row is deleted by hand — the sweep would
+     * remove it a day or two later, at its next pass after `drain_until_day` — so the next refusals are
+     * the spacing rule's alone, and the arming on day 14 (the window's edge: `day − last ≥ 14`) is its
+     * alone too. Two arming-eligible events 10 days apart arm once; events 14 days apart arm twice.
+     */
+    @Test
+    fun theRotationSpacingIsStrictOverTheHistoryRows() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val c = id.toByteArray()
+        // an unused invite expires 7 days out; the pass that sees it arms the rotation and the switch follows
+        owner.engine.invite(id, 7, null)
+        w.advance(8 * DmWorld.DAY)
+        rotateOnce(w, owner, id)
+        assertEquals("the expired invite rotated the channel", 1, owner.channel(id)!!.generation)
+        assertEquals(1L, owner.count("ch_rotation_history"))
+        assertEquals(1L, owner.count("ch_rotation_history", "removal = 0"))
+        val rotatedDay = rotationDay(owner, id)
+
+        // 7 days after the rotation: an arming-eligible event, refused — the spacing (7 < 14) and, the same
+        // day, the rotation's own drain (it runs 14 days from the switch) both shut the window
+        advanceToDay(w, rotatedDay)
+        owner.engine.invite(id, 7, null)
+        advanceToDay(w, rotatedDay + 7)
+        rotateOnce(w, owner, id)
+        assertEquals("7 days after a rotation the window is shut", 1, owner.channel(id)!!.generation)
+        assertEquals(1L, owner.count("ch_rotation_history"))
+
+        // the drain ends by itself a day or two later; deleting its row now isolates the spacing rule
+        assertEquals(1, owner.sql.execUpdate("DELETE FROM ch_generation WHERE channel_id = ? AND state = 'draining'", listOf(c)))
+
+        // 14 days after the rotation (the window's edge): it arms again
+        owner.engine.invite(id, 7, null)
+        advanceToDay(w, rotatedDay + 14)
+        rotateOnce(w, owner, id)
+        assertEquals("day 14 is outside the window: one rotation per 14 days", 2, owner.channel(id)!!.generation)
+        assertEquals(2L, owner.count("ch_rotation_history"))
+        assertEquals(2L, owner.count("ch_rotation_history", "removal = 0"))
+        val secondDay = rotationDay(owner, id)
+        assertTrue("the second rotation is 14 days after the first", secondDay >= rotatedDay + 14)
+
+        // and the same shape against the second rotation: 7 refused, 14 armed
+        owner.sql.execUpdate("DELETE FROM ch_generation WHERE channel_id = ? AND state = 'draining'", listOf(c))
+        owner.engine.invite(id, 7, null)
+        advanceToDay(w, secondDay + 7)
+        rotateOnce(w, owner, id)
+        assertEquals("7 days after the second rotation: refused again", 2, owner.channel(id)!!.generation)
+        assertEquals(2L, owner.count("ch_rotation_history"))
+        owner.engine.invite(id, 7, null)
+        advanceToDay(w, secondDay + 14)
+        rotateOnce(w, owner, id)
+        assertEquals("day 14 after the second rotation: armed", 3, owner.channel(id)!!.generation)
+        assertEquals(3L, owner.count("ch_rotation_history"))
+        assertEquals(3L, owner.count("ch_rotation_history", "removal = 0"))
+        assertEquals(emptyList<String>(), owner.integrity())
+        assertEquals(emptyList<String>(), bob.integrity())
+    }
+
+    /** The day the channel's newest rotation's switch hour falls on (what §19.7 (c) spaces against). */
+    private fun rotationDay(owner: ChannelClient, id: ChannelId): Long {
+        var day = -1L
+        owner.sql.query(
+            "SELECT rotated_day FROM ch_rotation_history WHERE channel_id = ? ORDER BY rotated_day DESC LIMIT 1",
+            listOf(id.toByteArray()),
+        ) { day = it.long(0) }
+        assertTrue("a rotation was recorded", day >= 0)
+        return day
+    }
+
+    /** Advances the clock until [DmTime.day] is [day] (the same time of day as now). */
+    private fun advanceToDay(w: ChannelWorld, day: Long) {
+        val target = day * DmWorld.DAY + Math.floorMod(w.now, DmWorld.DAY)
+        assertTrue("time only moves forward", target >= w.now)
+        w.advance(target - w.now)
+    }
+
+    /**
+     * One rotation attempt over the owner, the NI-CH5 choreography: the arming pass, the settle, then the
+     * switch at the commit's switch hour (two hours on; the third hour covers it).
+     */
+    private fun rotateOnce(w: ChannelWorld, owner: ChannelClient, id: ChannelId) {
+        owner.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        owner.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        w.quiesce()
+        w.advance(3 * DmWorld.HOUR)
+        owner.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
     }
 
     /**

@@ -321,31 +321,38 @@ internal class ChannelClient(
      * The DM context §6.9's `revealSeal` signs with: the world's stand-in for the DM stack's
      * context, opened lazily over an identity derived from the client's name (so every client's
      * card and identity key differ and a reboot keeps them). Null-handle while locked, like the
-     * DM context's.
+     * DM context's. The MESSAGING branch is per-client too, like production's (`m` of each
+     * identity): since slice S13b the channel self-update schedule keys its slot PRF by
+     * `K_sched = HKDF(m, "ghost/v1/dm/channel-schedule")` (§6.4 CO-9, owner decision Q-F5-6), and
+     * a branch shared by every client would give all of one channel's members the same slot.
      */
     private var dmHandle: Long? = null
+    private var dmScheduleKey: ByteArray? = null
     private val dmContext = object : org.ghost.messaging.port.DmContext {
-        override fun handleOrNull(): Long? = if (unlocked) openDm() else null
+        override fun handleOrNull(): Long? = if (unlocked) openDm()?.first else null
         override fun stateKeyWrapped(): ByteArray? = null
+        override fun channelScheduleKey(): ByteArray? =
+            if (unlocked) openDm()?.second?.copyOf() else null
     }
 
-    private fun openDm(): Long? {
-        dmHandle?.let { return it }
+    private fun openDm(): Pair<Long, ByteArray>? {
+        dmHandle?.let { return it to dmScheduleKey!! }
         val opened = org.ghost.crypto.bridge.DmSessions.openContext(
-            ChannelWorld.sha256("dm-branch"),
+            ChannelWorld.sha256("dm-branch:$seedOf"),
             // The identity persists across reboots and restores, like the pseudonym seed (a reboot
             // changes the random streams, never the identity): a revealed card must verify as the same
             // identity after the device crashed and came back.
             ChannelWorld.sha256("identity:$seedOf"),
             ChannelWorld.sha256("dm-state:$seedOf"),
-        )
-        dmHandle = opened
-        return opened
+        ) ?: return null
+        dmHandle = opened.handle
+        dmScheduleKey = opened.channelScheduleKey
+        return opened.handle to opened.channelScheduleKey
     }
 
     /** The own contact card v2 (through the DM context): what a reveal of this client carries, and what a recipient's offer compares against. */
     fun ownCard(): ByteArray? {
-        val h = openDm() ?: return null
+        val h = openDm()?.first ?: return null
         return org.ghost.crypto.bridge.DmSessions.ownCard(h, 0)?.card
     }
 

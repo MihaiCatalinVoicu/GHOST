@@ -22,7 +22,9 @@ import org.ghost.sync.api.SyncDatabase
  * `:identity`'s value").
  *
  * **Actor thread only**, like every step: nothing here is locked. [close] zeroises the native context (`ctxClose`) at
- * lock and wipe.
+ * lock and wipe — and with it go the receive path's in-memory worlds ([ChannelReceiveStep]'s deferral backoffs, held
+ * reactions and peek cursors, [ChannelPeekOrder]'s expected `seq`s and gap deferrals, §19.54 row 3): a restart or a
+ * lock rederives them all conservatively, from the start.
  */
 internal class ChannelContexts(
     private val database: SyncDatabase,

@@ -214,6 +214,41 @@ internal class GenerationStore {
         return out
     }
 
+    // ----------------------------------------------------------------------------- ch_rotation_history (slice S13c)
+
+    /**
+     * Records a rotation the member merged (`CH-SETTLE`, §19.7 (c); slice S13c, §19.54 row 12, F-S11-3): the
+     * generation the rotation opened (the key — a rotation opens exactly one generation), the day the rotating
+     * commit's switch hour falls on, and whether the rotation carried a removal. Every staying member records
+     * the same rows as it merges the same commits, so a committer's arming ([ChannelPassStep]'s
+     * `inviteExpiryRotation`) reads its own copy of the channel's history. A repeat of the key is
+     * [ChannelStoreError.ROW_EXISTS] (the row is a fact: append-only by schema).
+     */
+    fun recordRotation(tx: SyncTransaction, channelId: ByteArray, generation: Long, rotatedDay: Long, removal: Boolean) {
+        Fields.u32("ch_rotation_history.generation", generation)
+        Fields.nonNegative("ch_rotation_history.rotated_day", rotatedDay)
+        val changed = tx.sql.execUpdate(
+            "INSERT INTO ch_rotation_history(channel_id, generation, rotated_day, removal) SELECT ?, ?, ?, ? " +
+                "WHERE NOT EXISTS (SELECT 1 FROM ch_rotation_history WHERE channel_id = ? AND generation = ?)",
+            listOf(channelId, generation, rotatedDay, Fields.flag(removal), channelId, generation),
+        )
+        if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_rotation_history")
+    }
+
+    /**
+     * The day of the channel's newest **non-removal** rotation, if it ever had one: what §19.7 (c)'s spacing
+     * (Q28: "at most one non-removal rotation per 14 days") reads before arming. Removal rotations are exempt
+     * and do not move the window.
+     */
+    fun lastRoutineRotationDay(sql: SqlExecutor, channelId: ByteArray): Long? {
+        var last: Long? = null
+        sql.query(
+            "SELECT max(rotated_day) FROM ch_rotation_history WHERE channel_id = ? AND removal = 0",
+            listOf(channelId),
+        ) { r -> if (!r.isNull(0)) last = r.long(0) }
+        return last
+    }
+
     private fun read(r: SqlExecutor.Row) = GenerationRow(
         channelId = r.blob(0),
         generation = r.long(1),

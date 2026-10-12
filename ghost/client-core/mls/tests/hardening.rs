@@ -11,7 +11,7 @@ use ghost_client_mls::derive::{self, InvitePassword};
 use ghost_client_mls::ext::{self, AdmitEvidence, Bootstrap, CommitAad, Purpose, SwapEvidence};
 use ghost_client_mls::group::{Anchor, CommitRequest, KeyClass, ReceiveItem, Standing, Winner};
 use ghost_client_mls::invite;
-use ghost_client_mls::join::{self, JoinAuth, WelcomeBlob};
+use ghost_client_mls::join::{self, InviteCandidate, JoinAuth, WelcomeBlob};
 use ghost_client_mls::kv::WrappedRows;
 use ghost_client_mls::provider::{GhostProvider, PseudonymSigner};
 use ghost_client_mls::seal::{self, Order};
@@ -611,7 +611,10 @@ fn restore_request(w: &mut World, target: usize) -> (CommitRequest, Member) {
         .join_verify(
             &w.channel_id,
             &body,
-            Some(&inv.issued.invite_pk),
+            &[InviteCandidate {
+                invite_id: inv.issued.invite_id,
+                invite_pk: inv.issued.invite_pk,
+            }],
             None,
             g.generation,
         )

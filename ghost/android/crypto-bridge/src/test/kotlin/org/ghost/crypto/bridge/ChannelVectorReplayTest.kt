@@ -487,7 +487,8 @@ class ChannelVectorReplayTest {
         val seedEnv = MlsVectors.call(MlsVectors.WRAP_KEY, stateKey, byteArrayOf(5), channel, seed, MlsVectors.u64(0))[0]
         val body = (crypto.joinRequest(channel, inviteId, seedEnv, kp) as MlsOutcome.Ok).value
         assertArrayEquals(v.hex("join_request", "body"), body)
-        val verified = (crypto.joinVerify(channel, body, invitePk, null, 2) as MlsOutcome.Ok).value
+        val inviteSet = inviteId + invitePk
+        val verified = (crypto.joinVerify(channel, body, inviteSet, null, 2) as MlsOutcome.Ok).value
         assertEquals(1, verified.requestType)
         assertArrayEquals(kp, verified.keyPackage)
         assertArrayEquals(v.hex("key_package", "kp_ref"), verified.kpRef)
@@ -498,10 +499,11 @@ class ChannelVectorReplayTest {
         assertEquals(bind[33].toInt(), verified.kpBind.byte(MlsField.PURPOSE))
         assertEquals(BigInteger(1, bind.copyOfRange(34, 38)).toLong(), verified.kpBind.u32(MlsField.DAY))
         assertArrayEquals(inviteId, verified.auth.bytes(MlsField.INVITE_ID))
-        // Another invite key, another channel, a KeyPackage of another channel: refused.
-        assertEquals(MlsCode.BAD_SIGNATURE, crypto.joinVerify(channel, body, ByteArray(32) { 1 }, null, 2).code)
+        // The named invite under another key, another channel, a KeyPackage of another channel: refused.
+        assertEquals(MlsCode.BAD_SIGNATURE, crypto.joinVerify(channel, body, inviteId + ByteArray(32) { 1 }, null, 2).code)
+        assertEquals(MlsCode.BAD_SIGNATURE, crypto.joinVerify(channel, body, ByteArray(16) { 1 } + invitePk, null, 2).code)
         val other = channel.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertEquals(MlsCode.INVALID_KEYPACKAGE, crypto.joinVerify(other, body, invitePk, null, 2).code)
+        assertEquals(MlsCode.INVALID_KEYPACKAGE, crypto.joinVerify(other, body, inviteSet, null, 2).code)
         assertEquals(MlsCode.STATE_CORRUPT, crypto.joinRequest(other, inviteId, seedEnv, kp).code)
 
         // [rejoin_request]: the sample KeyPackage is a **join** KeyPackage, so the codec vector is
@@ -521,7 +523,10 @@ class ChannelVectorReplayTest {
             MlsCode.WRONG_PURPOSE,
             crypto.rejoinRequest(channel, 3, 20726, 41, v.hex("rejoin_request", "last_hash"), kp).code,
         )
-        assertEquals(MlsCode.WRONG_PURPOSE, crypto.joinVerify(channel, v.hex("rejoin_request", "body"), null, p, 3).code)
+        assertEquals(
+            MlsCode.WRONG_PURPOSE,
+            crypto.joinVerify(channel, v.hex("rejoin_request", "body"), ByteArray(0), p, 3).code,
+        )
 
         // [sponsor_sig] and [welcome_blob]: their layouts and the signature, in the JDK (the native
         // side signs `sponsor_sig` inside `inviteBuild` and reads the Welcome blob in `welcomeJoin`).

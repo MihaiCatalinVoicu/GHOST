@@ -1403,9 +1403,11 @@ object Schema {
     /**
      * Migration 7, **step 1**: the 26 tables of §9 and `mls_self`, amended by slice S4 (Phase 10 design §19.37: the
      * wrapped channel state key, §19.35 F-9; the invite state of `ch_join`, F-8; `ch_candidate.removes`, F-1;
-     * `ch_channel.committers_digest`, F-S4-2; `ch_generation.open_epoch`, F-S4-7) and by slice S6 (§19.41:
+     * `ch_channel.committers_digest`, F-S4-2; `ch_generation.open_epoch`, F-S4-7), by slice S6 (§19.41:
      * `ch_generation.own_rotation`, the marker of a generation the member's own commit opened — its funding is the
-     * rotating committer's at the switch — migration 7 had not shipped, so it is amended in place, still one
+     * rotating committer's at the switch) and by slice S13c (§19.54 rows 6 and 12: `ch_post.seq`, the stored
+     * per-epoch ratchet seq of §19.35 F-2, and `ch_rotation_history`, the row per rotation of §19.7 (c) that the
+     * 14-day spacing reads — migration 7 had not shipped, so it is amended in place, still one
      * transaction). Conventions (v5, "following the v4/v5 split of F9
      * §13.6"): **a table is WITHOUT ROWID** (T33 and F9 §13.6 step 5: "random WITHOUT ROWID keys"; the hidden
      * rowid of a rowid table is the order its rows arrived in, and the gaps between the rowids that survive
@@ -1486,6 +1488,23 @@ object Schema {
                                   OR (typeof(drain_until_day) = 'integer' AND drain_until_day >= 0)),
                   CHECK (state = 'pending_switch' OR switch_hour IS NULL),
                   CHECK ((state = 'draining') = (drain_until_day IS NOT NULL)),
+                  PRIMARY KEY (channel_id, generation)
+                ) WITHOUT ROWID""",
+        // The rotation history (§19.7 (c), Q28; slice S13c, §19.54 row 12, F-S11-3): one row per rotation a member
+        // merged, keyed by the generation the rotation opened (a rotation opens exactly one generation, so the key
+        // is the rotation's identity), the day the rotating commit's switch hour falls on, and whether the rotation
+        // carried a removal — removals, restores and the routine rotations are indistinguishable at a relay (LC-4),
+        // but the "at most one non-removal rotation per 14 days" spacing of §19.7 (c) binds the routine ones alone.
+        // The row is written at the settle that merges the rotating winner (every staying member records it, so a
+        // committer's arming reads its own copy of the channel's history); the arming (`ChannelPassStep.
+        // inviteExpiryRotation`) reads the newest non-removal day and refuses inside the 14-day window. Append-only
+        // like the other histories; no count bound — a channel rotates at most once a day at §19.7 (c)'s cadence.
+        """CREATE TABLE ch_rotation_history (
+                  channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  generation  INTEGER NOT NULL
+                                CHECK (typeof(generation) = 'integer' AND generation BETWEEN 1 AND 4294967295),
+                  rotated_day INTEGER NOT NULL CHECK (typeof(rotated_day) = 'integer' AND rotated_day >= 0),
+                  removal     INTEGER NOT NULL DEFAULT 0 CHECK (removal IN (0, 1)),
                   PRIMARY KEY (channel_id, generation)
                 ) WITHOUT ROWID""",
         """CREATE TABLE ch_epoch (
@@ -1577,6 +1596,12 @@ object Schema {
         // `displayed_minute` is kept only while a countdown needs it, a read post of a channel with a timer: with
         // the timer off F9's `dm_message` stores no time at all (T33), and a read minute that lives as long as the
         // post would be the one record of when the user opened it.
+        // `seq` (slice S13c, §19.54 row 6, §19.35 F-2, F-S4-16): the post's per-epoch ratchet seq, the `ChannelOrder`
+        // of the MLS AAD — the value `ch_epoch.own_seq` hands out at the encryption and every member reads back from
+        // the decryption. Stored, the author's posts of one minute finally have their own order (the display order's
+        // fourth term); without it they showed in `op_id` order, random. Write-once like the rest of the identity
+        // (`ch_post_identity`), with the one exception a retry is: F-S4-10 — a retried post takes the retry's `seq`
+        // (and epoch, timer and minute). The `u32` bound is `own_seq`'s: the seq lives inside its epoch.
         """CREATE TABLE ch_post (
                   op_id             BLOB PRIMARY KEY NOT NULL CHECK (length(op_id) = 16),
                   channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1586,6 +1611,7 @@ object Schema {
                   reply_to          BLOB CHECK (reply_to IS NULL OR length(reply_to) = 16),
                   timer_code        INTEGER NOT NULL CHECK (typeof(timer_code) = 'integer' AND timer_code BETWEEN 0 AND 5),
                   epoch             INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  seq               INTEGER NOT NULL CHECK (typeof(seq) = 'integer' AND seq BETWEEN 0 AND 4294967295),
                   body_env          BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 65564),
                   state             TEXT NOT NULL
                                     CHECK (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate', 'unread', 'read')),
@@ -1600,7 +1626,7 @@ object Schema {
                   CHECK (relay_expiry_hour IS NULL OR state = 'unread'),
                   CHECK (displayed_minute IS NULL OR (state = 'read' AND timer_code <> 0))
                 ) WITHOUT ROWID""",
-        "CREATE INDEX idx_ch_post_order ON ch_post(channel_id, author_minute, author, op_id)",
+        "CREATE INDEX idx_ch_post_order ON ch_post(channel_id, author_minute, author, epoch, seq, op_id)",
         "CREATE INDEX idx_ch_post_delete ON ch_post(delete_at_minute) WHERE delete_at_minute IS NOT NULL",
         "CREATE INDEX idx_ch_post_expiry ON ch_post(relay_expiry_hour) WHERE relay_expiry_hour IS NOT NULL",
         """CREATE TABLE ch_reaction (
@@ -1861,6 +1887,10 @@ object Schema {
                 BEGIN SELECT RAISE(ABORT, 'at most 1024 epoch log rows per channel'); END""",
         """CREATE TRIGGER ch_epoch_log_append_only BEFORE UPDATE ON ch_epoch_log
                 BEGIN SELECT RAISE(ABORT, 'the epoch log is append-only'); END""",
+        // A rotation a member merged is a fact of the channel's history, not a value that moves (slice S13c,
+        // §19.54 row 12): the spacing rule reads the days as they were.
+        """CREATE TRIGGER ch_rotation_history_append_only BEFORE UPDATE ON ch_rotation_history
+                BEGIN SELECT RAISE(ABORT, 'the rotation history is append-only'); END""",
         // ---- commit candidates (§6.3.5: at most 8 per epoch and one per sender, plus the own commit)
         """CREATE TRIGGER ch_candidate_limit BEFORE INSERT ON ch_candidate
                 WHEN (NEW.own = 0 AND (SELECT count(*) FROM ch_candidate
@@ -1887,13 +1917,14 @@ object Schema {
         """CREATE TRIGGER ch_fork_signal_append_only BEFORE UPDATE ON ch_fork_signal
                 BEGIN SELECT RAISE(ABORT, 'fork signals are diagnostics and are never rewritten'); END""",
         // ---- posts (§8.2: deadlines only move earlier; the F9 dm_message triggers, for the columns ch_post has).
-        // A retry (failed -> queued) re-encrypts the post under the epoch and the timer then current.
+        // A retry (failed -> queued) re-encrypts the post under the epoch and the timer then current, and takes the
+        // retry's `seq` with them (F-S4-10, slice S13c): the copy's order is the retry's, not the first attempt's.
         """CREATE TRIGGER ch_post_identity BEFORE UPDATE ON ch_post
                 WHEN NEW.op_id IS NOT OLD.op_id OR NEW.channel_id IS NOT OLD.channel_id
                   OR NEW.direction IS NOT OLD.direction OR NEW.author IS NOT OLD.author
                   OR NEW.kind IS NOT OLD.kind OR NEW.reply_to IS NOT OLD.reply_to OR NEW.body_env IS NOT OLD.body_env
                   OR ((NEW.timer_code IS NOT OLD.timer_code OR NEW.epoch IS NOT OLD.epoch
-                       OR NEW.author_minute IS NOT OLD.author_minute)
+                       OR NEW.author_minute IS NOT OLD.author_minute OR NEW.seq IS NOT OLD.seq)
                       AND NOT (OLD.state = 'failed' AND NEW.state = 'queued'))
                 BEGIN SELECT RAISE(ABORT, 'only the state and the display and expiry columns of a post change; a retry re-encrypts it'); END""",
         """CREATE TRIGGER ch_post_state BEFORE UPDATE OF state ON ch_post
@@ -2006,6 +2037,7 @@ object Schema {
             "ch_generation",
             "(channel_id = NEW.channel_id AND generation = NEW.generation) OR namespace_id = NEW.namespace_id",
         ),
+        replaceGuard("ch_rotation_history", "channel_id = NEW.channel_id AND generation = NEW.generation"),
         replaceGuard("ch_epoch", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
         replaceGuard("ch_epoch_log", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
         replaceGuard(
@@ -2064,8 +2096,9 @@ object Schema {
         "ch_fork_signal", "mls_kv", "mls_global_kv", "ch_post", "ch_reaction", "ch_pending_post", "ch_outbound_op",
         "ch_seen", "ch_reveal", "ch_join", "ch_join_request", "ch_invite_issued", "ch_kp_seen", "ch_member_seen",
         "ch_invite_own", "ch_sponsor", "ch_member_refresh", "ch_request", "ch_box_key",
-        // ... and the channel state key's row (amended by slice S4, §19.37).
-        "mls_self",
+        // ... the channel state key's row (amended by slice S4, §19.37) and the rotation history (amended by
+        // slice S13c, §19.54 row 12: §19.7 (c)'s spacing reads it).
+        "mls_self", "ch_rotation_history",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -2108,7 +2141,7 @@ object Schema {
         "ch_generation_identity", "ch_generation_state", "ch_generation_drain", "ch_generation_one_current_insert",
         "ch_generation_one_current_update", "ch_generation_one_draining_insert", "ch_generation_one_draining_update",
         "ch_epoch_limit", "ch_epoch_anchor_insert", "ch_epoch_anchor_update", "ch_epoch_identity", "ch_epoch_final",
-        "ch_epoch_log_limit", "ch_epoch_log_append_only",
+        "ch_epoch_log_limit", "ch_epoch_log_append_only", "ch_rotation_history_append_only",
         "ch_candidate_limit", "ch_candidate_identity", "ch_fork_signal_limit", "ch_fork_signal_append_only",
         "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit", "ch_pending_post_channel",
         "ch_join_request_limit", "ch_join_request_channel", "ch_join_fixed", "ch_invite_own_fixed",
@@ -2119,6 +2152,7 @@ object Schema {
         // ... their REPLACE guards (every channel table but ch_seen and ch_kp_seen, which are written with
         // INSERT OR IGNORE) ...
         "ch_channel_no_replace", "ch_liveness_no_replace", "ch_schedule_no_replace", "ch_generation_no_replace",
+        "ch_rotation_history_no_replace",
         "ch_epoch_no_replace", "ch_epoch_log_no_replace", "ch_candidate_no_replace", "ch_fork_signal_no_replace",
         "mls_kv_no_replace", "mls_global_kv_no_replace", "mls_self_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
         "ch_pending_post_no_replace", "ch_outbound_op_no_replace", "ch_reveal_no_replace", "ch_join_no_replace",

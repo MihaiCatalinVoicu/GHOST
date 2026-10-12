@@ -13,7 +13,7 @@ import org.junit.Test
  * of them that no test told from the right one).
  *
  * The tables of legal edges below are written from §6.11 again, not read from the schema, so a trigger that
- * gains or loses an edge fails here. The 36 triggers are listed in [ChannelSchema.rules]; the last test
+ * gains or loses an edge fails here. The 38 triggers are listed in [ChannelSchema.rules]; the last test
  * of this class requires that each of them was fired (its message was seen) by a test of the class.
  */
 class ChannelTriggersTest {
@@ -426,16 +426,30 @@ class ChannelTriggersTest {
             f.refuses("ch_post_identity", identity, "UPDATE ch_post SET $column = ?", value)
         }
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET channel_id = ?", chBytes(32, 9))
-        // the epoch, the timer and the author minute are the encryption's: fixed while the post lives its life ...
+        // the epoch, the timer, the author minute and the seq are the encryption's: fixed while the post lives its life ...
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET epoch = 4")
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET timer_code = 2")
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET author_minute = 660")
+        f.refuses("ch_post_identity", identity, "UPDATE ch_post SET seq = 9")
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET state = 'sent', epoch = 4")
         assertEquals(1, f.upd("UPDATE ch_post SET state = 'failed'"))
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET epoch = 4")
-        // ... and a retry (failed -> queued) re-encrypts the post under the epoch, the timer and the minute then current
-        assertEquals(1, f.upd("UPDATE ch_post SET state = 'queued', epoch = 4, timer_code = 2, author_minute = 660"))
+        // ... and a retry (failed -> queued) re-encrypts the post under the epoch, the timer, the minute and
+        // the seq then current (F-S4-10, slice S13c)
+        assertEquals(1, f.upd("UPDATE ch_post SET state = 'queued', epoch = 4, timer_code = 2, author_minute = 660, seq = 9"))
         f.refuses("ch_post_identity", identity, "UPDATE ch_post SET body_env = ?, state = 'sent'", chBytes(50, 9))
+    }
+
+    @Test
+    fun theRotationHistoryIsAppendOnly() = ChannelFixture().use { f ->
+        f.put("ch_rotation_history")
+        f.refuses("ch_rotation_history_append_only", "the rotation history is append-only", "UPDATE ch_rotation_history SET rotated_day = 20001")
+        f.refuses("ch_rotation_history_append_only", "the rotation history is append-only", "UPDATE ch_rotation_history SET removal = 1")
+        f.refuses("ch_rotation_history_append_only", "the rotation history is append-only", "UPDATE ch_rotation_history SET generation = 2")
+        assertEquals(1, f.count("ch_rotation_history"))
+        // a second rotation (another generation, the same day) is a new row
+        f.put("ch_rotation_history", "generation" to 2L, "removal" to 1L)
+        assertEquals(2, f.count("ch_rotation_history"))
     }
 
     @Test
@@ -714,6 +728,7 @@ class ChannelTriggersTest {
         anEpochKeepsItsKeysAndItsWinnerAndItsSequenceNeverGoesBack()
         aFinalEpochIsStickyAndOnlyItsRetentionMovesAndOnlyEarlier()
         theEpochLogIsAppendOnlyAndBoundedAtOneThousandAndTwentyFourRows()
+        theRotationHistoryIsAppendOnly()
         anEpochHasAtMostEightForeignCandidatesAndOneOwnCommit()
         aCandidateChangesOnlyByAVerifiedCopyAnEarlierSightingOrStoreHourAndTheErasureOfItsWelcomes()
         aChannelHasAtMostSixteenForkSignalsAndTheyAreNeverRewritten()
@@ -734,6 +749,6 @@ class ChannelTriggersTest {
         theChannelStateKeyIsWrittenOnceAndNeverRewritten()
         assertEquals("rules never provoked", emptySet<String>(), ChannelSchema.rules - fired)
         assertEquals("a refusal recorded for a trigger that is not in the schema", emptySet<String>(), fired - ChannelSchema.rules)
-        assertTrue(fired.size == 37)
+        assertTrue(fired.size == 38)
     }
 }

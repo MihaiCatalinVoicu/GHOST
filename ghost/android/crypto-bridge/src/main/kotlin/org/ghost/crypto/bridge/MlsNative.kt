@@ -271,14 +271,15 @@ object MlsNative {
         keyPackage: ByteArray,
     ): ByteArray?
 
-    // `invitePk` for a join or restore, `member` for a rejoin: empty when absent.
+    // The live invites' `INVITE_ID(16) ‖ invite_pk(32)` records (empty for a rejoin), `member` for
+    // a rejoin: empty when absent.
     @JvmStatic
     @JvmName("joinVerify")
     internal external fun joinVerify(
         handle: Long,
         channelId: ByteArray,
         body: ByteArray,
-        invitePk: ByteArray,
+        inviteSet: ByteArray,
         member: ByteArray,
         generation: Int,
     ): ByteArray?

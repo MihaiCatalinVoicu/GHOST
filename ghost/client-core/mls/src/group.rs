@@ -33,7 +33,7 @@ use crate::ext::{
     Purpose, SwapEvidence, FLAG_MEMBERS_MAY_INVITE, FLAG_PASSWORD,
 };
 use crate::invite::{self, InviteFields};
-use crate::join::{self, JoinAuth, JoinRequest, RequestType, WelcomeBlob};
+use crate::join::{self, InviteCandidate, JoinAuth, JoinRequest, RequestType, WelcomeBlob};
 use crate::kv::{self, Change, ChangeSet, GhostKv, RowSource, Scope};
 use crate::provider::{GhostProvider, PseudonymSigner};
 use crate::result::{Code, CommitReason, MlsError, MlsResult};
@@ -1926,15 +1926,20 @@ impl MlsContext {
         .encode()
     }
 
-    /// `joinVerify` (fn 15): the request's KeyPackage is canonical and bound to the channel with
-    /// the purpose of the request type (`WRONG_PURPOSE`), and its signature verifies under the
-    /// invite key (join, restore) or the member's pseudonym key (rejoin; `generation` is the
-    /// namespace's the request came from). `BAD_SIGNATURE` otherwise.
+    /// `joinVerify` (fn 15, slice S13b): the request's KeyPackage is canonical and bound to the
+    /// channel with the purpose of the request type (`WRONG_PURPOSE`). A join or restore request
+    /// **names its invite before the signature check**: the claimed `invite_id` is read from the
+    /// authenticated body (it is inside `invite_sig`), the matching record is looked up in
+    /// `invites`, and the signature is verified under that invite's key alone — one verification
+    /// per request, and an attacker naming a wrong invite fails the check (`BAD_SIGNATURE`), so
+    /// there is no downgrade to another invite's key. A rejoin is verified under the member's
+    /// pseudonym key (`generation` is the namespace's the request came from); `member` names it.
+    /// `BAD_SIGNATURE` otherwise, including a join whose named invite is not in `invites`.
     pub fn join_verify(
         &self,
         channel_id: &[u8; 32],
         body: &[u8],
-        invite_pk: Option<&[u8; 32]>,
+        invites: &[InviteCandidate],
         member: Option<&[u8; 32]>,
         generation: u32,
     ) -> MlsResult<VerifiedJoin> {
@@ -1949,19 +1954,23 @@ impl MlsContext {
         if !purpose_ok {
             return Err(MlsError::new(Code::WrongPurpose));
         }
-        let ok = match (&req.auth, invite_pk, member) {
+        let ok = match (&req.auth, member) {
             (
                 JoinAuth::Invite {
                     invite_id,
                     invite_sig,
                 },
-                Some(pk),
                 _,
-            ) => invite::verify_ed25519(
-                pk,
-                &join::invite_sig_message(channel_id, invite_id, &req.key_package),
-                invite_sig,
-            ),
+            ) => invites
+                .iter()
+                .find(|c| c.invite_id == *invite_id)
+                .is_some_and(|c| {
+                    invite::verify_ed25519(
+                        &c.invite_pk,
+                        &join::invite_sig_message(channel_id, invite_id, &req.key_package),
+                        invite_sig,
+                    )
+                }),
             (
                 JoinAuth::Rejoin {
                     day,
@@ -1969,7 +1978,6 @@ impl MlsContext {
                     last_hash,
                     rejoin_sig,
                 },
-                _,
                 Some(p),
             ) => {
                 kp.pseudonym == *p

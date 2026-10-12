@@ -41,7 +41,8 @@ import org.ghost.sync.api.SyncTransaction
  * §5.8 (the handshake TTL for an administrative post, §19.21), the deadline `author + min(bucket, 7 d)` (`author + 7 d`
  * for an administrative post), the relays of `set(ns_g, week(now))` (registered with the namespace) and Phase 7's send
  * delay (`SendDelay.OFF` is refused for `Consumer.CHANNEL`, S1a). `seq` is `ch_epoch.own_seq`, incremented in the same
- * transaction, and becomes the `ChannelOrder` of the MLS AAD natively (§5.5, §19.18).
+ * transaction, becomes the `ChannelOrder` of the MLS AAD natively (§5.5, §19.18) and, stored on the post's row since
+ * slice S13c (§19.54 row 6), orders the author's posts of one minute (a retry takes the retry's `seq` — F-S4-10).
  *
  * Gate G-M5 lists this file for `Outbox.enqueue` (`CH-POST`, and `CH-INVITE`'s `INVITE_ISSUED` through [compose]).
  */
@@ -344,8 +345,9 @@ internal class ChannelPostStep(
         when (fields.kind) {
             KIND_POST -> {
                 val deleteAt = DmTimers.senderExpireMinute(now, fields.timerCode)
-                // A retry (§6.11's failed → queued) re-encrypts a row that exists; a new post inserts its row.
-                if (!stores.posts.retry(tx, fields.opId, epoch.epoch, fields.timerCode, authorSeconds, deleteAt)) {
+                // A retry (§6.11's failed → queued) re-encrypts a row that exists and takes the retry's
+                // `seq` (and epoch) — F-S4-10: the copy's order is the retry's; a new post inserts its row.
+                if (!stores.posts.retry(tx, fields.opId, epoch.epoch, seq, fields.timerCode, authorSeconds, deleteAt)) {
                     stores.posts.insertOutgoing(
                         tx = tx,
                         opId = fields.opId,
@@ -355,6 +357,7 @@ internal class ChannelPostStep(
                         replyTo = fields.replyTo,
                         timerCode = fields.timerCode,
                         epoch = epoch.epoch,
+                        seq = seq,
                         bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), fields.text ?: ByteArray(0)),
                         authorMinute = authorSeconds,
                         deleteAtMinute = deleteAt,

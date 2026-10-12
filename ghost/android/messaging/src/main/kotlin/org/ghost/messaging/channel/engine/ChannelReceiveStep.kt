@@ -10,6 +10,7 @@ import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.ChannelStore
+import org.ghost.messaging.channel.store.ChannelStoreException
 import org.ghost.messaging.channel.store.Direction
 import org.ghost.messaging.channel.store.GenerationStore
 import org.ghost.messaging.channel.store.InviteStore
@@ -43,7 +44,12 @@ import java.security.MessageDigest
  *     and counted when evicted); a batch whose `receive` throws (`INTERNAL`) is retried blob by blob, and a blob that
  *     throws alone is left to the poison guard. A namespace **under pressure** — a full window, or as many due rows as
  *     `FETCHED_CAP` — defers the entries a gap holds instead of holding them in place (§19.38, [ChannelPeekOrder]), and a
- *     batch that decrypts the `seq` they wait for re-offers them; the round is then repeated (≤ [RECEIVE_ROUNDS]).
+ *     batch that decrypts the `seq` they wait for re-offers them; the round is then repeated (≤ [RECEIVE_ROUNDS]). A pass
+ *     that drains its full window under pressure leaves a per-namespace **peek cursor** (§19.54 row 3, S13a, the relief
+ *     valve for receive-under-pressure): a remembered gap deferral the cursor covers that comes back into the due set is
+ *     left out of the next window — it is still claimed back **by key**, wherever the window is; the cursor is in memory
+ *     (cleared with the context, empty after a restart = from the start), LRU-bounded like the deferral backoff, and any
+ *     pass that is partial, gap-filled or leaves a row unopened resets it.
  *  2. **Commits**, alone: for the current epoch a validation run (CO-2, native), recorded as a candidate with its sighting
  *     and its relay store hour, its removal-hold mark (§19.35 F-1) and the CO-4 anchor of the epoch, within the bounds of
  *     §6.3.5 (one per sender, the lowest hash; the best 8 by `(rank, hash)`); for a retained past epoch a **late
@@ -93,6 +99,30 @@ internal class ChannelReceiveStep(
     private val backoff = object : LinkedHashMap<List<Byte>, Int>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, Int>?): Boolean = size > MAX_BACKOFF_ENTRIES
     }
+
+    /**
+     * The namespaces whose peek window a pass **drained fully under pressure** (§19.54 row 3, S13a — Q-F4-13's
+     * relief valve): the namespace's fetched-and-deferred rows sit at the front of every later peek (the inbox peeks
+     * in fetch order; a deferred row keeps its fetch position), so the next pass leaves a row [ChannelPeekOrder]
+     * still remembers as a gap deferral within its grace out of the window — it is claimed back by key wherever the
+     * window is (§19.38's invariant, untouched). A deferral past its grace, or a row the pass left unopened, is
+     * re-examined from the start. In memory like [backoff] — a restart or a lock rederives it conservatively
+     * (empty = from the start, the pre-S13a behavior) —, forgotten LRU-boundedly, and cleared with the context.
+     */
+    private val cursors = object : LinkedHashMap<List<Byte>, Unit>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, Unit>?): Boolean = size > MAX_CURSOR_ENTRIES
+    }
+
+    /**
+     * Test/debug visibility (S13a): how many epoch blobs the passes opened natively ([openEpoch] and the by-key
+     * re-open [openClaimed]); the RO-C backlog suites bound it — a backlog post is opened once (twice when it waited
+     * behind a gap and came back by its key), never re-opened pass after pass.
+     */
+    internal var openedBlobs: Int = 0
+        private set
+
+    /** Test/debug visibility (§19.55a): how many namespaces the peek cursor currently covers — a mid-pass failure clears it. */
+    internal val cursorSize: Int get() = cursors.size
 
     /**
      * Reactions whose post is not on the device yet, `(channel ‖ target ‖ author)` → the reaction (§19.38): a reaction can
@@ -172,87 +202,154 @@ internal class ChannelReceiveStep(
         val peeked = sync.inbox.peek(Consumer.CHANNEL, peekLimit)
         if (peeked.isEmpty()) {
             peekOrder.idle(env.now())
+            cursors.clear()
             return 0
         }
         val now = env.now()
         val day = DmTime.day(now)
-        val present = peeked.map { it.namespace.toByteArray().toList() + it.hash.toByteArray().toList() }.toSet()
+        // S13a (§19.54 row 3): a remembered gap deferral of a namespace the cursor swept is left out of the
+        // window (no classification, no native open) and handed to the plan by its key — taken or deferred again
+        // there. The cursor itself advances only when the pass drains its full window under pressure (the finally).
+        val namespaces = HashSet<List<Byte>>()
+        val skipped = HashSet<List<Byte>>()
+        val window = ArrayList<PeekedBlob>(peeked.size)
+        for (b in peeked) {
+            val ns = b.namespace.toByteArray().toList()
+            namespaces += ns
+            if (cursors.containsKey(ns) && peekOrder.isDeferredInGrace(ns + b.hash.toByteArray().toList(), now)) {
+                skipped += ns + b.hash.toByteArray().toList()
+                continue
+            }
+            window += b
+        }
+        val present = window.map { it.namespace.toByteArray().toList() + it.hash.toByteArray().toList() }.toSet()
         // §19.38: a full window may hide the next blob of a sender, and a namespace at Phase 7's fetched cap fetches no
-        // further blob until rows are consumed — under either, a gap is deferred, not held in place.
+        // further blob until rows are consumed — under either, a gap is deferred, not held in place. Pressure reads what
+        // the inbox holds due (the peek), the cursor-skipped rows included: a due deferred row counts against the cap.
         val windowFull = peeked.size >= peekLimit
         val dueByNamespace = peeked.groupingBy { it.namespace.toByteArray().toList() }.eachCount()
-        val classified = env.database.transaction { tx -> peeked.map { classify(tx, it, day) } }
         var consumed = 0
+        var leftUnprocessed = false
+        var interrupted = false
+        var failed = false
         val apps = ArrayList<ChannelPeekOrder.Entry<Opened>>()
         val commits = ArrayList<Opened>()
         val joins = ArrayList<Classified>()
         val welcomes = ArrayList<Classified>()
         val unknown = ArrayList<Classified>()
-        for (c in classified) {
-            when (val k = c.kind) {
-                is Kind.Epoch -> when (val r = openEpoch(c, k.epoch, day)) {
-                    OpenResult.Consumed -> consumed++
-                    OpenResult.Left -> Unit
-                    is OpenResult.Ok -> {
-                        val o = r.opened
-                        when (o.contentType) {
-                            CONTENT_APPLICATION -> {
-                                val pressure = windowFull || (dueByNamespace[c.namespace] ?: 0) >= fetchedCap
-                                apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, c.namespace, o, pressure)
+        try {
+            val classified = env.database.transaction { tx -> window.map { classify(tx, it, day) } }
+            for (c in classified) {
+                when (val k = c.kind) {
+                    is Kind.Epoch -> when (val r = openEpoch(c, k.epoch, day)) {
+                        OpenResult.Consumed -> consumed++
+                        OpenResult.Left -> leftUnprocessed = true
+                        is OpenResult.Ok -> {
+                            val o = r.opened
+                            when (o.contentType) {
+                                CONTENT_APPLICATION -> {
+                                    val pressure = windowFull || (dueByNamespace[c.namespace] ?: 0) >= fetchedCap
+                                    apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, c.namespace, o, pressure)
+                                }
+                                CONTENT_COMMIT -> commits += o
+                                // §6.3.2, §19.16: a proposal is dropped before `process_message`, never stored.
+                                else -> if (drop(c, ChannelCounters.Reason.PROPOSAL)) consumed++
                             }
-                            CONTENT_COMMIT -> commits += o
-                            // §6.3.2, §19.16: a proposal is dropped before `process_message`, never stored.
-                            else -> if (drop(c, ChannelCounters.Reason.PROPOSAL)) consumed++
                         }
                     }
+                    Kind.Join -> joins += c
+                    Kind.Welcome -> welcomes += c
+                    Kind.Unknown -> unknown += c
                 }
-                Kind.Join -> joins += c
-                Kind.Welcome -> welcomes += c
-                Kind.Unknown -> unknown += c
             }
-        }
-        val plan = peekOrder.plan(apps, present, now)
-        for ((entry, waitingFor) in plan.deferrals) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            val opened = entry.value
-            val deferred = if (opened != null) {
-                deferClaimed(opened.c, ChannelPeekOrder.GAP_DEFER_SECONDS)
+            val plan = peekOrder.plan(apps, present, now, skipped)
+            for ((entry, waitingFor) in plan.deferrals) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                val opened = entry.value
+                val deferred = if (opened != null) {
+                    deferClaimed(opened.c, ChannelPeekOrder.GAP_DEFER_SECONDS)
+                } else {
+                    deferKey(entry.key, ChannelPeekOrder.GAP_DEFER_SECONDS)
+                }
+                if (deferred) {
+                    peekOrder.deferred(entry, waitingFor, now + ChannelPeekOrder.GAP_DEFER_SECONDS)
+                    env.counters.count(ChannelCounters.Reason.GAP_DEFERRED)
+                }
+            }
+            for (batch in plan.batches) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += applicationBatch(batch, now, day)
+            }
+            for (o in commits) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += commit(o, now, day)
+            }
+            val committers = HashMap<List<Byte>, Boolean>()
+            for (c in joins) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += joinRequest(c, committers, now, day)
+            }
+            for (c in welcomes) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += welcome(c)
+            }
+            for (c in unknown) {
+                if (outOfTime(deadlineMonotonicMillis)) {
+                    interrupted = true
+                    return consumed
+                }
+                consumed += unmatched(c, now)
+            }
+            return consumed
+        } catch (e: ChannelStoreException) {
+            // §19.55a (the review of S13a): the round died mid-flight and the pass drained nothing past the failure.
+            // The actor swallows pass exceptions, so nothing else would clear the peek cursor: it must not advance
+            // on this pass's account. Typed catches only (sync-no-catch-all); the exception is untouched (rethrown).
+            failed = true
+            throw e
+        } catch (e: IllegalStateException) {
+            // StorageFullException (:storage's typed full-database failure) and the facade's documented failure.
+            failed = true
+            throw e
+        } catch (e: IllegalArgumentException) {
+            // the Keystore wrapper's unwrap failure
+            failed = true
+            throw e
+        } finally {
+            // S13a: the cursor advances only when the pass drained its full window under pressure — no row left
+            // unopened, no deadline cut, no failure. Deferring is draining (the rows left the window) and a by-key
+            // claim-back touches only remembered rows the skip left out; both keep the cursor. Anything else
+            // rederives from the start (empty = the pre-S13a behavior).
+            val advance = !interrupted && !failed && !leftUnprocessed &&
+                (windowFull || dueByNamespace.values.any { it >= fetchedCap })
+            if (advance) {
+                for (ns in namespaces) cursors[ns] = Unit
             } else {
-                deferKey(entry.key, ChannelPeekOrder.GAP_DEFER_SECONDS)
-            }
-            if (deferred) {
-                peekOrder.deferred(entry, waitingFor, now + ChannelPeekOrder.GAP_DEFER_SECONDS)
-                env.counters.count(ChannelCounters.Reason.GAP_DEFERRED)
+                cursors.clear()
             }
         }
-        for (batch in plan.batches) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += applicationBatch(batch, now, day)
-        }
-        for (o in commits) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += commit(o, now, day)
-        }
-        val committers = HashMap<List<Byte>, Boolean>()
-        for (c in joins) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += joinRequest(c, committers, now, day)
-        }
-        for (c in welcomes) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += welcome(c)
-        }
-        for (c in unknown) {
-            if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += unmatched(c, now)
-        }
-        return consumed
     }
 
-    /** Forgets what the passes kept in memory (the backoffs, the held reactions): the context closed. */
+    /** Forgets what the passes kept in memory (the backoffs, the held reactions, the peek cursors): the context closed. */
     fun clear() {
         backoff.clear()
         heldReactions.clear()
+        cursors.clear()
     }
 
     // ------------------------------------------------------------------------------------ classification
@@ -297,6 +394,7 @@ internal class ChannelReceiveStep(
 
     /** Opens a mode-0x11 blob in memory (no write); a forged or non-canonical seal is consumed and counted. */
     private fun openEpoch(c: Classified, epoch: Long, day: Long): OpenResult {
+        openedBlobs++
         val channel = c.channel ?: return OpenResult.Left
         val generation = c.generation ?: return OpenResult.Left
         val epochRow = env.database.transaction { tx -> stores.epochs.epoch(tx.sql, channel.channelId, epoch, day) }
@@ -352,7 +450,9 @@ internal class ChannelReceiveStep(
                         consumed++
                         peekOrder.forget(e.key)
                     }
-                    Claim.Gone -> peekOrder.forget(e.key)
+                    Claim.Gone -> {
+                        peekOrder.forget(e.key)
+                    }
                     is Claim.Held -> {
                         if (o != null) {
                             claimed += Ready(e.key, o.body, r.blob)
@@ -396,6 +496,7 @@ internal class ChannelReceiveStep(
      * was opened as this message before it was deferred, so anything else is a store that changed under it.
      */
     private fun openClaimed(channelId: ByteArray, e: ChannelPeekOrder.Entry<Opened>, blob: InboundBlob, day: Long): Reopened {
+        openedBlobs++
         val epochRow = env.database.transaction { tx -> stores.epochs.epoch(tx.sql, channelId, e.epoch, day) } ?: return Reopened.Bad
         val opened = env.contexts.open(channelId) ?: return Reopened.Unavailable
         return when (
@@ -625,6 +726,7 @@ internal class ChannelReceiveStep(
             replyTo = replyTo,
             timerCode = timer,
             epoch = epoch,
+            seq = item.seq,
             bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), text),
             authorMinute = authorSeconds,
             deleteAtMinute = deleteAt,
@@ -1012,14 +1114,16 @@ internal class ChannelReceiveStep(
     // -------------------------------------------------------------------------------------- join requests
 
     /**
-     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and finds the invite it names: `joinVerify` (§10.2
-     * fn 15) needs the invite's public key before it says which invite the request names (finding F-S4-3 of §19.37), so
-     * the request is verified under each distinct `invite_pk` of the live invites the member holds, and then bound to the
-     * record whose `invite_id` is **the one the invitee signed** (`auth.INVITE_ID`; §19.38: binding it to the first record
-     * that merely shares the key let any member plant a record under a lower id and capture the request). A request
-     * refused for its KeyPackage, purpose or binding is consumed and counted; one no held invite signs is **deferred** —
-     * the `INVITE_ISSUED` may arrive later — until its relay expiry. A request for a spent or void invite, a second request
-     * for one invite and a 65th request are ignored (§6.2.4, §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`),
+     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and names the invite it names: since slice
+     * S13b (fn 15, owner decision Q-F4-14 of §19.54) `joinVerify` reads the claimed `invite_id` from the
+     * authenticated body — it is inside the invite signature — looks the invite up in the live set, and
+     * verifies under that invite's key, one native call per request; the request is bound to the record
+     * whose `invite_id` is the one the invitee signed (`auth.INVITE_ID` — a request naming a wrong invite
+     * fails the signature, so a planted record under another id captures nothing and costs no verification).
+     * A request refused for its KeyPackage, purpose or binding is consumed and counted; one no held invite
+     * signs — `BAD_SIGNATURE` at the named-invite lookup — is **deferred**: the `INVITE_ISSUED` may arrive
+     * later — until its relay expiry. A request for a spent or void invite, a second request for one invite
+     * and a 65th request are ignored (§6.2.4, §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`),
      * on the stored request.
      */
     private fun joinRequest(c: Classified, committers: MutableMap<List<Byte>, Boolean>, now: Long, day: Long): Int {
@@ -1048,19 +1152,26 @@ internal class ChannelReceiveStep(
         }
         val invites = env.database.transaction { tx -> stores.invites.issuedOf(tx.sql, channel.channelId, day) }
         var found: Pair<InviteStore.IssuedRow, ChannelCrypto.JoinVerified>? = null
-        // One verification per key: records that share an `invite_pk` cost one `joinVerify` together.
-        for (sharing in invites.groupBy { it.invitePk.toList() }.values) {
-            when (val v = opened.crypto.joinVerify(channel.channelId, body, sharing.first().invitePk, null, generation.generation.toInt())) {
+        if (invites.isNotEmpty()) {
+            // fn 15 (S13b): the request names its invite before the signature check — one native
+            // call over the whole live set; the key is chosen by the id inside the signature.
+            val inviteSet = ByteArray(invites.size * (INVITE_ID_BYTES + KEY_BYTES))
+            invites.forEachIndexed { i, inv ->
+                inv.inviteId.copyInto(inviteSet, i * (INVITE_ID_BYTES + KEY_BYTES))
+                inv.invitePk.copyInto(inviteSet, i * (INVITE_ID_BYTES + KEY_BYTES) + INVITE_ID_BYTES)
+            }
+            when (val v = opened.crypto.joinVerify(channel.channelId, body, inviteSet, null, generation.generation.toInt())) {
                 is MlsOutcome.Ok -> {
-                    val signed = v.value.auth.bytesOrNull(MlsField.INVITE_ID) ?: continue
-                    val invite = sharing.firstOrNull { it.inviteId.contentEquals(signed) } ?: continue
-                    found = invite to v.value
-                    break
+                    val signed = v.value.auth.bytesOrNull(MlsField.INVITE_ID)
+                    val invite = signed?.let { id -> invites.firstOrNull { it.inviteId.contentEquals(id) } }
+                    if (invite != null) found = invite to v.value
                 }
                 is MlsOutcome.Refused -> when (v.code) {
-                    MlsCode.BAD_SIGNATURE -> continue
+                    // No held invite by that id (an `INVITE_ISSUED` may arrive later) or the
+                    // signature is not the named invite's: the rejoin fallback below decides.
+                    MlsCode.BAD_SIGNATURE -> Unit
                     MlsCode.CRYPTO_UNAVAILABLE -> return 0
-                    // The KeyPackage, its purpose or its form is refused whatever the invite (decoded before the signature).
+                    // The KeyPackage, its purpose or its binding is refused whatever the invite (decoded before the signature).
                     else -> return if (drop(c, ChannelCounters.Reason.JOIN_REFUSED)) 1 else 0
                 }
             }
@@ -1075,7 +1186,7 @@ internal class ChannelReceiveStep(
             for (member in members) {
                 when (
                     val v = opened.crypto.joinVerify(
-                        channel.channelId, body, null, member.pseudonym, generation.generation.toInt(),
+                        channel.channelId, body, ByteArray(0), member.pseudonym, generation.generation.toInt(),
                     )
                 ) {
                     is MlsOutcome.Ok -> {
@@ -1336,6 +1447,9 @@ internal class ChannelReceiveStep(
 
         /** The blobs whose deferral backoff is remembered (the least recently used one is forgotten first). */
         const val MAX_BACKOFF_ENTRIES: Int = 4_096
+
+        /** The peek cursors of §19.54 row 3 (S13a): same bound and shape as [MAX_BACKOFF_ENTRIES]. */
+        const val MAX_CURSOR_ENTRIES: Int = 4_096
 
         /** The reactions held for a post that has not arrived (§19.38). */
         const val MAX_HELD_REACTIONS: Int = 256

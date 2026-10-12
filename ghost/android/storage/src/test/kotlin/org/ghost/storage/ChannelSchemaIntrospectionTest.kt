@@ -12,10 +12,11 @@ import org.junit.Test
  * [DmSchemaIntrospectionTest] already scans every table of the database, so a channel column that looks
  * like a time and is not declared fails there too; this class is the channel-specific half and says more:
  *
- *  - the tables are exactly the 26 of §9, and the columns of each are exactly §9's ([ChannelSchema.columns]),
+ *  - the tables are exactly the 26 of §9 plus the two amendments (`mls_self`, `ch_rotation_history`),
+ *    and the columns of each are exactly §9's ([ChannelSchema.columns]),
  *    so a `created_at`, a counter or an activity column added to one fails until it is written down
  *    beside the rule that allows it (R-M1's "the dump shows only what the design declares");
- *  - every time column is one of the 34 of [ChannelSchema.timeColumns], each with the granularity its
+ *  - every time column is one of the 35 of [ChannelSchema.timeColumns], each with the granularity its
  *    suffix names and `typeof(x) = 'integer'` (R-M3), and every such CHECK is **executed**: a REAL
  *    whose whole part is aligned is refused, a value one unit off the grid is refused, a whole number
  *    written as `x.0` is stored as an integer;
@@ -56,8 +57,8 @@ class ChannelSchemaIntrospectionTest {
     @Test
     fun theTablesAreExactlyTheTwentySixOfSectionNineAndTheStateKeyAndTheOldOnesAreGone() = migrated().use { db ->
         assertEquals(ChannelSchema.tables, channelTables(db).toSet())
-        // §9's 26 and `mls_self`, which slice S4 amended into migration 7 (§19.35 F-9, §19.37).
-        assertEquals(27, ChannelSchema.tables.size)
+        // §9's 26, `mls_self` (slice S4, §19.35 F-9, §19.37) and `ch_rotation_history` (slice S13c, §19.54 row 12).
+        assertEquals(28, ChannelSchema.tables.size)
         val all = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { all += it.string(0) }
         for (gone in ChannelSchema.v1Tables) assertFalse("$gone is dropped by migration 7", gone in all)
@@ -102,7 +103,7 @@ class ChannelSchemaIntrospectionTest {
         assertEquals("declared time columns that no table has", ChannelSchema.timeColumns, foundTimes)
         assertEquals("declared epoch counters that no table has", ChannelSchema.epochColumns, foundEpochs)
         assertEquals("exemptions that match nothing", ChannelSchema.notTimes.keys, usedExemptions)
-        assertEquals(34, ChannelSchema.timeColumns.size)
+        assertEquals(35, ChannelSchema.timeColumns.size)
     }
 
     /** The suffix names the grid, and the grid and the type are in the column's own CHECK (T20, §21.14). */
@@ -166,11 +167,17 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_epoch.final_day", 20_000, mapOf("state" to "final")),
         Typed("ch_epoch.keep_until_day", 20_002, mapOf("state" to "final", "final_day" to 20_000L)),
         Typed("ch_epoch_log.final_day", 20_000),
+        // Slice S13c (§19.54 row 12): the rotation history's day (a `*_day`, `>= 0`) and its generation
+        // (`u32`, a rotation opens generation >= 1). The removal flag is a 0/1 flag, not a typed column.
+        Typed("ch_rotation_history.rotated_day", 20_000),
+        Typed("ch_rotation_history.generation", 5, outside = listOf(0L, 4_294_967_296L)),
         Typed("ch_candidate.first_seen_minute", 600),
         Typed("ch_candidate.store_hour", 3_600),
         Typed("ch_fork_signal.first_seen_day", 20_000),
         Typed("mls_global_kv.delete_after_day", 20_007),
         Typed("ch_post.author_minute", 600),
+        // Slice S13c (§19.54 row 6): the post's ratchet seq, `own_seq`'s `u32` bound.
+        Typed("ch_post.seq", 7, outside = listOf(4_294_967_296L)),
         Typed("ch_post.displayed_minute", 660, mapOf("state" to "read")),
         Typed("ch_post.delete_at_minute", 604_800),
         Typed("ch_post.relay_expiry_hour", 3_600),
@@ -322,8 +329,8 @@ class ChannelSchemaIntrospectionTest {
             assertEquals("$table", table in ChannelSchema.withoutRowidTables, withoutRowid)
         }
         assertEquals(setOf("mls_kv", "ch_join_request"), ChannelSchema.rowidTables)
-        // §9's 24 and `mls_self` (slice S4).
-        assertEquals(25, ChannelSchema.withoutRowidTables.size)
+        // §9's 24, `mls_self` (slice S4) and `ch_rotation_history` (slice S13c).
+        assertEquals(26, ChannelSchema.withoutRowidTables.size)
         for (table in ChannelSchema.tables) {
             val answers = try {
                 db.queryLong("SELECT count(rowid) FROM $table")

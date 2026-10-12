@@ -14,6 +14,7 @@ use ghost_client_mls::content::{Body, ChannelContent, KIND_POST};
 use ghost_client_mls::ext::{AdmitEvidence, ChannelContext, Purpose, SwapEvidence};
 use ghost_client_mls::group::CommitRequest;
 use ghost_client_mls::invite;
+use ghost_client_mls::join::InviteCandidate;
 use ghost_client_mls::join::JoinAuth;
 use ghost_client_mls::kv::WrappedRows;
 use ghost_client_mls::seal;
@@ -62,7 +63,10 @@ fn restore_request(w: &mut World, target: usize) -> CommitRequest {
         .join_verify(
             &w.channel_id,
             &body,
-            Some(&inv.issued.invite_pk),
+            &[InviteCandidate {
+                invite_id: inv.issued.invite_id,
+                invite_pk: inv.issued.invite_pk,
+            }],
             None,
             g.generation,
         )
@@ -110,7 +114,7 @@ fn rejoin_request(w: &mut World, target: usize) -> CommitRequest {
         .unwrap();
     let v = w.members[0]
         .ctx
-        .join_verify(&w.channel_id, &body, None, Some(&p), g.generation)
+        .join_verify(&w.channel_id, &body, &[], Some(&p), g.generation)
         .unwrap();
     let JoinAuth::Rejoin { rejoin_sig, .. } = v.auth else {
         unreachable!()

@@ -30,6 +30,17 @@ pub enum RequestType {
     Restore = 3,
 }
 
+/// One live invite's verification material for `joinVerify` (fn 15, slice S13b): the invite id the
+/// invitee signs (`auth.INVITE_ID`, inside the signature) and the invite key the signature is
+/// verified under. The request **names** its invite before the signature check: the native side
+/// reads `invite_id` from the authenticated body, finds this record, and verifies under exactly
+/// this key — the per-key scan of F-S4-3/F-S4-14 is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InviteCandidate {
+    pub invite_id: [u8; 16],
+    pub invite_pk: [u8; 32],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinAuth {
     /// Join and restore: authorized by an invite.
