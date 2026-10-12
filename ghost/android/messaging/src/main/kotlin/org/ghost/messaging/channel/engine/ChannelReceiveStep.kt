@@ -10,6 +10,7 @@ import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.ChannelStore
+import org.ghost.messaging.channel.store.ChannelStoreException
 import org.ghost.messaging.channel.store.Direction
 import org.ghost.messaging.channel.store.GenerationStore
 import org.ghost.messaging.channel.store.InviteStore
@@ -315,10 +316,18 @@ internal class ChannelReceiveStep(
                 consumed += unmatched(c, now)
             }
             return consumed
-        } catch (e: Exception) {
-            // §19.55a (the review of S13a): the round died mid-flight — a store refusal, a busy database — and the
-            // pass drained nothing past the failure. The actor swallows pass exceptions, so nothing else would clear
-            // the cursor: it must not advance on this pass's account. The exception itself is untouched (rethrown).
+        } catch (e: ChannelStoreException) {
+            // §19.55a (the review of S13a): the round died mid-flight and the pass drained nothing past the failure.
+            // The actor swallows pass exceptions, so nothing else would clear the peek cursor: it must not advance
+            // on this pass's account. Typed catches only (sync-no-catch-all); the exception is untouched (rethrown).
+            failed = true
+            throw e
+        } catch (e: IllegalStateException) {
+            // StorageFullException (:storage's typed full-database failure) and the facade's documented failure.
+            failed = true
+            throw e
+        } catch (e: IllegalArgumentException) {
+            // the Keystore wrapper's unwrap failure
             failed = true
             throw e
         } finally {
