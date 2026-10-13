@@ -364,9 +364,11 @@ for LIBRARY in "$@"; do
       done < "$work/entry-symbols"
     fi
     # G-M5's media half: exactly §13.2's list, and the two host-only entries exactly in a test
-    # library, never in a shipped one.
+    # library, never in a shipped one. The shipped diff excludes the `^test` names — the source
+    # half's and the Kotlin half's exclusion — or a test library's own two entries would read as
+    # "not on §13.2's list" here while the check below requires them.
     grep -oE "${MEDIA_PREFIX}[A-Za-z0-9]+" "$work/nm-out" \
-      | sed -E "s/${MEDIA_PREFIX}//" | sort -u > "$work/media-symbols" || true
+      | sed -E "s/${MEDIA_PREFIX}//" | grep -vE '^test' | sort -u > "$work/media-symbols" || true
     while read -r name; do
       [ -n "$name" ] || continue
       fail "$LIBRARY exports 'MediaNative.$name', which is not on §13.2's list"

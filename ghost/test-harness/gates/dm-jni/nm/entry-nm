@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`), test-library case (Phase 9
-# §15.9 item 7, §22.8.10 point 6; slice S12, §22.37, §22.38): the closed list, as `exact-nm` prints
-# it, plus the four symbols a library built with `ghost-client-dm`'s `test-vectors` feature adds.
-# Accepted with `--test`; refused for a shipped library.
+# §15.9 item 7, §22.8.10 point 6; slice S12, §22.37, §22.38): the two closed surfaces, as
+# `exact-nm` prints them (the DM list plus slice S2's media list, G-M5), plus the four symbols a
+# library built with `ghost-client-dm`'s `test-vectors` feature adds — and (G-M5, §13.2, §15.6)
+# the media surface's two host-only entries, which the same feature compiles into the test
+# library. Accepted with `--test`; refused for a shipped library.
 set -euo pipefail
 "$(dirname "$0")/exact-nm" "$@"
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks\n' 65600
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook\n' 65664
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_sidecarLogHook\n' 65728
+printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testVectors\n' 66048
+printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testSealBeginWithKey\n' 66112
