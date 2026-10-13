@@ -2402,7 +2402,9 @@ pub fn join_verify(
         return Err(MlsError::new(Code::NonCanonical));
     }
     let invites: Vec<InviteCandidate> = invite_set
-        .chunks_exact(48)
+        .as_chunks::<48>()
+        .0
+        .iter()
         .map(|c| InviteCandidate {
             invite_id: c[..16].try_into().expect("chunked by 48"),
             invite_pk: c[16..].try_into().expect("chunked by 48"),

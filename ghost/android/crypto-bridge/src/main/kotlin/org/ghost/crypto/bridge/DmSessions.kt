@@ -144,7 +144,7 @@ object DmSessions {
     sealed interface Decrypted {
         /** The message decrypted on [slot]. The caller writes [stateEnv] for that slot. */
         data class Ok(
-            /** The L0 content. */
+            /** The L0 content. For a kind-5 L0 the key slot is re-zeroed (§4.2). */
             val plaintext: ByteArray,
             /** Which stored slot decrypted. */
             val slot: Slot,
@@ -152,6 +152,14 @@ object DmSessions {
             val acknowledged: Boolean,
             /** The new `olm_session.state_env` of that slot. */
             val stateEnv: ByteArray,
+            /**
+             * The media object's `key_env` (Phase 11 design §4.2): present exactly when [plaintext]
+             * is a kind-5 (MEDIA) L0 — native code wrapped the slot's `K_f` into a fresh envelope
+             * bound to `(in, contactId, objectId, manifestHash)` and re-zeroed the slot. RECV
+             * stores it in `media_object` in the same transaction, whichever native function
+             * produced it.
+             */
+            val mediaKeyEnv: ByteArray?,
         ) : Decrypted
 
         /** The message key is gone: used, evicted or never stored. A replay, not a forgery. */
@@ -174,12 +182,19 @@ object DmSessions {
     sealed interface Inbound {
         /** A new responder session and the first flight's content. */
         data class Ok(
-            /** The L0 content of the first flight. */
+            /** The L0 content of the first flight. For a kind-5 L0 the key slot is re-zeroed (§4.2). */
             val plaintext: ByteArray,
             /** `olm_session.state_env`. */
             val stateEnv: ByteArray,
             /** `olm_session.session_id`. */
             val sessionId: ByteArray,
+            /**
+             * The media object's `key_env` (Phase 11 design §4.2): present exactly when [plaintext]
+             * is a kind-5 (MEDIA) L0 — a photo sent as a first message takes this function, and so
+             * does a held descriptor replayed after a key change (`HeldReplay`), so both paths
+             * land the envelope exactly like [Decrypted.Ok].
+             */
+            val mediaKeyEnv: ByteArray?,
         ) : Inbound
 
         /** The PreKey message names a fallback key this generation does not hold (§2.2). */
@@ -439,17 +454,33 @@ object DmSessions {
         }
     }
 
-    /** §2.6 function 8: one ratchet step on the `current` slot. */
+    /**
+     * §2.6 function 8: one ratchet step on the `current` slot. [mediaKeyEnv] is the kind-5
+     * envelope of Phase 11 design §4.2: empty for a non-media message; for a MEDIA L0 the native
+     * side unwraps it under the binding `(out, contactId, objectId, manifestHash)` it reads from
+     * the L0 itself and writes `K_f` into the descriptor's key slot before encrypting — the slot
+     * in [l0] must be zero, and the envelope that does not open under that binding fails the item
+     * with `NON_CANONICAL`.
+     */
     fun encrypt(
         handle: Long,
         contactId: ByteArray,
         current: StoredSlot,
         l0: ByteArray,
         today: Int,
+        mediaKeyEnv: ByteArray = EMPTY,
     ): Encrypted {
         if (!DmNative.isAvailable()) return Encrypted.Unavailable
         val result = call {
-            DmNative.encrypt(handle, contactId, current.sessionId, current.stateEnv, l0, today)
+            DmNative.encrypt(
+                handle,
+                contactId,
+                current.sessionId,
+                current.stateEnv,
+                l0,
+                today,
+                mediaKeyEnv,
+            )
         }
         return when (result.code) {
             DmCode.OK -> {
@@ -506,6 +537,7 @@ object DmSessions {
                     slot = slot,
                     acknowledged = result.byte(DmField.FLAGS) and DM_FLAG_ACKNOWLEDGED != 0,
                     stateEnv = result.bytes(DmField.STATE),
+                    mediaKeyEnv = result.bytesOrNull(DmField.MEDIA_KEY_ENV),
                 )
             }
             DmCode.DUPLICATE_OR_LOST -> Decrypted.Duplicate
@@ -547,6 +579,7 @@ object DmSessions {
                 plaintext = result.bytes(DmField.L0),
                 stateEnv = result.bytes(DmField.STATE),
                 sessionId = result.bytes(DmField.SESSION_ID),
+                mediaKeyEnv = result.bytesOrNull(DmField.MEDIA_KEY_ENV),
             )
             DmCode.MISSING_KEY -> Inbound.MissingKey
             DmCode.IDENTITY_MISMATCH -> Inbound.IdentityMismatch

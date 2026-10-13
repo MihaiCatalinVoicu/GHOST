@@ -38,6 +38,13 @@ chacha20poly1305 = { version = "=0.11.0", default-features = false, features = [
 # the same `aead` 0.6.1, no duplicated package). G-R1, G-R2, G-R4, G-R8 and the licence gates read
 # normal edges only, so no shipped graph changes.
 aead-stream = { version = "=0.6.0", features = ["alloc"] }
+# The `[key_env]` section of media_object.txt (design §3.9, §4.2; slice S2): the section is
+# generated through `ghost-client-dm`'s real wrap registry (`WrapName::MediaFileKey` and its
+# binding), so the pinned envelopes are the shipped code's bytes, not a second implementation.
+# Dev graph only (a dev-dependency cycle with the DM crate's normal edge is the natural shape —
+# the gates read normal edges only), and the wrap draws no randomness here: the section pins the
+# nonce.
+ghost-client-dm = { path = "../dm" }
 # The integration tests read the nonce registry (§3.7 point 5, CS-M1): the crate itself with the
 # test feature, through the dev graph only (G-R2 reads `-e no-dev`).
 ghost-client-media = { path = ".", features = ["nonce-registry"] }

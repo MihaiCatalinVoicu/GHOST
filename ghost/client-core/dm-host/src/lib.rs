@@ -31,6 +31,12 @@
 //! runner of the JDK vector replay (§12.2). G-M6 checks this library exports exactly those, and the
 //! shipped one no `MlsVectors` symbol.
 //!
+//! **The media surface** (Phase 11 design §13.2, slice S2): `ghost_client_dm::export_media_jni!()`
+//! exports `MediaNative` — the same closed list `libghost_client_net.so` exports — and
+//! `ghost_client_dm::export_media_test_jni!()` its two test entries, `MediaNative.testVectors`
+//! and `MediaNative.testSealBeginWithKey` (§15.6's model-relay re-derivation). G-M5 checks this
+//! library exports exactly those, and the shipped one neither.
+//!
 //! This package is **never shipped** and is excluded from the shipped graph, so the client
 //! allowlist and the third-party notices do not see it.
 
@@ -39,5 +45,7 @@
 
 ghost_client_dm::export_jni!();
 ghost_client_dm::export_equivalence_jni!();
+ghost_client_dm::export_media_jni!();
+ghost_client_dm::export_media_test_jni!();
 ghost_client_mls::export_jni!();
 ghost_client_mls::export_vectors_jni!();

@@ -43,6 +43,12 @@
 # height 30, duration_ms 32, preview_len 36, preview 38, hashes 32806.
 # [separation] values are checks that cannot fail (another key derives another value); they are
 # reported apart from the refusals (S0-6).
+# [key_env] (slice S2, §4.2): key_env = nonce(12) || ChaCha20-Poly1305(state_key, nonce, AD, k_f)
+# with AD = "ghost/v1/wrap/" || the [labels] `wrap` string || u8(role) || dest_id(16) || object_id(16)
+# || manifest_hash(32), role 01 out and 02 in, generated through ghost-client-dm's WrapName::MediaFileKey
+# with the pinned nonce and state_key; `wrong_binding_out` binds the same k_f to `wrong_dest_id` and
+# must NOT open under `dest_id`. The JDK replay recomputes the three envelopes from this header and
+# [labels], and checks the refusal.
 # [ladder]: the size STRIP_IMAGE re-encodes a W x H source to (D29, §8.2, Q37): the long edge is the
 # largest of 512, 1 024 and 2 048 not above the source's (512 for a smaller source), the short edge
 # max(16, 16 * round(long * short_src / long_src / 16)) rounding half up, at most the long edge, and the
@@ -632,3 +638,15 @@ other_k_f_commit = 1ebd2205bb051efa9eac87f26a35ce9ab27aa7675ce812f5e39bf0947a76a
 other_object_id = eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 other_object_id_k_p = ddf61852fd8e15746ffcd2fa1eccc4378fcb52dc553cdd036fffb15d90229b00
 other_object_id_commit = 152ff9406cc597a1887c2e8afafb739fded16e6ba6629d90a26dd33ca77758b6
+
+[key_env]
+state_key = 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
+nonce = 6d6d6d6d6d6d6d6d6d6d6d6d
+dest_id = 11111111111111111111111111111111
+wrong_dest_id = 99999999999999999999999999999999
+object_id = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+manifest_hash = b2abbeaf8f992a848bf6de9d3f2afcc650d0ffddceda4d98b6ff9fd6a4578065
+k_f = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+out = 6d6d6d6d6d6d6d6d6d6d6d6df72e9bc92d1858e7499e00f393ffc44df96f868a7640f2885e0808ea1217e930c0795903c930cd72b961dc95e88eae19
+in = 6d6d6d6d6d6d6d6d6d6d6d6df72e9bc92d1858e7499e00f393ffc44df96f868a7640f2885e0808ea1217e930775405debb62b4cbc86e76d797904ce7
+wrong_binding_out = 6d6d6d6d6d6d6d6d6d6d6d6df72e9bc92d1858e7499e00f393ffc44df96f868a7640f2885e0808ea1217e930a7a80ca87ad94c78a1daef600433e23f

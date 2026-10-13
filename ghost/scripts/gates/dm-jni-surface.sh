@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Gate G-R6 (Phase 9 design §2.6, §2.3): the DM JNI surface is a **closed list**.
+# Gate G-R6 (Phase 9 design §2.6, §2.3): the DM JNI surface is a **closed list**. Gains G-M5's
+# second list in slice S2 (Phase 11 design §13.2): the media surface `MediaNative` is checked by
+# the same two directions, from the same workspace scan and the same library arguments.
 #
-# Two directions, both checked:
+# Two directions, both checked (for each of the two closed lists):
 #   1. every `Java_org_ghost_crypto_bridge_DmNative_*` entry point the **workspace** writes, and
 #      every such symbol a built library exports, is on the list `client-core/dm/src/jni.rs`
 #      declares, and
@@ -46,9 +48,11 @@
 # context) and since §22.38 `…_DmEquivalence_stateWrapHook` and `…_DmEquivalence_sidecarLogHook`
 # (ME-24's and MC-30's mutants, each switched per DM context), compiled only with
 # `ghost-client-dm`'s `test-vectors` feature, which only
-# `ghost-dm-host` enables. A library passed as `--test <library>` must export exactly the closed
-# list plus those symbols; every other library is a shipped one and must export no
-# `DmEquivalence` symbol at all.
+# `ghost-dm-host` enables. **The media surface's two** (Phase 11 design §13.2, §15.6; slice S2)
+# are `…_MediaNative_testVectors` and `…_MediaNative_testSealBeginWithKey`, the same feature, the
+# same host-only rule (G-M5). A library passed as `--test <library>` must export exactly the two
+# closed lists plus those test symbols; every other library is a shipped one and must export no
+# test symbol at all.
 #
 # Usage: dm-jni-surface.sh [[--test] <library> ...]
 #   <library>  a built library to read symbols from: `android-native` passes every shipped
@@ -169,14 +173,88 @@ while read -r name; do
   fail "DmNative does not declare 'external fun $name', which the crate exports"
 done < <(comm -13 "$work/kotlin" "$work/expected")
 
+# -------------------------------------------------------------------------------------------
+# G-M5: the media surface `MediaNative` (Phase 11 design §13.2) — the gate's second closed list.
+# The list is the Rust constant `MEDIA_CLOSED_LIST` of `jni_media.rs`, so this half and the code
+# cannot drift, exactly as the DM half's `CLOSED_LIST` is its source of truth. The two host-only
+# entries (`testVectors`, `testSealBeginWithKey`) are not on the shipped list: like
+# `DmEquivalence`'s, they may exist only in test libraries, which the library half below checks.
+# Self-test hooks: GHOST_DM_JNI_MEDIA_SOURCE and GHOST_DM_JNI_MEDIA_KOTLIN, the same pattern as
+# the DM halves' hooks.
+MEDIA_SOURCE="${GHOST_DM_JNI_MEDIA_SOURCE:-$GHOST_ROOT/client-core/dm/src/jni_media.rs}"
+MEDIA_KOTLIN="${GHOST_DM_JNI_MEDIA_KOTLIN:-$GHOST_ROOT/android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MediaNative.kt}"
+MEDIA_PREFIX="Java_org_ghost_crypto_bridge_MediaNative_"
+MEDIA_TEST_NAMES="testVectors testSealBeginWithKey"
+
+[ -f "$MEDIA_SOURCE" ] || { echo "Media JNI source not found: $MEDIA_SOURCE" >&2; exit 2; }
+[ -f "$MEDIA_KOTLIN" ] || { echo "MediaNative.kt not found: $MEDIA_KOTLIN" >&2; exit 2; }
+
+# The media list, from the Rust constant: `(n, "name")` rows of `MEDIA_CLOSED_LIST`. The slice
+# stops at the constant's closing `];`, so `MEDIA_TEST_LIST`'s rows (the host-only entries,
+# checked against built libraries below and kept out of shipped graphs by G-R2) do not leak into
+# the shipped list.
+sed -n '/pub const MEDIA_CLOSED_LIST/,/^]/p' "$MEDIA_SOURCE" \
+  | grep -oE '\([0-9]+, "[A-Za-z0-9]+"\)' | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)"\)$/\1/' \
+  | sort -u > "$work/media-declared"
+[ -s "$work/media-declared" ] || { fail "no media closed-list entries read from $MEDIA_SOURCE"; finish dm-jni-surface; }
+
+# Names the media export macros really emit, from the same whole-workspace scan as the DM half.
+# The two host-only entries are written in `export_media_test_jni!`'s body like
+# `DmEquivalence`'s are; whether they are *built* is the library half's and G-R2's question, so
+# the source emission check excludes them here.
+{ grep -E "^${MEDIA_PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${MEDIA_PREFIX}//" \
+  | grep -vE "^test" | sort -u > "$work/media-emitted"
+printf '%s\n' $MEDIA_TEST_NAMES | sort -u > "$work/media-test-names"
+
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "the workspace exports MediaNative.$name, which is not on §13.2's list ($MEDIA_SOURCE; scanned $SCAN)"
+done < <(comm -23 "$work/media-emitted" "$work/media-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "'$name' is on §13.2's media list but the crate emits no entry point for it"
+done < <(comm -23 "$work/media-declared" "$work/media-emitted")
+
+# Kotlin declares exactly the shipped names, internal with an explicit @JvmName — the same
+# facade rule as DmNative. The two test entries have no production declarations until the JVM
+# tests of the later slices land them in a test source set (the `MlsVectors` precedent), so
+# they are compared against the workspace's Rust emission only, not against this file.
+awk -v file="MediaNative" '
+  match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
+    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR
+  }
+  match($0, /external fun [A-Za-z0-9]+/) {
+    name = substr($0, RSTART + 13, RLENGTH - 13)
+    if ($0 !~ /internal external fun/) { print "public " name; next }
+    if (pinned != name || NR - pinned_line > 2) { print "unpinned " name }
+  }
+' "$MEDIA_KOTLIN" > "$work/media-visibility"
+while read -r kind name; do
+  [ -n "$name" ] || continue
+  case "$kind" in
+    public) fail "MediaNative declares 'external fun $name' outside the module: it must be internal" ;;
+    unpinned) fail "MediaNative's internal 'external fun $name' has no @JvmName(\"$name\"): Kotlin would mangle the JNI name" ;;
+  esac
+done < "$work/media-visibility"
+
+grep -oE 'external fun [A-Za-z0-9]+' "$MEDIA_KOTLIN" | sed -E 's/external fun //' | sort -u > "$work/media-kotlin"
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "MediaNative declares 'external fun $name', which the crate does not export for a shipped library"
+done < <(comm -23 "$work/media-kotlin" "$work/media-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "MediaNative does not declare 'external fun $name', which §13.2's list marks shipped"
+done < <(comm -13 "$work/media-kotlin" "$work/media-declared")
+
 # No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
 # `native` method (Java) anywhere but the files of `common.sh`'s GHOST_JNI_NATIVE_FILES (DmNative.kt,
-# MlsNative.kt and the network classes' own files). Without it a second class in `:crypto-bridge` —
-# `DmDebug.exportSessionState` — needed no closed-list entry and was not `DmNative` for the reference
-# rule below, so `:messaging` could call it directly.
+# MediaNative.kt, MlsNative.kt and the network classes' own files). Without it a second class in
+# `:crypto-bridge` — `DmDebug.exportSessionState` — needed no closed-list entry and was not
+# `DmNative` for the reference rule below, so `:messaging` could call it directly.
 while IFS= read -r v; do
   [ -n "$v" ] && fail "$v"
-done < <(jni_stray_natives "$ANDROID_TREE" "DmNative, MlsNative and the network classes (G-R6)")
+done < <(jni_stray_natives "$ANDROID_TREE" "DmNative, MediaNative, MlsNative and the network classes (G-R6, G-M5)")
 
 # Only `:crypto-bridge`'s `main` and `gate` source sets reference `DmNative` (see the header). Code
 # lines only: the design's KDoc across `:messaging` names `DmNative` on purpose.
@@ -276,6 +354,35 @@ for LIBRARY in "$@"; do
         [ -n "$name" ] || continue
         fail "$LIBRARY exports the test-vectors entry point 'DmEquivalence.$name': a shipped library never carries it"
       done < "$work/entry-symbols"
+    fi
+    # G-M5's media half: exactly §13.2's list, and the two host-only entries exactly in a test
+    # library, never in a shipped one.
+    grep -oE "${MEDIA_PREFIX}[A-Za-z0-9]+" "$work/nm-out" \
+      | sed -E "s/${MEDIA_PREFIX}//" | sort -u > "$work/media-symbols" || true
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY exports 'MediaNative.$name', which is not on §13.2's list"
+    done < <(comm -23 "$work/media-symbols" "$work/media-declared")
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY does not export 'MediaNative.$name', which §13.2's list ships"
+    done < <(comm -13 "$work/media-symbols" "$work/media-declared")
+    grep -oE "${MEDIA_PREFIX}test[A-Za-z0-9]+" "$work/nm-out" \
+      | sed -E "s/${MEDIA_PREFIX}//" | sort -u > "$work/media-test-symbols" || true
+    if [ "$is_test" = 1 ]; then
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY exports 'MediaNative.$name', which is not a host-only media test entry"
+      done < <(comm -23 "$work/media-test-symbols" "$work/media-test-names")
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY does not export the host-only media entry 'MediaNative.$name' (§13.2, §15.6)"
+      done < <(comm -13 "$work/media-test-symbols" "$work/media-test-names")
+    else
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "$LIBRARY exports the host-only media entry 'MediaNative.$name': a shipped library never carries it (G-M5)"
+      done < "$work/media-test-symbols"
     fi
   fi
 done

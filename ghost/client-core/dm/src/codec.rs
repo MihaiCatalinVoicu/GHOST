@@ -16,7 +16,7 @@
 
 use crate::result::{DmCode, DmResult};
 use crate::seal::{capacity, EXT_RESERVE, L0_FIXED_BYTES, MAX_BODY_BYTES, O_MAX};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The only content version Phase 9 writes or accepts.
 pub const CONTENT_VERSION: u8 = 0x01;
@@ -41,6 +41,10 @@ pub enum Kind {
     Reaction = 0x03,
     /// A control message: no body, TLVs only.
     Control = 0x04,
+    /// A media descriptor (Phase 11 design §4.1); the body is the 86-byte fixed part plus a
+    /// caption of at most 1 024 bytes, and the key slot is zero outside `encrypt`/`decrypt`/
+    /// `sessionInbound` (§4.2, slice S2).
+    Media = 0x05,
 }
 
 impl Kind {
@@ -49,13 +53,14 @@ impl Kind {
         self as u8
     }
 
-    /// The kind of a byte. `0x05` (MEDIA) is reserved for Phase 11 and refused in Phase 9.
+    /// The kind of a byte (Phase 11 slice S2: `0x05` is MEDIA, §4.1).
     pub const fn from_u8(byte: u8) -> Option<Self> {
         Some(match byte {
             0x01 => Kind::Text,
             0x02 => Kind::TimerSet,
             0x03 => Kind::Reaction,
             0x04 => Kind::Control,
+            0x05 => Kind::Media,
             _ => return None,
         })
     }
@@ -246,7 +251,7 @@ pub fn pq_ext_len(ext: &[Tlv]) -> usize {
         .sum()
 }
 
-fn check_body(kind: Kind, body: &[u8]) -> DmResult<()> {
+fn check_body(kind: Kind, body: &[u8], inbound: bool) -> DmResult<()> {
     match kind {
         Kind::Text => {
             if body.len() > MAX_BODY_BYTES || core::str::from_utf8(body).is_err() {
@@ -269,7 +274,172 @@ fn check_body(kind: Kind, body: &[u8]) -> DmResult<()> {
                 return Err(DmCode::NonCanonical);
             }
         }
+        Kind::Media => {
+            // R-D3 (Phase 11 design §4.1): the body must parse exactly as a media descriptor —
+            // version, kind, flag, class, image ⇒ class 0, caption bounds and strict UTF-8. The
+            // key slot is zero in every L0 Kotlin builds or reads: only `encrypt` fills it, only
+            // `decrypt` and `sessionInbound` read and re-zero it (§4.2). `inbound` is those two
+            // functions only, running on a just-decrypted L0 whose slot the sender's `encrypt`
+            // filled; they re-zero it before the bytes reach the caller.
+            let d = media_descriptor(body)?;
+            if !inbound && !d.key_slot.is_zero() {
+                return Err(DmCode::NonCanonical);
+            }
+        }
     }
+    Ok(())
+}
+
+/// Parses a kind-5 body as the media descriptor of Phase 11 design §4.1. Every refusal of the
+/// descriptor codec is [`DmCode::NonCanonical`] (R-D3 refuses the whole L0), so the mapping loses
+/// nothing.
+pub fn media_descriptor(body: &[u8]) -> DmResult<ghost_client_media::descriptor::Descriptor> {
+    ghost_client_media::descriptor::Descriptor::decode(body).map_err(|_| DmCode::NonCanonical)
+}
+
+/// The offset of the body inside an encoded L0 (§7.1's fixed prefix: version, kind, `message_id`,
+/// `author_minute`, `minute_index`, `timer_code`, `timer_version`, `flags`, the optional
+/// `quote_ref`, `body_len`). `bytes` must have decoded with [`decode`] first; anything else is
+/// [`DmCode::NonCanonical`].
+///
+/// This is how §4.2's key slot is filled and re-zeroed without re-encoding the record: the body
+/// rules above pin the slot to zero at every encode and decode, so the patch is the only path a
+/// non-zero slot ever takes, inside the one call that holds `K_f`.
+pub fn body_offset(bytes: &[u8]) -> DmResult<usize> {
+    const PREFIX: usize = 1 + 1 + 16 + 4 + 2 + 1 + 4 + 1;
+    let flags = *bytes.get(PREFIX - 1).ok_or(DmCode::NonCanonical)?;
+    if flags & !FLAG_HAS_QUOTE != 0 {
+        return Err(DmCode::NonCanonical);
+    }
+    let offset = PREFIX
+        .checked_add(if flags & FLAG_HAS_QUOTE != 0 { 16 } else { 0 })
+        .and_then(|p| p.checked_add(4))
+        .ok_or(DmCode::NonCanonical)?;
+    let end = offset
+        .checked_add(u32::from_be_bytes([
+            *bytes.get(offset - 4).ok_or(DmCode::NonCanonical)?,
+            *bytes.get(offset - 3).ok_or(DmCode::NonCanonical)?,
+            *bytes.get(offset - 2).ok_or(DmCode::NonCanonical)?,
+            *bytes.get(offset - 1).ok_or(DmCode::NonCanonical)?,
+        ]) as usize)
+        .ok_or(DmCode::NonCanonical)?;
+    if end > bytes.len() {
+        return Err(DmCode::NonCanonical);
+    }
+    Ok(offset)
+}
+
+/// §4.2, the sender half (`encrypt`): validates `l0` strictly (a zero slot, every body rule),
+/// opens `key_env` under the `out` binding built from the descriptor the L0 itself carries, and
+/// fills the slot with `K_f`. A non-empty `key_env` for a non-media L0, an empty one for a media
+/// L0, or an envelope that does not open under the binding is [`DmCode::NonCanonical`] (a caller
+/// bug, counted); a plaintext of the wrong width is [`DmCode::StateCorrupt`]. Returns whether the
+/// L0 was media (the caller answers `CRYPTO_UNAVAILABLE`-class differently, though it does not
+/// today).
+pub fn media_slot_fill(
+    state_key: &crate::derive::StateKey,
+    contact_id: &[u8; 16],
+    l0: &mut [u8],
+    key_env: &[u8],
+) -> DmResult<bool> {
+    let content = decode(l0)?;
+    if content.kind != Kind::Media {
+        if key_env.is_empty() {
+            return Ok(false);
+        }
+        return Err(DmCode::NonCanonical);
+    }
+    if key_env.is_empty() {
+        return Err(DmCode::NonCanonical);
+    }
+    let d = media_descriptor(&content.body)?;
+    let binding = crate::wrap::media_file_key_binding(
+        crate::wrap::MEDIA_ROLE_OUT,
+        contact_id,
+        d.object_id.as_bytes(),
+        &d.manifest_hash,
+    );
+    let plain = crate::wrap::unwrap(
+        state_key,
+        crate::wrap::WrapName::MediaFileKey,
+        &binding,
+        key_env,
+    )
+    .map_err(|_| DmCode::NonCanonical)?;
+    let mut key_f = <[u8; 32]>::try_from(plain.as_slice()).map_err(|_| DmCode::StateCorrupt)?;
+    let filled = fill_media_key_slot(l0, &key_f);
+    key_f.zeroize();
+    filled?;
+    Ok(true)
+}
+
+/// §4.2, the recipient half (`decrypt`, `sessionInbound`): reads `K_f` out of the slot of a
+/// just-decrypted kind-5 L0, wraps it into a fresh `key_env` under the `in` binding, and re-zeros
+/// the slot in `l0` — the L0 that reaches Kotlin and the database always has a zero slot. A kind
+/// other than media answers `Ok(None)`; a media L0 with a zero slot (a peer's protocol
+/// violation) is [`DmCode::NonCanonical`].
+pub fn media_slot_take(
+    state_key: &crate::derive::StateKey,
+    contact_id: &[u8; 16],
+    l0: &mut [u8],
+) -> DmResult<Option<Vec<u8>>> {
+    let content = decode_inbound(l0)?;
+    if content.kind != Kind::Media {
+        return Ok(None);
+    }
+    let d = media_descriptor(&content.body)?;
+    if d.key_slot.is_zero() {
+        return Err(DmCode::NonCanonical);
+    }
+    let key_f = Zeroizing::new(*d.key_slot.as_bytes());
+    let binding = crate::wrap::media_file_key_binding(
+        crate::wrap::MEDIA_ROLE_IN,
+        contact_id,
+        d.object_id.as_bytes(),
+        &d.manifest_hash,
+    );
+    let key_env = crate::wrap::wrap(
+        state_key,
+        crate::wrap::WrapName::MediaFileKey,
+        &binding,
+        key_f.as_slice(),
+    )?;
+    clear_media_key_slot(l0)?;
+    Ok(Some(key_env))
+}
+
+/// §4.2: `encrypt` fills the key slot of a kind-5 L0 with `K_f` before the session layer sees it.
+/// `bytes` must be a decoded kind-5 L0 with a zero slot; `key` is `K_f`.
+pub fn fill_media_key_slot(bytes: &mut [u8], key: &[u8; 32]) -> DmResult<()> {
+    let content = decode(bytes)?;
+    if content.kind != Kind::Media {
+        return Err(DmCode::NonCanonical);
+    }
+    let at = body_offset(bytes)?;
+    let slot = bytes
+        .get_mut(at..at + ghost_client_media::consts::DESCRIPTOR_FIXED)
+        .ok_or(DmCode::NonCanonical)?;
+    let slot = slot.get_mut(20..52).ok_or(DmCode::NonCanonical)?;
+    slot.copy_from_slice(key);
+    Ok(())
+}
+
+/// §4.2: `decrypt` and `sessionInbound` re-zero the key slot of the kind-5 L0 they return, after
+/// wrapping `K_f` into `key_env`: the L0 that reaches Kotlin and the database always has a zero
+/// slot. The input is a just-decrypted L0 whose slot the sender's `encrypt` filled, so it is read
+/// with the inbound tolerance ([`decode_inbound`]); the caller extracts `K_f` first and refuses a
+/// zero slot as `NON_CANONICAL` (a peer's kind-5 L0 must carry the key).
+pub fn clear_media_key_slot(bytes: &mut [u8]) -> DmResult<()> {
+    let content = decode_inbound(bytes)?;
+    if content.kind != Kind::Media {
+        return Err(DmCode::NonCanonical);
+    }
+    let at = body_offset(bytes)?;
+    let slot = bytes
+        .get_mut(at..at + ghost_client_media::consts::DESCRIPTOR_FIXED)
+        .ok_or(DmCode::NonCanonical)?;
+    let slot = slot.get_mut(20..52).ok_or(DmCode::NonCanonical)?;
+    slot.zeroize();
     Ok(())
 }
 
@@ -316,7 +486,7 @@ impl DmContent {
         if self.timer_version > MAX_TIMER_VERSION {
             return Err(DmCode::NonCanonical);
         }
-        check_body(self.kind, &self.body)?;
+        check_body(self.kind, &self.body, false)?;
         check_ext(&self.ext)?;
         let classical = classical_ext_len(&self.ext);
         if classical > EXT_RESERVE {
@@ -405,6 +575,18 @@ impl<'a> Reader<'a> {
 /// Decodes an L0, fail closed. Every refusal is [`DmCode::NonCanonical`] except a record longer
 /// than a 64 KiB bucket can carry, which is [`DmCode::Oversize`].
 pub fn decode(bytes: &[u8]) -> DmResult<DmContent> {
+    decode_with(bytes, false)
+}
+
+/// [`decode`] for the two functions that run on a just-decrypted kind-5 L0 (§4.2 `decrypt` and
+/// `sessionInbound`): the sender's `encrypt` filled the key slot, so the zero-slot rule is not
+/// applied on this path — the caller extracts `K_f`, wraps it into `key_env` and re-zeros the
+/// slot ([`clear_media_key_slot`]) before the bytes leave native hands.
+pub(crate) fn decode_inbound(bytes: &[u8]) -> DmResult<DmContent> {
+    decode_with(bytes, true)
+}
+
+fn decode_with(bytes: &[u8], inbound: bool) -> DmResult<DmContent> {
     if bytes.len() > MAX_L0_BYTES {
         return Err(DmCode::Oversize);
     }
@@ -438,7 +620,7 @@ pub fn decode(bytes: &[u8]) -> DmResult<DmContent> {
     };
     let body_len = reader.u32()? as usize;
     let body = reader.take(body_len)?.to_vec();
-    check_body(kind, &body)?;
+    check_body(kind, &body, inbound)?;
     let ext_len = reader.u16()? as usize;
     if ext_len > MAX_EXT_BYTES {
         return Err(DmCode::NonCanonical);
@@ -801,8 +983,10 @@ mod tests {
         let mut bytes = text().encode().expect("encode");
         bytes[0] = 0x02;
         assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
+        // MEDIA (0x05, Phase 11 §4.1) is a known kind since slice S2, so the kind byte alone is
+        // not a refusal — but "salut" is not a descriptor body, so the L0 is still refused.
         let mut bytes = text().encode().expect("encode");
-        bytes[1] = 0x05; // MEDIA: reserved for Phase 11.
+        bytes[1] = 0x05;
         assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
         let mut bytes = text().encode().expect("encode");
         bytes[1] = 0x00;
@@ -813,6 +997,200 @@ mod tests {
         let mut bytes = text().encode().expect("encode");
         bytes[24] = MAX_TIMER_CODE + 1; // timer_code
         assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
+    }
+
+    /// Phase 11 §4.1/§4.2 (slice S2): a kind-5 L0 round-trips with a well-formed descriptor body
+    /// and a **zero** key slot; the slot filled is refused on every path except the inbound one
+    /// (`decrypt`/`sessionInbound`), which re-zeros it before the bytes leave native hands.
+    #[test]
+    fn a_media_l0_carries_a_zero_slot_outside_the_native_surface() {
+        use ghost_client_media::descriptor::{Descriptor, KeySlot};
+        use ghost_client_media::{MediaKind, ObjectId};
+
+        fn media_content() -> DmContent {
+            let mut content = text();
+            content.kind = Kind::Media;
+            let d = Descriptor {
+                kind: MediaKind::Image,
+                view_once: false,
+                class: ghost_client_media::SizeClass::SMALLEST,
+                object_id: ObjectId::from_bytes([9u8; 16]),
+                key_slot: KeySlot::zero(),
+                manifest_hash: [7u8; 32],
+                caption: "o poză".to_owned(),
+            };
+            content.body = d.encode().expect("encode descriptor").to_vec();
+            content
+        }
+
+        let bytes = media_content().encode().expect("encode");
+        let decoded = decode(&bytes).expect("decode");
+        assert_eq!(decoded.kind, Kind::Media);
+        assert_eq!(decoded.body, media_content().body);
+
+        // The slot at body offset 20: filling it refuses the strict decoder, and an encode of a
+        // content whose body carries a filled slot is refused too (Kotlin never builds one).
+        let mut filled = bytes.clone();
+        codec_fill_slot_for_test(&mut filled);
+        assert_eq!(decode(&filled).err(), Some(DmCode::NonCanonical));
+        let mut filled_content = media_content();
+        codec_fill_slot_for_test(&mut filled_content.body);
+        assert_eq!(
+            filled_content.encode().err(),
+            Some(DmCode::NonCanonical),
+            "an encode of a filled slot is refused"
+        );
+        // The inbound tolerance sees it, and clear re-zeros: the returned L0 decodes strict
+        // again, byte-identical to the zero-slot original.
+        let inbound = decode_inbound(&filled).expect("inbound decodes a filled slot");
+        assert_eq!(inbound.kind, Kind::Media);
+        let mut cleared = filled;
+        clear_media_key_slot(&mut cleared).expect("clear");
+        assert_eq!(cleared, bytes);
+        assert!(decode(&cleared).is_ok(), "cleared decodes strict");
+        // Filling is for kind 5 only, and clears the slot it filled.
+        let mut text_bytes = text().encode().expect("encode");
+        assert_eq!(
+            fill_media_key_slot(&mut text_bytes, &[1u8; 32]),
+            Err(DmCode::NonCanonical)
+        );
+        let mut media_bytes = bytes.clone();
+        fill_media_key_slot(&mut media_bytes, &[0xa5; 32]).expect("fill");
+        let at = body_offset(&media_bytes).expect("body offset");
+        assert_eq!(&media_bytes[at + 20..at + 52], &[0xa5; 32]);
+        let mut cleared = media_bytes;
+        clear_media_key_slot(&mut cleared).expect("clear");
+        assert_eq!(cleared, bytes);
+        // The body offset accounts for a quote.
+        let mut quoted = media_content();
+        quoted.quote_ref = Some([3u8; 16]);
+        let quoted_bytes = quoted.encode().expect("encode");
+        let mut quoted_fill = quoted_bytes.clone();
+        fill_media_key_slot(&mut quoted_fill, &[0x5a; 32]).expect("fill quoted");
+        assert_eq!(body_offset(&quoted_bytes).expect("quoted offset"), 50);
+        clear_media_key_slot(&mut quoted_fill).expect("clear quoted");
+        assert_eq!(quoted_fill, quoted_bytes);
+    }
+
+    /// Fills the key slot of a kind-5 L0 at the offset this test computed, without the crate's
+    /// helper (which refuses non- Media kinds — here the point is the decoder's strictness).
+    fn codec_fill_slot_for_test(bytes: &mut [u8]) {
+        let at = body_offset(bytes).expect("offset");
+        bytes[at + 20..at + 52].copy_from_slice(&[0xa5; 32]);
+    }
+
+    /// §4.2 (slice S2): the sender's fill and the recipient's take round-trip `K_f` through
+    /// `key_env` — the fill unwraps the `out` envelope and writes the slot; the take reads the
+    /// slot, wraps an `in` envelope and re-zeros the slot, and the returned L0 decodes strict
+    /// again, byte-identical to what Kotlin first built.
+    #[test]
+    fn the_key_slot_round_trips_through_fill_and_take() {
+        use crate::derive::StateKey;
+        use crate::wrap;
+        use ghost_client_media::descriptor::{Descriptor, KeySlot};
+        use ghost_client_media::{MediaKind, ObjectId};
+
+        let state_key = StateKey::from_bytes([0x91; 32]);
+        let contact = [7u8; 16];
+        let key_f = [0x42u8; 32];
+        let d = Descriptor {
+            kind: MediaKind::Image,
+            view_once: false,
+            class: ghost_client_media::SizeClass::SMALLEST,
+            object_id: ObjectId::from_bytes([9u8; 16]),
+            key_slot: KeySlot::zero(),
+            manifest_hash: [7u8; 32],
+            caption: "o poză".to_owned(),
+        };
+        let body = d.encode().expect("encode descriptor").to_vec();
+        let mut content = text();
+        content.kind = Kind::Media;
+        content.body = body;
+        let l0 = content.encode().expect("encode");
+        // The honest envelope a MEDIA-COMMIT would store: bound to (out, contact, object_id,
+        // manifest_hash).
+        let out_binding = wrap::media_file_key_binding(
+            wrap::MEDIA_ROLE_OUT,
+            &contact,
+            d.object_id.as_bytes(),
+            &d.manifest_hash,
+        );
+        let key_env = wrap::wrap(
+            &state_key,
+            wrap::WrapName::MediaFileKey,
+            &out_binding,
+            &key_f,
+        )
+        .expect("wrap key_env");
+
+        // The fill: slot written, session-bound copy differs from the caller's zero-slot L0.
+        let mut sealed = l0.clone();
+        assert!(media_slot_fill(&state_key, &contact, &mut sealed, &key_env).expect("fill"));
+        assert_ne!(sealed, l0);
+        let inbound = decode_inbound(&sealed).expect("inbound");
+        let sealed_d = media_descriptor(&inbound.body).expect("descriptor");
+        assert_eq!(sealed_d.key_slot.as_bytes(), &key_f);
+
+        // The take: an `in` envelope that opens back to K_f, and an L0 that decodes strict,
+        // byte-identical to the zero-slot original.
+        let taken = media_slot_take(&state_key, &contact, &mut sealed).expect("take");
+        let env = taken.expect("media envelope");
+        let in_binding = wrap::media_file_key_binding(
+            wrap::MEDIA_ROLE_IN,
+            &contact,
+            d.object_id.as_bytes(),
+            &d.manifest_hash,
+        );
+        let opened = wrap::unwrap(&state_key, wrap::WrapName::MediaFileKey, &in_binding, &env)
+            .expect("open in envelope");
+        assert_eq!(opened.as_slice(), &key_f);
+        assert_eq!(sealed, l0);
+        assert!(decode(&sealed).is_ok(), "the returned L0 decodes strict");
+
+        // Refusals: a non-opening envelope and an empty one are the caller's bug; a non-media L0
+        // takes no envelope; a zero slot on the take is a peer's violation.
+        let wrong = wrap::wrap(
+            &state_key,
+            wrap::WrapName::MediaFileKey,
+            &wrap::media_file_key_binding(
+                wrap::MEDIA_ROLE_OUT,
+                &[8u8; 16],
+                d.object_id.as_bytes(),
+                &d.manifest_hash,
+            ),
+            &key_f,
+        )
+        .expect("wrap wrong");
+        let mut attempt = l0.clone();
+        assert_eq!(
+            media_slot_fill(&state_key, &contact, &mut attempt, &wrong),
+            Err(DmCode::NonCanonical),
+            "an envelope of another contact's binding"
+        );
+        let mut attempt = l0.clone();
+        assert_eq!(
+            media_slot_fill(&state_key, &contact, &mut attempt, &[]),
+            Err(DmCode::NonCanonical),
+            "no key_env for a media L0"
+        );
+        let text_l0 = text().encode().expect("encode");
+        let mut text_attempt = text_l0.clone();
+        assert_eq!(
+            media_slot_fill(&state_key, &contact, &mut text_attempt, &key_env),
+            Err(DmCode::NonCanonical),
+            "a key_env for a text L0"
+        );
+        let mut text_attempt = text_l0.clone();
+        assert_eq!(
+            media_slot_take(&state_key, &contact, &mut text_attempt).expect("text take"),
+            None
+        );
+        let mut zero_slot = l0.clone();
+        assert_eq!(
+            media_slot_take(&state_key, &contact, &mut zero_slot),
+            Err(DmCode::NonCanonical),
+            "a peer's zero slot"
+        );
     }
 
     /// §10.5 R-T9 and the S9 review: a `timer_version` this device could not re-encode after

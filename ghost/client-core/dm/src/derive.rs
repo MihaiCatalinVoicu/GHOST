@@ -120,6 +120,10 @@ pub enum DmLabel {
     /// for every channel of the identity, no parameters. Consumed by the channel engine
     /// (`ChannelSchedule`), which is why the label names the channel schedule, not a card.
     ChannelSchedule,
+    /// The media read secret `RM_{i,s}` of card index i at the relay of ES slot s (Phase 11
+    /// design §5.1): seed-derived, like `RX`, presented to the relay as a read credential v3 by
+    /// the owner only.
+    MediaRead(u16, u8),
 }
 
 impl DmLabel {
@@ -132,6 +136,7 @@ impl DmLabel {
             DmLabel::InboxRead(..) => "ghost/v1/dm/inbox-read",
             DmLabel::Schedule(_) => "ghost/v1/dm/schedule",
             DmLabel::ChannelSchedule => "ghost/v1/dm/channel-schedule",
+            DmLabel::MediaRead(..) => "ghost/v1/dm/media-read",
         }
     }
 
@@ -147,18 +152,23 @@ impl DmLabel {
                 info.extend_from_slice(&index.to_be_bytes());
                 info.push(slot);
             }
+            DmLabel::MediaRead(index, slot) => {
+                info.extend_from_slice(&index.to_be_bytes());
+                info.push(slot);
+            }
         }
         info
     }
 
     /// Every seed-level label string.
-    pub const LABELS: [&'static str; 6] = [
+    pub const LABELS: [&'static str; 7] = [
         "ghost/v1/dm/olm-identity",
         "ghost/v1/dm/olm-account-signing",
         "ghost/v1/dm/card",
         "ghost/v1/dm/inbox-read",
         "ghost/v1/dm/schedule",
         "ghost/v1/dm/channel-schedule",
+        "ghost/v1/dm/media-read",
     ];
 }
 
@@ -177,6 +187,12 @@ pub enum CardLabel {
     BundleSeal,
     /// The intro outer key `KIO_i`, which never leaves the device.
     IntroOuter,
+    /// The media namespace `M_i` (Phase 11 design §5.1): `HKDF(card_secret_i,
+    /// "ghost/v1/card/media-ns")`, registered and paid by the recipient.
+    MediaNamespace,
+    /// The media deposit secret `MD_{i,s}` presented to the relay of ES slot s (Phase 11 design
+    /// §5.1), as a deposit credential v3.
+    MediaDeposit(u8),
 }
 
 impl CardLabel {
@@ -189,6 +205,8 @@ impl CardLabel {
             CardLabel::BundleRead(_) => "ghost/v1/card/bundle-read",
             CardLabel::BundleSeal => "ghost/v1/card/bundle-seal",
             CardLabel::IntroOuter => "ghost/v1/card/intro-outer",
+            CardLabel::MediaNamespace => "ghost/v1/card/media-ns",
+            CardLabel::MediaDeposit(_) => "ghost/v1/card/media-deposit",
         }
     }
 
@@ -196,20 +214,24 @@ impl CardLabel {
     pub fn info(self) -> Vec<u8> {
         let mut info = self.label().as_bytes().to_vec();
         match self {
-            CardLabel::Deposit(slot) | CardLabel::BundleRead(slot) => info.push(slot),
+            CardLabel::Deposit(slot)
+            | CardLabel::BundleRead(slot)
+            | CardLabel::MediaDeposit(slot) => info.push(slot),
             _ => {}
         }
         info
     }
 
     /// Every card-level label string.
-    pub const LABELS: [&'static str; 6] = [
+    pub const LABELS: [&'static str; 8] = [
         "ghost/v1/card/inbox-ns",
         "ghost/v1/card/bundle-ns",
         "ghost/v1/card/deposit",
         "ghost/v1/card/bundle-read",
         "ghost/v1/card/bundle-seal",
         "ghost/v1/card/intro-outer",
+        "ghost/v1/card/media-ns",
+        "ghost/v1/card/media-deposit",
     ];
 }
 
@@ -263,6 +285,20 @@ pub fn derive_inbox_read_secret(
         m.as_bytes(),
         None,
         &DmLabel::InboxRead(card_index, slot).info(),
+    )
+}
+
+/// `RM_{i,s}`, the media read secret presented to the relay of ES slot s (Phase 11 design §5.1).
+/// Seed-derived, like [`derive_inbox_read_secret`], so a restored device reads its `M_0` at once.
+pub fn derive_media_read_secret(
+    m: &MessagingBranch,
+    card_index: u16,
+    slot: u8,
+) -> [u8; SECRET_BYTES] {
+    hkdf32(
+        m.as_bytes(),
+        None,
+        &DmLabel::MediaRead(card_index, slot).info(),
     )
 }
 
@@ -329,6 +365,12 @@ pub fn derive_inbox_namespace(card_secret: &CardSecret) -> [u8; SECRET_BYTES] {
 /// The bundle namespace `P_i` (§3.2).
 pub fn derive_bundle_namespace(card_secret: &CardSecret) -> [u8; SECRET_BYTES] {
     derive_card_value(card_secret, CardLabel::BundleNamespace)
+}
+
+/// The media namespace `M_i` (Phase 11 design §5.1): the recipient-owned namespace every media
+/// blob of the card's holder is deposited into.
+pub fn derive_media_namespace(card_secret: &CardSecret) -> [u8; SECRET_BYTES] {
+    derive_card_value(card_secret, CardLabel::MediaNamespace)
 }
 
 /// `K_b = HKDF(root, "ghost/v1/dm/pair-epoch" || u64_be(b))`, the base-week key (§6.3).
@@ -433,11 +475,13 @@ mod tests {
         let _: fn(&MessagingBranch) -> OlmSecret = derive_olm_account_signing;
         let _: fn(&MessagingBranch, u16) -> CardSecret = derive_card_secret;
         let _: fn(&MessagingBranch, u16, u8) -> [u8; 32] = derive_inbox_read_secret;
+        let _: fn(&MessagingBranch, u16, u8) -> [u8; 32] = derive_media_read_secret;
         let _: fn(&MessagingBranch, u16) -> [u8; 32] = derive_schedule_key;
         let _: fn(&MessagingBranch) -> [u8; 32] = derive_channel_schedule_key;
         let _: fn(&CardSecret, CardLabel) -> [u8; 32] = derive_card_value;
         let _: fn(&CardSecret) -> [u8; 32] = derive_inbox_namespace;
         let _: fn(&CardSecret) -> [u8; 32] = derive_bundle_namespace;
+        let _: fn(&CardSecret) -> [u8; 32] = derive_media_namespace;
         let _: fn(&PairRoot, u64) -> PairWeekKey = derive_pair_base_week_key;
         let _: fn(&PairWeekKey) -> PairWeekKey = derive_pair_next_week_key;
         let _: fn(&ReplySeed, &[u8; 32], u8) -> [u8; 32] = derive_provisional_key;
@@ -452,13 +496,15 @@ mod tests {
 
     /// The names [`derivation_key_inputs_are_typed`] pins, in one list the enumeration below
     /// compares with the sources.
-    const PINNED_DERIVATIONS: [&str; 13] = [
+    const PINNED_DERIVATIONS: [&str; 15] = [
         "derive_bundle_namespace",
         "derive_card_secret",
         "derive_card_value",
         "derive_channel_schedule_key",
         "derive_inbox_namespace",
         "derive_inbox_read_secret",
+        "derive_media_namespace",
+        "derive_media_read_secret",
         "derive_olm_account_signing",
         "derive_olm_identity",
         "derive_pair_base_week_key",
@@ -747,6 +793,64 @@ mod tests {
         assert_ne!(
             derive_card_value(&card, CardLabel::BundleSeal),
             derive_card_value(&card, CardLabel::IntroOuter)
+        );
+        // Phase 11 (§5.1): the media values of one card secret are pairwise distinct, and the
+        // media read secrets of one seed separate by card index and slot like `RX`.
+        assert_ne!(derive_media_namespace(&card), derive_inbox_namespace(&card));
+        assert_ne!(
+            derive_card_value(&card, CardLabel::MediaDeposit(0)),
+            derive_card_value(&card, CardLabel::MediaDeposit(1))
+        );
+        assert_ne!(
+            derive_media_read_secret(&m, 0, 0),
+            derive_media_read_secret(&m, 0, 1)
+        );
+        assert_ne!(
+            derive_media_read_secret(&m, 0, 0),
+            derive_media_read_secret(&m, 1, 0)
+        );
+    }
+
+    /// Phase 11 design §5.1: the three media derivations recomputed independently (RFC 5869
+    /// test-vector style, like [`channel_schedule_key_golden`]), so a renamed label or a moved
+    /// parameter lands on different bytes. `m = 00 01 … 1f`, `card_secret_0` at the same branch.
+    /// The pinned digests below are this recomputation's output, recorded so a silent drift of the
+    /// label strings fails here.
+    #[test]
+    fn media_derivations_golden() {
+        fn hkdf(ikm: &[u8], info: &[u8]) -> [u8; 32] {
+            use hkdf::Hkdf;
+            use sha2::Sha256;
+            let hk = Hkdf::<Sha256>::new(None, ikm);
+            let mut out = [0u8; 32];
+            hk.expand(info, &mut out).expect("L = 32");
+            out
+        }
+        let m = branch();
+        let card = derive_card_secret(&m, 0);
+        let namespace = derive_media_namespace(&card);
+        let deposit = derive_card_value(&card, CardLabel::MediaDeposit(3));
+        let read = derive_media_read_secret(&m, 0, 3);
+        // Independent recomputation from the design's table of §5.1.
+        assert_eq!(namespace, hkdf(card.as_bytes(), b"ghost/v1/card/media-ns"));
+        let mut deposit_info = b"ghost/v1/card/media-deposit".to_vec();
+        deposit_info.push(3);
+        assert_eq!(deposit, hkdf(card.as_bytes(), &deposit_info));
+        let mut read_info = b"ghost/v1/dm/media-read".to_vec();
+        read_info.extend_from_slice(&0u16.to_be_bytes());
+        read_info.push(3);
+        assert_eq!(read, hkdf(m.as_bytes(), &read_info));
+        assert_eq!(
+            hex::encode(namespace),
+            "1ebe75189c6162b166830f53482ce9c3fb1cccf47631d201e60bea27eb9f6e4a"
+        );
+        assert_eq!(
+            hex::encode(deposit),
+            "76c565ea03ab719460885fc27a19302ca433422ec45744f3f6e7bb67af9e1455"
+        );
+        assert_eq!(
+            hex::encode(read),
+            "46ac0f63763043d5046fa48614c002c50dbb84433a3df293bb36e763ff7a420b"
         );
     }
 
