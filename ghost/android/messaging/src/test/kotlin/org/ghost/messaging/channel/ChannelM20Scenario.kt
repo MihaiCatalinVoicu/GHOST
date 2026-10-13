@@ -44,7 +44,10 @@ import kotlin.system.measureTimeMillis
 internal object ChannelM20 {
 
     /** The pinned seeds (S10's exit; §12.5's scale row). `-Dghost.channel.seed=<index>` runs one (a PR), `all` or a count the first ones. */
-    val SEEDS: List<Long> = listOf(0x5eed_c101L, 0x5eed_c102L, 0x5eed_c103L)
+    val SEEDS: List<Long> = listOf(0x5eed_c101L, 0x5eed_c102L, 0x5eed_c103L) +
+        // The gate-scale sweep (§12.5's 64-seed target, §19.49's projection): the three pinned seeds
+        // stay the head; indices 3..63 run the same choreography over the sweep's seeds.
+        (0x04..0x40).map { 0x5eed_c100L + it }
 
     fun selectedSeeds(): List<Long> {
         System.getProperty("ghost.channel.seed")?.let { return listOf(SEEDS[it.toInt()]) }

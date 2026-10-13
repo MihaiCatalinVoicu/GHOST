@@ -162,6 +162,14 @@ val harnessProperties = listOf(
     "ghost.dm.privacy.seed",
     "ghost.dm.privacy.seeds",
     "ghost.dm.privacy.report",
+    // S10/S11's channel harness knobs, the same forwarding (without it they reach the Gradle JVM
+    // and not the test JVM): the SCN-M20 seed selection (§12.5) and the channel privacy world's
+    // seed selection and day count (§12.7; `ghost.channel.privacy.days` is the gate-scale knob).
+    "ghost.channel.seed",
+    "ghost.channel.seeds",
+    "ghost.channel.privacy.seed",
+    "ghost.channel.privacy.seeds",
+    "ghost.channel.privacy.days",
 )
 
 tasks.withType<Test>().configureEach {

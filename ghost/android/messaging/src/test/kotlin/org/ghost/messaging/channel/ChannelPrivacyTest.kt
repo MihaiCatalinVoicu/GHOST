@@ -29,8 +29,11 @@ class ChannelPrivacyTest {
     @Test
     fun thePrivacyWorldsSearchesFindNothing() {
         val failures = ArrayList<String>()
+        // §12.7's gate scale: `-Dghost.channel.privacy.days` raises the world's day count (the
+        // default stays the PR scale's 28); the report line names the days it ran.
+        val days = System.getProperty("ghost.channel.privacy.days")?.toInt() ?: 28
         for (seed in selectedSeeds().take(1)) {
-            ChannelPrivacyWorld(ChannelPrivacyWorld.Config(seed = seed)).use { privacy ->
+            ChannelPrivacyWorld(ChannelPrivacyWorld.Config(seed = seed, days = days)).use { privacy ->
                 val built = privacy.build()
                 val material = ChannelPrivacyChecks.gather(built)
                 val results = listOf(
