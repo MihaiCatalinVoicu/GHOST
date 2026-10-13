@@ -746,11 +746,16 @@ pub(crate) struct DmContext {
     /// The `ghost1` Ed25519 seed, handed over by `:identity` at unlock (§2.4, X-21).
     identity_seed: IdentitySeed,
     /// The media sealers of this context (Phase 11 design §13.2 M1–M4): at most two live at once,
-    /// each owns a `K_f` in native memory. `ctxClose` drops and zeroises them with the context.
-    pub(crate) media_sealers: std::collections::HashMap<i64, crate::jni_media::SealerEntry>,
+    /// each owns a `K_f` in native memory. Boxed like [`ContextSlot`], CRY-P9-02's discipline at
+    /// the entry level (the review round of §22.4, finding F3): a bucket holds only the pointer,
+    /// so `sealAbort`/`sealFinish`'s `HashMap::remove` — a bit-for-bit move that leaves the
+    /// vacated bucket bytes stale — moves no secret, and dropping the box zeroises the entry's
+    /// keys in place before its allocation is freed. `ctxClose` drops the maps with the context.
+    pub(crate) media_sealers: std::collections::HashMap<i64, Box<crate::jni_media::SealerEntry>>,
     /// The media readers of this context (§13.2 M5–M8): at most eight live at once, each holds a
-    /// derived payload key. Dropped and zeroised with the context.
-    pub(crate) media_readers: std::collections::HashMap<i64, crate::jni_media::ReaderEntry>,
+    /// derived payload key. The same boxed-entry storage as `media_sealers`: `readerClose`'s
+    /// removal moves the pointer, not the key.
+    pub(crate) media_readers: std::collections::HashMap<i64, Box<crate::jni_media::ReaderEntry>>,
 }
 
 /// One registry entry: the context **behind a pointer** (phase review CRY-P9-02).
@@ -1340,6 +1345,11 @@ pub fn decrypt(
             state.zeroize();
         }
         let mut out = out?;
+        // `out.plaintext` is the decrypted L0: a kind-5 body's slot still holds K_f until
+        // `media_slot_take` re-zeros it below — and the take, like the state re-wrap above, can
+        // refuse, in which case the slot is still filled. The buffer is wrapped so EVERY exit
+        // path erases it, the codebase's own rule at the states loop above (§2.5).
+        let mut plaintext = Zeroizing::new(std::mem::take(&mut out.plaintext));
         let (_, session_id, _) = states
             .iter()
             .find(|(slot, _, _)| *slot == out.slot)
@@ -1359,14 +1369,14 @@ pub fn decrypt(
         // precede the `L0` field below: `Reply::field` copies its value into the reply buffer, so
         // a take after the field ships `K_f` to Kotlin inside the L0 (the host JVM verification
         // of 2026-10-13 caught exactly that: element 55 of the returned L0 was `k_f[1]`).
-        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?;
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut plaintext)?;
         let flags = if out.acknowledged {
             FLAG_ACKNOWLEDGED
         } else {
             0
         };
         let mut reply = Reply::ok()
-            .field(Field::L0, &out.plaintext)
+            .field(Field::L0, &plaintext)
             .field(Field::State, &new_state)
             .field(Field::SlotUsed, &[out.slot.as_u8()])
             .field(Field::Flags, &[flags]);
@@ -1443,6 +1453,10 @@ pub fn session_inbound(
         );
         fallback.zeroize();
         let mut out = out?;
+        // Same rule as `decrypt` above: the decrypted L0's slot still holds K_f until the take
+        // below re-zeros it, and either the take or the state re-wrap can refuse first — the
+        // buffer is wrapped so every exit path erases it (§2.5).
+        let mut plaintext = Zeroizing::new(std::mem::take(&mut out.plaintext));
         let state_env = wrap::wrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
@@ -1458,9 +1472,9 @@ pub fn session_inbound(
         // media descriptor lands its `key_env` exactly like a live one. The take MUST precede
         // the `L0` field: `Reply::field` copies its value into the reply buffer, so a take after
         // the field ships `K_f` to Kotlin inside the L0.
-        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?;
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut plaintext)?;
         let mut reply = Reply::ok()
-            .field(Field::L0, &out.plaintext)
+            .field(Field::L0, &plaintext)
             .field(Field::State, &state_env)
             .field(Field::SessionId, &out.session_id);
         if let Some(key_env) = key_env {

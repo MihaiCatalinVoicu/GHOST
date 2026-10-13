@@ -364,17 +364,32 @@ pub const MEDIA_TEST_LIST: &[(u8, &str)] = &[(0, "testVectors"), (0, "testSealBe
 
 /// One live sealer (§3.7 point 1: a native object that owns `K_f`, `object_id`, the used-index
 /// set and the running hash list) with the destination its `key_env` will be bound to.
-pub(crate) struct SealerEntry {
+///
+/// The context's registry stores entries behind a `Box`, so a hash bucket holds only the
+/// pointer: `HashMap::remove`'s bit-for-bit move — which leaves the vacated bucket bytes
+/// stale, readable until the table is rehashed or freed — moves no secret, and dropping the
+/// box runs every key field's zeroisation in place before the allocation is freed
+/// (CRY-P9-02's discipline at the entry level; the review round of §22.4, finding F3).
+///
+/// `pub` for the zero-residue probe only (`tests/media_registry_zeroize.rs`, through
+/// [`probe`]); not part of the JNI surface, and not constructible outside this module.
+#[doc(hidden)]
+pub struct SealerEntry {
     sealer: media::Sealer,
-    dest_id: [u8; 16],
+    /// The destination identifier the `key_env` binds to: wiped with the entry.
+    dest_id: Zeroizing<[u8; 16]>,
 }
 
 /// One live reader with the read-mode gate of §22.2 row 28a: `readerChunk(mode = read)` refuses
 /// with `SEQUENCE` unless the caller attests the object is one the database holds readable — a
 /// recipient's `verified` object, or the sender's own `out` object in `uploading`, `uploaded` or
 /// `failed`. The attestation is the caller's (`:media` holds the database); the native side keeps
-/// the rule close to the key.
-pub(crate) struct ReaderEntry {
+/// the rule close to the key. Same boxed-entry storage as [`SealerEntry`]: removal moves the
+/// pointer, not the derived payload key, and the box zeroises it in place when dropped.
+///
+/// `pub` for the zero-residue probe only, like [`SealerEntry`].
+#[doc(hidden)]
+pub struct ReaderEntry {
     reader: media::Reader,
     readable: bool,
 }
@@ -468,7 +483,9 @@ fn insert_sealer(context: &mut DmContext, entry: SealerEntry) -> Result<i64, Med
         return Err(MediaCode::Limit);
     }
     let id = dm_jni::next_handle();
-    context.media_sealers.insert(id, entry);
+    // Boxed: the bucket holds the pointer only, so a later `remove`'s bitwise move leaves no
+    // secret bytes stale in the table (CRY-P9-02 at the entry level, §22.4's review round F3).
+    context.media_sealers.insert(id, Box::new(entry));
     Ok(id)
 }
 
@@ -477,7 +494,7 @@ fn insert_reader(context: &mut DmContext, entry: ReaderEntry) -> Result<i64, Med
         return Err(MediaCode::Limit);
     }
     let id = dm_jni::next_handle();
-    context.media_readers.insert(id, entry);
+    context.media_readers.insert(id, Box::new(entry));
     Ok(id)
 }
 
@@ -561,7 +578,13 @@ pub fn seal_begin(
             max_class,
         );
         key_f.zeroize();
-        let id = insert_sealer(context, SealerEntry { sealer, dest_id })?;
+        let id = insert_sealer(
+            context,
+            SealerEntry {
+                sealer,
+                dest_id: Zeroizing::new(dest_id),
+            },
+        )?;
         Ok(Reply::ok()
             .field(MediaField::SealerId, &id.to_be_bytes())
             .field(MediaField::ObjectId, &object_id)
@@ -703,7 +726,8 @@ pub fn reader_open(
             &key_env,
         )
         .map_err(|_| MediaCode::StateCorrupt)?;
-        let key_f = <[u8; 32]>::try_from(plain.as_slice()).map_err(|_| MediaCode::StateCorrupt)?;
+        let mut key_f =
+            <[u8; 32]>::try_from(plain.as_slice()).map_err(|_| MediaCode::StateCorrupt)?;
         let expected = media::Expected {
             object_id: media::ObjectId::from_bytes(object_id),
             kind,
@@ -716,7 +740,11 @@ pub fn reader_open(
             &expected,
             &manifest_blob,
         )
-        .map_err(MediaCode::from_media)?;
+        .map_err(MediaCode::from_media);
+        // `key_f` is `K_f` in the clear: it goes no further than `Reader::open`, whatever its
+        // outcome — the codec's own pattern (`codec.rs`, the `media_slot_fill` half).
+        key_f.zeroize();
+        let reader = reader?;
         let id = insert_reader(context, ReaderEntry { reader, readable })?;
         // The manifest fields come from the entry just opened: the reader was moved into the
         // registry, so read them back out of it.
@@ -882,7 +910,7 @@ pub fn test_seal_begin_with_key(
             context,
             SealerEntry {
                 sealer,
-                dest_id: [0u8; 16],
+                dest_id: Zeroizing::new([0u8; 16]),
             },
         )?;
         Ok(Reply::ok()
@@ -1440,5 +1468,49 @@ mod tests {
                 assert!(MediaCode::ALL.contains(code));
             }
         }
+    }
+}
+
+/// Zero-residue probe support for the crate's integration test `tests/media_registry_zeroize.rs`
+/// (the review round of §22.4, finding F3). **Not part of the JNI surface:** `#[doc(hidden)]`
+/// and `test-vectors`-gated like the `equivalence` entry point, so no shipped graph carries it
+/// (G-R2; `ghost-dm-host` alone enables the feature). The probe builds the real registry
+/// entries with canary-planted keys and drives the same storage the DM context's registries
+/// use, scanning every freed block for the canary-derived key patterns the way the media
+/// crate's `tests/zeroize.rs` does.
+#[cfg(feature = "test-vectors")]
+#[doc(hidden)]
+pub mod probe {
+    use super::{ReaderEntry, SealerEntry};
+
+    /// The sealer registry's storage: entries behind a pointer, so a hash bucket holds no
+    /// secret and `HashMap::remove`'s bitwise move leaves nothing readable behind.
+    pub type SealerMap = std::collections::HashMap<i64, Box<SealerEntry>>;
+    /// The reader registry's storage, same discipline.
+    pub type ReaderMap = std::collections::HashMap<i64, Box<ReaderEntry>>;
+    /// The pre-fix storage shape (by-value entries), kept so the probe can measure the residue
+    /// the review found — the stale bucket bytes a removal leaves in the table.
+    pub type ByValueSealerMap = std::collections::HashMap<i64, SealerEntry>;
+    /// The reader side of the pre-fix shape.
+    pub type ByValueReaderMap = std::collections::HashMap<i64, ReaderEntry>;
+
+    /// A sealer entry holding exactly the caller's `K_f` and `object_id` (the probe's canary
+    /// carriers) with the caller's destination identifier.
+    pub fn sealer_entry(file_key: [u8; 32], object_id: [u8; 16], dest_id: [u8; 16]) -> SealerEntry {
+        SealerEntry {
+            sealer: super::media::Sealer::begin(
+                super::media::FileKey::from_bytes(file_key),
+                super::media::ObjectId::from_bytes(object_id),
+                super::media::MediaKind::Image,
+                false,
+                super::media::SizeClass::SMALLEST,
+            ),
+            dest_id: zeroize::Zeroizing::new(dest_id),
+        }
+    }
+
+    /// A reader entry for a caller-opened reader.
+    pub fn reader_entry(reader: super::media::Reader, readable: bool) -> ReaderEntry {
+        ReaderEntry { reader, readable }
     }
 }
