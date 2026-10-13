@@ -73,7 +73,7 @@ internal class ChannelEngine(
     val joinStep = ChannelJoinStep(env, sync, livenessStep)
     val rejoinStep = ChannelRejoinStep(env, sync)
     val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap, livenessStep)
-    val passStep = ChannelPassStep(env, sync, postStep)
+    val passStep = ChannelPassStep(env, sync, postStep, livenessStep)
     val settleStep = ChannelSettleStep(env, sync, livenessStep)
     val channelOutcomeStep = ChannelOutcomeStep(env, sync)
     val sweepStep = ChannelSweepStep(env, sync, checkpoint)

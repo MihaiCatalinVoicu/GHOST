@@ -17,7 +17,8 @@
 #       crypto-bridge  `dm-equivalence: N cases, N identical, control detected`, with N the number
 #                      of cases in `protocol/test-vectors/dm_equivalence.txt` (§15.9 item 7: the
 #                      comparator ran over every case, and its control was detected);
-#       messaging      the SQLCipher v3 -> v4 -> v5 migration, SCN-A, SCN-B, SCN-F with the WAL at
+#       messaging      the SQLCipher v3 -> current migration (the v3 fixture database migrates to
+#                      Schema.CURRENT_VERSION), SCN-A, SCN-B, SCN-F with the WAL at
 #                      0 bytes, the alarm scheduled and cancelled, and SCN-D's key change with a
 #                      logcat scan over at least one canary (§15.9 items 2, 5 and 6);
 #       app-smoke      the release smoke test: the shipped library in the R8-shrunk APK, one
@@ -102,7 +103,7 @@ for api in "$@"; do
   suite "$api" crypto-bridge 1 \
     "^dm-equivalence: $cases cases, $cases identical, control detected\$"
   suite "$api" messaging 6 \
-    '^dm-device: sqlcipher v3 -> v4 -> v5 ok$' \
+    '^dm-device: sqlcipher v3 -> current ok$' \
     '^dm-device: SCN-A ' \
     '^dm-device: SCN-B ' \
     '^dm-device: SCN-F .*WAL 0 bytes$' \

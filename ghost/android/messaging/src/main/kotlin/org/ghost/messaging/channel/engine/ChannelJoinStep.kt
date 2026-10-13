@@ -127,7 +127,7 @@ internal class ChannelJoinStep(
                 seedSchedule(env, tx, c, day)
                 // §19.44 F-S7-6: the join restarts the channel — CO-11's window state belonged to
                 // the old leaf; carried over it would refire the moment the channel is active again.
-                liveness.reset(tx, c, content)
+                liveness.reset(tx, c, content, day)
                 sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
                 sync.inbox.reofferDeferred(tx, NamespaceId(ns))
                 Outcome.JOINED
@@ -222,7 +222,7 @@ internal class ChannelJoinStep(
                 }
                 // §19.44 F-S7-6: the rejoin restarts the channel — CO-11's window state belonged to
                 // the old leaf; carried over it would refire the moment the channel is active again.
-                liveness.reset(tx, channelId, content)
+                liveness.reset(tx, channelId, content, day)
                 val g = joined.generation
                 if (g.generation != fresh.generation) {
                     // A newer bootstrap (a rotation on the live branch): `CH-SWITCH` adopts it at the

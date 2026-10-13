@@ -130,7 +130,7 @@ class DeviceGateSuite {
         sql5.query("PRAGMA foreign_key_check") { fk += 1 }
         assertEquals(0, fk)
         v5.close()
-        DeviceRunner.report("dm-device: sqlcipher v3 -> v4 -> v5 ok")
+        DeviceRunner.report("dm-device: sqlcipher v3 -> current ok")
     }
 
     /**

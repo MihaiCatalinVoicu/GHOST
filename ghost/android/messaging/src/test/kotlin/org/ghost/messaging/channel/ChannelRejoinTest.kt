@@ -1093,6 +1093,197 @@ class ChannelRejoinTest {
         assertEquals(owner.channel(id)!!.epoch, dave.channel(id)!!.epoch)
     }
 
+    /**
+     * The review of F-S10-8's fix, F-1 (fixed + probed): the liveness window's OPENING branch —
+     * the first unopenable blob, SPAM_UNOPENABLE being a designed hostile mode — used to rewrite
+     * the whole Progress record with the restart day at its sentinel, silently erasing the
+     * F-S10-8 quarantine's stamp. The probe: the restarted device (a restore — the stamp lands
+     * at the join's completion), then ONE junk blob consumed at it (the window opens on the
+     * fixed branch), then its scheduled pass over the rejoin request its pre-restart state
+     * recorded — the quarantine must still wait (no swap is built, the row stays pending).
+     * Without the fix the erased stamp lets the pass admit the pre-restart request: red.
+     */
+    @Test
+    fun aJunkBlobOpeningTheLivenessWindowKeepsTheRestartStamp() {
+        val dir = java.nio.file.Files.createTempDirectory("ghost-f10x8-f1").toFile()
+        try {
+            val world = restartedCommitterWithRecordedRejoin(dir)
+            val w = world.w
+            val bob2 = world.bob2
+            val id = world.id
+
+            // ONE junk blob of the current generation, consumed at bob2: the window opens — on
+            // the branch that used to erase the restart stamp.
+            w.relay.holdAt = { name, b ->
+                (b.purpose == "rejoin" && b.from == "dave" && name == "owner") || (b.injected && name != "bob")
+            }
+            w.relay.inject(
+                generationNs(bob2, id, 1),
+                ChannelAdversary.sealJunk(bob2, id, ByteArray(700) { (it % 251).toByte() }),
+                w.now, "junk-0",
+            )
+            w.pump()
+            bob2.hintPass()
+            assertEquals("the junk opened the window at bob2", 1L, bob2.count("ch_liveness", "unopenable_count >= 1"))
+            w.advance(DmWorld.DAY) // the rank-1 work-age rule (§19.13) needs the request 2 days old.
+
+            // The restarted committer's pass over the pre-restart request: the stamp survived
+            // the window-opening — the quarantine still waits.
+            duePass(w, bob2)
+            w.quiesce()
+            assertEquals("the stamp survived the junk: no swap was built", 0L, bob2.count("ch_candidate", "own = 1 AND removes = 1"))
+            assertEquals("the request waited unrefused", 1L, bob2.count("ch_join_request"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * The review of F-S10-8's fix, F-3 (covered): a rejoin request recorded within
+     * `[restartDay − 7, restartDay)` — signed recently, recorded just before the committer's
+     * restart, so the day window passes it and it reaches the quarantine — is wait-refused by
+     * the restarted committer (no candidate is built, the row stays pending); the requester's
+     * re-send after the restart records a post-restart row and is admitted. Without the
+     * quarantine the restarted committer admits the pre-restart request at the first pass: red.
+     */
+    @Test
+    fun aRestartedCommitterWaitsOnARejoinRecordedJustBeforeItsRestart() {
+        val dir = java.nio.file.Files.createTempDirectory("ghost-f10x8-f3").toFile()
+        try {
+            val world = restartedCommitterWithRecordedRejoin(dir)
+            val w = world.w
+            val owner = world.owner
+            val dave = world.dave
+            val bob2 = world.bob2
+            val id = world.id
+
+            // The restarted committer's pass: the pre-restart row reaches every content check
+            // (the day window passes it — recorded within [restartDay − 7, restartDay)) and the
+            // quarantine wait-refuses it.
+            w.advance(DmWorld.DAY) // the rank-1 work-age rule (§19.13) needs the request 2 days old.
+            duePass(w, bob2)
+            w.quiesce()
+            assertEquals("the quarantine wait-refused the pre-restart request", 0L, bob2.count("ch_candidate", "own = 1 AND removes = 1"))
+            assertEquals("the request waited unrefused", 1L, bob2.count("ch_join_request"))
+
+            // No deadlock: the requester re-sends after the restart — a fresh KeyPackage and
+            // signature, a post-restart row — and the restarted committer admits it.
+            w.relay.holdAt = { name, b -> b.purpose == "rejoin" && b.from == "dave" && name == "owner" }
+            assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, dave.engine.resync(id))
+            w.pump()
+            bob2.hintPass()
+            assertEquals(
+                "the re-send recorded post-restart rows (one per listened generation, §6.7)",
+                3L, bob2.count("ch_join_request"),
+            )
+            w.advance(2 * DmWorld.DAY) // the rank-1 work-age rule (§19.13) ages the re-send.
+            duePass(w, bob2)
+            w.quiesce()
+            w.pastSettleWindow()
+            w.quiesce()
+            w.pump()
+            dave.hintPass()
+            w.quiesce()
+            assertEquals("the re-send completed", ChannelState.ACTIVE, dave.channel(id)!!.state)
+            var catchUp = 0
+            while (
+                (dave.channel(id)!!.epoch < owner.channel(id)!!.epoch || bob2.channel(id)!!.epoch < owner.channel(id)!!.epoch) &&
+                catchUp++ < 20
+            ) {
+                w.pastSettleWindow()
+                w.quiesce()
+            }
+            assertEquals(owner.channel(id)!!.epoch, dave.channel(id)!!.epoch)
+            assertEquals(owner.channel(id)!!.epoch, bob2.channel(id)!!.epoch)
+            assertTrue(dave.integrity().isEmpty())
+            assertTrue(bob2.integrity().isEmpty())
+            assertTrue(owner.integrity().isEmpty())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * The review's shared choreography (F-1's probe and F-3's coverage): a three-member channel
+     * (bob the moderator); dave's catch-up rejoin recorded at bob and held from the owner; bob's
+     * device then replaced by a restore (his resync is the stale clock's reinvite — 15 quiet
+     * days put him past `day > lastCommitterCommitDay + 14`, no give-up wait), so the returned
+     * copy holds dave's row recorded two days before the restart, inside the day window, and
+     * bob's restart day has just stamped at the restore's completion. The returned world sits
+     * right before the restarted committer's decisive pass.
+     */
+    private class RestartedCommitterWorld(
+        val w: ChannelWorld,
+        val owner: ChannelClient,
+        val dave: ChannelClient,
+        val bob2: ChannelClient,
+        val id: ChannelId,
+    )
+
+    private fun restartedCommitterWithRecordedRejoin(dir: java.io.File): RestartedCommitterWorld {
+        val w = ChannelWorld()
+        val owner = w.client("owner")
+        val db1 = java.io.File(dir, "bob1.db")
+        val bob1 = w.client("bob", path = db1.absolutePath)
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, dave, bob1)
+        makeCommitter(w, owner, bob1, id)
+        agePcsClock(owner, id, 8)
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+
+        // Fifteen quiet days: bob's stale clock passes the resync's 14-day bound, so his resync
+        // is the reinvite directly — the state a restore accept re-enters joining from.
+        quietClocks(bob1, id)
+        repeat(3) {
+            w.advance(5 * DmWorld.DAY)
+            bob1.sessionStart()
+        }
+        assertTrue(bob1.channel(id)!!.staleSuspected)
+        // Day R: dave's catch-up rejoin — recorded at bob (his pre-restart state), held from the
+        // owner so nobody answers it before the restart.
+        w.relay.holdAt = { name, b -> b.purpose == "rejoin" && b.from == "dave" && name == "owner" }
+        assertEquals(ChannelRejoinStep.ResyncResult.REQUESTED, dave.engine.resync(id))
+        w.pump()
+        bob1.hintPass()
+        assertEquals("bob's pre-restart state recorded dave's request", 1L, bob1.count("ch_join_request"))
+        // Day R + 1: bob's device is replaced — the copy returns by a restore invite.
+        w.advance(DmWorld.DAY)
+        assertEquals("the stale clock's reinvite", ChannelRejoinStep.ResyncResult.REINVITE_NEEDED, bob1.engine.resync(id))
+        bob1.die()
+        bob1.close()
+        val db2 = java.io.File(dir, "bob2.db")
+        db1.copyTo(db2)
+        val bob2 = w.client("bob", boot = 1, path = db2.absolutePath)
+        quietClocks(bob2, id)
+        assertEquals("the copied state is reinvite_needed", ChannelState.REINVITE_NEEDED, bob2.channel(id)!!.state)
+        val link = ChannelAdmissionTest.invite(owner, id)
+        assertEquals(AcceptResult.PENDING, bob2.engine.accept(link, null))
+        assertEquals(1L, bob2.count("ch_join", "type = 'restore'"))
+        w.pump()
+        duePass(w, owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals("the restore completed", ChannelState.ACTIVE, bob2.channel(id)!!.state)
+        // The restore rotated: the switch lands owner and bob2 on generation 1.
+        w.advance(2 * DmWorld.HOUR + 60)
+        w.quiesce()
+        owner.sessionStart()
+        bob2.sessionStart()
+        w.advance(6 * DmWorld.MINUTE)
+        owner.timePass()
+        bob2.timePass()
+        w.quiesce()
+        assertEquals(1L, bob2.channel(id)!!.generation)
+        // The restart day has stamped; dave's row (recorded two days before it) survived the
+        // restore and is still pending — the world sits before the decisive pass.
+        assertEquals(1L, bob2.count("ch_join_request"))
+        return RestartedCommitterWorld(w, owner, dave, bob2, id)
+    }
+
     // ---------------------------------------------------------------------------------------------- helpers
 
     private fun generationNs(client: ChannelClient, id: ChannelId, generation: Long): ByteArray =
