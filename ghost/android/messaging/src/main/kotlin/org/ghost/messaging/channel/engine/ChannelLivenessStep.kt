@@ -71,8 +71,16 @@ internal class ChannelLivenessStep(
          *  must not read as an arrived message to CO-12's clocks; real days are > 0). */
         val lastForeignMessageDay: Long,
         val foreignMerged: Boolean,
+        /**
+         * The day of this member's last rejoin/restore restart (the join's completion, [reset]);
+         * [NO_FOREIGN_MESSAGE_DAY] = never. F-S10-8's freshness quarantine of the rejoin admission
+         * reads it (§19.56): a catch-up request recorded before the restart was recorded by a
+         * state that no longer exists (a dead stack's copy) — its answering admission lived on a
+         * branch this device never merged.
+         */
+        val restartDay: Long,
     ) {
-        fun cleared(): Progress = Progress(emptyList(), lastForeignMessageDay, false)
+        fun cleared(): Progress = Progress(emptyList(), lastForeignMessageDay, false, restartDay)
 
         override fun toString(): String = "Progress(${senders.size} senders, merged=$foreignMerged)"
     }
@@ -100,7 +108,11 @@ internal class ChannelLivenessStep(
         if (row == null || row.unopenableFirstMinute == null) {
             // No message opened here: the last-foreign-message day is the sentinel, not today —
             // a junk blob opening the window must not raise CO-12's partition clock (§19.40).
-            val progress = Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false)
+            // The restart day is carried through, never reset: it is the F-S10-8 quarantine's
+            // stamp, and a hostile window-opening (SPAM_UNOPENABLE is a designed mode) must not
+            // silently disable the guard (the review's F-1, fixed + probed).
+            val restartDay = row?.let { decode(content, c, it.progressEnv)?.restartDay } ?: NO_FOREIGN_MESSAGE_DAY
+            val progress = Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false, restartDay)
             stores.channels.putLiveness(
                 tx, c, 1, operators, 1, encode(content, c, progress), DmTime.floorMinute(now),
             )
@@ -128,12 +140,16 @@ internal class ChannelLivenessStep(
     ) {
         if (senders.isEmpty()) return
         val row = stores.channels.liveness(tx.sql, channelId)
-        val progress = row?.let { decode(content, channelId, it.progressEnv) } ?: Progress(emptyList(), day, false)
+        val progress = row?.let { decode(content, channelId, it.progressEnv) }
+            ?: Progress(emptyList(), day, false, NO_FOREIGN_MESSAGE_DAY)
         // A value-keyed union, capped: ByteArray identity is not equality.
         val byKey = LinkedHashMap<String, ByteArray>()
         for (s in progress.senders) byKey[s.toList().toString()] = s
         for (s in senders) byKey.putIfAbsent(s.toList().toString(), s)
-        val updated = Progress(byKey.values.take(MAX_TRACKED_SENDERS), maxOf(progress.lastForeignMessageDay, day), progress.foreignMerged)
+        val updated = Progress(
+            byKey.values.take(MAX_TRACKED_SENDERS), maxOf(progress.lastForeignMessageDay, day),
+            progress.foreignMerged, progress.restartDay,
+        )
         stores.channels.putLiveness(
             tx, channelId,
             row?.unopenableCount ?: 0, row?.unopenableOperators ?: 0, row?.sessions ?: 0,
@@ -144,15 +160,28 @@ internal class ChannelLivenessStep(
     /** CO-11 (b): a commit by another member merged (the settle re-ran CO-2 and wrote it). */
     fun noteMerged(tx: SyncTransaction, channelId: ByteArray, content: ContentCipher, day: Long) {
         val row = stores.channels.liveness(tx.sql, channelId)
-        val progress = row?.let { decode(content, channelId, it.progressEnv) } ?: Progress(emptyList(), day, false)
+        val progress = row?.let { decode(content, channelId, it.progressEnv) }
+            ?: Progress(emptyList(), day, false, NO_FOREIGN_MESSAGE_DAY)
         if (row != null && progress.foreignMerged) return
         stores.channels.putLiveness(
             tx, channelId,
             row?.unopenableCount ?: 0, row?.unopenableOperators ?: 0, row?.sessions ?: 0,
-            encode(content, channelId, Progress(progress.senders, progress.lastForeignMessageDay, true)),
+            encode(content, channelId, Progress(progress.senders, progress.lastForeignMessageDay, true, progress.restartDay)),
             row?.unopenableFirstMinute,
         )
     }
+
+    /**
+     * F-S10-8 (§19.56): the day of this member's last rejoin/restore restart, what the rejoin
+     * admission's freshness quarantine reads ([NO_FOREIGN_MESSAGE_DAY] when none — no restart,
+     * no constraint). Own transaction.
+     */
+    fun lastRestartDay(content: ContentCipher, channelId: ByteArray): Long =
+        env.database.transaction { tx ->
+            stores.channels.liveness(tx.sql, channelId)
+                ?.let { decode(content, channelId, it.progressEnv)?.restartDay }
+                ?: NO_FOREIGN_MESSAGE_DAY
+        }
 
     /**
      * A rejoin or a restore restarts the channel (§6.7, §6.12): CO-11's window state — the
@@ -162,10 +191,13 @@ internal class ChannelLivenessStep(
      * transaction clears it; the progress record starts over too (the displayed posts stay, but
      * every authenticated message they carried was the old branch's).
      */
-    fun reset(tx: SyncTransaction, channelId: ByteArray, content: ContentCipher) {
+    fun reset(tx: SyncTransaction, channelId: ByteArray, content: ContentCipher, day: Long) {
         stores.channels.putLiveness(
             tx, channelId, 0, 0, 0,
-            encode(content, channelId, Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false)),
+            encode(
+                content, channelId,
+                Progress(emptyList(), NO_FOREIGN_MESSAGE_DAY, false, day),
+            ),
             null,
         )
     }
@@ -205,7 +237,7 @@ internal class ChannelLivenessStep(
     ) {
         val c = channel.channelId
         val row = stores.channels.liveness(tx.sql, c)
-        val progress = row?.let { decode(content, c, it.progressEnv) } ?: Progress(emptyList(), day, false)
+        val progress = row?.let { decode(content, c, it.progressEnv) } ?: Progress(emptyList(), day, false, NO_FOREIGN_MESSAGE_DAY)
         val first = row?.unopenableFirstMinute
         val windowOpen = first != null
         val sessions = if (windowOpen) minOf((row?.sessions ?: 0) + 1, 255) else 0
@@ -288,27 +320,39 @@ internal class ChannelLivenessStep(
 
     // ----------------------------------------------------------------------------------------------- codec
 
-    /** `[version(1) u32 senders u32 lastForeignMessageDay u8 foreignMerged senders(32 each)]`, sealed. */
+    /**
+     * `[version u32 senders u32 lastForeignMessageDay u8 foreignMerged u32 restartDay
+     * senders(32 each)]`, sealed (version 2; version 1 records decode with the restart day at
+     * its sentinel — no constraint, what a pre-fix device honestly has).
+     */
     private fun encode(content: ContentCipher, channelId: ByteArray, progress: Progress): ByteArray {
         val plain = java.io.ByteArrayOutputStream()
-        plain.write(1)
+        plain.write(2)
         plain.write(u32(progress.senders.size.toLong()))
         plain.write(u32(progress.lastForeignMessageDay))
         plain.write(if (progress.foreignMerged) 1 else 0)
+        plain.write(u32(progress.restartDay))
         for (s in progress.senders) plain.write(s)
         return env.seal(content, ChannelAd.liveness(channelId), plain.toByteArray())
     }
 
     private fun decode(content: ContentCipher, channelId: ByteArray, envBytes: ByteArray): Progress? {
         val plain = content.open(envBytes, ChannelAd.liveness(channelId)) ?: return null
-        if (plain.size < 10 || plain[0].toInt() != 1) return null
+        if (plain.size < 10 || (plain[0].toInt() != 1 && plain[0].toInt() != 2)) return null
         val n = readU32(plain, 1)
         val lastDay = readU32(plain, 5).toLong()
         val merged = plain[9].toInt() == 1
-        if (plain.size < 10 + n * PSEUDONYM_BYTES) return null
+        val restartDay = if (plain[0].toInt() == 2) {
+            if (plain.size < 14) return null
+            readU32(plain, 10).toLong()
+        } else {
+            NO_FOREIGN_MESSAGE_DAY
+        }
+        val at = if (plain[0].toInt() == 2) 14 else 10
+        if (plain.size < at + n * PSEUDONYM_BYTES) return null
         val senders = ArrayList<ByteArray>(n)
-        for (i in 0 until n) senders += plain.copyOfRange(10 + i * PSEUDONYM_BYTES, 10 + (i + 1) * PSEUDONYM_BYTES)
-        return Progress(senders, lastDay, merged)
+        for (i in 0 until n) senders += plain.copyOfRange(at + i * PSEUDONYM_BYTES, at + (i + 1) * PSEUDONYM_BYTES)
+        return Progress(senders, lastDay, merged, restartDay)
     }
 
     private fun u32(value: Long): ByteArray = ByteArray(4) { i -> (value ushr (24 - 8 * i)).toByte() }
@@ -340,10 +384,11 @@ internal class ChannelLivenessStep(
 
         /**
          * At most this many window senders are remembered. The progress env is bounded by the
-         * column (`ch_liveness.progress_env` ≤ 256): the sealed record is 38 bytes of framing
-         * (version, count, day, flag, nonce, tag) plus 32 per sender, so 7 senders seal to 262
-         * bytes and break the bound — SCN-M20 (20 clients, slice S10) reached 7 distinct window
-         * senders at the first try (F-S10-2).
+         * column (`ch_liveness.progress_env` ≤ 256): the sealed record is 42 bytes of framing
+         * (version, count, day, flag, restart day, nonce, tag) plus 32 per sender, so 6 senders
+         * seal to about 234 bytes; 7 would seal to 266 and break the bound — SCN-M20 (20
+         * clients, slice S10) reached 7 distinct window senders at the first try (F-S10-2), when
+         * the framing was 38 bytes and the cap was computed at 7 → 262.
          */
         const val MAX_TRACKED_SENDERS: Int = 6
 

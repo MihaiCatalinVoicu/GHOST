@@ -88,6 +88,7 @@ internal class ChannelPassStep(
     private val env: ChannelEnv,
     private val sync: ChannelSyncPorts,
     private val postStep: ChannelPostStep,
+    private val livenessStep: ChannelLivenessStep,
 ) {
     private val stores = env.stores
 
@@ -296,6 +297,12 @@ internal class ChannelPassStep(
         val swapByMember = HashMap<List<Byte>, SwapAdmission>()
         val invitesUsed = HashSet<List<Byte>>()
         val cap = ChannelTime.cap(snapshot.channel.sizeClass)
+        // F-S10-8's freshness quarantine (§19.56), read once for the whole pass: the day of
+        // this member's last rejoin/restore restart. admitRejoin's catch-up branch is only sound
+        // for a request this member's current state recorded — a row recorded before the restart
+        // is a dead stack's copy (the restored rank-0's copied ch_join_request is exactly that:
+        // its answering admission lived on a branch this device never merged).
+        val lastRestartDay = livenessStep.lastRestartDay(content, channelId)
         for (request in agedRequests) {
             if (admissions.size + swaps.size >= MAX_ADDS) break
             try {
@@ -310,7 +317,7 @@ internal class ChannelPassStep(
                     )
                     JoinType.REJOIN -> admitRejoin(
                         request, opened, content, members, snapshot.epoch.epoch, snapshot.channel.timerCode,
-                        day, seenKey, refused, swaps, swapByMember,
+                        day, seenKey, refused, swaps, swapByMember, lastRestartDay,
                     )
                 }
             } catch (e: CryptoUnavailable) {
@@ -642,7 +649,12 @@ internal class ChannelPassStep(
      * current epoch and either the epoch log holds a different winner for it (a fork) or its winner was
      * finalized more than one handshake TTL ago or is older than the log (D-6) —; and no authenticated
      * message from the member's current leaf opened on this branch in an epoch after `last_epoch`
-     * (`ch_member_seen`: a live leaf is never replaced).
+     * (`ch_member_seen`: a live leaf is never replaced). The catch-up branch of that verdict (no fork,
+     * beyond the TTL) is additionally gated by the freshness quarantine (F-S10-8, §19.56,
+     * [lastRestartDay]): the certification that the requester cannot catch up in-band is only sound
+     * for a request the committer's current state recorded — a row recorded before this member's
+     * last rejoin/restore restart is a dead stack's copy — the fork branch is exempt (every receiver
+     * holds the same log and the same verdict there; it is the designed recovery, §6.7).
      */
     private fun admitRejoin(
         request: JoinStore.RequestRow,
@@ -656,6 +668,7 @@ internal class ChannelPassStep(
         refused: MutableList<Refusal>,
         swaps: MutableList<SwapAdmission>,
         swapByMember: MutableMap<List<Byte>, SwapAdmission>,
+        lastRestartDay: Long,
     ) {
         val channelId = request.channelId
         val member = request.member ?: run {
@@ -703,6 +716,19 @@ internal class ChannelPassStep(
         val beyondTtl = logged == null || day - logged.finalDay > ttlDays
         if (lastEpoch >= currentEpoch || (!fork && !beyondTtl)) {
             refused += Refusal(request, tag, kpDay + KP_SEEN_DAYS)
+            return
+        }
+        // F-S10-8's quarantine (§19.56), the catch-up branch only (a fork above is the designed
+        // recovery and every receiver shares the verdict): certifying that the requester cannot
+        // catch up in-band is only sound for a request the committer's current state recorded — a
+        // row recorded before this member's last rejoin/restore restart is a dead stack's copy
+        // (the restored rank-0's copied ch_join_request is exactly that: its answering admission
+        // lived on a branch this device never merged and cannot open — the blind window's
+        // commits are TTL-dead). The quarantine does not refuse: the request waits unrefused,
+        // the row stays pending, and a later pass — or another committer — answers it (the
+        // requester's 7-day re-send carries a fresh KeyPackage and signature, and the 14-day
+        // reinvite bounds the wait, §6.7).
+        if (!fork && lastRestartDay > 0 && request.recordedDay < lastRestartDay) {
             return
         }
         // The live-leaf check: no authenticated message from the member's current leaf in an epoch
