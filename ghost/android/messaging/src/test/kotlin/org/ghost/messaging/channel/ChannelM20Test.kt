@@ -38,9 +38,31 @@ class ChannelM20Test {
     /** The base scenario over the pinned seeds: §12.5's script, its assertions inside the runner. */
     @Test
     fun theExitScenarioRunsGreenOverThePinnedSeeds() {
+        // Measurement knob (test infra): `-Dghost.channel.report.lenient=1` records this seed's
+        // commit/Welcome counts as an extra report line instead of leaving them unmeasured when
+        // a strict pin is being re-measured across the seed sweep (§19.51). The strict size
+        // floors live in [everyCommitIsWithinItsFloorAndEveryWelcomeUnderTheCap] and are untouched.
+        val recordSizes = System.getProperty("ghost.channel.report.lenient") == "1"
         for (seed in ChannelM20.selectedSeeds()) {
             val built = ChannelM20.build(ChannelM20.Config(seed = seed))
-            built.world.use { ChannelReport.line(built.report.line()) }
+            built.world.use { w ->
+                ChannelReport.line(built.report.line())
+                if (recordSizes) {
+                    var commits = 0
+                    var welcomes = 0
+                    for (blob in w.relay.stored) {
+                        if (blob.injected) continue
+                        when (blob.purpose) {
+                            "commit" -> commits++
+                            "welcome" -> welcomes++
+                        }
+                    }
+                    ChannelReport.line(
+                        "channel SCN-M20 sizes (record-only): seed ${"0x%08x".format(seed)}: " +
+                            "$commits commits, $welcomes Welcomes",
+                    )
+                }
+            }
         }
     }
 
@@ -225,11 +247,22 @@ class ChannelM20Test {
     }
 
     private companion object {
-        /** The tip-pinned size floors: the commit count drifts with host load (the swap window's
-         *  guard-bounded rounds) — measured at the tip at seed `0x5eed_c101`: 53, 52 and 51
-         *  commits across runs, 21 Welcomes each — so the gate is a floor at the minimum
-         *  observed, not an exact pin (review finding F-6, §19.50). */
-        const val TipPinnedCommits: Int = 51
+        /** The tip-pinned size floors: the commit count varies with host load and with the seed
+         *  (the swap window's guard-bounded rounds, the seeded poster/PCS draws) — re-measured
+         *  across the full 64-seed gate-scale sweep at the `p11-s2` tip (2026-10-13, the lenient
+         *  record-only knob `-Dghost.channel.report.lenient=1`, one Gradle invocation per seed,
+         *  `gatescale-m20-lenient.log`): commits 54 … 57, Welcomes 21 … 22 — so the gate is a
+         *  floor at the minimum observed, not an exact pin (review finding F-6, §19.50; the
+         *  64-seed re-measurement §19.51). Measured per seed (index: commits/Welcomes):
+         *  0:55/21  1:55/21  2:56/21  3:54/21  4:55/22  5:55/21  6:55/21  7:55/21  8:56/22
+         *  9:55/21 10:56/22 11:55/21 12:56/21 13:55/21 14:55/21 15:55/21 16:55/21 17:55/21
+         * 18:56/22 19:55/21 20:55/21 21:55/21 22:55/21 23:56/22 24:56/22 25:55/21 26:54/21
+         * 27:55/21 28:54/21 29:54/21 30:57/22 31:56/22 32:55/21 33:56/22 34:56/22 35:55/21
+         * 36:56/21 37:55/21 38:54/21 39:54/21 40:57/22 41:55/21 42:56/22 43:56/21 44:55/21
+         * 45:55/21 46:54/21 47:55/21 48:56/21 49:55/21 50:55/21 51:56/22 52:56/22 53:55/21
+         * 54:55/21 55:55/21 56:54/21 57:54/21 58:55/21 59:55/21 60:55/21 61:57/22 62:56/22
+         * 63:55/22. Minima: 54 commits (seeds 3, 26, 28, 29, 38, 39, 46, 56, 57), 21 Welcomes. */
+        const val TipPinnedCommits: Int = 54
         const val TipPinnedWelcomes: Int = 21
 
         /** The seal's overhead over the sealed body: salt + hint + the AEAD tag. */

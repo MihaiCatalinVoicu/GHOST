@@ -167,6 +167,8 @@ val harnessProperties = listOf(
     // seed selection and day count (§12.7; `ghost.channel.privacy.days` is the gate-scale knob).
     "ghost.channel.seed",
     "ghost.channel.seeds",
+    "ghost.channel.report",
+    "ghost.channel.report.lenient",
     "ghost.channel.privacy.seed",
     "ghost.channel.privacy.seeds",
     "ghost.channel.privacy.days",
