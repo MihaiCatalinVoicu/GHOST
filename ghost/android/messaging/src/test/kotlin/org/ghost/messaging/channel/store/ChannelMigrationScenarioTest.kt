@@ -199,7 +199,8 @@ class ChannelMigrationScenarioTest {
     }
 
     /**
-     * **SCN-CI's group half** (slice S4, §19.37): the populated v5 database upgraded to v7, then SCN-CA on it — a real MLS
+     * **SCN-CI's group half** (slice S4, §19.37; migration 8 amended by Phase 11 S3, §22.5): the populated v5 database
+     * upgraded to the current version (v8 — migration 8 rebuilds the DM tables), then SCN-CA on it — a real MLS
      * group created over the upgraded schema, a member invited, admitted and joined, a post each way — and every DM row
      * as it was before the upgrade.
      */
@@ -207,7 +208,7 @@ class ChannelMigrationScenarioTest {
     fun scnCiThenScnCaOnTheUpgradedDatabaseKeepsEveryDmRow() {
         assumeTrue("ghost-dm-host is not loaded (-Dghost.dm.native)", ChannelWorld.nativeAvailable())
         populatedV5().use { db ->
-            assertEquals(listOf(6, 7), MigrationRunner(db).migrate())
+            assertEquals(listOf(6, 7, 8), MigrationRunner(db).migrate())
             val dmTables = setOf("dm_self", "dm_contact", "dm_conversation", "dm_message", "dm_reaction", "olm_session", "dm_seen")
             val before = db.dump().filterKeys { it in dmTables }
             assertEquals(dmTables, before.keys)
