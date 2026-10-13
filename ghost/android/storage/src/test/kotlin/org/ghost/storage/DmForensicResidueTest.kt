@@ -106,8 +106,8 @@ class DmForensicResidueTest {
             listOf(bytes(16, 3), secrets[4]),
         )
         exec(
-            "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, l0_env, deadline_hour, state) " +
-                "VALUES (?, ?, ?, 1, ?, ?, 'enqueued')",
+            "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, l0_env, deadline_hour, state, ttl_seconds) " +
+                "VALUES (?, ?, ?, 1, ?, ?, 'enqueued', 604800)",
             listOf(bytes(16, 1), bytes(16, 1), bytes(16, 1), secrets[5], NOW - NOW % 3600),
         )
         exec(
@@ -234,8 +234,8 @@ class DmForensicResidueTest {
             listOf(bytes(16, 2), bytes(16, 2), NOW + 3600),
         )
         exec(
-            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, l0_env, deadline_hour, state) " +
-                "VALUES (?, ?, 4, 'reconnect', ?, ?, 'enqueued')",
+            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, l0_env, deadline_hour, state, ttl_seconds) " +
+                "VALUES (?, ?, 4, 'reconnect', ?, ?, 'enqueued', 86400)",
             listOf(bytes(16, 2), bytes(16, 2), secrets[12], NOW - NOW % 3600),
         )
         exec(
@@ -554,11 +554,12 @@ class DmForensicResidueTest {
                 "olm_prekey_gen.secrets_env",
                 "olm_prekey_used.gen_id", "olm_prekey_used.session_id",
                 // The cached bundle candidate and the scheduled notice, which L7-D7 did not name
-                // before S5 (§22.10 item 1).
+                // before S5 (§22.10 item 1). `attempts` is Q27/S3b's reschedule bound (§21.8 point 4):
+                // the counter's start, 0, survives like every other declared non-NULL column.
                 "dm_bundle_candidate.contact_id", "dm_bundle_candidate.bundle_env",
                 "dm_bundle_candidate.bundle_week", "dm_bundle_candidate.bundle_rank",
                 "dm_scheduled.sched_id", "dm_scheduled.contact_id", "dm_scheduled.what",
-                "dm_scheduled.payload", "dm_scheduled.due_minute",
+                "dm_scheduled.payload", "dm_scheduled.due_minute", "dm_scheduled.attempts",
                 // The tag.
                 "dm_seen.tag", "dm_seen.until_day",
                 // The schema's own version row, which no conversation writes.

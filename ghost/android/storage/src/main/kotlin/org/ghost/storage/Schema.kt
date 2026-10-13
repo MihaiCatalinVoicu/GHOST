@@ -123,6 +123,15 @@ private object DmObjects {
                 ) WITHOUT ROWID"""
     const val IDX_MESSAGE_ORDER = "CREATE INDEX idx_dm_message_order ON dm_message(conversation_id, sort_minute, minute_index, message_id)"
     const val IDX_MESSAGE_DELETE = "CREATE INDEX idx_dm_message_delete ON dm_message(delete_at_minute) WHERE delete_at_minute IS NOT NULL"
+    /**
+     * Migration 5's `dm_outbound_item`, as released, **plus the TTL bucket of Q27/S3b** (owner
+     * decision 2026-10-05): every item carries the relay TTL bucket its send chose, in seconds —
+     * for a TIMER_SET R-T3's larger of the old and the new (`timerSetBucket`), so a change queued
+     * before a session exists (`EST-READY`'s flush, the FAILED retry) can be stored under the
+     * bucket the send committed instead of the L0's new-timer bucket (faza9-dm.md §22.21 item 2,
+     * §22.39 item 8; faza11-media.md §22.5 row 22). The buckets are ADR-27 point 11's DM set
+     * (`DmTimers.bucketOf`), the same four values `media_upload.ttl_seconds` admits.
+     */
     const val OUTBOUND_ITEM_TABLE = """CREATE TABLE dm_outbound_item (
                   item_id       BLOB PRIMARY KEY NOT NULL CHECK (length(item_id) = 16),
                   contact_id    BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
@@ -133,6 +142,7 @@ private object DmObjects {
                   deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
                   state         TEXT NOT NULL
                                 CHECK (state IN ('pending', 'enqueued', 'sent', 'degraded', 'failed', 'indeterminate')),
+                  ttl_seconds   INTEGER NOT NULL CHECK (ttl_seconds IN (3600, 86400, 604800, 2592000)),
                   CHECK ((kind = 4) = (control IS NOT NULL)),
                   CHECK (kind = 4 OR message_ref IS NOT NULL)
                 ) WITHOUT ROWID"""
@@ -214,7 +224,8 @@ private object DmObjects {
             "                  CHECK (kind <> 5 OR length(body_env) BETWEEN 28 AND 1052),",
     )
 
-    /** `dm_outbound_item` (§13.6 step 3): `kind BETWEEN 1 AND 5` and nothing else (Q27: no Phase 9 column, the owner has not decided). */
+    /** `dm_outbound_item` (§13.6 step 3): `kind BETWEEN 1 AND 5`; Q27's `ttl_seconds` rides along on the
+     * shared text above (S3b, owner decision 2026-10-05), so the `_v8` derivation adds nothing here. */
     val OUTBOUND_ITEM_TABLE_V8: String = OUTBOUND_ITEM_TABLE.derived(
         "CREATE TABLE dm_outbound_item (" to "CREATE TABLE dm_outbound_item_v8 (",
         "REFERENCES dm_message(message_id)" to "REFERENCES dm_message_v8(message_id)",
@@ -2210,9 +2221,13 @@ object Schema {
      * first and **every row is copied before any old table is dropped**: that copy, not the order of the drops, is what keeps
      * the rows (the review dropped the parents first in a throwaway mutant: no row was lost, only the textual order test
      * failed). The old ones are then dropped children first, so that no parent's implicit `DELETE` cascades over old children
-     * that still exist (needless work); the renames rewrite the references of the new children to the final names. Q27: the
-     * Phase 9 columns are **not** folded in (the owner has not decided), so the rebuild copies the tables as they are at
-     * merge and adds nothing but the kind.
+     * that still exist (needless work); the renames rewrite the references of the new children to the final names. Q27
+     * (owner decision 2026-10-05, folded by slice S3b, §22.5): `dm_outbound_item`'s rebuild carries Phase 9's
+     * `ttl_seconds` — R-T3's bucket, kept with the pending item — because the column stands on the shared text both
+     * migrations build from; `dm_scheduled` is not among the five, so its Q27 column (`attempts`, the §21.8 point 4
+     * reschedule bound) arrives by the migration's own `ALTER TABLE … ADD COLUMN`, which runs on **every** path — a
+     * fresh install runs migrations 1…8 too, so amending migration 5's text as well would only collide with the
+     * ALTER — and backfills the bound counter's default, 0.
      *
      * Every index, trigger and REPLACE guard of the five tables is recreated from the same constants migration 5
      * creates them from, and the `pragma_foreign_key_check` guard of migration 4 is repeated: a rebuild that leaves a
@@ -2229,8 +2244,8 @@ object Schema {
                 SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, minute_index,
                        timer_code, body_env, state, expire_at_minute, unread_deadline_minute, delete_at_minute
                 FROM dm_message""",
-        """INSERT INTO dm_outbound_item_v8(item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state)
-                SELECT item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state
+        """INSERT INTO dm_outbound_item_v8(item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state, ttl_seconds)
+                SELECT item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state, ttl_seconds
                 FROM dm_outbound_item""",
         """INSERT INTO dm_outbound_op_v8(operation_id, purpose, item_id, bundle_week, blob, resend_count, deadline_hour)
                 SELECT operation_id, purpose, item_id, bundle_week, blob, resend_count, deadline_hour
@@ -2270,6 +2285,14 @@ object Schema {
         "CREATE TABLE v8_fk_guard (violations INTEGER NOT NULL CHECK (violations = 0))",
         "INSERT INTO v8_fk_guard(violations) SELECT count(*) FROM pragma_foreign_key_check",
         "DROP TABLE v8_fk_guard",
+        // Q27/S3b: `dm_scheduled` is not one of the five rebuilt tables, so its column arrives by
+        // `ADD COLUMN` (allowed with a constant DEFAULT under NOT NULL). This statement runs on
+        // every path — fresh installs run migrations 1…8 in order — so migration 5's text is left
+        // untouched and the CHECK is written once, here; existing rows read as `attempts = 0`
+        // (§22.5 row 22). Nothing reads the counter yet: the FAILED-control reschedule it bounds
+        // is the Phase 9 follow-up (faza9-dm.md §22.13 item 9).
+        "ALTER TABLE dm_scheduled ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0 " +
+            "CHECK (typeof(attempts) = 'integer' AND attempts BETWEEN 0 AND 3)",
     )
 
     /**

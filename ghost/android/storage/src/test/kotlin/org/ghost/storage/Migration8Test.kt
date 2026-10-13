@@ -113,11 +113,14 @@ class Migration8Test {
         db.exec(message, listOf(bytes(16, 0x26), convB, "out", 2, 900L, 900L, 0, 0, null, "queued", null, null, null))
         db.exec(message, listOf(bytes(16, 0x27), convB, "in", 1, 960L, 960L, 0, 4, bytes(45, 0x37), "read", 801000L, 801000L, 801000L))
         // Outbound items: a text, a failed text waiting for a session, a reaction, a control item (no message).
-        val item = "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        db.exec(item, listOf(bytes(16, 0x41), contactA, bytes(16, 0x21), 1, null, bytes(65564, 0x51), 360000L, "sent"))
-        db.exec(item, listOf(bytes(16, 0x42), contactB, bytes(16, 0x24), 1, null, bytes(29, 0x52), 360000L, "pending"))
-        db.exec(item, listOf(bytes(16, 0x43), contactB, bytes(16, 0x26), 2, null, null, 363600L, "enqueued"))
-        db.exec(item, listOf(bytes(16, 0x44), contactA, null, 4, "reconnect", null, 367200L, "failed"))
+        // `ttl_seconds` (Q27/S3b) is part of the row a v7 database of this branch carries; every value is a
+        // valid ADR-27 bucket (the texts and the reaction under the default 7-day timer, the control at a day).
+        val item = "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state, ttl_seconds) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        db.exec(item, listOf(bytes(16, 0x41), contactA, bytes(16, 0x21), 1, null, bytes(65564, 0x51), 360000L, "sent", 604800L))
+        db.exec(item, listOf(bytes(16, 0x42), contactB, bytes(16, 0x24), 1, null, bytes(29, 0x52), 360000L, "pending", 604800L))
+        db.exec(item, listOf(bytes(16, 0x43), contactB, bytes(16, 0x26), 2, null, null, 363600L, "enqueued", 604800L))
+        db.exec(item, listOf(bytes(16, 0x44), contactA, null, 4, "reconnect", null, 367200L, "failed", 86400L))
         val op = "INSERT INTO dm_outbound_op(operation_id, purpose, item_id, bundle_week, blob, resend_count, deadline_hour) VALUES (?, ?, ?, ?, ?, ?, ?)"
         db.exec(op, listOf(bytes(16, 0x61), "item", bytes(16, 0x41), null, bytes(65536, 0x71), 1, 360000L))
         db.exec(op, listOf(bytes(16, 0x62), "item", bytes(16, 0x43), null, null, 0, 363600L))
@@ -295,7 +298,9 @@ class Migration8Test {
      * kind lists and the envelope checks of `dm_message` and `dm_outbound_item` and **in nothing else** — written again
      * here as textual substitutions on the v7 text, so that the migration's own derivation and this list cannot drift
      * together — every other column, CHECK and key is v7's, every index, trigger and guard that names one of them is
-     * recreated with the same text, and every object that names none of the rebuilt, dropped and new tables is untouched.
+     * recreated with the same text, and every object that names none of the rebuilt, dropped and new tables is untouched —
+     * with the one deliberate exception Q27/S3b adds outside the rebuild: `dm_scheduled.attempts`, the §21.8 point 4
+     * reschedule bound, added by `ALTER TABLE` and asserted here as one more literal substitution.
      */
     @Test
     fun theRebuiltTablesDifferFromV7InTheKindAndEnvelopeChecksAndInNothingElse() {
@@ -332,9 +337,25 @@ class Migration8Test {
                 rebuiltObjects.toSet(),
                 now.filterValues { it.substringBefore('|') in MediaSchema.rebuilt }.keys,
             )
-            // Everything else that v7 had is untouched, byte for byte (type, name, table, text); what v8 adds is the media objects.
-            val untouched = v7.first.filterValues { it.substringBefore('|') !in MediaSchema.rebuilt && it.substringBefore('|') !in MediaSchema.v1Tables }
+            // Everything else that v7 had is untouched, byte for byte (type, name, table, text) — except
+            // `dm_scheduled`, whose Q27 column (`attempts`, §21.8 point 4's reschedule bound) migration 8
+            // adds by `ALTER TABLE`; written again here as a literal substitution, so this list cannot
+            // drift with the migration. What v8 adds is the media objects.
+            val scheduledChanges = listOf(
+                "due_minute INTEGER NOT NULL CHECK (typeof(due_minute) = 'integer' AND due_minute % 60 = 0)," to
+                    "due_minute INTEGER NOT NULL CHECK (typeof(due_minute) = 'integer' AND due_minute % 60 = 0), " +
+                    "attempts INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempts) = 'integer' AND attempts BETWEEN 0 AND 3),",
+            )
+            val untouched = v7.first.filterValues {
+                it.substringBefore('|') !in MediaSchema.rebuilt && it.substringBefore('|') !in MediaSchema.v1Tables
+            } - "table dm_scheduled"
             for ((key, text) in untouched) assertEquals(key, text, now[key])
+            var expectedScheduled = v7.first.getValue("table dm_scheduled")
+            for ((old, new) in scheduledChanges) {
+                assertEquals("table dm_scheduled: the old text of a change occurs once", 2, expectedScheduled.split(old).size)
+                expectedScheduled = expectedScheduled.replace(old, new)
+            }
+            assertEquals("table dm_scheduled", expectedScheduled, now["table dm_scheduled"])
             val added = now.keys - v7.first.keys
             assertEquals(MediaSchema.tables + MediaSchema.indexes + MediaSchema.rules + MediaSchema.guards, added.map { it.substringAfter(' ') }.filter { !it.startsWith("sqlite_autoindex") }.toSet())
             assertEquals(setOf("index sqlite_autoindex_media_outbound_op_2"), added.filter { it.contains("sqlite_autoindex") }.toSet())
@@ -377,6 +398,40 @@ class Migration8Test {
         }
     }
 
+    /**
+     * Q27's other column lands outside the rebuild: `dm_scheduled` is not one of the five tables, so
+     * migration 8 adds `attempts` (the §21.8 point 4 reschedule bound, faza9-dm.md §22.13 item 9) by
+     * `ALTER TABLE … ADD COLUMN`. The statement runs on every path — a fresh install runs migrations
+     * 1…8 — so both an upgrade and a fresh install must end with the identical column, default and
+     * CHECK; the backfill gives an existing row the bound counter's start, and the CHECK executes
+     * (a fractional value and an out-of-range one are refused).
+     */
+    @Test
+    fun theScheduledAttemptsColumnArrivesByAlterOnEveryPath() {
+        fun shape(db: JdbcSqlExecutor): List<String> {
+            val out = ArrayList<String>()
+            db.query("PRAGMA table_info(dm_scheduled)") { r ->
+                out += "${r.string(1)}|${r.string(2)}|${r.long(3)}|${if (r.isNull(4)) "null" else r.string(4)}"
+            }
+            return out
+        }
+        val freshShape = JdbcSqlExecutor().use { fresh -> MigrationRunner(fresh).migrate(); shape(fresh) }
+        populatedV7().use { db ->
+            MigrationRunner(db).migrate()
+            assertEquals("the upgrade and a fresh install must end with the identical dm_scheduled", freshShape, shape(db))
+            assertTrue("the ALTER added attempts with its DEFAULT", freshShape.any { it.startsWith("attempts|INTEGER|1|0") })
+            db.exec(
+                "INSERT INTO dm_scheduled(sched_id, contact_id, what, due_minute) VALUES (?, ?, 'reconnect', 600)",
+                listOf(bytes(16, 0x51), contactA),
+            )
+            assertEquals("the counter's start is its DEFAULT", 0L, db.queryLong("SELECT attempts FROM dm_scheduled"))
+            db.rejects(CHECK_FAILED, "UPDATE dm_scheduled SET attempts = 1.5 WHERE sched_id = ?", bytes(16, 0x51))
+            db.rejects(CHECK_FAILED, "UPDATE dm_scheduled SET attempts = 4 WHERE sched_id = ?", bytes(16, 0x51))
+            db.exec("UPDATE dm_scheduled SET attempts = 3 WHERE sched_id = ?", listOf(bytes(16, 0x51)))
+            assertEquals(3L, db.queryLong("SELECT attempts FROM dm_scheduled"))
+        }
+    }
+
     /** The rebuilt tables still cascade where v7 cascaded, and admit kind 5 (the edges of the new checks are [MediaSchemaConstraintsTest]'s). */
     @Test
     fun theRebuiltTablesStillCascadeAndNowAdmitAMediaMessage() = populatedV7().use { db ->
@@ -393,7 +448,8 @@ class Migration8Test {
         // A media message (kind 5, a caption of 28 bytes) and its outbound item (kind 5) are admitted now.
         MediaFixture(db).dmMessage(bytes(16, 0x95), body = bytes(28, 0x73))
         db.exec(
-            "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, deadline_hour, state) VALUES (?, ?, ?, 5, 360000, 'pending')",
+            "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, deadline_hour, state, ttl_seconds) " +
+                "VALUES (?, ?, ?, 5, 360000, 'pending', 604800)",
             listOf(bytes(16, 0x96), MediaFixture.DEST, bytes(16, 0x95)),
         )
         assertEquals(1L, db.queryLong("SELECT count(*) FROM dm_outbound_item WHERE kind = 5"))
@@ -514,8 +570,8 @@ class Migration8Test {
         }
         assertEquals(
             "guards 9, rebuild 5 tables + 5 copies + 5 drops + 5 renames + 3 indexes + 3 triggers + 5 guards + 3 foreign-key guard, " +
-                "media 5 tables + 5 indexes, 14 rules + 5 guards: a change is deliberate",
-            9 + (5 + 5 + 5 + 5 + 3 + 3 + 5 + 3) + (5 + 5) + (14 + 5),
+                "1 scheduled column, media 5 tables + 5 indexes, 14 rules + 5 guards: a change is deliberate",
+            9 + (5 + 5 + 5 + 5 + 3 + 3 + 5 + 3 + 1) + (5 + 5) + (14 + 5),
             v8.statements.size,
         )
         for (i in v8.statements.indices) {

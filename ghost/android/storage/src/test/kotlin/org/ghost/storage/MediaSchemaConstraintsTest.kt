@@ -175,6 +175,9 @@ class MediaSchemaConstraintsTest {
         for (kind in listOf(0L, 6L)) add(refused("dm_outbound_item", "kind $kind", "kind" to kind))
         add(accepted("dm_outbound_item", "kind 5 (a media message)", "kind" to 5L))
         add(accepted("dm_outbound_item", "kind 1", "kind" to 1L))
+        // Q27/S3b's column: ADR-27's four DM buckets exactly; nothing else, and never NULL.
+        add(accepted("dm_outbound_item", "the 1-hour TTL bucket", "ttl_seconds" to 3_600L))
+        add(refused("dm_outbound_item", "a TTL of 7 200 seconds (no such bucket)", "ttl_seconds" to 7_200L))
     }
 
     /** The defaults of the two rebuilt tables, which the media defaults do not carry. */
@@ -186,7 +189,7 @@ class MediaSchemaConstraintsTest {
         )
         else -> linkedMapOf(
             "item_id" to mBytes(16, 0x92), "contact_id" to MediaFixture.DEST, "message_ref" to mBytes(16, 0x91), "kind" to 5L,
-            "deadline_hour" to 360_000L, "state" to "pending",
+            "deadline_hour" to 360_000L, "state" to "pending", "ttl_seconds" to 604_800L,
         )
     }
 
