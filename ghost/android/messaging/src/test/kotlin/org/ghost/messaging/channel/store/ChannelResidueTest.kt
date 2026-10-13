@@ -49,6 +49,10 @@ class ChannelResidueTest {
             s.generations.insert(tx, w.ch, 1, key(0xA1), GenerationState.DRAINING, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 0, drainUntilDay = today - 1)
             s.generations.insert(tx, w.ch, 2, key(0xA2), GenerationState.CURRENT, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 1)
             s.generations.insert(tx, w.ch, 3, key(0xA3), GenerationState.PENDING_SWITCH, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 2, switchHour = now + 3_600)
+            // the rotation that opened g2, recorded at the settle that merged it (slice S13c, §19.7 (c)): the
+            // history row the invite-expiry-rotation arming reads; a removal rotation the design exempts is not
+            // this channel's history, so removal = false
+            s.generations.recordRotation(tx, w.ch, 2, today - 3, removal = false)
             // epochs: 0 past its retention, 1 retained, 2 open with candidates; the log and the fork signals
             s.epochs.insert(tx, w.ch, 0, chBytes(68, 5), chBytes(32, 6))
             s.epochs.finalize(tx, w.ch, 0, key(7), today - 12, today - 1)
@@ -148,7 +152,7 @@ class ChannelResidueTest {
     @Test
     fun afterTheSweepTheDumpShowsOnlyWhatTheDesignDeclaresAsResidue() = StoreWorld().use { w ->
         live(w)
-        // before: every one of the 27 tables has a row (the world is lived-in)
+        // before: every one of the 28 tables has a row (the world is lived-in; 28 since slice S13c's ch_rotation_history)
         assertEquals(ChannelSchema.tables, w.db.nonEmpty().keys)
         sweep(w)
         val residue = w.db.nonEmpty()
@@ -162,6 +166,9 @@ class ChannelResidueTest {
                 "mls_kv", "ch_box_key",
                 // membership metadata the design declares (§8.5): sponsor, refresh days, last epochs
                 "ch_sponsor", "ch_member_refresh", "ch_member_seen",
+                // the rotation history (slice S13c, §8.5's table at faza10-forum.md: append-only, no count bound,
+                // no deadline, read by §19.7 (c)'s arming; the sweep offers no delete for it, as for ch_epoch_log)
+                "ch_rotation_history",
                 // the wrapped channel state key (slice S4, §10.4): it lives as long as the database's channels can
                 "mls_self",
             ),
@@ -175,6 +182,7 @@ class ChannelResidueTest {
         assertEquals(2L, residue["ch_generation"])
         assertEquals(2L, residue["ch_epoch"])
         assertEquals("the log is trimmed by count, not by the sweep", 2L, residue["ch_epoch_log"])
+        assertEquals("the rotation history is append-only, trimmed by no sweep (§8.5)", 1L, residue["ch_rotation_history"])
         assertEquals(2L, residue["ch_candidate"])
         assertEquals(1L, residue["ch_box_key"])
         assertEquals(1L, residue["ch_fork_signal"])
@@ -266,6 +274,9 @@ class ChannelResidueTest {
                 "ch_generation.switch_hour", "ch_epoch.anchor_minute", "ch_epoch.final_day", "ch_epoch.keep_until_day",
                 "ch_epoch_log.final_day", "ch_candidate.first_seen_minute", "ch_fork_signal.first_seen_day",
                 "ch_sponsor.admitted_day", "ch_member_refresh.refresh_day",
+                // the rotation's day outlives the rotation's row by design (S13c, §8.5): the history is residue,
+                // and rotated_day is §9's declared column for it — not the time of a post
+                "ch_rotation_history.rotated_day",
             ),
             remaining,
         )
