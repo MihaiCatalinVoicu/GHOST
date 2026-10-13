@@ -590,8 +590,14 @@ internal object ChannelM20 {
         // one winner, the loser clears; F-S10-8's quarantine refuses only the stale-view shapes).
         // Its held removing candidate arms the CO-13 hold on the lead's posts until the epoch
         // settles — settle it before the latency check below (the design's own bound, §19.13).
-        w.pastSettleWindow()
-        w.quiesce()
+        // The hold's settling commit advances the lead one epoch past the rejoiner's; some seeds
+        // need more than one settle round for the rejoiner to apply it (the gate-scale sweep's
+        // 18 seeds, §19.51), so the settle is guard-bounded like the admission/re-add loops.
+        var settleGuard = 0
+        while (lead().channel(id)!!.epoch != lost.channel(id)!!.epoch && settleGuard++ < 4) {
+            w.pastSettleWindow()
+            w.quiesce()
+        }
         assertEquals(lead().channel(id)!!.epoch, lost.channel(id)!!.epoch)
         // Catch-up: one pass, no wall-clock wait (SCN-CE's latency claim).
         ChannelScenes.post(lead(), id, "after-the-rejoin-${config.seed}")
