@@ -136,11 +136,25 @@ class DmRevocationNativeTest {
             var state = outbound.stateEnv
             val indices = ArrayList<Long>()
             for (i in 0 until 3) {
+                // encrypt strict-decodes the L0 for the media key slot (Phase 11 §4.2, slice S2):
+                // the payload is a real text record through the codec, not raw bytes.
+                val encoded = DmContent.encode(
+                    handle = alice,
+                    kind = DmContent.Kind.TEXT,
+                    messageId = ByteArray(16) { i.toByte() },
+                    authorMinute = 0x10_00_00L + i,
+                    minuteIndex = 0,
+                    timerCode = 0,
+                    timerVersion = 0,
+                    quoteRef = null,
+                    body = ByteArray(32) { i.toByte() },
+                )
+                assertTrue("l0Encode: $encoded", encoded is DmContent.Encoded.Ok)
                 val encrypted = DmSessions.encrypt(
                     alice,
                     ByteArray(16) { 1 },
                     DmSessions.StoredSlot(outbound.sessionId, state),
-                    ByteArray(32) { i.toByte() },
+                    (encoded as DmContent.Encoded.Ok).l0,
                     100,
                 )
                 encrypted as DmSessions.Encrypted.Ok

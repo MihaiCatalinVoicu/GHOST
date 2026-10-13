@@ -37,6 +37,14 @@ pq-spy = []
 name = "equivalence"
 required-features = ["test-vectors"]
 
+# The F3 zero-residue probe over the media registries' storage (§22.4's review round): needs
+# the JNI modules (the registry types) and the probe hooks (test-vectors, the equivalence
+# precedent — no shipped graph carries them).
+[[test]]
+name = "media-registry-zeroize"
+path = "tests/media_registry_zeroize.rs"
+required-features = ["jni-bridge", "test-vectors"]
+
 [dependencies]
 # Olm (design §2.1, §2.3, D1; ADR-35). `default-features = false` drops `libolm-compat` and
 # `precomputed-tables`; `low-level-api`, `experimental-session-config` and `insecure-pk-encryption`
@@ -66,6 +74,12 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 rand = { workspace = true }
 ed25519-dalek = { workspace = true }
+# The media object (Phase 11 design §13.1, slice S2): the format, the sealer/reader state machines
+# and the descriptor codec behind `MediaNative` (§13.2). The S2 link: G-R2's shipped-graph clause
+# for `ghost-client-media` and the G-R8 scan's feature source turn themselves on at this dependency
+# (§22.2 row 19). No new external crate: the pins `chacha20poly1305`, `hkdf`, `sha2` and `zeroize`
+# are shared, and `hmac` arrives through `hkdf` on both sides.
+ghost-client-media = { path = "../media" }
 # The closed JNI surface (§2.6), behind `jni-bridge`; the version `ghost-client-net` already uses.
 jni = { workspace = true, optional = true }
 

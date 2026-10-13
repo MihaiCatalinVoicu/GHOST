@@ -62,7 +62,19 @@ pub enum WrapName {
     /// never (rule R-S6), and it carries a binding of its own so a key of one direction cannot be
     /// presented as the other's.
     ProvisionalKey,
+    /// A media object's `key_env` (Phase 11 design §4.2): the file key `K_f`, the only durable
+    /// form of the key, stored in `media_object.key_env` wrapped under `session_state_key`.
+    ///
+    /// **Added by S2.** The binding `u8(role) || dest_id(16) || object_id(16) || manifest_hash(32)`
+    /// follows F9's `olm_session_binding` practice of naming the contact: a `key_env` of one
+    /// contact's object does not open for another contact (§4.2, L7-D16).
+    MediaFileKey,
 }
+
+/// The `role` byte of an `out` `key_env` (the sender's; §4.2).
+pub const MEDIA_ROLE_OUT: u8 = 0x01;
+/// The `role` byte of an `in` `key_env` (the recipient's; §4.2).
+pub const MEDIA_ROLE_IN: u8 = 0x02;
 
 impl WrapName {
     /// The name string inside the associated data.
@@ -76,11 +88,12 @@ impl WrapName {
             WrapName::PairOffer => "pair-offer",
             WrapName::CardKey => "card-key",
             WrapName::ProvisionalKey => "provisional-key",
+            WrapName::MediaFileKey => "media-file-key",
         }
     }
 
     /// Every name, for the exhaustiveness test.
-    pub const ALL: [WrapName; 8] = [
+    pub const ALL: [WrapName; 9] = [
         WrapName::OlmSession,
         WrapName::ReplySeed,
         WrapName::Generation,
@@ -89,6 +102,7 @@ impl WrapName {
         WrapName::PairOffer,
         WrapName::CardKey,
         WrapName::ProvisionalKey,
+        WrapName::MediaFileKey,
     ];
 }
 
@@ -149,6 +163,24 @@ pub fn card_key_binding(identity_pk: &[u8; 32], kind: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(33);
     out.extend_from_slice(identity_pk);
     out.push(kind);
+    out
+}
+
+/// `u8(role) || dest_id(16) || object_id(16) || manifest_hash(32)` of a media file key
+/// (`media_object.key_env`, Phase 11 design §4.2). `role` is [`MEDIA_ROLE_OUT`] or
+/// [`MEDIA_ROLE_IN`]; `dest_id` is the contact id (the recipient's on the sender, the sender's on
+/// the recipient), so a `key_env` of one contact's object does not open for another contact's.
+pub fn media_file_key_binding(
+    role: u8,
+    dest_id: &[u8; 16],
+    object_id: &[u8; 16],
+    manifest_hash: &[u8; 32],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(65);
+    out.push(role);
+    out.extend_from_slice(dest_id);
+    out.extend_from_slice(object_id);
+    out.extend_from_slice(manifest_hash);
     out
 }
 
@@ -426,6 +458,64 @@ mod tests {
         let count = names.len();
         names.dedup();
         assert_eq!(names.len(), count);
+    }
+
+    /// §4.2 (Phase 11): a media file key opens only under its `(role, dest_id, object_id,
+    /// manifest_hash)` binding — a value moved to another role, contact, object or manifest is
+    /// `STATE_CORRUPT`, like every other envelope.
+    #[test]
+    fn a_media_file_key_is_bound_to_role_contact_object_and_manifest() {
+        let dest = [3u8; 16];
+        let object = [4u8; 16];
+        let manifest = [5u8; 32];
+        let binding = media_file_key_binding(MEDIA_ROLE_OUT, &dest, &object, &manifest);
+        let envelope = wrap(&key(), WrapName::MediaFileKey, &binding, b"kf").expect("wrap");
+        assert_eq!(
+            unwrap(
+                &key(),
+                WrapName::MediaFileKey,
+                &media_file_key_binding(MEDIA_ROLE_IN, &dest, &object, &manifest),
+                &envelope
+            )
+            .expect_err("another role"),
+            DmCode::StateCorrupt
+        );
+        assert_eq!(
+            unwrap(
+                &key(),
+                WrapName::MediaFileKey,
+                &media_file_key_binding(MEDIA_ROLE_OUT, &[9u8; 16], &object, &manifest),
+                &envelope
+            )
+            .expect_err("another contact"),
+            DmCode::StateCorrupt
+        );
+        assert_eq!(
+            unwrap(
+                &key(),
+                WrapName::MediaFileKey,
+                &media_file_key_binding(MEDIA_ROLE_OUT, &dest, &[9u8; 16], &manifest),
+                &envelope
+            )
+            .expect_err("another object"),
+            DmCode::StateCorrupt
+        );
+        assert_eq!(
+            unwrap(
+                &key(),
+                WrapName::MediaFileKey,
+                &media_file_key_binding(MEDIA_ROLE_OUT, &dest, &object, &[9u8; 32]),
+                &envelope
+            )
+            .expect_err("another manifest"),
+            DmCode::StateCorrupt
+        );
+        assert_eq!(
+            unwrap(&key(), WrapName::MediaFileKey, &binding, &envelope)
+                .expect("its own binding")
+                .as_slice(),
+            b"kf"
+        );
     }
 
     #[cfg(feature = "test-vectors")]

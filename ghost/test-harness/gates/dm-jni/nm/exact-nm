@@ -5,8 +5,16 @@
 # The names are read from the closed list itself rather than restated here, so a function promoted
 # to `Exported` needs no fixture change — what the fixtures drill is the gate's symbol **diff**,
 # not the list. The arguments (`-D --defined-only <library>`) are accepted and ignored.
+#
+# Slice S2 (Phase 11 design §13.2) gives the gate a second closed list, the media surface
+# `MediaNative`: a shipped library exports it beside the DM surface, so this reader prints
+# `MEDIA_CLOSED_LIST` of `client-core/dm/src/jni_media.rs` too, from the constant itself and in
+# the same `sed` shape the gate's media half reads it, so the two cannot drift either. The two
+# host-only entries (`MEDIA_TEST_LIST`, the test-vectors feature) are **not** here: a shipped
+# library never carries them — they are `entry-nm`'s alone.
 set -euo pipefail
 source="${GHOST_DM_JNI_FIXTURE_SOURCE:-$(dirname "$0")/../../../../client-core/dm/src/jni.rs}"
+media_source="$(dirname "$0")/../../../../client-core/dm/src/jni_media.rs"
 address=4096
 while read -r name; do
   [ -n "$name" ] || continue
@@ -14,7 +22,13 @@ while read -r name; do
   address=$((address + 16))
 done < <(grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::Exported\)' "$source" \
   | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
-# A library exports more than the DM surface: the network classes' entry points, which the gate
-# allows by class (Phase 9 review GATES-3), and symbols that are not JNI at all, which it ignores.
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(sed -n '/pub const MEDIA_CLOSED_LIST/,/^]/p' "$media_source" \
+  | grep -oE '\([0-9]+, "[A-Za-z0-9]+"\)' | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
+# A library exports more than the two closed surfaces: the network classes' entry points, which the
+# gate allows by class (Phase 9 review GATES-3), and symbols that are not JNI at all, which it ignores.
 printf '%016x T Java_org_ghost_network_TorRelayTransport_nativeCreate\n' "$((address + 16))"
 printf '%016x T rust_eh_personality\n' "$((address + 32))"

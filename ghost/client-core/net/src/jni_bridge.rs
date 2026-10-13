@@ -62,6 +62,13 @@ use tokio::sync::watch;
 // `strip = "symbols"` on arm64-v8a and x86_64.
 ghost_client_dm::export_jni!();
 
+// The media surface `org.ghost.crypto.bridge.MediaNative` (Phase 11 design §13.2, slice S2), the
+// same pattern: the closed list of G-M5 stays visible here, the bodies live in
+// `ghost_client_dm::jni_media`. The test-only entries (`testVectors`, `testSealBeginWithKey`) are
+// the host library's alone and are never invoked here (G-M5 refuses a shipped library that
+// exports them).
+ghost_client_dm::export_media_jni!();
+
 // The channel surface `org.ghost.crypto.bridge.MlsNative` (Phase 10 design §10.1, §10.2; slice
 // S2b), the same pattern: the closed list of G-M6 stays visible here, the bodies live in
 // `ghost_client_mls::jni`. The test-vectors entry point (`MlsVectors.run`) is the host library's

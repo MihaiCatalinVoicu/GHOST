@@ -61,21 +61,27 @@ manifest_files() {
 gradle_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \) -print 2>/dev/null || true
 }
-# The JNI surfaces of GHOST's native libraries (Phase 9 G-R6, Phase 10 G-M6; one list, so the two
-# surface gates agree on what is allowed and each checks its own classes exactly):
+# The JNI surfaces of GHOST's native libraries (Phase 9 G-R6, Phase 10 G-M6, Phase 11 G-M5; one
+# list, so the surface gates agree on what is allowed and each checks its own classes exactly):
 #   - `org.ghost.crypto.bridge.DmNative` (the DM closed list, dm-jni-surface.sh) and
 #     `DmEquivalence` (its test libraries' entry points);
+#   - `org.ghost.crypto.bridge.MediaNative` (the media closed list of Phase 11 design §13.2,
+#     dm-jni-surface.sh's second list, G-M5); its test entries `MediaNative.testVectors` and
+#     `MediaNative.testSealBeginWithKey` are host-library-only, like `MlsVectors`;
 #   - `org.ghost.crypto.bridge.MlsNative` (the channel closed list, mls-jni-surface.sh) and
 #     `MlsVectors` (its test library's entry point);
 #   - the network surface of Phases 6 and 8 (`TorRelayTransport`, `TorIssuerTransport`,
 #     `EntitlementCrypto`).
 # A JNI entry point of any other class, in the workspace's sources or in a built library, fails both
 # gates; a new class is a change to this list, which is what makes it arrive deliberately.
-GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto"
+GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MediaNative org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto"
 # The production source files allowed to declare a native method (paths under android/): the two
 # closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
-# live in test source sets, which no production half reads.
-GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt"
+# live in test source sets, which no production half reads. `MediaNative`'s declarations are
+# production (the surface ships); its two test entries (`testVectors`, `testSealBeginWithKey`)
+# have no Kotlin declarations until the JVM tests of the later slices, exactly as `MlsVectors`
+# had none before its replay landed.
+GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MediaNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt"
 # The Rust files the surface gates read under $1 (a directory, or one file): build outputs pruned —
 # a `target` or `build` directory **outside every `src/`**, so a module directory of either name is
 # code and is read (Phase 10 review of S2a F4, review of S2b) — and `.gradle`; the gates' own

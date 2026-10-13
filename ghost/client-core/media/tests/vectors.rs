@@ -137,6 +137,12 @@ MP offsets: m_version 0, kind 1, flags 2, class_code 3, object_id 4, content_len
 height 30, duration_ms 32, preview_len 36, preview 38, hashes 32806.
 [separation] values are checks that cannot fail (another key derives another value); they are
 reported apart from the refusals (S0-6).
+[key_env] (slice S2, §4.2): key_env = nonce(12) || ChaCha20-Poly1305(state_key, nonce, AD, k_f)
+with AD = \"ghost/v1/wrap/\" || the [labels] `wrap` string || u8(role) || dest_id(16) || object_id(16)
+|| manifest_hash(32), role 01 out and 02 in, generated through ghost-client-dm's WrapName::MediaFileKey
+with the pinned nonce and state_key; `wrong_binding_out` binds the same k_f to `wrong_dest_id` and
+must NOT open under `dest_id`. The JDK replay recomputes the three envelopes from this header and
+[labels], and checks the refusal.
 [ladder]: the size STRIP_IMAGE re-encodes a W x H source to (D29, §8.2, Q37): the long edge is the
 largest of 512, 1 024 and 2 048 not above the source's (512 for a smaller source), the short edge
 max(16, 16 * round(long * short_src / long_src / 16)) rounding half up, at most the long edge, and the
@@ -786,6 +792,79 @@ fn media_object_vectors() {
     out.kv("other_object_id_k_p", h(d2.payload.as_bytes()));
     out.kv("other_object_id_commit", h(d2.commitment.as_bytes()));
     assert!(negs.len() >= 50);
+    // §3.9's key_env vectors (slice S2, §4.2): fixed state key and nonce, both roles' envelopes
+    // over the image object's k_f, and a binding mismatch — generated through the DM crate's real
+    // wrap registry, so the pinned bytes are the shipped code's.
+    out.section("key_env");
+    let state_key = ghost_client_dm::derive::StateKey::from_bytes([0x5c; 32]);
+    let nonce = [0x6d; 12];
+    let dest_id = [0x11; 16];
+    let wrong_dest_id = [0x99; 16];
+    let k_f = img.spec.k_f;
+    let object_id = img.spec.object_id;
+    let manifest_hash = img.manifest_hash;
+    let env_for = |role: u8, dest: &[u8; 16]| {
+        let binding =
+            ghost_client_dm::wrap::media_file_key_binding(role, dest, &object_id, &manifest_hash);
+        ghost_client_dm::wrap::wrap_with_nonce(
+            &state_key,
+            ghost_client_dm::wrap::WrapName::MediaFileKey,
+            &binding,
+            &k_f,
+            &nonce,
+        )
+        .expect("wrap key_env")
+    };
+    let out_env = env_for(ghost_client_dm::wrap::MEDIA_ROLE_OUT, &dest_id);
+    let in_env = env_for(ghost_client_dm::wrap::MEDIA_ROLE_IN, &dest_id);
+    let wrong_env = env_for(ghost_client_dm::wrap::MEDIA_ROLE_OUT, &wrong_dest_id);
+    out.kv("state_key", h(state_key.as_bytes()));
+    out.kv("nonce", h(&nonce));
+    out.kv("dest_id", h(&dest_id));
+    out.kv("wrong_dest_id", h(&wrong_dest_id));
+    out.kv("object_id", h(&object_id));
+    out.kv("manifest_hash", h(&manifest_hash));
+    out.kv("k_f", h(&k_f));
+    out.kv("out", h(&out_env));
+    out.kv("in", h(&in_env));
+    out.kv("wrong_binding_out", h(&wrong_env));
+    // The replay: both roles open back to k_f; the mismatched binding refuses — each under the
+    // binding its row names.
+    for (role, env) in [
+        (ghost_client_dm::wrap::MEDIA_ROLE_OUT, &out_env),
+        (ghost_client_dm::wrap::MEDIA_ROLE_IN, &in_env),
+    ] {
+        let binding = ghost_client_dm::wrap::media_file_key_binding(
+            role,
+            &dest_id,
+            &object_id,
+            &manifest_hash,
+        );
+        let opened = ghost_client_dm::wrap::unwrap(
+            &state_key,
+            ghost_client_dm::wrap::WrapName::MediaFileKey,
+            &binding,
+            env,
+        )
+        .expect("key_env opens under its binding");
+        assert_eq!(opened.as_slice(), &k_f, "key_env opens to k_f");
+    }
+    let binding = ghost_client_dm::wrap::media_file_key_binding(
+        ghost_client_dm::wrap::MEDIA_ROLE_OUT,
+        &dest_id,
+        &object_id,
+        &manifest_hash,
+    );
+    assert!(
+        ghost_client_dm::wrap::unwrap(
+            &state_key,
+            ghost_client_dm::wrap::WrapName::MediaFileKey,
+            &binding,
+            &wrong_env,
+        )
+        .is_err(),
+        "a key_env of another binding does not open"
+    );
     // §3.7 point 5 and §3.9, read: the crate sealed each vector object's pairs once each — its n
     // chunk nonces under K_p and nonce 0 under K_m — with no violation and no repeat; every
     // negative case's re-seal was the attacker's (the tests' own AEAD), not the crate's.

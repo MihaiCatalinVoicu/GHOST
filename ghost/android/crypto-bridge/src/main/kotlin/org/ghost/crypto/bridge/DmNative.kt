@@ -113,7 +113,10 @@ object DmNative {
         today: Int,
     ): ByteArray?
 
-    // §2.6 function 8.
+    // §2.6 function 8. `mediaKeyEnv` is the kind-5 key envelope of Phase 11 design §4.2: for a
+    // MEDIA L0 the native side checks `key_slot` is zero, unwraps it under (out, contactId,
+    // objectId, manifestHash) read from the L0 itself, and writes K_f into the slot before the
+    // session layer encrypts; for any other kind it must be empty.
     @JvmStatic
     @JvmName("encrypt")
     internal external fun encrypt(
@@ -123,6 +126,7 @@ object DmNative {
         stateEnv: ByteArray,
         l0: ByteArray,
         today: Int,
+        mediaKeyEnv: ByteArray,
     ): ByteArray?
 
     // §2.6 function 13. An absent slot is an empty session id and an empty envelope.

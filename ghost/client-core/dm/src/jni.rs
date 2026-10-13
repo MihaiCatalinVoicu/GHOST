@@ -523,6 +523,20 @@ pub enum Field {
     /// the slot PRF `HMAC(K_sched, channel_id ‖ u32_be(period))` with it — scheduling metadata,
     /// never on the wire.
     ChannelScheduleKey = 0x40,
+    // ---- added by S2 (Phase 11) ----
+    /// The media namespace `M_i` of the card (own or contact's; Phase 11 design §5.1).
+    MediaNamespace = 0x41,
+    /// The media deposit secret `MD_{c,s}` of `cardDerive` (Phase 11 design §5.1): a bearer
+    /// secret presented to the relay of slot s inside a deposit credential v3.
+    MediaDepositSecret = 0x42,
+    /// The own media read secret `RM_{i,s}` of `ownReadSecret` (Phase 11 design §5.1):
+    /// seed-derived, a bearer secret presented to the relay inside a read credential v3.
+    MediaReadSecret = 0x43,
+    /// A media object's `key_env` (Phase 11 design §4.2): `K_f` wrapped under
+    /// `session_state_key`, bound to `role ‖ dest_id ‖ object_id ‖ manifest_hash`. Returned by
+    /// `decrypt` and `sessionInbound` for a kind-5 L0, after the key slot was re-zeroed; handed
+    /// to `MediaNative.sealFinish`'s caller on the sender and stored in `media_object.key_env`.
+    MediaKeyEnv = 0x44,
 }
 
 impl Field {
@@ -595,6 +609,10 @@ impl Field {
         Field::PeerGenId,
         Field::SealRootPqTlv,
         Field::ChannelScheduleKey,
+        Field::MediaNamespace,
+        Field::MediaDepositSecret,
+        Field::MediaReadSecret,
+        Field::MediaKeyEnv,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -665,6 +683,10 @@ impl Field {
             Field::PeerGenId => 0x3e,
             Field::SealRootPqTlv => 0x3f,
             Field::ChannelScheduleKey => 0x40,
+            Field::MediaNamespace => 0x41,
+            Field::MediaDepositSecret => 0x42,
+            Field::MediaReadSecret => 0x43,
+            Field::MediaKeyEnv => 0x44,
         }
     }
 }
@@ -714,14 +736,26 @@ fn code_only(code: DmCode) -> Vec<u8> {
 // -------------------------------------------------------------------------------------------
 
 /// The secrets the DM context derives once at unlock and holds in native memory only.
-struct DmContext {
+pub(crate) struct DmContext {
     olm_identity: OlmSecret,
     olm_signing: OlmSecret,
-    state_key: StateKey,
+    /// The wrapping key of every persisted secret, media `key_env` included (Phase 11 §4.2).
+    pub(crate) state_key: StateKey,
     /// The branch the card, namespace and read secrets derive from (§3.1).
     messaging: MessagingBranch,
     /// The `ghost1` Ed25519 seed, handed over by `:identity` at unlock (§2.4, X-21).
     identity_seed: IdentitySeed,
+    /// The media sealers of this context (Phase 11 design §13.2 M1–M4): at most two live at once,
+    /// each owns a `K_f` in native memory. Boxed like [`ContextSlot`], CRY-P9-02's discipline at
+    /// the entry level (the review round of §22.4, finding F3): a bucket holds only the pointer,
+    /// so `sealAbort`/`sealFinish`'s `HashMap::remove` — a bit-for-bit move that leaves the
+    /// vacated bucket bytes stale — moves no secret, and dropping the box zeroises the entry's
+    /// keys in place before its allocation is freed. `ctxClose` drops the maps with the context.
+    pub(crate) media_sealers: std::collections::HashMap<i64, Box<crate::jni_media::SealerEntry>>,
+    /// The media readers of this context (§13.2 M5–M8): at most eight live at once, each holds a
+    /// derived payload key. The same boxed-entry storage as `media_sealers`: `readerClose`'s
+    /// removal moves the pointer, not the key.
+    pub(crate) media_readers: std::collections::HashMap<i64, Box<crate::jni_media::ReaderEntry>>,
 }
 
 /// One registry entry: the context **behind a pointer** (phase review CRY-P9-02).
@@ -760,7 +794,13 @@ fn registry_lock() -> MutexGuard<'static, Registry> {
     registry().lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn next_handle() -> i64 {
+/// The raw registry guard, for the media surface's own context access ([`crate::jni_media`]):
+/// it needs `&mut` for the sealer/reader registries, which [`with_context`] cannot give.
+pub(crate) fn registry_guard() -> MutexGuard<'static, Registry> {
+    registry_lock()
+}
+
+pub(crate) fn next_handle() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
@@ -789,7 +829,7 @@ fn remove_context(registry: &mut Registry, handle: i64) -> bool {
 /// call loses the slot to the guard: the call answers `CRYPTO_UNAVAILABLE`. The cost is latency
 /// coupling — a channel pass that opens a reveal waits behind whatever DM call holds the guard.
 /// What the guard must not do is latch a panic, which is [`registry_lock`]'s job.
-fn with_context<T>(
+pub(crate) fn with_context<T>(
     handle: jlong,
     body: impl FnOnce(&DmContext) -> Result<T, DmCode>,
 ) -> Result<T, DmCode> {
@@ -808,7 +848,7 @@ fn in_hook_scope<T>(_handle: jlong, body: impl FnOnce() -> T) -> T {
 /// state-wrap hook (`wrap::hooks`) and MC-30's sidecar-log hook (`olm::state::hooks`, §22.38) of
 /// this context active on this thread — none unless a JVM world set them on this handle.
 #[cfg(feature = "test-vectors")]
-fn in_hook_scope<T>(handle: jlong, body: impl FnOnce() -> T) -> T {
+pub(crate) fn in_hook_scope<T>(handle: jlong, body: impl FnOnce() -> T) -> T {
     crate::binding::hooks::scope(handle, || {
         crate::wrap::hooks::scope(handle, || crate::olm::state::hooks::scope(handle, body))
     })
@@ -848,7 +888,7 @@ fn guarded(
 /// native memory, which §2.5 and L7-D19 ("zeroised on lock and wipe") do not allow (review round
 /// 2, R2-04). The rest of the crate already erases every intermediate it builds; this is the copy
 /// the boundary itself makes.
-fn bytes(env: &JNIEnv, array: &JByteArray) -> Result<Zeroizing<Vec<u8>>, DmCode> {
+pub(crate) fn bytes(env: &JNIEnv, array: &JByteArray) -> Result<Zeroizing<Vec<u8>>, DmCode> {
     env.convert_byte_array(array)
         .map(Zeroizing::new)
         .map_err(|_| DmCode::NonCanonical)
@@ -856,7 +896,7 @@ fn bytes(env: &JNIEnv, array: &JByteArray) -> Result<Zeroizing<Vec<u8>>, DmCode>
 
 /// The same copy, as a fixed-size array: the [`Zeroizing`] temporary erases itself at the end of
 /// the statement, so a secret of known length leaves nothing behind either.
-fn fixed<const N: usize>(env: &JNIEnv, array: &JByteArray) -> Result<[u8; N], DmCode> {
+pub(crate) fn fixed<const N: usize>(env: &JNIEnv, array: &JByteArray) -> Result<[u8; N], DmCode> {
     bytes(env, array)?
         .as_slice()
         .try_into()
@@ -894,6 +934,8 @@ pub fn ctx_open(
         state_key,
         messaging,
         identity_seed,
+        media_sealers: std::collections::HashMap::new(),
+        media_readers: std::collections::HashMap::new(),
     };
     let handle = insert_context(context);
     Ok(Reply::ok()
@@ -963,6 +1005,12 @@ pub fn own_card(env: &mut JNIEnv, handle: jlong, card_index: jint) -> Result<Vec
                 Field::BundleNamespace,
                 &derive::derive_bundle_namespace(&card_secret),
             )
+            // Phase 11 §5.1 (slice S2): the own media namespace `M_i`, registered and paid by
+            // the owner (`ACTIVATE`, restore, `OWNER-WEEK`).
+            .field(
+                Field::MediaNamespace,
+                &derive::derive_media_namespace(&card_secret),
+            )
             .field(Field::RecognitionIntro, &seal::recognition_key(&intro_key))
             .field(
                 Field::RecognitionBundle,
@@ -1027,6 +1075,13 @@ pub fn own_read_secret(
             card_index,
             slot,
         ));
+        // Phase 11 §5.1 (slice S2): the own media read secret `RM_{i,s}`, seed-derived like `RX`,
+        // presented to the relay inside a read credential v3 by the owner only.
+        let mut media_read = Zeroizing::new(derive::derive_media_read_secret(
+            &context.messaging,
+            card_index,
+            slot,
+        ));
         let mut deposit = Zeroizing::new(derive::derive_card_value(
             &card_secret,
             derive::CardLabel::Deposit(slot),
@@ -1039,8 +1094,10 @@ pub fn own_read_secret(
             .field(Field::ReadSecret, read.as_ref())
             .field(Field::DepositSecret, deposit.as_ref())
             .field(Field::FetchSecret, fetch.as_ref())
+            .field(Field::MediaReadSecret, media_read.as_ref())
             .into_bytes();
         read.zeroize();
+        media_read.zeroize();
         deposit.zeroize();
         fetch.zeroize();
         Ok(reply)
@@ -1159,7 +1216,17 @@ pub fn session_outbound(
     })
 }
 
-/// §2.6 function 8: `encrypt(h, contactId, sessionId, stateEnv, l0, today)`.
+/// §2.6 function 8: `encrypt(h, contactId, sessionId, stateEnv, l0, today, mediaKeyEnv)`.
+///
+/// **Phase 11 §4.2 (slice S2): the key slot.** For a kind-5 (MEDIA) L0, `mediaKeyEnv` carries the
+/// object's `key_env`; it must open under the binding `(out, contactId, object_id,
+/// manifest_hash)` with the last two read from the L0's own descriptor body, and `K_f` is written
+/// into the descriptor's key slot before the session layer encrypts the L0 (the slot Kotlin
+/// handed in is zero — [`codec::decode`] enforces it). A `key_env` that does not open under that
+/// binding is [`DmCode::NonCanonical`], a caller bug, counted; the item fails and nothing is
+/// encrypted. For any other kind `mediaKeyEnv` must be empty. `K_f` exists in native memory for
+/// the length of this call and is zeroised with it.
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt(
     env: &mut JNIEnv,
     handle: jlong,
@@ -1168,11 +1235,13 @@ pub fn encrypt(
     state_env: &JByteArray,
     l0: &JByteArray,
     today: jint,
+    media_key_env: &JByteArray,
 ) -> Result<Vec<u8>, DmCode> {
     let contact_id = fixed::<16>(env, contact_id)?;
     let session_id = fixed::<32>(env, session_id)?;
     let state_env = bytes(env, state_env)?;
     let l0 = bytes(env, l0)?;
+    let media_env = bytes(env, media_key_env)?;
     let today = day(today)?;
     with_context(handle, |context| {
         let binding = wrap::olm_session_binding(&contact_id, &session_id);
@@ -1182,7 +1251,20 @@ pub fn encrypt(
             &binding,
             &state_env,
         )?;
-        let out = session::encrypt(&state, &l0, today);
+        // The L0 the session layer sees has the slot filled; the caller's copy stays zero. Every
+        // error path zeroises the unwrapped session state before returning.
+        let mut l0_for_encrypt = Zeroizing::new(l0.to_vec());
+        let filled = codec::media_slot_fill(
+            &context.state_key,
+            &contact_id,
+            &mut l0_for_encrypt,
+            &media_env,
+        );
+        if let Err(code) = filled {
+            state.zeroize();
+            return Err(code);
+        }
+        let out = session::encrypt(&state, &l0_for_encrypt, today);
         state.zeroize();
         let mut out = out?;
         let new_state = wrap::wrap(
@@ -1263,6 +1345,11 @@ pub fn decrypt(
             state.zeroize();
         }
         let mut out = out?;
+        // `out.plaintext` is the decrypted L0: a kind-5 body's slot still holds K_f until
+        // `media_slot_take` re-zeros it below — and the take, like the state re-wrap above, can
+        // refuse, in which case the slot is still filled. The buffer is wrapped so EVERY exit
+        // path erases it, the codebase's own rule at the states loop above (§2.5).
+        let mut plaintext = Zeroizing::new(std::mem::take(&mut out.plaintext));
         let (_, session_id, _) = states
             .iter()
             .find(|(slot, _, _)| *slot == out.slot)
@@ -1275,17 +1362,28 @@ pub fn decrypt(
         );
         out.state.zeroize();
         let new_state = new_state?;
+        // Phase 11 §4.2 (slice S2): a kind-5 L0 carries `K_f` in its key slot — the sender's
+        // `encrypt` filled it. `media_slot_take` wraps it into a fresh `key_env` bound to
+        // `(in, contactId, object_id, manifest_hash)` and re-zeros the slot in the returned L0;
+        // RECV stores the envelope in `media_object` in the same transaction. The take MUST
+        // precede the `L0` field below: `Reply::field` copies its value into the reply buffer, so
+        // a take after the field ships `K_f` to Kotlin inside the L0 (the host JVM verification
+        // of 2026-10-13 caught exactly that: element 55 of the returned L0 was `k_f[1]`).
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut plaintext)?;
         let flags = if out.acknowledged {
             FLAG_ACKNOWLEDGED
         } else {
             0
         };
-        Ok(Reply::ok()
-            .field(Field::L0, &out.plaintext)
+        let mut reply = Reply::ok()
+            .field(Field::L0, &plaintext)
             .field(Field::State, &new_state)
             .field(Field::SlotUsed, &[out.slot.as_u8()])
-            .field(Field::Flags, &[flags])
-            .into_bytes())
+            .field(Field::Flags, &[flags]);
+        if let Some(key_env) = key_env {
+            reply = reply.field(Field::MediaKeyEnv, &key_env);
+        }
+        Ok(reply.into_bytes())
     })
 }
 
@@ -1355,6 +1453,10 @@ pub fn session_inbound(
         );
         fallback.zeroize();
         let mut out = out?;
+        // Same rule as `decrypt` above: the decrypted L0's slot still holds K_f until the take
+        // below re-zeros it, and either the take or the state re-wrap can refuse first — the
+        // buffer is wrapped so every exit path erases it (§2.5).
+        let mut plaintext = Zeroizing::new(std::mem::take(&mut out.plaintext));
         let state_env = wrap::wrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
@@ -1363,11 +1465,22 @@ pub fn session_inbound(
         );
         out.state.zeroize();
         let state_env = state_env?;
-        Ok(Reply::ok()
-            .field(Field::L0, &out.plaintext)
+        // Phase 11 §4.2 (slice S2): same key-slot rule as `decrypt`, through `media_slot_take`:
+        // a kind-5 L0's `K_f` is wrapped into a fresh `key_env` bound to `(in, contactId,
+        // object_id, manifest_hash)` and the slot is re-zeroed in the returned L0. This is the
+        // function the held-replay path after a key change drives (`HeldReplay.kt`), so a held
+        // media descriptor lands its `key_env` exactly like a live one. The take MUST precede
+        // the `L0` field: `Reply::field` copies its value into the reply buffer, so a take after
+        // the field ships `K_f` to Kotlin inside the L0.
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut plaintext)?;
+        let mut reply = Reply::ok()
+            .field(Field::L0, &plaintext)
             .field(Field::State, &state_env)
-            .field(Field::SessionId, &out.session_id)
-            .into_bytes())
+            .field(Field::SessionId, &out.session_id);
+        if let Some(key_env) = key_env {
+            reply = reply.field(Field::MediaKeyEnv, &key_env);
+        }
+        Ok(reply.into_bytes())
     })
 }
 
@@ -1486,6 +1599,12 @@ pub fn card_derive(
             &card_secret,
             derive::CardLabel::BundleRead(slot),
         ));
+        // Phase 11 §5.1 (slice S2): the media deposit secret `MD_{c,s}` for the relay of slot s,
+        // a bearer secret like `D` and `RP`.
+        let mut media_deposit = Zeroizing::new(derive::derive_card_value(
+            &card_secret,
+            derive::CardLabel::MediaDeposit(slot),
+        ));
         let intro_env = wrap::wrap(
             &context.state_key,
             wrap::WrapName::CardKey,
@@ -1507,8 +1626,15 @@ pub fn card_derive(
                 Field::BundleNamespace,
                 &derive::derive_bundle_namespace(&card_secret),
             )
+            // Phase 11 §5.1 (slice S2): the contact's media namespace `M_c`, registered at a media
+            // send.
+            .field(
+                Field::MediaNamespace,
+                &derive::derive_media_namespace(&card_secret),
+            )
             .field(Field::DepositSecret, deposit.as_ref())
             .field(Field::FetchSecret, fetch.as_ref())
+            .field(Field::MediaDepositSecret, media_deposit.as_ref())
             .field(Field::RecognitionIntro, &seal::recognition_key(&intro))
             .field(
                 Field::RecognitionBundle,
@@ -1519,6 +1645,7 @@ pub fn card_derive(
             .into_bytes();
         deposit.zeroize();
         fetch.zeroize();
+        media_deposit.zeroize();
         Ok(reply)
     })
 }
@@ -1951,6 +2078,8 @@ pub(crate) fn open_intro_for_test(
         state_key: StateKey::from_bytes([0x5c; 32]),
         messaging,
         identity_seed: IdentitySeed::from_bytes(identity_seed),
+        media_sealers: std::collections::HashMap::new(),
+        media_readers: std::collections::HashMap::new(),
     };
     let gen_fallback_public =
         derive::olm_identity_public(&OlmSecret::from_bytes(*gen_fallback_secret));
@@ -3065,6 +3194,7 @@ pub mod entry {
         state_env: JByteArray<'local>,
         l0: JByteArray<'local>,
         today: jint,
+        media_key_env: JByteArray<'local>,
     ) -> jbyteArray {
         guarded(&mut env, |env| {
             super::encrypt(
@@ -3075,6 +3205,7 @@ pub mod entry {
                 &state_env,
                 &l0,
                 today,
+                &media_key_env,
             )
         })
     }
@@ -3757,6 +3888,7 @@ macro_rules! paste_export {
         /// One entry point of the closed JNI surface (design §2.6); the body is in
         /// [`crate::jni::entry`].
         #[no_mangle]
+        #[allow(clippy::too_many_arguments)]
         pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_encrypt<'local>(
             env: ::jni::JNIEnv<'local>,
             class: ::jni::objects::JClass<'local>,
@@ -3766,8 +3898,9 @@ macro_rules! paste_export {
             c: ::jni::objects::JByteArray<'local>,
             d: ::jni::objects::JByteArray<'local>,
             today: ::jni::sys::jint,
+            e: ::jni::objects::JByteArray<'local>,
         ) -> ::jni::sys::jbyteArray {
-            $crate::jni::entry::encrypt(env, class, handle, a, b, c, d, today)
+            $crate::jni::entry::encrypt(env, class, handle, a, b, c, d, today, e)
         }
     };
     (decrypt, $rust:ident) => {
@@ -4339,6 +4472,8 @@ mod tests {
             state_key: StateKey::from_bytes([0x22; 32]),
             messaging,
             identity_seed: IdentitySeed::from_bytes([0x33; 32]),
+            media_sealers: std::collections::HashMap::new(),
+            media_readers: std::collections::HashMap::new(),
         }
     }
 

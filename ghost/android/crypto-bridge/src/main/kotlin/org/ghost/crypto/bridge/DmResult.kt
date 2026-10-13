@@ -285,6 +285,29 @@ enum class DmField(val tag: Int) {
      * `ctxOpen`. The channel engine's `ChannelSchedule` keys the slot PRF with it.
      */
     CHANNEL_SCHEDULE_KEY(0x40),
+
+    /** The media namespace `M_i` of the card (own or contact's; Phase 11 design §5.1, slice S2). */
+    MEDIA_NAMESPACE(0x41),
+
+    /**
+     * The media deposit secret `MD_{c,s}` of `cardDerive` (Phase 11 design §5.1): a bearer secret
+     * presented to the relay of slot s inside a deposit credential v3.
+     */
+    MEDIA_DEPOSIT_SECRET(0x42),
+
+    /**
+     * The own media read secret `RM_{i,s}` of `ownReadSecret` (Phase 11 design §5.1): seed-derived,
+     * a bearer secret presented to the relay inside a read credential v3.
+     */
+    MEDIA_READ_SECRET(0x43),
+
+    /**
+     * A media object's `key_env` (Phase 11 design §4.2): `K_f` wrapped under `session_state_key`,
+     * bound to `role ‖ dest_id ‖ object_id ‖ manifest_hash`. Returned by `decrypt` and
+     * `sessionInbound` for a kind-5 L0 after the key slot was re-zeroed; `null` on a non-media
+     * message.
+     */
+    MEDIA_KEY_ENV(0x44),
     ;
 
     companion object {

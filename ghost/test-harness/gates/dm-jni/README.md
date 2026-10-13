@@ -15,7 +15,7 @@ what keeps the fixture readable.
 | `DmNativeMissing.kt` | Kotlin does not declare a function the crate exports |
 | `DmNativePublic.kt` | a native declaration is public, so `:messaging` could bypass the facade |
 | `DmNativeMangled.kt` | an `internal` declaration without `@JvmName`, which Kotlin mangles |
-| `nm/exact-nm` | a built library whose DM symbols are exactly the closed list (the positive case) |
+| `nm/exact-nm` | a built library whose DM symbols are exactly the closed list (the positive case); since slice S2 (G-M5) it prints the media surface `MEDIA_CLOSED_LIST` too, from the constant itself |
 | `nm/stray-nm` | a built library exporting a DM symbol that is not on the list |
 | `nm/missing-nm` | a built library that does not export an entry marked `Exported` |
 | `nm/unreadable-nm` | a symbol reader that cannot read the library and exits non-zero |
@@ -40,6 +40,14 @@ library.
 - `android-ref/` is an Android tree whose `:messaging` production source imports and calls
   `DmNative` directly; the source-set half (only `:crypto-bridge` `src/{main,gate}` may) reports
   the import and the call, not the comment.
+
+## Slice S2 additions (G-M5, Phase 11 design §13.2)
+
+- `nm/exact-nm` prints the media surface `MEDIA_CLOSED_LIST` of `jni_media.rs` beside the DM list
+  (both read from the constants), and `nm/entry-nm` adds the two host-only media test entries
+  (`MediaNative_testVectors`, `MediaNative_testSealBeginWithKey`) beside `DmEquivalence`'s four:
+  a shipped library carries both closed surfaces and no test symbol, a `--test` library carries
+  both plus exactly those six.
 
 ## Phase 9 review additions (GATES-3)
 

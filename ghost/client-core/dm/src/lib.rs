@@ -54,6 +54,9 @@ pub mod derive;
 pub mod equivalence;
 #[cfg(feature = "jni-bridge")]
 pub mod jni;
+/// The closed media JNI surface `MediaNative` (Phase 11 design §13.2, gate G-M5): slice S2.
+#[cfg(feature = "jni-bridge")]
+pub mod jni_media;
 pub mod olm;
 pub mod pq;
 /// PQ1 and PQ5 over a scripted world (§15.5, RG-5; §22.20): test builds only.
