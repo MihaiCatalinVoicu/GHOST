@@ -81,6 +81,27 @@ class DmSessionsNativeTest {
 
     private val today = 100
 
+    /**
+     * The canonical text L0 that `encrypt` strict-decodes for the media key slot (Phase 11 §4.2,
+     * slice S2): since the slot, `encrypt` validates the L0 with the codec, and a raw string is
+     * `NON_CANONICAL`. Tests encode through the facade, as the send pipeline does.
+     */
+    private fun textL0(handle: Long, text: String, salt: Int): ByteArray {
+        val encoded = DmContent.encode(
+            handle = handle,
+            kind = DmContent.Kind.TEXT,
+            messageId = bytes(salt, 16),
+            authorMinute = 0x10_00_00L + salt,
+            minuteIndex = 0,
+            timerCode = 0,
+            timerVersion = 0,
+            quoteRef = null,
+            body = text.toByteArray(),
+        )
+        assertTrue("l0Encode: $encoded", encoded is DmContent.Encoded.Ok)
+        return (encoded as DmContent.Encoded.Ok).l0
+    }
+
     @Test
     fun aFullRoundTripRunsThroughTheTypedFacade() {
         requireNative()
@@ -105,11 +126,12 @@ class DmSessionsNativeTest {
             assertEquals(32, outbound.sessionId.size)
             assertTrue("the reply seed is wrapped", outbound.replySeedEnv.size >= 32 + 28)
 
+            val firstL0 = textL0(alice, "first flight", 0x11)
             val first = DmSessions.encrypt(
                 handle = alice,
                 contactId = contact,
                 current = DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv),
-                l0 = "first flight".toByteArray(),
+                l0 = firstL0,
                 today = today,
             )
             assertTrue("encrypt: $first", first is DmSessions.Encrypted.Ok)
@@ -129,14 +151,15 @@ class DmSessionsNativeTest {
             )
             assertTrue("inbound: $inbound", inbound is DmSessions.Inbound.Ok)
             inbound as DmSessions.Inbound.Ok
-            assertArrayEquals("first flight".toByteArray(), inbound.plaintext)
+            assertArrayEquals("the L0 record returns whole", firstL0, inbound.plaintext)
             assertArrayEquals(outbound.sessionId, inbound.sessionId)
 
+            val replyL0 = textL0(bob, "reply", 0x12)
             val reply = DmSessions.encrypt(
                 handle = bob,
                 contactId = contact,
                 current = DmSessions.StoredSlot(inbound.sessionId, inbound.stateEnv),
-                l0 = "reply".toByteArray(),
+                l0 = replyL0,
                 today = today,
             )
             assertTrue("reply: $reply", reply is DmSessions.Encrypted.Ok)
@@ -154,7 +177,7 @@ class DmSessionsNativeTest {
             )
             assertTrue("decrypt: $read", read is DmSessions.Decrypted.Ok)
             read as DmSessions.Decrypted.Ok
-            assertArrayEquals("reply".toByteArray(), read.plaintext)
+            assertArrayEquals("the L0 record returns whole", replyL0, read.plaintext)
             assertEquals(DmSessions.Slot.CURRENT, read.slot)
             assertTrue("the session is acknowledged", read.acknowledged)
 
@@ -202,11 +225,12 @@ class DmSessionsNativeTest {
             val outbound = DmSessions.outbound(
                 alice, contact, generation.olmIdentity, generation.fallbackPublic, today,
             ) as DmSessions.Outbound.Ok
+            val firstL0 = textL0(alice, "one", 0x13)
             val first = DmSessions.encrypt(
                 alice,
                 contact,
                 DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv),
-                "one".toByteArray(),
+                firstL0,
                 today,
             ) as DmSessions.Encrypted.Ok
             val inbound = DmSessions.inbound(
@@ -243,11 +267,12 @@ class DmSessionsNativeTest {
 
             // The property a persisted activation would break: the session the caller still holds
             // sends, and Alice reads what it sends.
+            val replyL0 = textL0(bob, "two", 0x14)
             val reply = DmSessions.encrypt(
                 bob,
                 contact,
                 DmSessions.StoredSlot(inbound.sessionId, stored),
-                "two".toByteArray(),
+                replyL0,
                 today,
             ) as DmSessions.Encrypted.Ok
             val read = DmSessions.decrypt(
@@ -263,7 +288,11 @@ class DmSessionsNativeTest {
                 "the peer reads the reply of the unchanged session",
                 read is DmSessions.Decrypted.Ok,
             )
-            assertArrayEquals("two".toByteArray(), (read as DmSessions.Decrypted.Ok).plaintext)
+            assertArrayEquals(
+                "the L0 record returns whole",
+                replyL0,
+                (read as DmSessions.Decrypted.Ok).plaintext,
+            )
         } finally {
             DmSessions.closeContext(alice)
             DmSessions.closeContext(bob)
@@ -283,7 +312,7 @@ class DmSessionsNativeTest {
             initiator,
             contact,
             DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv),
-            "x".toByteArray(),
+            textL0(initiator, "x", 0x15),
             today,
         ) as DmSessions.Encrypted.Ok
         val answered = DmSessions.inbound(
@@ -300,7 +329,7 @@ class DmSessionsNativeTest {
             responder,
             contact,
             DmSessions.StoredSlot(answered.sessionId, answered.stateEnv),
-            "y".toByteArray(),
+            textL0(responder, "y", 0x16),
             today,
         ) as DmSessions.Encrypted.Ok
         assertTrue("the forgery is a normal message", !foreign.isPreKey)
@@ -333,12 +362,13 @@ class DmSessionsNativeTest {
             // climbs past `MAX_MESSAGE_GAP` (2 000).
             var stateEnv = outbound.stateEnv
             var last: ByteArray? = null
+            val l0 = textL0(alice, "one", 0x17)
             repeat(2_002) {
                 val sent = DmSessions.encrypt(
                     alice,
                     contact,
                     DmSessions.StoredSlot(outbound.sessionId, stateEnv),
-                    "one".toByteArray(),
+                    l0,
                     today,
                 ) as DmSessions.Encrypted.Ok
                 assertTrue("an unanswered session sends PreKey messages", sent.isPreKey)

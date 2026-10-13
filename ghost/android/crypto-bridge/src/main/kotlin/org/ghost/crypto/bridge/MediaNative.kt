@@ -143,4 +143,31 @@ object MediaNative {
     @JvmStatic
     @JvmName("sniff")
     internal external fun sniff(first64: ByteArray): ByteArray?
+
+    // --------------------------------------------------------------------------------------------
+    // The two host-only test entries of §13.2 (§15.6's model-relay re-derivation; G-M5). The
+    // design names them members of this class, and the JNI symbol pins the declaring class, so —
+    // unlike DmEquivalence's test entries, whose symbol carries a test-only class name — these
+    // two declarations have no test-source-set home: only this file can carry them. They are
+    // exported by `ghost-dm-host` alone (the `test-vectors` feature): a shipped library carries
+    // no such symbol, so on a device both are inert — nothing production may call them, and a
+    // caller that did would get `UnsatisfiedLinkError`, not a key. Production code never sees a
+    // chosen key (§15.1); the JVM tests of slice S2 are their only callers.
+
+    // §13.2 host-only: `testSealBeginWithKey` (§15.6).
+    @JvmStatic
+    @JvmName("testSealBeginWithKey")
+    internal external fun testSealBeginWithKey(
+        handle: Long,
+        fileKey: ByteArray,
+        objectId: ByteArray,
+        kind: Int,
+        viewOnce: Int,
+        maxClass: Int,
+    ): ByteArray?
+
+    // §13.2 host-only: `testVectors` (§15.6).
+    @JvmStatic
+    @JvmName("testVectors")
+    internal external fun testVectors(handle: Long, request: ByteArray): ByteArray?
 }

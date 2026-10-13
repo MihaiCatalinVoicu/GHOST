@@ -110,10 +110,17 @@ class DmResultCodesTest {
                 RegexOption.DOT_MATCHES_ALL,
             )
                 .findAll(source.readText())
+                // Arm labels only (`DmCode.X ->`), and DM blocks only: the media facade
+                // (MediaCrypto.kt, Phase 11 slice S2) answers the media surface's `when` blocks
+                // in the same package, and MediaResultCodesTest owns those.
+                .filter { it.groupValues[1].contains("DmCode.") }
                 .forEach { match ->
                     val function = match.groupValues[2]
-                    val codes = Regex("""DmCode\.([A-Z_]+)""")
-                        .findAll(match.groupValues[1])
+                    // Arm labels only, one arm or a comma-chain per line (the facade style the
+                    // project's ktlint enforces) — a bare `DmCode\.X` reference is not an arm.
+                    val codes = match.groupValues[1].lineSequence()
+                        .filter { line -> "->" in line }
+                        .flatMap { line -> Regex("""DmCode\.([A-Z_]+)""").findAll(line) }
                         .map { it.groupValues[1] }
                         .toSet()
                     val existing = arms[function]

@@ -219,6 +219,14 @@ done < <(comm -23 "$work/media-declared" "$work/media-emitted")
 # facade rule as DmNative. The two test entries have no production declarations until the JVM
 # tests of the later slices land them in a test source set (the `MlsVectors` precedent), so
 # they are compared against the workspace's Rust emission only, not against this file.
+# The two entries ARE declared on `MediaNative` itself: §13.2 names them `MediaNative.testVectors`
+# / `MediaNative.testSealBeginWithKey`, and the JNI symbol pins the declaring class, so unlike
+# `DmEquivalence`'s they have no test-only class to live on and their declarations sit in this
+# production file (inert on a device: a shipped library exports no such symbol, which the
+# library half below checks). They are excluded from the Kotlin-vs-list comparison below,
+# exactly as the Rust emission half above excludes `^test` names; the library half still
+# checks precisely their two symbols in a test library and none in a shipped one (the JVM
+# tests of slice S2 are their only caller and load the host build).
 awk -v file="MediaNative" '
   match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
     pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR
@@ -237,7 +245,7 @@ while read -r kind name; do
   esac
 done < "$work/media-visibility"
 
-grep -oE 'external fun [A-Za-z0-9]+' "$MEDIA_KOTLIN" | sed -E 's/external fun //' | sort -u > "$work/media-kotlin"
+grep -oE 'external fun [A-Za-z0-9]+' "$MEDIA_KOTLIN" | sed -E 's/external fun //' | grep -vE '^test' | sort -u > "$work/media-kotlin"
 while read -r name; do
   [ -n "$name" ] || continue
   fail "MediaNative declares 'external fun $name', which the crate does not export for a shipped library"

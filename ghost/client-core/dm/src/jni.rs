@@ -1352,6 +1352,14 @@ pub fn decrypt(
         );
         out.state.zeroize();
         let new_state = new_state?;
+        // Phase 11 §4.2 (slice S2): a kind-5 L0 carries `K_f` in its key slot — the sender's
+        // `encrypt` filled it. `media_slot_take` wraps it into a fresh `key_env` bound to
+        // `(in, contactId, object_id, manifest_hash)` and re-zeros the slot in the returned L0;
+        // RECV stores the envelope in `media_object` in the same transaction. The take MUST
+        // precede the `L0` field below: `Reply::field` copies its value into the reply buffer, so
+        // a take after the field ships `K_f` to Kotlin inside the L0 (the host JVM verification
+        // of 2026-10-13 caught exactly that: element 55 of the returned L0 was `k_f[1]`).
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?;
         let flags = if out.acknowledged {
             FLAG_ACKNOWLEDGED
         } else {
@@ -1362,13 +1370,7 @@ pub fn decrypt(
             .field(Field::State, &new_state)
             .field(Field::SlotUsed, &[out.slot.as_u8()])
             .field(Field::Flags, &[flags]);
-        // Phase 11 §4.2 (slice S2): a kind-5 L0 carries `K_f` in its key slot — the sender's
-        // `encrypt` filled it. `media_slot_take` wraps it into a fresh `key_env` bound to
-        // `(in, contactId, object_id, manifest_hash)` and re-zeros the slot in the returned L0;
-        // RECV stores the envelope in `media_object` in the same transaction.
-        if let Some(key_env) =
-            codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?
-        {
+        if let Some(key_env) = key_env {
             reply = reply.field(Field::MediaKeyEnv, &key_env);
         }
         Ok(reply.into_bytes())
@@ -1453,14 +1455,15 @@ pub fn session_inbound(
         // a kind-5 L0's `K_f` is wrapped into a fresh `key_env` bound to `(in, contactId,
         // object_id, manifest_hash)` and the slot is re-zeroed in the returned L0. This is the
         // function the held-replay path after a key change drives (`HeldReplay.kt`), so a held
-        // media descriptor lands its `key_env` exactly like a live one.
+        // media descriptor lands its `key_env` exactly like a live one. The take MUST precede
+        // the `L0` field: `Reply::field` copies its value into the reply buffer, so a take after
+        // the field ships `K_f` to Kotlin inside the L0.
+        let key_env = codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?;
         let mut reply = Reply::ok()
             .field(Field::L0, &out.plaintext)
             .field(Field::State, &state_env)
             .field(Field::SessionId, &out.session_id);
-        if let Some(key_env) =
-            codec::media_slot_take(&context.state_key, &contact_id, &mut out.plaintext)?
-        {
+        if let Some(key_env) = key_env {
             reply = reply.field(Field::MediaKeyEnv, &key_env);
         }
         Ok(reply.into_bytes())
