@@ -15,6 +15,8 @@ violation of each source gate, on the lines of slice S3's `negative-channel-pack
 | 25 | `CREATE VIRTUAL TABLE … USING fts5(…)` | `dm-no-fts.sh` G-DM6 (the statement and the token) | 2 |
 
 The other files are the clean minimum each gate needs not to pass vacuously (the DM modules, `:sync`,
-`:entitlement`, a `Schema.kt` with the migration markers, a clean channel crate). G-DM2's and G-DM3's channel-engine
+`:entitlement`, a `Schema.kt` with the migration markers — a `media_` table among them — a clean channel crate,
+and, since Phase 11 slice S3 extended these gates' scopes with `android/media`, a clean media store). G-DM2's
+and G-DM3's channel-engine
 cases have fixtures of their own (`negative-dm-enqueue-channel-engine`, `dm-derivation/negative-channel-engine`), and
 G-M5's are `negative-ch-enqueue-*`. Nothing here is compiled or shipped.
