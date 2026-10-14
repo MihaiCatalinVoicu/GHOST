@@ -34,8 +34,9 @@
 # reads plain strings (escapes, `${…}` templates with nested strings) and `"""` raw strings, and
 # joins literals separated only by `+`, whitespace or line breaks into one **group**: a statement
 # split as `"… ON CONFLICT(a) " + "DO UPDATE …"` is matched as one text. A group is DM SQL when
-#   (1) it is in a production source of `android/messaging` or `android/crypto-bridge` (every SQL
-#       string of the DM stores is DM SQL), or
+#   (1) it is in a production source of `android/messaging`, `android/crypto-bridge` or `android/media`
+#       (every SQL string of the DM stores and of the media store is DM SQL; Phase 11 slice S3 added
+#       `android/media`, design faza11-media.md 13.6: "G-DM4 and G-DM6 cover the media SQL"), or
 #   (2) it is inside migration 5 of `android/storage/.../Schema.kt` — from `fun migration5Tables(`
 #       to `val expectedTables` — where `replaceGuard` builds trigger names from templates (migration 6
 #       and migration 7, the channel tables of Phase 10 slice S3, sit in the same region), or
@@ -64,14 +65,23 @@
 #       this reads before a test has to reach the statement. The channel DAOs themselves are in
 #       `android/messaging`, which (1) reads whole, `org.ghost.messaging.channel` included; the
 #       v1 `mls_state` (dropped by migration 7) is matched by the same prefix.
+#   (3″) it names a media table of migration 8 (Phase 11 slice S3, design faza11-media.md 13.6): a word that
+#       starts `media_` (`media_object`, `media_upload`, `media_blob`, `media_fragment`, `media_outbound_op`),
+#       anywhere else under `android/*/src/{main,gate,debug,release}` of any module, matched at its start and
+#       without regard to case like (3′). All five carry a `*_no_replace` guard, and the store that writes them
+#       (`org.ghost.media.store`, in `android/media`, which (1) reads whole) inserts a key only when it does not
+#       exist: the guarded UPDATE-then-INSERT form, never an upsert (a REPLACE of a `media_blob` row would
+#       delete the row whose file the reconcile expects, and one of a `media_object` row would take its
+#       fragments and operations with it).
 # `:sync`'s own upserts (cursors, capabilities, the directory) and `:storage`'s pre-DM tables are not
 # DM SQL and are not read against this rule — `relay_capability` is upserted by design — except for
 # the two tables named in (3).
 #
-# Vacuity: `android/messaging/src/main` must exist and hold at least one SQL group, and Schema.kt must
-# carry both region markers with a `CREATE TABLE dm_` and a `CREATE TABLE ch_` between them; otherwise
-# the gate fails rather than pass over a moved schema (the channel tables of migration 7 are what
-# (3′) and the REPLACE guards are about).
+# Vacuity: `android/messaging/src/main` and `android/media/src/main` must exist and hold at least one SQL
+# group each, and Schema.kt must carry both region markers with a `CREATE TABLE dm_`, a `CREATE TABLE ch_`
+# and a `CREATE TABLE media_` between them; otherwise the gate fails rather than pass over a moved schema
+# (the channel tables of migration 7 and the media tables of migration 8 are what (3′), (3″) and the
+# REPLACE guards are about).
 #
 # Usage: dm-no-replace.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-replace-*.
@@ -236,10 +246,11 @@ sub check {
   }
 }
 
-my %dm_module = map { $_ => 1 } ("messaging", "crypto-bridge");
-my ($dm_sql_groups, $region_found, $region_tables, $region_ch_tables) = (0, 0, 0, 0);
+my %dm_module = map { $_ => 1 } ("messaging", "crypto-bridge", "media");
+my ($dm_sql_groups, $media_sql_groups, $region_found, $region_tables, $region_ch_tables, $region_media_tables) = (0, 0, 0, 0, 0, 0);
 my @mains = grep { length } split /\n/, `find "$root/android" -maxdepth 3 -type d -path "*/src/main" 2>/dev/null | sort`;
 print "VACUOUS android/messaging/src/main: missing (the gate would pass vacuously)\n" unless -d "$root/android/messaging/src/main";
+print "VACUOUS android/media/src/main: missing (the gate would pass vacuously)\n" unless -d "$root/android/media/src/main";
 for my $main (@mains) {
   (my $module = $main) =~ s{^\Q$root\E/android/([^/]+)/src/main$}{$1};
   # The production source sets of every module, not of the two DM modules alone: src/release is compiled into the
@@ -278,21 +289,25 @@ for my $main (@mains) {
         my $in_region = $from && $to && $start >= $from && $start < $to;
         $region_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+dm_/i;
         $region_ch_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+ch_/i;
+        $region_media_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+media_/i;
         # Table names are matched without regard to case: SQLite resolves them that way, so INSERT OR REPLACE INTO
         # CH_POST replaces a row of ch_post (the first version of this test was case-sensitive and passed it).
-        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm|ch|mls)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/i;
+        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm|ch|mls|media)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/i;
         next unless $dm;
         $dm_sql_groups++ if $module eq "messaging" && $text =~ $sqlish;
+        $media_sql_groups++ if $module eq "media" && $text =~ $sqlish;
         check($rel, $g);
       }
     }
   }
 }
 print "VACUOUS android/messaging/src/main: no SQL string found (the gate would pass vacuously)\n" if -d "$root/android/messaging/src/main" && !$dm_sql_groups;
+print "VACUOUS android/media/src/main: no SQL string found (the gate would pass vacuously)\n" if -d "$root/android/media/src/main" && !$media_sql_groups;
 print "VACUOUS $schema_rel: missing (the gate would pass vacuously)\n" unless -f "$root/$schema_rel";
 print "VACUOUS $schema_rel: no CREATE TABLE dm_ between the migration 5 markers (the gate would pass vacuously)\n" if $region_found && !$region_tables;
 print "VACUOUS $schema_rel: no CREATE TABLE ch_ between the migration 5 markers (the channel tables of migration 7 would not be read)\n" if $region_found && !$region_ch_tables;
-print "SUMMARY $dm_sql_groups DM SQL strings in android/messaging\n";
+print "VACUOUS $schema_rel: no CREATE TABLE media_ between the migration 5 markers (the media tables of migration 8 would not be read)\n" if $region_found && !$region_media_tables;
+print "SUMMARY $dm_sql_groups DM SQL strings in android/messaging, $media_sql_groups in android/media\n";
 ')" || fail "dm-no-replace.sh lexer stopped (exit $?)"
 
 while IFS= read -r line; do

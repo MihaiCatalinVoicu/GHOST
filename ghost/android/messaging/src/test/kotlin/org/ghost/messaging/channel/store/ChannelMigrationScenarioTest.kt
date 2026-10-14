@@ -47,6 +47,9 @@ import org.junit.Test
 class ChannelMigrationScenarioTest {
 
     private val upToV5 = Schema.migrations.filter { it.version <= 5 }
+
+    /** SCN-CI ends at v7, the version Phase 10 slice S3 wrote it for; migration 8 (Phase 11 slice S3) is applied on top at the end. */
+    private val upToV7 = Schema.migrations.filter { it.version <= 7 }
     private val channelNamespace = chBytes(32, 0x40)
     private val dmNamespace = chBytes(32, 0x42)
 
@@ -153,8 +156,8 @@ class ChannelMigrationScenarioTest {
             assertFalse(db.queryString("SELECT name FROM sqlite_master WHERE name = 'ch_channel'") != null)
             assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
             // the restart
-            assertEquals(listOf(7), MigrationRunner(db).migrate())
-            MigrationRunner(db).verifyIntegrity()
+            assertEquals(listOf(7), MigrationRunner(db, upToV7).migrate())
+            assertEquals(7, db.userVersion) // the runner's own integrity check is for the current version (8), asserted below
             val after = db.dump()
             for ((table, rows) in before) {
                 if (table in ChannelNames.v1) continue
@@ -170,17 +173,34 @@ class ChannelMigrationScenarioTest {
             assertEquals(listOf(3, 2), page.map { it.messageId[0].toInt() })
             assertArrayEquals(chBytes(100, 4), page[0].bodyEnv)
             assertEquals(1, MessageStore().unreadCount(db, 1_200))
-            // a fresh install ends with the identical schema text
+            // a fresh install of v7 ends with the identical schema text
             val fresh = JdbcSqlExecutor().use { f ->
-                MigrationRunner(f).migrate()
+                MigrationRunner(f, upToV7).migrate()
                 f.schemaText()
             }
             assertEquals(fresh, db.schemaText())
+            // ... and the same database then takes migration 8 (Phase 11, slice S3): the DM tables it rebuilds keep every row
+            // they hold (a message, its reaction, the session, the seen tag), the stores read them as before, and the schema
+            // is again a fresh install's.
+            val dmRows = { db.dump().filterKeys { it.startsWith("dm_") || it.startsWith("olm_") } }
+            val dmBeforeV8 = dmRows()
+            assertEquals(listOf(8), MigrationRunner(db).migrate())
+            MigrationRunner(db).verifyIntegrity()
+            assertEquals(dmBeforeV8, dmRows())
+            assertEquals(1L, db.queryLong("SELECT count(*) FROM dm_reaction"))
+            assertEquals(listOf(3, 2), MessageStore().conversationPage(db, chBytes(16, 1), 1_200, 10).map { it.messageId[0].toInt() })
+            assertNull(db.queryLong("PRAGMA foreign_key_check"))
+            val freshV8 = JdbcSqlExecutor().use { f ->
+                MigrationRunner(f).migrate()
+                f.schemaText()
+            }
+            assertEquals(freshV8, db.schemaText())
         }
     }
 
     /**
-     * **SCN-CI's group half** (slice S4, §19.37): the populated v5 database upgraded to v7, then SCN-CA on it — a real MLS
+     * **SCN-CI's group half** (slice S4, §19.37; migration 8 amended by Phase 11 S3, §22.5): the populated v5 database
+     * upgraded to the current version (v8 — migration 8 rebuilds the DM tables), then SCN-CA on it — a real MLS
      * group created over the upgraded schema, a member invited, admitted and joined, a post each way — and every DM row
      * as it was before the upgrade.
      */
@@ -188,7 +208,7 @@ class ChannelMigrationScenarioTest {
     fun scnCiThenScnCaOnTheUpgradedDatabaseKeepsEveryDmRow() {
         assumeTrue("ghost-dm-host is not loaded (-Dghost.dm.native)", ChannelWorld.nativeAvailable())
         populatedV5().use { db ->
-            assertEquals(listOf(6, 7), MigrationRunner(db).migrate())
+            assertEquals(listOf(6, 7, 8), MigrationRunner(db).migrate())
             val dmTables = setOf("dm_self", "dm_contact", "dm_conversation", "dm_message", "dm_reaction", "olm_session", "dm_seen")
             val before = db.dump().filterKeys { it in dmTables }
             assertEquals(dmTables, before.keys)

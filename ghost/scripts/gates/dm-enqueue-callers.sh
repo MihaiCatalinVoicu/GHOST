@@ -43,7 +43,13 @@
 #
 # **What it reads.** Every Kotlin and Java source on the Android production path (`*/src/main/*`)
 # of `android/messaging` and `android/app`, which are the two modules §13.1 lets drive the DM
-# engine. `android/sync` is deliberately **not** scanned: it *defines* these functions, and its own
+# engine, and, since Phase 11 slice S3, of `android/media` (the media store and engine, which depends
+# on `:sync` for its transactions and so could call a port: none of its files is on `ALLOWED_FILES`, so
+# `Outbox.enqueue`, `Namespaces.register` and the rest are refused there — design faza11-media.md 16.1
+# G-M6, "never from ingest, bind, verify, display or preview code"; `MediaFeeder` (`org.ghost.media.send`),
+# the one file that may enqueue `Consumer.MEDIA`, joins `ALLOWED_FILES` deliberately with the slice that builds it).
+# The directory need not exist: a tree without `android/media` is read as before, because the restricted-call
+# floor below, not a module list, is this gate's vacuity check. `android/sync` is deliberately **not** scanned: it *defines* these functions, and its own
 # engine calls them for the Phase 7 reasons (a capability arriving from the entitlement layer, a
 # namespace the directory repairs), which T19 and the Phase 7 gates cover. `android/entitlement`
 # is not scanned either: it installs the capabilities it redeems, which is its whole job.
@@ -344,7 +350,7 @@ step_allowed() { # $1 = basename, $2 = path relative to GHOST_ROOT
 # `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2); and since the review of S4 (§19.38) every
 # other source set but the test ones — `debug`, `gate`, a build type or flavour added later.
 dm_caller_files() {
-  find "$GHOST_ROOT/android/messaging" "$GHOST_ROOT/android/app" \
+  find "$GHOST_ROOT/android/messaging" "$GHOST_ROOT/android/app" "$GHOST_ROOT/android/media" \
     -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/*' \
     ! -path '*/src/test/*' ! -path '*/src/test[A-Z]*' ! -path '*/src/androidTest*' ! -path '*/src/testFixtures*' \
     -print 2>/dev/null || true
@@ -374,6 +380,7 @@ joined_lines() { # $1 = file
 }
 
 SCANNED=0
+MEDIA_SCANNED=0
 WITH_CALL=0
 while IFS= read -r file; do
   [ -n "$file" ] || continue
@@ -385,6 +392,8 @@ while IFS= read -r file; do
   channel_engine=0
   case "$rel" in
     android/messaging/src/*/org/ghost/messaging/channel/engine/*) channel_engine=1 ;;
+    # Phase 11 S3: the media module is read like the DM modules; counted for the vacuity floor below.
+    android/media/*) MEDIA_SCANNED=$((MEDIA_SCANNED + 1)) ;;
   esac
 
   # Each hit is read from a variable and matched with a here-string, never `producer | grep -q`:
@@ -544,10 +553,16 @@ while IFS= read -r file; do
   fi
 done < <(dm_caller_files)
 
-# Vacuity, twice over, because a gate that scans nothing passes. At least one production source of
-# the DM modules must be found, and at least one of them must really make one of the restricted
-# calls — the day `OwnerSteps.kt` moves or is renamed, this gate must fail rather than go quiet.
+# Vacuity, three times over, because a gate that scans nothing passes. At least one production source of
+# the DM modules must be found, one of them in `android/media` (below), and at least one of them must
+# really make one of the restricted calls — the day `OwnerSteps.kt` moves or is renamed, this gate must
+# fail rather than go quiet.
 [ "$SCANNED" -gt 0 ] || fail "no DM production sources found under $GHOST_ROOT/android (the gate would pass vacuously)"
+# ... and the media module is one of them (Phase 11 slice S3 and its review: the three modules were scanned as a set, so a tree whose
+# android/media moved away still satisfied the floor with the other two, and the gate went on passing over the module that holds the
+# media stores and, later, MediaFeeder; G-DM1 and the source gates that name the module had the check already).
+[ -d "$GHOST_ROOT/android/media/src/main" ] || fail "android/media/src/main: missing (the gate would pass vacuously)"
+[ ! -d "$GHOST_ROOT/android/media/src/main" ] || [ "$MEDIA_SCANNED" -gt 0 ] || fail "android/media/src/main: no sources found (the gate would pass vacuously)"
 [ "$WITH_CALL" -gt 0 ] || \
   fail "none of the $SCANNED scanned DM sources makes a restricted call (the gate would pass vacuously; see the S6 note in this script)"
 

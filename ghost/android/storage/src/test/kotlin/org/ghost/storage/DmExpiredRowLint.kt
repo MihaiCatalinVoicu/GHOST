@@ -47,7 +47,12 @@ import java.io.File
  *
  * **What the static half still cannot see**, recorded so it is not mistaken for coverage: a query
  * whose *table name* arrives through a Kotlin template or a constant (`"SELECT … FROM $DM_MESSAGE"`)
- * names no expiring table in its text. Adjacent literals joined by `+` are concatenated before
+ * names no expiring table in its text. (The **strict** mode of [readQueriesOverExpiringRows], which the media lint uses, closes
+ * that: a constant declared in the same file is substituted into `$NAME`, `${NAME}` and `+ NAME +`, and a table position that
+ * stays unresolved is reported as a read, so it fails until the DAO spells the table out. It also reads a write with a
+ * `RETURNING` clause as the read it is. Still unseen in either mode: a constant declared in another file, a name computed by a
+ * call, and the subqueries of a write — an `INSERT … SELECT`, a `DELETE … WHERE … IN (SELECT …)` — which are decided by the
+ * tests of the DAO that writes them.) Adjacent literals joined by `+` are concatenated before
  * matching ([literalRuns]), so the repo's own house style of splitting a long statement across
  * lines is covered — also when a `//` or a block comment sits between the literals and the `+`
  * (review of S3: `"SELECT body_env " + // why` followed by `"FROM ch_post …"` compiles, and was two
@@ -166,26 +171,50 @@ object DmExpiredRowLint {
      * [tables] is the set of expiring tables the scan looks for: the DM one by default, and
      * [ChannelExpiredRowLint] passes the channel tables (Phase 10 design §10.1, slice S3), so the scanner is
      * one implementation for both families.
+     *
+     * [strict] (the media lint, Phase 11 slice S3 and its review) widens what counts as a read, and only that: a write with a
+     * `RETURNING` clause; a table name that a constant of the same file supplies (`$NAME`, `${NAME}`, `+ NAME +`), which is
+     * substituted before matching; and a table position the scan cannot resolve, which is reported. Everything the default
+     * mode finds, strict finds too.
      */
-    fun readQueriesOverExpiringRows(sources: List<File>, tables: Set<String> = expiringTables.keys): List<Found> {
+    fun readQueriesOverExpiringRows(sources: List<File>, tables: Set<String> = expiringTables.keys, strict: Boolean = false): List<Found> {
         val out = ArrayList<Found>()
         for (file in sources) {
             val text = runCatching { file.readText() }.getOrNull() ?: continue
-            if (tables.none { text.contains(it, ignoreCase = true) }) continue
-            for (literal in literalRuns(text, stringLiterals(text))) {
-                val sql = literal.text
-                if (!selectLike.containsMatchIn(sql)) continue
-                if (!sql.contains("SELECT", ignoreCase = true)) continue
+            // Strict mode looks at every file: a read whose table name arrives through a constant spells none of the tables.
+            if (!strict && tables.none { text.contains(it, ignoreCase = true) }) continue
+            val literals = stringLiterals(text)
+            val constants = if (strict) stringConstants(text, literals) else emptyMap()
+            for (literal in literalRuns(text, literals, constants)) {
+                val sql = if (strict) substituteTemplates(literal.text, constants) else literal.text
+                val returning = strict && returningClause.containsMatchIn(sql)
+                if (!returning && !selectLike.containsMatchIn(sql)) continue
+                if (!returning && !sql.contains("SELECT", ignoreCase = true)) continue
                 if (schemaStatement.containsMatchIn(sql)) continue
-                if (writeStatement.containsMatchIn(sql)) continue
-                if (tables.none { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(sql) }) continue
+                // A write with a RETURNING clause hands rows back to its caller: a read path (strict mode).
+                if (!returning && writeStatement.containsMatchIn(sql)) continue
+                val names = tables.any { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(sql) }
+                // Strict mode: a table position that is not a literal (an unresolved template, or a literal that ends at
+                // FROM/JOIN and goes on with an expression) is a read of a table the scan cannot name; it fails until the
+                // DAO spells the table out.
+                val unresolved = strict && (unresolvedTemplate.containsMatchIn(sql) || (literal.dangling && endsAtTablePosition.containsMatchIn(sql.trimEnd())))
+                if (!names && !unresolved) continue
                 out += Found(file, literal.line, sql.replace(Regex("\\s+"), " ").trim())
             }
         }
         return out
     }
 
-    private data class Literal(val line: Int, val text: String, val start: Int, val end: Int)
+    /** A `RETURNING` clause: the statement answers rows. */
+    private val returningClause = Regex("\\bRETURNING\\b", RegexOption.IGNORE_CASE)
+
+    /** A Kotlin template where a table name belongs, left after the same-file constants were substituted. */
+    private val unresolvedTemplate = Regex("\\b(?:FROM|JOIN|INTO|UPDATE)\\s+\\$", RegexOption.IGNORE_CASE)
+
+    /** A statement whose text stops where a table name belongs. */
+    private val endsAtTablePosition = Regex("\\b(?:FROM|JOIN|INTO|UPDATE)$", RegexOption.IGNORE_CASE)
+
+    private data class Literal(val line: Int, val text: String, val start: Int, val end: Int, val dangling: Boolean = false)
 
     /** Whitespace, a `//` comment to the end of its line, or a block comment: none of them separates two literals. */
     private const val GAP = "(?:\\s|//[^\\n]*(?:\\n|\\z)|/\\*.*?\\*/)*"
@@ -201,23 +230,96 @@ object DmExpiredRowLint {
      * actually builds. The run keeps the **first** literal's line, which is where a reader looks
      * for the statement, and its text is exactly what a DAO would register verbatim.
      */
-    private fun literalRuns(text: String, literals: List<Literal>): List<Literal> {
+    private fun literalRuns(text: String, literals: List<Literal>, constants: Map<String, String> = emptyMap()): List<Literal> {
         val out = ArrayList<Literal>()
         var i = 0
         while (i < literals.size) {
-            var last = i
-            val body = StringBuilder(literals[i].text)
-            while (last + 1 < literals.size &&
-                concatenation.matches(text.substring(literals[last].end, literals[last + 1].start))
-            ) {
-                last += 1
-                body.append(literals[last].text)
-            }
-            out += Literal(literals[i].line, body.toString(), literals[i].start, literals[last].end)
+            val (joined, last, dangling) = chainFrom(text, literals, i, constants)
+            // A constant in front of the run (`LEAD + "media_blob WHERE ..."`) is the start of the string it builds.
+            val lead = if (constants.isEmpty()) null else leadingConstant.find(text.substring(maxOf(0, literals[i].start - LOOK_BEHIND), literals[i].start))
+            val prefix = lead?.let { constants[it.groupValues[1]] }.orEmpty()
+            out += Literal(literals[i].line, prefix + joined, literals[i].start, literals[last].end, dangling)
             i = last + 1
         }
         return out
     }
+
+    /**
+     * The string built by the literals from [from] on, joined by `+` (comments and whitespace between are nothing) and, in strict
+     * mode, by `+ CONSTANT +` where the constant is a string declared in the same file; the index of the last literal used; and
+     * whether the run ends with a `+` and an expression that is not a known constant (a table name computed at run time).
+     */
+    private fun chainFrom(text: String, literals: List<Literal>, from: Int, constants: Map<String, String>): Triple<String, Int, Boolean> {
+        var last = from
+        val body = StringBuilder(literals[from].text)
+        while (last + 1 < literals.size) {
+            val gap = text.substring(literals[last].end, literals[last + 1].start)
+            if (concatenation.matches(gap)) {
+                last += 1
+                body.append(literals[last].text)
+                continue
+            }
+            val value = joinedConstant.matchEntire(gap)?.let { constants[it.groupValues[1]] } ?: break
+            body.append(value)
+            last += 1
+            body.append(literals[last].text)
+        }
+        if (constants.isEmpty()) return Triple(body.toString(), last, false)
+        // After the last literal: `+ CONSTANT` ends the string (a table name), `+ something else` leaves it open.
+        val trailing = trailingExpression.find(text.substring(literals[last].end, minOf(text.length, literals[last].end + LOOK_AHEAD)))
+        if (trailing != null) {
+            val value = constants[trailing.groupValues[1]]
+            if (value != null) body.append(value)
+            return Triple(body.toString(), last, value == null)
+        }
+        return Triple(body.toString(), last, false)
+    }
+
+    private const val LOOK_BEHIND = 200
+    private const val LOOK_AHEAD = 200
+
+    /** `+ NAME +` between two literals. */
+    private val joinedConstant = Regex("^$GAP\\+$GAP([A-Za-z_][A-Za-z0-9_]*)$GAP\\+$GAP$", RegexOption.DOT_MATCHES_ALL)
+
+    /** `NAME +` right before a literal. */
+    private val leadingConstant = Regex("([A-Za-z_][A-Za-z0-9_]*)$GAP\\+$GAP$", RegexOption.DOT_MATCHES_ALL)
+
+    /** `+ NAME` right after a literal. */
+    private val trailingExpression = Regex("^$GAP\\+$GAP([A-Za-z_][A-Za-z0-9_]*)", RegexOption.DOT_MATCHES_ALL)
+
+    /** `const val NAME = "..." + "..."` (also `val`, with a `: String`): the strings a file declares, by name, with their `+` joins resolved. */
+    private val constantDeclaration = Regex("\\bval\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?::\\s*String\\s*)?=")
+
+    private fun stringConstants(text: String, literals: List<Literal>): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        // Two rounds, so that a constant may use one declared after it.
+        repeat(2) {
+            for (declaration in constantDeclaration.findAll(text)) {
+                val afterEquals = declaration.range.last + 1
+                val first = literals.indexOfFirst { it.start >= afterEquals }
+                if (first < 0 || !GAP_ONLY.matches(text.substring(afterEquals, literals[first].start))) continue
+                val (value, _, dangling) = chainFrom(text, literals, first, out)
+                if (!dangling) out[declaration.groupValues[1]] = value
+            }
+        }
+        return out
+    }
+
+    private val GAP_ONLY = Regex("^$GAP$", RegexOption.DOT_MATCHES_ALL)
+
+    /** `$NAME` and `${NAME}` of a declared constant, replaced by its text (a template of anything else stays as it is). */
+    private fun substituteTemplates(sql: String, constants: Map<String, String>): String {
+        if (constants.isEmpty() || !sql.contains('$')) return sql
+        var current = sql
+        repeat(3) {
+            current = templateReference.replace(current) { m ->
+                constants[m.groupValues[1].ifEmpty { m.groupValues[2] }] ?: m.value
+            }
+        }
+        return current
+    }
+
+    private val templateReference = Regex("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}|\\$([A-Za-z_][A-Za-z0-9_]*)")
 
     /**
      * String literals of a Kotlin or Java source, `"""raw"""` ones joined across their lines. This

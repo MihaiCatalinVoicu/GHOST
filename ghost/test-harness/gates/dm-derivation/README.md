@@ -14,3 +14,10 @@ Used by `scripts/gates/self-test.sh` with `GHOST_ROOT` pointing at each director
 - `negative-channel-package/`: Phase 10 slice S3 — an HMAC keyed by a channel identifier in
   `org.ghost.messaging.channel.store`, which the gate reads like the rest of `:messaging`. Exactly one
   violation, line 13.
+- `negative-no-media/`: the `positive/` tree with `android/media` removed — the review of Phase 11 slice S3 found that the gate
+  read four modules as a set and passed a tree that lost one. Exactly one violation: `android/media/src/main: missing`.
+  (Every other tree of this directory carries a clean `CleanMediaStore.kt` for the same reason.)
+- `negative-media-package/`: Phase 11 slice S3 — an HMAC keyed by an object identifier (line 14) and a
+  `ghost/v1/media/…` label (line 19) in `org.ghost.media.store`, which the gate reads like the DM modules:
+  every media derivation lives in `ghost-client-media`, so the Kotlin of `:media` holds no site and no label.
+  Exactly two violations.

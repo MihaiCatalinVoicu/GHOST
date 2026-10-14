@@ -314,7 +314,7 @@ class OwnerWorld(
         if (!withItem) return
         sql.exec(
             "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, control, l0_env, " +
-                "deadline_hour, state) VALUES (?, ?, ?, 1, NULL, ?, ?, 'enqueued')",
+                "deadline_hour, state, ttl_seconds) VALUES (?, ?, ?, 1, NULL, ?, ?, 'enqueued', 604800)",
             listOf(
                 messageId,
                 ByteArray(16) { contact.toByte() },

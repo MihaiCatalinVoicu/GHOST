@@ -66,6 +66,14 @@ class DmSchemaIntrospectionTest {
      */
     private val countersOfMigration6 = setOf("relay_register_capability.generation")
 
+    /**
+     * The one integer counter of migration 8's Q27 fold (faza11-media.md §22.5 row 22): the
+     * reschedule bound of faza9-dm.md §21.8 point 4, added by `ALTER TABLE` because `dm_scheduled`
+     * is not one of the five rebuilt tables. Its name matches none of [timeLike]'s words — the
+     * executed case below is what pins its `typeof` CHECK.
+     */
+    private val countersOfMigration8 = setOf("dm_scheduled.attempts")
+
     /** §13.6 steps 5 and 6: the 24 time columns migration 5 adds, verbatim from R-M3. */
     private val timeColumnsOfMigration5 = setOf(
         "dm_self.expiry_clock_minute", "dm_self.accept_after_minute",
@@ -166,6 +174,10 @@ class DmSchemaIntrospectionTest {
         // Phase 7 §11.2 #8: a TTL bucket is a duration, not a point in time. (The `*attempts`
         // counters the `:sync` test exempts do not appear here: no word of the rule matches them.)
         "outbox_op.ttl_seconds" to "a TTL bucket in seconds, a duration",
+        // Q27/S3b: the relay TTL bucket the outbound item's send committed — R-T3's larger of the
+        // old and the new for a TIMER_SET — kept with the pending item; a duration, like
+        // `outbox_op.ttl_seconds` and `media_upload.ttl_seconds`, not a point in time.
+        "dm_outbound_item.ttl_seconds" to "the item's TTL bucket in seconds, a duration",
         // Phase 9 §7.5: the position of a message inside its author minute, not a second.
         "dm_message.minute_index" to "the index of a message within its author minute, never a finer time",
         // Phase 9 §9.1: a timer is a bucket code (0..5) and a version counter, not a time. This is
@@ -200,9 +212,9 @@ class DmSchemaIntrospectionTest {
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
         val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
-            timeColumnsBeforeV4 + ChannelSchema.timeColumns
+            timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
         val indices = periodIndices + ChannelSchema.epochColumns
-        val exempt = notTimes + ChannelSchema.notTimes
+        val exempt = notTimes + ChannelSchema.notTimes + MediaSchema.notTimes
         val foundTimes = HashSet<String>()
         val foundIndices = HashSet<String>()
         val usedExemptions = HashSet<String>()
@@ -340,8 +352,8 @@ class DmSchemaIntrospectionTest {
     private fun anOutboundItem(db: JdbcSqlExecutor) {
         aContact(db)
         db.exec(
-            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, deadline_hour, state) " +
-                "VALUES (?, ?, 4, 'reconnect', 3600, 'pending')",
+            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, deadline_hour, state, ttl_seconds) " +
+                "VALUES (?, ?, 4, 'reconnect', 3600, 'pending', 86400)",
             listOf(bytes(16, 1), bytes(16, 1)),
         )
     }
@@ -497,8 +509,16 @@ class DmSchemaIntrospectionTest {
         // ---- the outbound path
         TypedColumn(
             "dm_outbound_item.deadline_hour", 3600,
-            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, deadline_hour, state) " +
-                "VALUES (?, ?, 4, 'reconnect', {v}, 'pending')",
+            "INSERT INTO dm_outbound_item(item_id, contact_id, kind, control, deadline_hour, state, ttl_seconds) " +
+                "VALUES (?, ?, 4, 'reconnect', {v}, 'pending', 86400)",
+            listOf(bytes(16, 1), bytes(16, 1)), prepare = ::aContact,
+        ),
+        // Q27/S3b (migration 8's fold): the reschedule bound's counter, added by `ALTER TABLE`
+        // because dm_scheduled is not one of the five rebuilt tables.
+        TypedColumn(
+            "dm_scheduled.attempts", 1,
+            "INSERT INTO dm_scheduled(sched_id, contact_id, what, due_minute, attempts) " +
+                "VALUES (?, ?, 'reconnect', 600, {v})",
             listOf(bytes(16, 1), bytes(16, 1)), prepare = ::aContact,
         ),
         TypedColumn(
@@ -663,7 +683,8 @@ class DmSchemaIntrospectionTest {
     @Test
     fun everyTypedColumnRefusesAFractionalValue() {
         val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
-            countersOfMigration6 + periodIndices - typeofCheckedByForeignKey - executedByTheEntitlementSuite
+            countersOfMigration6 + countersOfMigration8 + periodIndices - typeofCheckedByForeignKey -
+            executedByTheEntitlementSuite
         assertEquals(
             "a declared integer-typed column that no case of this test ever writes",
             declared.sorted(),

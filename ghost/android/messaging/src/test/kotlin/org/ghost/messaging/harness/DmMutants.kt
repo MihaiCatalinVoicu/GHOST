@@ -600,7 +600,8 @@ internal object DmMutants {
 
     /**
      * **ME-20 — the retained blob survives its message's deletion** (§7.5 "Retained blob", §21.10
-     * point 2, T25; built by §22.38). A statement rewrite of migration 5: `dm_outbound_op.item_id`
+     * point 2, T25; built by §22.38). A statement rewrite of migration 5 (and of migration 8, which rebuilds the table):
+     * `dm_outbound_op.item_id`
      * loses its foreign key — the whole clause, since a key kept without its cascade makes SWEEP's
      * delete fail instead of leaving the op — so when SWEEP deletes a message whose op is still in
      * flight, the cascade takes the message and its item and leaves the op with its blob, and the
@@ -630,8 +631,13 @@ internal object DmMutants {
         actsAt = { label -> label.startsWith("DELETE FROM dm_message WHERE message_id") },
     )
 
-    /** `dm_outbound_op.item_id`'s foreign key, as migration 5 writes it (the spacing is the schema's). */
-    private val ME20_KEY = Regex("""item_id\s+BLOB REFERENCES dm_outbound_item\(item_id\) ON DELETE CASCADE,""")
+    /**
+     * `dm_outbound_op.item_id`'s foreign key, as migration 5 writes it (the spacing is the schema's) **and as migration 8
+     * writes it**: migration 8 (Phase 11, slice S3) rebuilds the table as `dm_outbound_op_v8`, whose key names its parent
+     * `dm_outbound_item_v8` until the renames, and `startsWith("CREATE TABLE dm_outbound_op")` matches both statements, so
+     * the rewritten world ends with the table the mutant means: the one migration 8 leaves, without the key.
+     */
+    private val ME20_KEY = Regex("""item_id\s+BLOB REFERENCES dm_outbound_item(?:_v8)?\(item_id\) ON DELETE CASCADE,""")
 
     /** MC-30's decorator: every `sessionPrune` reports that it removed nothing and leaves the state as it was. */
     private class NoPrune(private val real: org.ghost.messaging.port.DmEnvelopes) : org.ghost.messaging.port.DmEnvelopes by real {

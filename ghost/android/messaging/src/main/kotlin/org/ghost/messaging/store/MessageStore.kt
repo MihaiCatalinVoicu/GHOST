@@ -47,6 +47,8 @@ internal class MessageStore {
         val l0Env: ByteArray?,
         val deadlineHour: Long,
         val state: String,
+        /** Q27/S3b: R-T3's bucket, fixed with the item at its send (`ttl_seconds`). */
+        val ttlSeconds: Long,
     ) {
         override fun toString(): String = "ItemRow(kind=$kind, state=$state)"
     }
@@ -433,13 +435,20 @@ internal class MessageStore {
     fun item(sql: SqlExecutor, itemId: ByteArray): ItemRow? {
         var row: ItemRow? = null
         sql.query(
-            "SELECT item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state " +
+            "SELECT item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state, ttl_seconds " +
                 "FROM dm_outbound_item WHERE item_id = ?",
             listOf(itemId),
         ) { r -> row = readItem(r) }
         return row
     }
 
+    /**
+     * The TTL bucket is written with the item (Q27/S3b, `ttl_seconds`): for a TIMER_SET it is
+     * R-T3's larger of the old and the new (`DmTimers.timerSetBucket`), so the pending path —
+     * `EST-READY`'s flush and the FAILED retry — can store the bucket the send committed instead
+     * of recomputing the L0's new-timer bucket (faza9-dm.md §22.21 item 2). The column is fixed
+     * for the item's whole life, like `deadline_hour`.
+     */
     @Suppress("LongParameterList")
     fun insertItem(
         tx: SyncTransaction,
@@ -451,11 +460,12 @@ internal class MessageStore {
         l0Env: ByteArray?,
         deadlineHour: Long,
         state: String,
+        ttlSeconds: Long,
     ) {
         tx.sql.exec(
             "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, control, l0_env, " +
-                "deadline_hour, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            listOf(itemId, contactId, messageRef, kind.toLong(), control, l0Env, deadlineHour, state),
+                "deadline_hour, state, ttl_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            listOf(itemId, contactId, messageRef, kind.toLong(), control, l0Env, deadlineHour, state, ttlSeconds),
         )
     }
 
@@ -498,6 +508,7 @@ internal class MessageStore {
         l0Env = if (r.isNull(5)) null else r.blob(5),
         deadlineHour = r.long(6),
         state = r.string(7),
+        ttlSeconds = r.long(8),
     )
 
     // ----------------------------------------------------------- dm_outbound_op

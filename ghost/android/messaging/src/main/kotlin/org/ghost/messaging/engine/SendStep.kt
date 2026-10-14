@@ -1105,6 +1105,9 @@ internal class SendStep(
                     l0Env = self.content.seal(l0Nonce, messageId, l0.l0),
                     deadlineHour = deadlineHour,
                     state = MessageStore.ITEM_PENDING,
+                    // Q27/S3b: R-T3's bucket (for a TIMER_SET the larger of the old and the new)
+                    // is fixed with the item, so the pending path can read it back (§22.21 item 2).
+                    ttlSeconds = ttl.seconds.toLong(),
                 )
 
                 // S4: no usable session, so the item waits and the caller runs `EST-START`.

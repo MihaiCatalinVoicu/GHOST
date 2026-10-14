@@ -20,6 +20,13 @@
 # every occurrence, an entry whose clause is found fewer times than it says is stale and fails, and
 # the allowlist can name nothing outside the two DM modules. Both DM modules' `src/main` must exist
 # and `android/messaging/src/main` must hold sources.
+# Phase 11 (design faza11-media.md 13.1, 16.1 last row; slice S3): the same rule covers `android/media`
+# (the media store and engine: its crash enumeration, SCN-MA ... SCN-MF, relies on an injected crash
+# reaching the top level, and its file operations catch the one typed `IOException`, never a catch-all).
+# `:media` is read as a DM module **with no allowlist entry possible**: its hits are compared with the
+# allowlist like the DM modules', and the allowlist's path check still names only the two DM modules, so a
+# catch-all in `:media` fails every time until a later slice widens that check on purpose. Its `src/main`
+# must exist and hold sources.
 #
 # **How the sources are read** (§22.33 item 16, the evasion review of this gate). Each file is one
 # string (`source-text.pl`) with its comments and string contents blanked and Kotlin backtick quoting
@@ -51,7 +58,7 @@ list_files() {
     dir="$GHOST_ROOT/android/$area/src/main"
     [ -d "$dir" ] && find "$dir" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | sort | sed "s|^|$area |"
   done
-  for module in messaging crypto-bridge; do
+  for module in messaging crypto-bridge media; do
     for set in main gate debug release; do
       dir="$GHOST_ROOT/android/$module/src/$set"
       [ -d "$dir" ] && find "$dir" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | sort | sed "s|^|dm |"
@@ -60,7 +67,7 @@ list_files() {
   if [ -d "$GHOST_ROOT/android" ]; then
     find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
       \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' -o -path '*/src/debug/*' \) -print 2>/dev/null \
-      | grep -vE '/android/(sync|entitlement|messaging|crypto-bridge)/src/' | sort | sed 's|^|alias |' || true
+      | grep -vE '/android/(sync|entitlement|messaging|crypto-bridge|media)/src/' | sort | sed 's|^|alias |' || true
   fi
   return 0
 }
@@ -147,12 +154,14 @@ if [ -f "$ALLOW" ]; then
     allowed["$path|$clause"]="$count"
   done < "$ALLOW"
 fi
-for module in messaging crypto-bridge; do
+for module in messaging crypto-bridge media; do
   [ -d "$GHOST_ROOT/android/$module/src/main" ] || fail "$GHOST_ROOT/android/$module/src/main: missing (the gate would pass vacuously)"
 done
-[ ! -d "$GHOST_ROOT/android/messaging/src/main" ] \
-  || [ -n "$(find "$GHOST_ROOT/android/messaging/src/main" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | head -n 1)" ] \
-  || fail "$GHOST_ROOT/android/messaging/src/main: no sources found (the gate would pass vacuously)"
+for module in messaging media; do
+  [ ! -d "$GHOST_ROOT/android/$module/src/main" ] \
+    || [ -n "$(find "$GHOST_ROOT/android/$module/src/main" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | head -n 1)" ] \
+    || fail "$GHOST_ROOT/android/$module/src/main: no sources found (the gate would pass vacuously)"
+done
 for key in "${!found[@]}"; do
   want="${allowed["$key"]:-0}"
   if [ "${found["$key"]}" -gt "$want" ]; then

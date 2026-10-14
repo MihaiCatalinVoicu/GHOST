@@ -1,0 +1,3 @@
+# Fixture allowlist (G-DM3 positive).
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|SecretKeySpec(recognitionKey, "HmacSHA256")|1|fun hint(recognitionKey: ByteArray|fixture: the recognition key of the hint
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|ghost/v1/dm-hint|1|-|fixture: the hint label

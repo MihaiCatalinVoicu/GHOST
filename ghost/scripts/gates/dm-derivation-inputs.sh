@@ -27,8 +27,13 @@
 # What is read: every Kotlin and Java file of the production source sets (every `src/<set>` but
 # `test`, `androidTest`, `testShared`, `testFixtures`, `equivalence`, `deviceRunner`) of
 # `android/messaging`, `android/crypto-bridge` and `android/app` — the DM modules and the app's DM
-# wiring — each as **one string** (`source-text.pl`: comments blanked, so a call written across
-# lines, with a comment inside or with a quoted name is the call it spells). Three rules:
+# wiring — and, since Phase 11 slice S3, `android/media` (design faza11-media.md 13.1, 13.2: every media
+# derivation, the file key, the fragment keys, the namespace labels, lives in `ghost-client-media`
+# behind `MediaNative`, so the Kotlin of `:media` holds no KDF site, no seed branch and no `ghost/v<n>/`
+# label, and the allowlist's path check below still names only the three modules that may hold one: an
+# entry for `:media` is refused until a later slice widens it on purpose) — each as **one string**
+# (`source-text.pl`: comments blanked, so a call written across lines, with a comment inside or with a
+# quoted name is the call it spells). Three rules:
 #
 #   1. **Keys handed to a primitive.** Every `SecretKeySpec(…)` (a MAC or a cipher key: a text gate
 #      cannot tell them apart when the algorithm is a constant), every `Hkdf.derive|extract|expand(…)`
@@ -68,7 +73,7 @@ use warnings;
 use File::Find;
 require "$ENV{GATES_DIR}/source-text.pl";
 my $root = $ENV{GHOST_ROOT};
-my %dm_modules = map { $_ => 1 } ("messaging", "crypto-bridge", "app");
+my %dm_modules = map { $_ => 1 } ("messaging", "crypto-bridge", "app", "media");
 my %test_sets = map { $_ => 1 } qw(test androidTest testShared testFixtures equivalence deviceRunner);
 sub report { print "VIOLATION\t$_[0]\n" }
 # A call or a declaration compared without its layout: whitespace and a trailing comma are formatting.
@@ -112,6 +117,7 @@ if (-d "$root/android") {
 my $DM_LABEL = qr{^ghost/v\d+/(?:dm|card/|gate/)|-verifier$};
 my $good_branch = qr/\.\s*deriveBranch\s*\(\s*(?:org\s*\.\s*ghost\s*\.\s*identity\s*\.\s*)?DerivationLabels\s*\.\s*[A-Z][A-Z0-9_]*\s*\)/;
 my ($scanned, $declarations) = (0, 0);
+my %scanned_in;
 for my $file (sort @files) {
   (my $rel = $file) =~ s{^\Q$root\E/}{};
   next unless $rel =~ m{^android/([^/]+)/src/([^/]+)/};
@@ -140,6 +146,7 @@ for my $file (sort @files) {
     next;
   }
   $scanned++;
+  $scanned_in{$module}++ if $set eq "main";
 
   # Rule 1: the sites. The argument list is balanced on the code view (strings blanked) and read
   # back from the view that keeps them, at the same offsets.
@@ -210,18 +217,25 @@ for my $k (sort keys %label) {
 }
 report("no RootEntropy.deriveBranch declaration found in android/identity/src/main (rule 2 would hold vacuously)") unless $declarations == 1;
 print "SCANNED\t$scanned\n";
+print "MODULE\t$_ $scanned_in{$_}\n" for sort keys %scanned_in;
 ')" || { echo "dm-derivation-inputs: the scanner stopped" >&2; exit 2; }
 
 scanned=0
+declare -A in_module=()
 while IFS= read -r line; do
   kind="${line%%$'\t'*}"
   rest="${line#*$'\t'}"
   case "$kind" in
     VIOLATION) fail "$rest" ;;
     SCANNED) scanned="$rest" ;;
+    MODULE) in_module["${rest% *}"]="${rest##* }" ;;
   esac
 done <<< "$out"
 [ "$scanned" -gt 0 ] || fail "no production source of the DM modules found under $GHOST_ROOT (the gate would pass vacuously)"
+# The media module is read as a DM module (Phase 11 slice S3 and its review): the floor above is met by the other three, so a tree
+# whose android/media moved away must fail on its own account.
+[ -d "$GHOST_ROOT/android/media/src/main" ] || fail "android/media/src/main: missing (the gate would pass vacuously)"
+[ ! -d "$GHOST_ROOT/android/media/src/main" ] || [ "${in_module[media]:-0}" -gt 0 ] || fail "android/media/src/main: no sources found (the gate would pass vacuously)"
 [ -f "$ALLOW" ] || fail "scripts/gates/dm-derivation-inputs.allow: missing (every site would fail)"
-echo "[dm-derivation-inputs] $scanned production sources of android/{messaging,crypto-bridge,app} read"
+echo "[dm-derivation-inputs] $scanned production sources of android/{messaging,crypto-bridge,app,media} read"
 finish dm-derivation-inputs

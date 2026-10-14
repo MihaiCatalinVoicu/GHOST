@@ -1622,6 +1622,15 @@ dmenq_case placement 4 "app/messaging/channel/engine/ChannelReflexStep.kt:9:" \
   "refuses an :app file under a channel engine package path (the boundary is :messaging's channel engine)"
 dmenq_case placement 4 "android/app/src/debug/kotlin/org/ghost/app/Reflex.kt:6:" "reads the debug source set"
 dmenq_case placement 4 "android/app/src/gate/kotlin/org/ghost/app/gate/Reflex.kt:6:" "reads the gate source set"
+# Phase 11, slice S3: the media store (org.ghost.media.store of android/media) makes no port call (design faza11-media.md 16.1,
+# G-M6); the gate reads the new module like :messaging, so a store that enqueues an operation is refused, and MediaFeeder
+# (org.ghost.media.send) will have to be put on the allowlist on purpose.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-media"
+dmenq_case media 1 "media/store/MediaMirror.kt:11" "refuses a media store that enqueues an operation"
+# A tree whose media module moved away (review of slice S3): the other two modules meet the floor of sources and the fixture holds the
+# one allowed restricted call, so G-DM2 must fail for the missing module alone (the first version passed this tree).
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-no-media"
+dmenq_case no-media 1 "android/media/src/main: missing" "refuses a tree whose media module moved away"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1803,6 +1812,23 @@ dmrep_case v7tables 4 "ChannelMirrorStore.kt:16: ON CONFLICT ... DO UPDATE" \
 expect_fail dm-no-replace "$HARNESS/negative-dm-replace-no-channel"
 dmrep_case no-channel 1 "no CREATE TABLE ch_ between the migration 5 markers" \
   "refuses a schema whose migration 5 region holds no channel table"
+# Phase 11, slice S3: the five media tables of migration 8 (`media_*`) are REPLACE-guarded like the DM tables (design
+# faza11-media.md 13.6), and the media store (`android/media`) is read whole like :messaging. `v8tables` holds, in the
+# media store, an upsert on `media_blob`, an INSERT OR REPLACE on `media_fragment`, one on a table that is no media table
+# (the module is read, not the name), `ContentValues` and `insertWithOnConflict(..., 5)`; in a `:sync` store an upsert on
+# `media_outbound_op`, an INSERT OR REPLACE on `MEDIA_OBJECT` and a REPLACE INTO on `Media_Upload` (the name in any case);
+# in a later migration of Schema.kt an INSERT OR REPLACE on `media_object`: 9 violations, beside the writers' own
+# UPDATE-then-INSERT form, INSERT OR IGNORE, DO NOTHING, replace(), `social_media_cache`, `mediate_log` and the pre-DM
+# REPLACE, none of which may count. `no-media` is a schema whose migration 5 region holds no `media_` table and a media
+# store with no SQL string (2).
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-v8tables"
+dmrep_case v8tables 9 "ReplacingMediaStore.kt:10: ON CONFLICT ... DO UPDATE" \
+  "reports the writers of the media tables: the media store read whole, a store outside it by the table name, a later migration"
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-no-media"
+dmrep_case no-media 2 "no CREATE TABLE media_ between the migration 5 markers" \
+  "refuses a schema whose migration 5 region holds no media table"
+dmrep_case no-media 2 "android/media/src/main: no SQL string found" \
+  "refuses a media store that holds no SQL string"
 if bash "$DIR/dm-no-replace.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-no-replace accepts the real DM SQL"
 else
@@ -1883,6 +1909,17 @@ evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:16: ON CONFLICT ..
 evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:19: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_post"
 evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:22: REPLACE INTO in DM SQL" "reports a REPLACE INTO on mls_kv"
 evasion_named dm-no-replace "storage/Schema.kt:25: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_channel in a later migration"
+# G-DM4, Phase 11 slice S3: each violation of the media-table fixture by line (the media store, a store outside it, a later migration).
+evasion_count dm-no-replace negative-dm-replace-v8tables 9
+evasion_named dm-no-replace "media/store/ReplacingMediaStore.kt:10: ON CONFLICT ... DO UPDATE in DM SQL" "reports an upsert on media_blob in the media store"
+evasion_named dm-no-replace "media/store/ReplacingMediaStore.kt:12: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on media_fragment"
+evasion_named dm-no-replace "media/store/ReplacingMediaStore.kt:14: OR REPLACE, REPLACE INTO in DM SQL" "reads every literal of the media store, whatever table it names"
+evasion_named dm-no-replace "media/store/ReplacingMediaStore.kt:16: ContentValues in a DM module" "reports ContentValues in the media store"
+evasion_named dm-no-replace "media/store/ReplacingMediaStore.kt:18: insertWithOnConflict in a DM module" "reports insertWithOnConflict in the media store"
+evasion_named dm-no-replace "sync/store/MediaMirrorStore.kt:9: ON CONFLICT ... DO UPDATE in DM SQL" "reports an upsert on media_outbound_op outside the media module"
+evasion_named dm-no-replace "sync/store/MediaMirrorStore.kt:11: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on MEDIA_OBJECT"
+evasion_named dm-no-replace "sync/store/MediaMirrorStore.kt:13: REPLACE INTO in DM SQL" "reports a REPLACE INTO on Media_Upload"
+evasion_named dm-no-replace "storage/Schema.kt:26: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on media_object in a later migration"
 # G-DM4, review of slice S3: a table name is matched without regard to case (SQLite resolves it so) and every
 # module's `gate`, `debug` and `release` source sets are read, not only the two DM modules'. One fixture of six
 # violations the first version passed: three in a `:sync` store in capitals or mixed case, and one in each of
@@ -1940,6 +1977,35 @@ evasion_count dm-no-replace $CHE 1
 evasion_named dm-no-replace "$CHF:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel engine"
 evasion_count dm-no-fts $CHE 2
 evasion_named dm-no-fts "$CHF:25:" "reads the package of the channel engine (the virtual table and the token)"
+# The same for the media store (Phase 11 design faza11-media.md 13.1, 13.6 and the last row of 16.1; slice S3): anti-placeholder,
+# no-logging, sync-no-catch-all, kotlin-clearnet, G-DM1, G-DM4 and G-DM6 read `org.ghost.media.store` of the new module
+# `android/media`. One fixture, one violation of each: a gate whose scope named the DM modules one by one would pass this
+# tree. G-DM2 (dm-enqueue-callers) and G-DM3 (dm-derivation-inputs) have fixtures of their own, further down, because
+# each needs a file of its own to be non-vacuous.
+MDP=negative-media-packages
+MDS="android/media/src/main/kotlin/org/ghost/media/store/LeakyMediaStore.kt"
+evasion_count anti-placeholder $MDP 1
+evasion_named anti-placeholder "$MDS:11:" "reads the package of the media store"
+evasion_count no-logging $MDP 1
+evasion_named no-logging "$MDS:14:" "reads the package of the media store"
+evasion_count sync-no-catch-all $MDP 1
+evasion_named sync-no-catch-all "$MDS:19: catch (e: Exception)" "reads the package of the media store against the allowlist"
+evasion_count kotlin-clearnet $MDP 1
+evasion_named kotlin-clearnet "$MDS:3:import java.net.Socket" "reads the package of the media store"
+evasion_count messaging-no-network $MDP 2
+evasion_named messaging-no-network "$MDS:3:import java.net.Socket (G-DM1: a DM module names a network package" "reads the package of the media store (the package)"
+evasion_named messaging-no-network "$MDS:3:import java.net.Socket (G-DM1: a DM module names a socket, address or HTTP class" "reads the package of the media store (the class)"
+evasion_count dm-no-replace $MDP 1
+evasion_named dm-no-replace "$MDS:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the media store"
+evasion_count dm-no-fts $MDP 2
+evasion_named dm-no-fts "$MDS:25:" "reads the package of the media store (the virtual table and the token)"
+# A tree whose media module moved away is refused by the three gates that require it to exist (it would otherwise be read as
+# a tree with one module fewer): one violation each, for that reason alone.
+for mvg in messaging-no-network sync-no-catch-all dm-no-replace; do
+  expect_fail $mvg "$HARNESS/negative-media-vacuous"
+  evasion_count $mvg negative-media-vacuous 1
+  evasion_named $mvg "android/media/src/main: missing" "refuses a tree whose media module moved away"
+done
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
@@ -1977,6 +2043,16 @@ evasion_named dm-derivation-inputs "channel/store/ChannelLeak.kt:13: SecretKeySp
 evasion_count dm-derivation-inputs dm-derivation/negative-channel-engine 1
 evasion_named dm-derivation-inputs "channel/engine/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
   "reports a MAC keyed by a channel identifier in the channel engine package"
+# Phase 11, slice S3: the media store is read like the DM modules (every media derivation lives in ghost-client-media).
+evasion_count dm-derivation-inputs dm-derivation/negative-media-package 2
+evasion_named dm-derivation-inputs "media/store/MediaLeak.kt:14: SecretKeySpec(objectId, \"HmacSHA256\") is not on G-DM3's allowlist" \
+  "reports a MAC keyed by an object identifier in the media store package"
+evasion_named dm-derivation-inputs "media/store/MediaLeak.kt:19: \"ghost/v1/media/fragment\": a DM label that is not on G-DM3's allowlist for this file" \
+  "reports a media label in the media store package"
+# The media module moved away (review of slice S3): messaging, crypto-bridge and identity meet the floor, so G-DM3 must fail for the
+# missing module alone (the first version passed this tree).
+evasion_count dm-derivation-inputs dm-derivation/negative-no-media 1
+evasion_named dm-derivation-inputs "android/media/src/main: missing" "refuses a tree whose media module moved away"
 if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else

@@ -62,7 +62,7 @@ class ChannelSchemaIntrospectionTest {
         val all = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { all += it.string(0) }
         for (gone in ChannelSchema.v1Tables) assertFalse("$gone is dropped by migration 7", gone in all)
-        assertTrue("media and media_blobs stay for Phase 11", "media" in all && "media_blobs" in all)
+        for (gone in MediaSchema.v1Tables) assertFalse("$gone is dropped by migration 8 (Phase 11)", gone in all)
     }
 
     @Test

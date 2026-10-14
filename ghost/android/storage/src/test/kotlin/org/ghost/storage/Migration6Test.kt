@@ -27,7 +27,8 @@ class Migration6Test {
     /**
      * What `verifyIntegrity` asserts, for a database at v6: this class tests migration 6 on its own, and
      * the runner's check is against the **current** schema (v7 has since dropped four tables and added
-     * 26), so a v6 database is verified against the objects of v1 to v6 and the version it is at.
+     * 26, v8 dropped two and added five), so a v6 database is verified against the objects of v1 to v6 and
+     * the version it is at.
      */
     private fun verifyAtV6(db: SqlExecutor) {
         assertEquals(6, db.userVersion)
@@ -35,8 +36,9 @@ class Migration6Test {
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { tables += it.string(0) }
         val triggers = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'") { triggers += it.string(0) }
-        val expectedTables = Schema.expectedTables - ChannelSchema.tables + ChannelSchema.v1Tables
-        val expectedTriggers = Schema.expectedTriggers - ChannelSchema.rules - ChannelSchema.guards - ChannelSchema.rowidChecks
+        val expectedTables = Schema.expectedTables - ChannelSchema.tables - MediaSchema.tables + ChannelSchema.v1Tables + MediaSchema.v1Tables
+        val expectedTriggers = Schema.expectedTriggers - ChannelSchema.rules - ChannelSchema.guards - ChannelSchema.rowidChecks -
+            MediaSchema.rules - MediaSchema.guards
         assertEquals(emptySet<String>(), expectedTables - tables)
         assertEquals(emptySet<String>(), expectedTriggers - triggers)
         for ((pragma, expected) in Schema.expectedPragmaValues) assertEquals(pragma, expected, db.queryLong("PRAGMA $pragma"))

@@ -15,5 +15,6 @@ Used by `scripts/gates/self-test.sh` with `GHOST_ROOT` pointing here (Phase 10 d
 
 `client-core/mls/src/lib.rs` holds a `TODO` without a ticket (`anti-placeholder.sh`) and a `println!`
 (`no-logging.sh`): the channel crate is read by the two gates that read Rust. The other files are the clean
-minimum each gate needs not to pass vacuously (both DM modules, `:sync`, `:entitlement`, a `Schema.kt` with the
-migration 5 markers). Nothing here is compiled or shipped.
+minimum each gate needs not to pass vacuously (both DM modules, `:media` (Phase 11 slice S3: a clean store, and a `media_`
+table in the schema), `:sync`, `:entitlement`, a `Schema.kt` with the migration 5 markers). Nothing here is compiled or
+shipped.
