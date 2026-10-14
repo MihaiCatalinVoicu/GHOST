@@ -15,6 +15,7 @@ import org.ghost.messaging.engine.EstablishmentSteps
 import org.ghost.messaging.engine.ExpirySchedule
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
+import org.ghost.messaging.engine.MediaOrphanSteps
 import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.engine.PairKeySteps
@@ -193,6 +194,7 @@ class OwnerWorld(
             clock = clock,
             contexts = contexts,
             media = media,
+            mediaOrphans = MediaOrphanSteps(crypto, clock),
         )
     }
 
@@ -748,6 +750,7 @@ class FakeDmCrypto : DmCrypto {
             card = derive("card", cardIndex, 0, 131),
             inboxNamespace = derive("inbox-ns", cardIndex, 0, 32),
             bundleNamespace = derive("bundle-ns", cardIndex, 0, 32),
+            mediaNamespace = derive("media-ns", cardIndex, 0, 32),
             recognitionIntro = derive("rec-intro", cardIndex, 0, 32),
             recognitionBundle = derive("rec-bundle", cardIndex, 0, 32),
             olmIdentity = derive("olm", cardIndex, 0, 32),
@@ -761,6 +764,7 @@ class FakeDmCrypto : DmCrypto {
             read = derive("rx", cardIndex, slot, 32),
             deposit = derive("d", cardIndex, slot, 32),
             fetch = derive("rp", cardIndex, slot, 32),
+            mediaRead = derive("rm", cardIndex, slot, 32),
         )
     }
 
@@ -812,8 +816,10 @@ class FakeDmCrypto : DmCrypto {
             DmCards.Derived(
                 inboxNamespace = derive("inbox-ns-$tag", 0, 0, 32),
                 bundleNamespace = derive("bundle-ns-$tag", 0, 0, 32),
+                mediaNamespace = derive("media-ns-$tag", 0, 0, 32),
                 deposit = derive("d-$tag", 0, slot, 32),
                 fetch = derive("rp-$tag", 0, slot, 32),
+                mediaDeposit = derive("md-$tag", 0, slot, 32),
                 recognitionIntro = derive("rec-intro-$tag", 0, 0, 32),
                 recognitionBundle = derive("rec-bundle-$tag", 0, 0, 32),
                 introKeyEnv = derive("kio-$tag", 0, 0, 60),

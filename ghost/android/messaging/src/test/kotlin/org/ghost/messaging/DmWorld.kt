@@ -16,6 +16,7 @@ import org.ghost.messaging.engine.ExpirySchedule
 import org.ghost.messaging.engine.ExpiryTimer
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
+import org.ghost.messaging.engine.MediaOrphanSteps
 import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OutcomeStep
 import org.ghost.messaging.engine.OwnerSteps
@@ -648,6 +649,8 @@ class DmDevice(
     /** Every batch of ids SWEEP handed the media port inside its own transaction (§10.6). */
     val media = RecordingMedia()
 
+    internal val mediaOrphans = MediaOrphanSteps(crypto, clock)
+
     internal val sweeper = Sweeper(
         database = database,
         namespaces = stores.namespaces,
@@ -657,6 +660,7 @@ class DmDevice(
         clock = clock,
         contexts = contexts,
         media = media,
+        mediaOrphans = mediaOrphans,
     )
     internal val notices = UnreadNotices { sweeper.unreadCount() }
 
@@ -737,7 +741,7 @@ class DmDevice(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
             scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
         )
-        outcomeStep = OutcomeStep(database, dmSync, sendStep, clock)
+        outcomeStep = OutcomeStep(database, dmSync, sendStep, clock, contexts, mediaOrphans)
         actor = DmActor(
             database = database,
             sync = dmSync,

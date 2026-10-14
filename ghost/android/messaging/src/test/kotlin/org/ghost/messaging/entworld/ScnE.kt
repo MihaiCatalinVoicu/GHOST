@@ -616,7 +616,9 @@ internal class ScnE(
         val caps = EntDmEvidence.writeCapabilities(dm, bobDm)
         val regs = EntDmEvidence.registrations(dm, bobDm)
         for ((role, ns) in bobDm.ownNamespaces()) {
-            val kinds = if (role == "inbox") listOf("deposit", "read") else listOf("fetch")
+            // Since S4-owner the own set has three namespaces (Phase 11 design §5.1): `M_0` keeps
+            // DEPOSIT and READ registrations like `X_0`, only `P_0` keeps FETCH.
+            val kinds = if (role == "inbox" || role == "media") listOf("deposit", "read") else listOf("fetch")
             for (relay in EntDmEvidence.relaySet(dm, bobDm, ns)) {
                 if (caps.none { it.relay == relay && it.namespaceHex == hexOf(ns) && it.redeemed && it.week == week }) {
                     violation("SCN-E: six hours after his return bob holds no redeemed capability of week $week for his $role at $relay: $caps")
@@ -854,8 +856,8 @@ internal class ScnE(
         /** Weeks of ACCESS tokens each client holds from the start: `W0 … W0 + 5`. */
         const val TOKEN_WEEKS = 6
 
-        /** Tokens per slot per week: each client has two own namespaces, each at most once per slot. */
-        const val TOKENS_PER_SLOT = 2
+        /** Tokens per slot per week: each client has three own namespaces since Phase 11's S4-owner (§5.2: X_0, P_0, M_0), each at most once per slot. */
+        const val TOKENS_PER_SLOT = 3
 
         const val HELLO_AT = HOUR
         const val HI_AT = 3 * HOUR

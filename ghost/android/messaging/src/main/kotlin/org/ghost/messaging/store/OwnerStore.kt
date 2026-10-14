@@ -291,5 +291,12 @@ internal class OwnerStore {
 
         const val ROLE_INBOX: String = "inbox"
         const val ROLE_BUNDLE: String = "bundle"
+
+        /**
+         * The own media namespace `M_0` (Phase 11 design §5.1). The schema's role CHECK admits it
+         * since S4-owner (migration 5 is unshipped, so the CHECK was amended in place — the S3b
+         * practice).
+         */
+        const val ROLE_MEDIA: String = "media"
     }
 }

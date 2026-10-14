@@ -153,13 +153,16 @@ internal class ContactSteps(
      * A card deleted while its namespaces still had ops left rows that SWEEP discharges once those
      * ops end. Added again before then, the same card derives the same namespaces: without this,
      * the next sweep after the old ops ended removed the **new** contact's inbox and bundle
-     * namespaces — an open fetch window among them.
+     * namespaces — an open fetch window among them. `M_c` is deleted with the other two (Phase 11
+     * design §5.1: a later media send to the re-added contact deletes a pending orphan row in its
+     * own transaction and registers the namespace again).
      */
     private fun forgetOrphans(tx: SyncTransaction, card: ByteArray) {
         val derived = crypto.deriveCard(card, ORPHAN_SLOT)
         if (derived !is DmCards.DeriveResult.Ok) return
         store.deleteOrphan(tx, derived.values.inboxNamespace)
         store.deleteOrphan(tx, derived.values.bundleNamespace)
+        store.deleteOrphan(tx, derived.values.mediaNamespace)
         derived.values.clearSecrets()
     }
 
@@ -409,12 +412,15 @@ internal class ContactSteps(
     }
 
     /**
-     * §21.12 point 3: `X_c` and `P_c` become `dm_orphan_namespace` rows, and **SWEEP** calls
+     * §21.12 point 3: `X_c`, `P_c` and `M_c` become `dm_orphan_namespace` rows, and **SWEEP** calls
      * `Namespaces.remove` for each once the contact's ops are released. The removal is not here:
      * gate G-DM2 gives `Namespaces.remove` to the establishment steps and to SWEEP alone, and
      * doing it inline would withdraw a namespace whose last op is still in flight.
      *
      * The residue lasts at most until that op's deadline (≤ 7 d) and is declared in L7-D7.
+     * `M_c` (Phase 11 design §5.1) is the third: registered only at a media send and never
+     * redeemed, it is recorded with the other two so a block or delete cannot leave the
+     * contact's media namespace behind.
      *
      * **False means "do not proceed".** The namespaces are derived from the card, so once the card
      * is gone they cannot be recomputed; an early return that let the delete commit anyway would
@@ -434,6 +440,7 @@ internal class ContactSteps(
         if (derived !is DmCards.DeriveResult.Ok) return false
         store.addOrphan(tx, derived.values.inboxNamespace)
         store.addOrphan(tx, derived.values.bundleNamespace)
+        store.addOrphan(tx, derived.values.mediaNamespace)
         derived.values.clearSecrets()
         return true
     }

@@ -30,6 +30,7 @@ class KeyZeroisationTest {
             card = filled(131, 1),
             inboxNamespace = filled(32, 2),
             bundleNamespace = filled(32, 3),
+            mediaNamespace = filled(32, 9),
             recognitionIntro = filled(32, 4),
             recognitionBundle = filled(32, 5),
             olmIdentity = filled(32, 6),

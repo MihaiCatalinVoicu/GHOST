@@ -35,10 +35,21 @@ object DmCards {
         val inboxNamespace: ByteArray,
         /** The contact's bundle namespace `P_c`, which establishment fetches from. */
         val bundleNamespace: ByteArray,
+        /**
+         * The contact's media namespace `M_c` (Phase 11 design §5.1): registered at a media send,
+         * orphaned once every upload of c is over. **Added by S4-owner** — the native side has
+         * returned it since S2.
+         */
+        val mediaNamespace: ByteArray,
         /** `D_{c,s}`: the deposit secret, a bearer value for the credential v3 of that slot. */
         val deposit: ByteArray,
         /** `RP_{c,s}`: the bundle fetch secret, registered and presented as kind FETCH. */
         val fetch: ByteArray,
+        /**
+         * `MD_{c,s}`: the media deposit secret (Phase 11 design §5.1), a bearer value for the media
+         * deposit credential v3 of that slot. **Added by S4-owner**.
+         */
+        val mediaDeposit: ByteArray,
         /** The recognition key of `KIO_c`: what an intro envelope **to that contact** hints. */
         val recognitionIntro: ByteArray,
         /** The recognition key of `KB_c`: what that contact's bundle hints. */
@@ -48,10 +59,11 @@ object DmCards {
         /** The **wrapped** bundle seal key `KB_c`, for [DmBundles.open]. */
         val bundleKeyEnv: ByteArray,
     ) {
-        /** Zeroises the two bearer secrets; the envelopes and recognition keys are not secrets. */
+        /** Zeroises the three bearer secrets; the envelopes and recognition keys are not secrets. */
         fun clearSecrets() {
             deposit.fill(0)
             fetch.fill(0)
+            mediaDeposit.fill(0)
         }
 
         override fun toString(): String = "Derived(redacted)"
@@ -113,8 +125,10 @@ object DmCards {
                 Derived(
                     inboxNamespace = result.bytes(DmField.INBOX_NAMESPACE),
                     bundleNamespace = result.bytes(DmField.BUNDLE_NAMESPACE),
+                    mediaNamespace = result.bytes(DmField.MEDIA_NAMESPACE),
                     deposit = result.bytes(DmField.DEPOSIT_SECRET),
                     fetch = result.bytes(DmField.FETCH_SECRET),
+                    mediaDeposit = result.bytes(DmField.MEDIA_DEPOSIT_SECRET),
                     recognitionIntro = result.bytes(DmField.RECOGNITION_INTRO),
                     recognitionBundle = result.bytes(DmField.RECOGNITION_BUNDLE),
                     introKeyEnv = result.bytes(DmField.INTRO_KEY),

@@ -1,5 +1,5 @@
 T2 variant t2-gate-0: N = 2000 packs, 84 days, seeds 0x1/0x2, mutant None
-population: PASS fixture, dm_owner_namespaces 600 (2 per activated client: 299 owners, 598 namespaces registered at a relay; 1782 registrations ok, 0 wrong_period, 0 failed)
+population: PASS fixture, dm_owner_namespaces 600 (3 per activated client: 300 owners, 598 namespaces registered at a relay; 2673 registrations ok, 0 wrong_period, 0 failed)
 J1: PASS fixture
 J2: PASS fixture
 J3: PASS fixture

@@ -98,7 +98,10 @@ internal class SweepReport(
  *     expires in this same pass can be erased in this same pass (§5.4, §22.13 item 10);
  *  2. **expired messages** (`delete_at_minute ≤ now_e`), at most [BATCH] per transaction, with
  *     their reactions, outbound items, ops, retained blobs and pending sends by `ON DELETE
- *     CASCADE`, and `MediaPort.onMessagesDeleted(tx, ids)` inside the same transaction;
+ *     CASCADE`, and `MediaPort.onMessagesDeleted(tx, ids)` inside the same transaction; the `M_c`
+ *     orphan rule (Phase 11 design §5.1) reads its candidates before this cascade and records the
+ *     orphan after it — post-cascade the upload is over, the descriptor is final and the media
+ *     ops read as released, which is exactly the "or SWEEP" clause of the rule's producers;
  *  3. **expired requests** (`request_until_day`), each cascading its contact, session, pair keys
  *     and rows (§12.3);
  *  4. **pending sends past their `fail_after_hour`** whose message is still live (R-T5);
@@ -143,6 +146,7 @@ internal class Sweeper(
     private val clock: DmClock,
     private val contexts: SelfContexts,
     private val media: MediaPort,
+    private val mediaOrphans: MediaOrphanSteps,
 ) {
     private val messages = MessageStore()
     private val contacts = ContactStore()
@@ -216,8 +220,12 @@ internal class Sweeper(
         val week = DmTime.week(nowE)
         // Resolved **before** the transaction, like every other caller of `SelfContexts` since the
         // S8 review (§22.12 item 18b): `get()` opens a transaction of its own when its cache is
-        // cold, and `SyncDatabase` refuses a nested one outright.
-        val canPrune = contexts.get() != null && envelopes.isAvailable()
+        // cold, and `SyncDatabase` refuses a nested one outright. `self` also feeds the `M_c`
+        // orphan rule's recording (§5.1's "or SWEEP"): a locked context cannot derive `M_c` from
+        // the card, and the rule records nothing until a pass where it can.
+        val self = contexts.get()
+        val canPrune = self != null && envelopes.isAvailable()
+        val nowSeconds = expiry.nowSeconds()
         // §10.6's 500 bounds a **transaction**, and this loop is why that is the right reading. A
         // device back after a long absence has more expired rows than one transaction may take,
         // and the leftovers are in the **past** — while every "next wake" query is strictly in the
@@ -229,13 +237,13 @@ internal class Sweeper(
         // The loop tests the **last** transaction and not the running total: `batchWasFull` is a
         // property of one batch, and a total that had once reached 500 would stay above it and run
         // the loop to its bound every time.
-        var last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune) }
+        var last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune, self, nowSeconds) }
         var report = last
         var batches = 1
         while (last.batchWasFull && batches < MAX_BATCHES) {
             // The skipped-key prune runs in the first transaction only: it is per session, not per
             // row, and repeating it would be work with no second effect.
-            last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune = false) }
+            last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune = false, self, nowSeconds) }
             report += last
             batches += 1
         }
@@ -304,17 +312,29 @@ internal class Sweeper(
         today: Long,
         week: Long,
         canPrune: Boolean,
+        self: SelfContext?,
+        nowSeconds: Long,
     ): SweepReport {
         // 1. Held rows first: a generation whose last holder expires now is erasable now (§5.4).
         val heldRows = held.deleteExpiredHeld(tx, nowE)
 
         // 2. Expired messages, with the media port inside the same transaction (§10.6).
+        //    The `M_c` orphan rule's candidates (§5.1's "or SWEEP") are read **before** the
+        //    deletion: they are the contacts with `out` objects whose message is expiring, and the
+        //    cascade below takes the objects — and the media-op mapping — with the messages.
+        //    Evaluating the rule after the deletion is what lets the expired-descriptor path
+        //    record the orphan at all: post-cascade nothing of the upload remains to block it,
+        //    and no later transaction looks at the contact's media rows again.
+        val mediaOrphanCandidates = mediaOrphans.candidates(tx.sql, nowE)
         val expired = messages.expiredMessages(tx.sql, nowE, BATCH)
         if (expired.isNotEmpty()) {
             media.onMessagesDeleted(tx, expired.map { MessageId(it) })
         }
         var messageRows = 0
         for (messageId in expired) messageRows += messages.deleteMessage(tx, messageId)
+        for (contactId in mediaOrphanCandidates) {
+            mediaOrphans.recordIfOrphaned(tx, self, contactId, nowSeconds)
+        }
 
         // 3. Requests past their day: the contact goes and everything of it cascades (§12.3).
         //

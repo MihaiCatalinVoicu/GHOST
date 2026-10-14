@@ -1,6 +1,7 @@
 package org.ghost.messaging.engine
 
 import org.ghost.crypto.bridge.CredentialV3
+import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.DmSessions
 import org.ghost.crypto.bridge.RelaySets
 import org.ghost.identity.ZBase32
@@ -258,6 +259,31 @@ class OwnerSteps(
             store.currentGeneration(tx.sql)?.let { previous ->
                 store.supersede(tx, previous.genId, DmTime.day(now))
             }
+            // §5.2's "no one-time upgrade step": a device activated before Phase 11 (only
+            // development devices; §4.1) has no `M_0`. This pass — the EXPIRING PRF time, the
+            // moment the week is claimed and `X_0`/`P_0` are renewed anyway — is the one that adds
+            // it, so no redeem or registration ever happens at a moment that depends on the app
+            // update (JM5, PM-M28). Before `t_pub(w)` the step returns UNCHANGED above and nothing
+            // here runs: a pending registration outside the weekly renewal would name the update.
+            //
+            // The add is the namespace registration alone (the same call ACTIVATE makes): KEEPER
+            // and REGROWS run later in this same pass and install the read credential and the
+            // registration rows, exactly as they do for a fresh activation. A week whose slot
+            // tables give no union defers the add to the next OWNER-WEEK pass.
+            if (store.ownNamespaces(tx.sql, cardIndex)[OwnerStore.ROLE_MEDIA] == null) {
+                val media = own.mediaNamespace
+                val union = readerUnion(media, week)
+                if (union.isNotEmpty()) {
+                    store.putOwnNamespace(tx, media, OwnerStore.ROLE_MEDIA, cardIndex)
+                    sync.namespaces.register(
+                        tx,
+                        NamespaceId(media),
+                        Consumer.MEDIA,
+                        union.map { it.relay }.toSet(),
+                        listen = true,
+                    )
+                }
+            }
             publishBundle(tx, week = week, rank = 0, now = now, bundleNamespace = own.bundleNamespace)
             Result.DONE
         }
@@ -303,10 +329,15 @@ class OwnerSteps(
      *     healed and re-put under the bound of [readCredentialAction] (§4.8, §21.2 point 8). Reads
      *     prefer a usable one over the write capability (§13.3 item 7), so the relay sees the
      *     owner's read scope and not its write one;
+     *  1b. since S4-owner, the same for `M_0`'s read credential (`RM_{0,s}`) on its union set —
+     *     §5.2's "the healing rule unchanged" covers `M_0` like `X_0`; until OWNER-WEEK has added
+     *     a missing `M_0` (the pre-Phase-11 device) there is no namespace to keep, and the step
+     *     skips the half;
      *  2. `setRelays` when a set changed. The owner, **as a reader**, keeps the union of the sets
      *     of weeks `w − 5 … w` (§5.2): a blob stored in week `w′` may live until `w′ + 6` weeks, so
      *     dropping an old relay from the set would abandon mail that is still there. The bundle
-     *     namespace `P_0` is written, not read, so it takes the current week's set alone.
+     *     namespace `P_0` is written, not read, so it takes the current week's set alone; `M_0` is
+     *     read, so — like `X_0` — it takes the union.
      *
      * **Every credential is minted before the transaction opens.** A `CRYPTO_UNAVAILABLE` decided
      * inside it would be a normal return, and a normal return **commits** what the earlier loop
@@ -324,8 +355,16 @@ class OwnerSteps(
         val bundleSet = relaySet(own.bundleNamespace, week) ?: return Result.NO_RELAYS
         val inboxUnion = readerUnion(own.inboxNamespace, week)
         if (inboxUnion.isEmpty()) return Result.NO_RELAYS
+        // `M_0`'s union, kept exactly like `X_0`'s (§5.1's "union set"; §5.2: REGROWS and KEEPER
+        // cover `M_0` like `X_0`). A device activated before Phase 11 has no `M_0` yet — the
+        // registration is the one OWNER-WEEK adds at the EXPIRING PRF time — and until then there
+        // is nothing to keep: `setRelays` and a credential `put` both refuse an unregistered
+        // namespace, which is the schema keeping the steps honest.
+        val mediaUnion = readerUnion(own.mediaNamespace, week)
+        val mediaRegistered = mediaUnion.isNotEmpty()
         // Minted here, never inside the transaction: see the note above.
         val credentials = LinkedHashMap<Long, ByteArray>()
+        val mediaCredentials = LinkedHashMap<Long, ByteArray>()
         for (slot in inboxUnion) {
             val secrets = crypto.ownSecrets(cardIndex, slot.slot) ?: return Result.CRYPTO_UNAVAILABLE
             credentials[slot.relay.value] = try {
@@ -334,16 +373,58 @@ class OwnerSteps(
                 secrets.clear()
             }
         }
+        if (mediaRegistered) {
+            for (slot in mediaUnion) {
+                val secrets = crypto.ownSecrets(cardIndex, slot.slot) ?: return Result.CRYPTO_UNAVAILABLE
+                mediaCredentials[slot.relay.value] = try {
+                    CredentialV3.credential(
+                        CredentialV3.Kind.READ,
+                        slot.slot,
+                        own.mediaNamespace,
+                        secrets.mediaRead,
+                    )
+                } finally {
+                    secrets.clear()
+                }
+            }
+        }
 
         return database.transaction { tx ->
             store.self(tx.sql) ?: return@transaction Result.NOT_ACTIVATED
             var changed = false
             val inboxNs = NamespaceId(own.inboxNamespace)
             val bundleNs = NamespaceId(own.bundleNamespace)
+            val mediaNs = NamespaceId(own.mediaNamespace)
 
-            // 1. Relay sets. The reader union for the inbox, the week's set for the bundle.
+            // 1. Relay sets. The reader union for the inbox, the week's set for the bundle, the
+            //    reader union for `M_0` — a blob stored in week `w′` may live until `w′ + 6`
+            //    weeks, so the same union argument as `X_0`'s (§5.2).
             sync.namespaces.setRelays(tx, inboxNs, inboxUnion.map { it.relay }.toSet())
             sync.namespaces.setRelays(tx, bundleNs, bundleSet.map { it.relay }.toSet())
+            if (mediaRegistered && sync.namespaces.listening(tx, mediaNs) != null) {
+                sync.namespaces.setRelays(tx, mediaNs, mediaUnion.map { it.relay }.toSet())
+
+                // 2b. `M_0`'s own READ credential (`RM_{0,s}`), on every relay of its union — the
+                //     same freshness and healing rule as `X_0`'s (§5.2's "the healing rule
+                //     unchanged"): reads prefer a usable read scope over the write capability.
+                for (slot in mediaUnion) {
+                    when (readCredentialAction(tx, slot.relay, mediaNs, week, now)) {
+                        ReadCredential.LEAVE -> continue
+                        ReadCredential.HEAL_AND_PUT ->
+                            changed = sync.registrations.rearm(tx, slot.relay, mediaNs, week) > 0 || changed
+                        ReadCredential.PUT -> Unit
+                    }
+                    sync.capabilities.put(
+                        tx,
+                        slot.relay,
+                        mediaNs,
+                        CapabilityKind.READ,
+                        mediaCredentials.getValue(slot.relay.value),
+                        DmTime.ceilHour(now) + READ_CREDENTIAL_LIFETIME_SECONDS,
+                    )
+                    changed = true
+                }
+            }
 
             // 2. The own READ credential, on every relay the owner reads the inbox from — which is
             //    the union, not only this week's set: a relay that left the ES still holds blobs
@@ -415,6 +496,11 @@ class OwnerSteps(
         val week = DmTime.week(now)
         val inboxSet = relaySet(own.inboxNamespace, week) ?: return Result.NO_RELAYS
         val bundleSet = relaySet(own.bundleNamespace, week) ?: return Result.NO_RELAYS
+        // `M_0` keeps rows at the relays of its current week's set, like `X_0` (§5.2). Skipped
+        // entirely while the namespace does not exist yet: the device activated before Phase 11
+        // gains `M_0` at OWNER-WEEK's EXPIRING PRF time, and until then there are no rows to
+        // keep — and the `relay_key_registration` foreign key refuses them.
+        val mediaSet = relaySet(own.mediaNamespace, week)
         // DEPOSIT: card-derived, so every card holder presents one value (P-2). READ: seed-derived,
         // the D11 key no card holder can compute (C-5). FETCH: the bundle namespace's (§22.8.7).
         val inbox = inboxSet.map {
@@ -423,11 +509,18 @@ class OwnerSteps(
         val bundle = bundleSet.map {
             verifiersOf(it, own.bundleNamespace, BUNDLE_KINDS) ?: return Result.CRYPTO_UNAVAILABLE
         }
+        // `M_0`: DEPOSIT and READ exactly like `X_0`'s (§5.2), the verifiers over the media
+        // secrets — `MD` is card-derived (so it comes from `cardDerive` of the own card, like a
+        // contact's) and `RM` is seed-derived (so it comes from `ownSecrets`, like `RX`).
+        val media = mediaSet?.map {
+            mediaVerifiersOf(own, it) ?: return Result.CRYPTO_UNAVAILABLE
+        }
 
         return database.transaction { tx ->
             store.self(tx.sql) ?: return@transaction Result.NOT_ACTIVATED
             val inboxNs = NamespaceId(own.inboxNamespace)
             val bundleNs = NamespaceId(own.bundleNamespace)
+            val mediaNs = NamespaceId(own.mediaNamespace)
             var changed = false
 
             for (relayVerifiers in inbox) {
@@ -436,6 +529,11 @@ class OwnerSteps(
             for (relayVerifiers in bundle) {
                 changed = keepRows(tx, relayVerifiers, bundleNs, week) || changed
             }
+            if (media != null && sync.namespaces.listening(tx, mediaNs) != null) {
+                for (relayVerifiers in media) {
+                    changed = keepRows(tx, relayVerifiers, mediaNs, week) || changed
+                }
+            }
             // Rows of weeks before `w - 1` can no longer be served: §4.8 deletes a pending row once
             // `week < week(now) - 1`, because no capability the relay would accept still names it.
             for (relayVerifiers in inbox) {
@@ -443,6 +541,11 @@ class OwnerSteps(
             }
             for (relayVerifiers in bundle) {
                 changed = sync.registrations.forget(tx, relayVerifiers.slot.relay, bundleNs, week - 1) > 0 || changed
+            }
+            if (media != null && sync.namespaces.listening(tx, mediaNs) != null) {
+                for (relayVerifiers in media) {
+                    changed = sync.registrations.forget(tx, relayVerifiers.slot.relay, mediaNs, week - 1) > 0 || changed
+                }
             }
             if (changed) Result.DONE else Result.UNCHANGED
         }
@@ -584,7 +687,44 @@ class OwnerSteps(
     private class SlotVerifiers(val slot: EsSlot, val byKind: Map<KeyKind, ByteArray>)
 
     /**
-     * The verifiers of one slot, computed **outside** any transaction. The **verifier** is what the
+     * The verifiers of one slot for `M_0`, computed **outside** any transaction (§5.2: DEPOSIT
+     * and READ registrations like `X_0`'s). `MD` is card-derived — `cardDerive` of the own card,
+     * the same function a contact's `MD_{c,s}` comes from — and `RM` is seed-derived, from
+     * `ownSecrets` like `RX`. Both secrets are zeroised here whatever happens. Null when the DM
+     * context is closed.
+     */
+    private fun mediaVerifiersOf(own: DmSessions.OwnCard, slot: EsSlot): SlotVerifiers? {
+        val secrets = crypto.ownSecrets(cardIndex, slot.slot) ?: return null
+        val derived = crypto.deriveCard(own.card, slot.slot)
+        if (derived !is DmCards.DeriveResult.Ok) {
+            secrets.clear()
+            return null
+        }
+        return try {
+            SlotVerifiers(
+                slot,
+                linkedMapOf(
+                    KeyKind.DEPOSIT to CredentialV3.verifier(
+                        CredentialV3.Kind.DEPOSIT,
+                        slot.slot,
+                        own.mediaNamespace,
+                        derived.values.mediaDeposit,
+                    ),
+                    KeyKind.READ to CredentialV3.verifier(
+                        CredentialV3.Kind.READ,
+                        slot.slot,
+                        own.mediaNamespace,
+                        secrets.mediaRead,
+                    ),
+                ),
+            )
+        } finally {
+            secrets.clear()
+            derived.values.clearSecrets()
+        }
+    }
+
+    /** The verifiers of one slot, computed **outside** any transaction. The **verifier** is what the
      * row carries and what the relay stores; the secrets never leave this frame, and they are
      * zeroised here whatever happens. Null when the DM context is closed.
      */
@@ -625,10 +765,13 @@ class OwnerSteps(
     private fun registerOwnNamespaces(tx: SyncTransaction, own: DmSessions.OwnCard, slots: List<EsSlot>) {
         val inbox = own.inboxNamespace
         val bundle = own.bundleNamespace
+        val media = own.mediaNamespace
         store.putOwnNamespace(tx, inbox, OwnerStore.ROLE_INBOX, cardIndex)
         store.putOwnNamespace(tx, bundle, OwnerStore.ROLE_BUNDLE, cardIndex)
+        store.putOwnNamespace(tx, media, OwnerStore.ROLE_MEDIA, cardIndex)
         val inboxSet = RelaySets.forNamespace(inbox, slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) })
         val bundleSet = RelaySets.forNamespace(bundle, slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) })
+        val mediaUnion = readerUnion(media, DmTime.week(clock.nowEpochSeconds()))
         // `X_0` listens (it is the inbox); `P_0` does not (the owner writes bundles and verifies
         // them with `check`, §5.1). Both are REDEEM: they are the owner's own namespaces, the only
         // two DM namespaces a token is ever spent on (§4.8 token accounting).
@@ -639,6 +782,18 @@ class OwnerSteps(
         sync.namespaces.register(
             tx, NamespaceId(bundle), Consumer.PREKEYS, bundleSet.map { RelayId(it.relay) }.toSet(),
             listen = false,
+        )
+        // Phase 11 design §5.1: `M_0` — the owner's media namespace. It **listens** (it is the
+        // second listened owner namespace, §5.2's listing cost) and takes the reader's union set,
+        // exactly as KEEPER maintains it below; REDEEM like the other two own namespaces, so the
+        // EXPIRING path spends exactly one more token per (relay, week) on it (§5.2 token
+        // accounting, L9-M12). No separate relay set is pinned to `X_0`'s: tokens are per relay
+        // and namespace (§5.1). An empty union registers an empty set exactly like `X_0`/`P_0` —
+        // a week whose table cannot give a set is what the bundle's `InsufficientReplicasException`
+        // (ADR-11) then refuses, rolling the whole activation back.
+        sync.namespaces.register(
+            tx, NamespaceId(media), Consumer.MEDIA, mediaUnion.map { it.relay }.toSet(),
+            listen = true,
         )
     }
 

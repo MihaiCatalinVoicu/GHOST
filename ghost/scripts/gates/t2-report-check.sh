@@ -5,8 +5,9 @@
 #                                          FR-6′.7 amount uniformity), the variant's scale, the
 #                                          reported S3c and E30 lines (E30 with a held session,
 #                                          §19.26), the population line's `dm_owner_namespaces`
-#                                          field — two per owner, some registered, registrations
-#                                          answered OK and none failed (Phase 9 design §4.9) — and
+#                                          field — three per owner since Phase 11's S4-owner slice
+#                                          (Phase 11 design §5.2's T2 bullet), some registered,
+#                                          registrations answered OK and none failed — and
 #                                          the final "T2 RESULT: PASS";
 #   t2-report-check.sh <report> mutants    the output of tests/t2_mutants.rs: all 26 privacy mutants
 #                                          (M1–M24 with M2b, M5a and M5b) detected.
@@ -31,18 +32,19 @@ case "$kind" in
     if grep -qE '^(S1|S2): PASS n=0 |^S3[abd]: PASS .*n=0 |^S4( lying issuer)?: PASS .* over 0 |^NI-1d: PASS 0 drop|^NI-1 across cells: PASS 0 flows|^NI-1: PASS .*; 0 finalizations' "$report"; then
       bad "a check passed on an empty sample"
     fi
-    # Phase 9 design §4.9 point 3: the population line counts the DM owner namespaces — two per
-    # activated client, the owners counted from the client list and not by the step that adds the
-    # namespaces — how many of them a relay registered, and the registrations the relays answered OK,
-    # WRONG_PERIOD or not at all. A population that names none, registered nothing, is not two per
-    # owner, or whose loopback failed a registration, did not model them.
-    dm_field="$(sed -nE 's/^population: PASS .*dm_owner_namespaces ([0-9]+) \(2 per activated client: ([0-9]+) owners, ([0-9]+) namespaces registered at a relay; ([0-9]+) registrations ok, ([0-9]+) wrong_period, ([0-9]+) failed\).*/\1 \2 \3 \4 \6/p' "$report" | head -1)"
+    # Phase 9 design §4.9 point 3, extended by Phase 11 design §5.2's T2 bullet (S4-owner): the
+    # population line counts the DM owner namespaces — three per activated client, the owners
+    # counted from the client list and not by the step that adds the namespaces — how many of
+    # them a relay registered, and the registrations the relays answered OK, WRONG_PERIOD or not
+    # at all. A population that names none, registered nothing, is not three per owner, or whose
+    # loopback failed a registration, did not model them.
+    dm_field="$(sed -nE 's/^population: PASS .*dm_owner_namespaces ([0-9]+) \(3 per activated client: ([0-9]+) owners, ([0-9]+) namespaces registered at a relay; ([0-9]+) registrations ok, ([0-9]+) wrong_period, ([0-9]+) failed\).*/\1 \2 \3 \4 \6/p' "$report" | head -1)"
     if [ -z "$dm_field" ]; then
-      bad "the population line names no dm_owner_namespaces with its owners and registrations (Phase 9 design §4.9)"
+      bad "the population line names no dm_owner_namespaces with its owners and registrations (Phase 9 design §4.9, Phase 11 §5.2)"
     else
       read -r dm_ns dm_owners dm_registered dm_ok dm_failed <<<"$dm_field"
       [ "$dm_owners" -gt 0 ] || bad "the population line counts no DM owner"
-      [ "$dm_ns" -eq $(( 2 * dm_owners )) ] || bad "$dm_ns DM owner namespaces for $dm_owners owners, not two per activated client"
+      [ "$dm_ns" -eq $(( 3 * dm_owners )) ] || bad "$dm_ns DM owner namespaces for $dm_owners owners, not three per activated client (Phase 11 design §5.2)"
       [ "$dm_registered" -gt 0 ] || bad "no DM owner namespace was registered at a relay"
       [ "$dm_ok" -gt 0 ] || bad "the population line counts DM owner namespaces with no registration answered OK"
       [ "$dm_failed" -eq 0 ] || bad "$dm_failed DM registrations failed on the loopback"

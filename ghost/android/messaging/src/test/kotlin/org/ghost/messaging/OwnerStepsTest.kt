@@ -1,6 +1,7 @@
 package org.ghost.messaging
 
 import org.ghost.crypto.bridge.CredentialV3
+import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.RelaySets
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.port.EsSlot
@@ -67,7 +68,7 @@ class OwnerStepsTest {
     // ---------------------------------------------------------------- ACTIVATE
 
     @Test
-    fun activateWritesTheIdentityRowTheTwoNamespacesAndTheFirstGeneration() {
+    fun activateWritesTheIdentityRowTheThreeNamespacesAndTheFirstGeneration() {
         OwnerWorld().use { world ->
             val now = weekStart(2_870) + 2 * day + 90
             assertEquals(OwnerSteps.Result.DONE, world.activateAt(now))
@@ -84,6 +85,23 @@ class OwnerStepsTest {
             val namespaces = world.ownNamespaces()
             assertArrayEquals(own.inboxNamespace, namespaces["inbox"])
             assertArrayEquals(own.bundleNamespace, namespaces["bundle"])
+            assertArrayEquals(own.mediaNamespace, namespaces["media"])
+
+            // Phase 11 design §5.1's registration: `M_0` is a listened `Consumer.MEDIA` namespace
+            // with the week's relay set, REDEEM like the other two own namespaces.
+            var media: Map<String, Any?>? = null
+            world.sql.query(
+                "SELECT consumer, listening FROM sync_namespace WHERE namespace_id = ?",
+                listOf(own.mediaNamespace),
+            ) {
+                media = mapOf("consumer" to it.string(0), "listening" to it.long(1))
+            }
+            assertEquals("media", media!!["consumer"])
+            assertEquals(1L, media!!["listening"])
+            assertEquals(
+                world.namespaceRelays(own.inboxNamespace),
+                world.namespaceRelays(own.mediaNamespace),
+            )
 
             val generations = world.generations()
             assertEquals(1, generations.size)
@@ -372,12 +390,103 @@ class OwnerStepsTest {
         }
     }
 
+    /**
+     * Phase 11 design §5.2's "no one-time upgrade step": a device activated before Phase 11 (only
+     * development devices; §4.1) has no `M_0`. OWNER-WEEK adds the missing namespace at its next
+     * EXPIRING PRF time — the pass that claims the week — and no pass before that touches it, so
+     * no redeem or registration ever happens at a moment that depends on the app update (JM5,
+     * PM-M28).
+     */
+    @Test
+    fun ownerWeekAddsAMissingMediaNamespaceOnlyAtTheExpiringPrfTime() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            val own = world.crypto.ownCard(0)!!
+
+            // Simulate the pre-Phase-11 database: no `M_0` row, no `:sync` registration.
+            world.sql.exec("DELETE FROM namespace_relay WHERE namespace_id = ?", listOf(own.mediaNamespace))
+            world.sql.exec("DELETE FROM relay_capability WHERE namespace_id = ?", listOf(own.mediaNamespace))
+            world.sql.exec("DELETE FROM relay_key_registration WHERE namespace_id = ?", listOf(own.mediaNamespace))
+            world.sql.exec("DELETE FROM sync_namespace WHERE namespace_id = ?", listOf(own.mediaNamespace))
+            world.sql.exec("DELETE FROM dm_own_namespace WHERE namespace_id = ?", listOf(own.mediaNamespace))
+            assertNull(world.ownNamespaces()["media"])
+
+            // Before `t_pub(w + 1)` the step does nothing at all (the week guard), so the update
+            // moment is invisible: the missing `M_0` is not added early.
+            world.crypto.publicationOffsetSeconds = day
+            world.clock.now = weekStart(2_871) + 2 * hour
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.ownerWeek())
+            assertNull("no pass before the EXPIRING PRF time adds M_0", world.ownNamespaces()["media"])
+
+            // At the EXPIRING PRF time the same pass that renews `X_0`/`P_0` adds `M_0`: the row,
+            // the `:sync` registration, listening, the MEDIA consumer.
+            world.clock.now = weekStart(2_871) + day
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+            assertArrayEquals(own.mediaNamespace, world.ownNamespaces()["media"])
+            var listening: Long? = null
+            var consumer: String? = null
+            world.sql.query(
+                "SELECT listening, consumer FROM sync_namespace WHERE namespace_id = ?",
+                listOf(own.mediaNamespace),
+            ) {
+                listening = it.long(0)
+                consumer = it.string(1)
+            }
+            assertEquals("M_0 listens (Phase 11 §5.1)", 1L, listening)
+            assertEquals("media", consumer)
+
+            // KEEPER and REGROWS, later in the same maintenance pass, complete what ACTIVATE
+            // would have installed: the read credential and the week's registration rows.
+            assertEquals(OwnerSteps.Result.DONE, world.steps.keeper())
+            assertEquals(OwnerSteps.Result.DONE, world.steps.regrows())
+            assertTrue(
+                world.capabilities().any {
+                    it["kind"] == "read" && it["ns"] == own.mediaNamespace.toHex()
+                },
+            )
+            assertTrue(
+                world.registrations().any {
+                    it["ns"] == own.mediaNamespace.toHex() && it["period_id"] == 2_871L
+                },
+            )
+
+            // And a second pass in the same week reports the state as unchanged.
+            world.clock.now = weekStart(2_871) + day + hour
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.ownerWeek())
+        }
+    }
+
+    /**
+     * The other half of the upgrade rule: a device activated **with** Phase 11 never re-adds
+     * anything — OWNER-WEEK's missing-add branch is a no-op, and the pass reports only the
+     * publication work.
+     */
+    @Test
+    fun ownerWeekLeavesAPresentMediaNamespaceAlone() {
+        OwnerWorld().use { world ->
+            world.crypto.publicationOffsetSeconds = day
+            world.activateAt(weekStart(2_870) + 2 * day)
+            val own = world.crypto.ownCard(0)!!
+            world.clock.now = weekStart(2_871) + day
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+            assertEquals(
+                "one own-namespace row per role, and no second media row",
+                listOf("bundle", "inbox", "media"),
+                world.ownNamespaces().keys.sorted(),
+            )
+            assertEquals(1, world.count("SELECT count(*) FROM sync_namespace WHERE namespace_id = ?", listOf(own.mediaNamespace)))
+        }
+    }
+
     // ------------------------------------------------------------------ KEEPER
 
     /**
      * §4.8: the owner installs its **own READ credential** per relay of `X_0`'s set, an 8-day
      * bearer credential v3 it mints itself. Its bytes are the 67 of §4.3 and its secret is the
-     * seed-derived `RX_{0,s}` of the relay's slot.
+     * seed-derived `RX_{0,s}` of the relay's slot. Phase 11 design §5.2's "the healing rule
+     * unchanged" extends the same to `M_0`'s credential, minted from the seed-derived `RM_{0,s}`,
+     * on the relays of `M_0`'s union set.
      */
     @Test
     fun keeperInstallsTheOwnReadCredentialOfEveryRelayOfTheInboxSet() {
@@ -387,18 +496,28 @@ class OwnerStepsTest {
             assertEquals(OwnerSteps.Result.DONE, world.steps.keeper())
 
             val own = world.crypto.ownCard(0)!!
-            val set = RelaySets.forNamespace(
-                own.inboxNamespace,
-                world.slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) },
-            )
-            val installed = world.capabilities().filter { it["kind"] == "read" }
+            val slots = world.slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) }
+            val set = RelaySets.forNamespace(own.inboxNamespace, slots)
+            val installed = world.capabilities()
+                .filter { it["kind"] == "read" && it["ns"] == own.inboxNamespace.toHex() }
             assertEquals(set.size, installed.size)
             assertEquals(set.map { it.relay }.toSet(), installed.map { it["relay_id"] }.toSet())
             for (row in installed) {
-                assertEquals(own.inboxNamespace.toHex(), row["ns"])
                 assertEquals(67L, row["len"])
                 assertEquals("usable", row["state"])
                 // `ceilHour(now) + 8 d`, floored to the hour by the store (§4.8).
+                assertEquals(ceilHour(now) + 8 * day, row["expires_hour"])
+            }
+
+            // §5.2: `M_0` is covered like `X_0` — its READ credential on the relays of its set,
+            // the same lifetime, from `RM_{0,s}`.
+            val mediaSet = RelaySets.forNamespace(own.mediaNamespace, slots)
+            val mediaInstalled = world.capabilities()
+                .filter { it["kind"] == "read" && it["ns"] == own.mediaNamespace.toHex() }
+            assertEquals("M_0's read credential on every relay of its set", mediaSet.size, mediaInstalled.size)
+            for (row in mediaInstalled) {
+                assertEquals(67L, row["len"])
+                assertEquals("usable", row["state"])
                 assertEquals(ceilHour(now) + 8 * day, row["expires_hour"])
             }
         }
@@ -487,6 +606,7 @@ class OwnerStepsTest {
 
             val inboxRelays = world.namespaceRelays(own.inboxNamespace)
             val bundleRelays = world.namespaceRelays(own.bundleNamespace)
+            val mediaRelays = world.namespaceRelays(own.mediaNamespace)
             assertTrue(
                 "the reader's union keeps the relays of the earlier weeks",
                 inboxRelays.any { it in oldRelays },
@@ -496,6 +616,9 @@ class OwnerStepsTest {
                 "the writer's set holds only this week's relays",
                 bundleRelays.none { it in oldRelays },
             )
+            // Phase 11 §5.1: `M_0` is read like `X_0`, so its set is the reader's union too.
+            assertTrue("M_0's union keeps the relays of the earlier weeks", mediaRelays.any { it in oldRelays })
+            assertTrue(mediaRelays.any { it !in oldRelays })
         }
     }
 
@@ -503,8 +626,9 @@ class OwnerStepsTest {
 
     /**
      * §4.8: for each own namespace, each relay of its set and each kind it needs — `X_0`: DEPOSIT
-     * and READ; `P_0`: FETCH — a row for week `w` must exist, and its verifier is the labelled
-     * hash of §4.3 over that relay's slot.
+     * and READ; `P_0`: FETCH; `M_0` (Phase 11 design §5.2): DEPOSIT and READ, covered like
+     * `X_0` — a row for week `w` must exist, and its verifier is the labelled hash of §4.3 over
+     * that relay's slot.
      */
     @Test
     fun regrowsKeepsARowPerRelayNamespaceAndKindOfTheWeek() {
@@ -517,9 +641,10 @@ class OwnerStepsTest {
             val slots = world.slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) }
             val inboxSet = RelaySets.forNamespace(own.inboxNamespace, slots)
             val bundleSet = RelaySets.forNamespace(own.bundleNamespace, slots)
+            val mediaSet = RelaySets.forNamespace(own.mediaNamespace, slots)
             val rows = world.registrations()
 
-            assertEquals(2 * inboxSet.size + bundleSet.size, rows.size)
+            assertEquals(2 * inboxSet.size + 2 * mediaSet.size + bundleSet.size, rows.size)
             assertTrue(rows.all { it["period_id"] == weekOf(now) })
             assertTrue(rows.all { it["state"] == "pending" })
             assertEquals(
@@ -529,6 +654,10 @@ class OwnerStepsTest {
             assertEquals(
                 setOf("fetch"),
                 rows.filter { it["ns"] == own.bundleNamespace.toHex() }.map { it["kind"] }.toSet(),
+            )
+            assertEquals(
+                setOf("deposit", "read"),
+                rows.filter { it["ns"] == own.mediaNamespace.toHex() }.map { it["kind"] }.toSet(),
             )
 
             // The verifier of one row, recomputed from the secrets the slot really has.
@@ -541,9 +670,44 @@ class OwnerStepsTest {
                 secrets.deposit,
             )
             val row = rows.first {
-                it["relay_id"] == slot.relay && it["kind"] == "deposit"
+                it["relay_id"] == slot.relay && it["kind"] == "deposit" &&
+                    it["ns"] == own.inboxNamespace.toHex()
             }
             assertEquals(expected.toHex(), row["verifier"])
+
+            // §5.2: `M_0`'s DEPOSIT verifier is over the media deposit secret `MD` (card-derived,
+            // so `cardDerive` of the own card yields it) and its READ verifier over `RM`
+            // (seed-derived, from `ownSecrets` like `RX`).
+            val mediaSlot = mediaSet.first()
+            val derived = world.crypto.deriveCard(own.card, mediaSlot.slot)
+            assertTrue(derived is DmCards.DeriveResult.Ok)
+            val mediaSecrets = world.crypto.ownSecrets(0, mediaSlot.slot)!!
+            val mediaRow = rows.first {
+                it["relay_id"] == mediaSlot.relay && it["kind"] == "deposit" &&
+                    it["ns"] == own.mediaNamespace.toHex()
+            }
+            assertEquals(
+                CredentialV3.verifier(
+                    CredentialV3.Kind.DEPOSIT,
+                    mediaSlot.slot,
+                    own.mediaNamespace,
+                    (derived as DmCards.DeriveResult.Ok).values.mediaDeposit,
+                ).toHex(),
+                mediaRow["verifier"],
+            )
+            val mediaReadRow = rows.first {
+                it["relay_id"] == mediaSlot.relay && it["kind"] == "read" &&
+                    it["ns"] == own.mediaNamespace.toHex()
+            }
+            assertEquals(
+                CredentialV3.verifier(
+                    CredentialV3.Kind.READ,
+                    mediaSlot.slot,
+                    own.mediaNamespace,
+                    mediaSecrets.mediaRead,
+                ).toHex(),
+                mediaReadRow["verifier"],
+            )
         }
     }
 
@@ -695,12 +859,15 @@ class OwnerStepsTest {
             engine.runOwnerMaintenance()
             assertTrue(world.registrations().any { it["state"] == "pending" })
 
-            // The work lane registers one of the re-armed rows, and the relay refuses the
-            // credential once more before the other is done.
+            // The work lane registers one of the re-armed rows — the inbox pair's read row — and
+            // the relay refuses the credential once more before the other is done. Scoped to the
+            // inbox namespace: since S4-owner the owner also keeps `M_0`'s read rows, and the
+            // point of the test is the one finished row against its still-pending siblings.
+            val inboxNs = world.crypto.ownCard(0)!!.inboxNamespace
             world.sql.exec(
                 "UPDATE relay_key_registration SET state = 'done', valid_until_hour = ? " +
-                    "WHERE state = 'pending' AND kind = 'read'",
-                listOf(validUntil),
+                    "WHERE state = 'pending' AND kind = 'read' AND namespace_id = ?",
+                listOf(validUntil, inboxNs),
             )
             world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
             world.clock.now = now + 2 * hour
@@ -709,7 +876,21 @@ class OwnerStepsTest {
             assertEquals(
                 "the row the work lane finished stays done while the rest of the pair is pending",
                 listOf("done"),
-                world.registrations().filter { it["relay_id"] == rejected && it["kind"] == "read" }
+                world.registrations()
+                    .filter {
+                        it["relay_id"] == rejected && it["kind"] == "read" &&
+                            it["ns"] == inboxNs.toHex()
+                    }
+                    .map { it["state"] },
+            )
+            // `M_0`'s read row at the same relay was re-armed by the same refusal and is pending.
+            assertEquals(
+                listOf("pending"),
+                world.registrations()
+                    .filter {
+                        it["relay_id"] == rejected && it["kind"] == "read" &&
+                            it["ns"] == world.crypto.ownCard(0)!!.mediaNamespace.toHex()
+                    }
                     .map { it["state"] },
             )
         }
@@ -959,7 +1140,7 @@ class OwnerStepsTest {
             assertNotNull(world.selfRow())
             assertEquals(1, world.generations().size)
             assertEquals(1, world.bundleOps().size)
-            assertEquals(2, world.ownNamespaces().size)
+            assertEquals(3, world.ownNamespaces().size)
             assertEquals(OwnerSteps.Result.UNCHANGED, world.activateAt(weekStart(2_870) + 2 * day + 2 * hour))
         }
     }

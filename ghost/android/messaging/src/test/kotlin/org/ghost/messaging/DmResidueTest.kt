@@ -113,8 +113,9 @@ class DmResidueTest {
     }
 
     /**
-     * §21.12 point 3: block and delete record `X_c` and `P_c` in `dm_orphan_namespace`, which is
-     * what carries them to SWEEP and what makes the residue's ≤ 7-day bound (L7-D7) true.
+     * §21.12 point 3: block and delete record `X_c`, `P_c` and — since slice S4-owner — `M_c`
+     * (Phase 11 design §5.1) in `dm_orphan_namespace`, which is what carries them to SWEEP and
+     * what makes the residue's ≤ 7-day bound (L7-D7) true.
      */
     @Test
     fun blockAndDeleteRecordBothNamespacesAsOrphans() {
@@ -126,7 +127,7 @@ class DmResidueTest {
 
             assertTrue(alice.engine.block(contactB))
             val afterBlock = orphans(alice)
-            assertEquals("X_B and P_B, and those two only", 2, afterBlock.size)
+            assertEquals("X_B, P_B and M_B, and those three only (Phase 11 §5.1)", 3, afterBlock.size)
             assertTrue(
                 "the bundle namespace this device was fetching from is one of them",
                 afterBlock.contains(bundleNamespaceOf(alice)),
@@ -136,13 +137,13 @@ class DmResidueTest {
             // second time — and nothing has to be, because block recorded it.
             assertTrue(alice.engine.unblock(contactB))
             assertTrue(alice.engine.contacts().isEmpty())
-            assertEquals("the orphan rows outlive the contact", 2, orphans(alice).size)
+            assertEquals("the orphan rows outlive the contact", 3, orphans(alice).size)
         }
     }
 
     /**
      * The same for `deleteContact`, on a contact with a live conversation: every row of the contact
-     * goes and the two namespaces stay behind as orphans (§12.4, §21.12 point 3).
+     * goes and the three namespaces stay behind as orphans (§12.4, §21.12 point 3, Phase 11 §5.1).
      */
     @Test
     fun deletingAContactLeavesItsNamespacesRecordedAndNothingElse() {
@@ -165,7 +166,7 @@ class DmResidueTest {
                 0,
                 countWhere(alice, "SELECT count(*) FROM dm_message"),
             )
-            assertEquals("X_B and P_B are recorded for SWEEP", 2, orphans(alice).size)
+            assertEquals("X_B, P_B and M_B are recorded for SWEEP (Phase 11 §5.1)", 3, orphans(alice).size)
         }
     }
 
