@@ -77,7 +77,9 @@ internal open class StoreStep {
     /** One attempt for one due delivery. */
     open fun attempt(ctx: WorkContext, due: DueStore): StoreResult {
         val relay = due.relayId
-        val deadline = ctx.deadline(relay) ?: return StoreResult.SKIPPED
+        // The planner classified the delivery's consumer class, so the check before restore (step 1)
+        // gets the media share's deadline even before the lease exists (Phase 11 design §5.5).
+        val deadline = ctx.deadline(relay, due.media) ?: return StoreResult.SKIPPED
         val backoff = Backoff.retrySeconds(due.attempts + 1, ctx.selection())
         val lease = ctx.db.transaction { tx -> ctx.stores.outboxStore.lease(tx, due.operationId, relay, ctx.now(), backoff) }
             ?: return StoreResult.SKIPPED
@@ -178,7 +180,7 @@ internal open class StoreStep {
      * attempt's copy is there (verified) or the token is spent (exhausted, parked).
      */
     protected open fun quota(ctx: WorkContext, lease: StoreLease, pair: PairKey): StoreResult {
-        val deadline = ctx.deadline(lease.relayId)
+        val deadline = ctx.deadline(lease.relayId, lease.media)
         val checked = if (deadline == null) {
             null
         } else {

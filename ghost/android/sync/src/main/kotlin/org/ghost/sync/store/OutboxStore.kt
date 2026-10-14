@@ -23,8 +23,14 @@ import org.ghost.sync.store.RetentionPolicy.STORE_WINDOW_SECONDS
 import org.ghost.sync.store.Sql.DUE_CLAMP_SECONDS
 import org.ghost.sync.store.Sql.LIVE_DELIVERY_D
 
-/** A delivery the planner found due for a store attempt (design §3.3). */
-internal class DueStore(val operationId: OperationId, val relayId: RelayId, val namespace: NamespaceId, val attempts: Int) {
+/** A delivery the planner found due for a store attempt (design §3.3). [media] is the namespace's consumer class (§5.5). */
+internal class DueStore(
+    val operationId: OperationId,
+    val relayId: RelayId,
+    val namespace: NamespaceId,
+    val attempts: Int,
+    val media: Boolean = false,
+) {
     override fun toString(): String = "DueStore(attempts=$attempts)"
 }
 
@@ -251,7 +257,7 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
             args += ns.raw
         }
         return tx.sql.rows(
-            "SELECT d.operation_id, d.relay_id, o.namespace_id, d.attempts FROM outbox_delivery d " +
+            "SELECT d.operation_id, d.relay_id, o.namespace_id, d.attempts, n.consumer FROM outbox_delivery d " +
                 "JOIN outbox_op o ON o.operation_id = d.operation_id " +
                 "JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = d.relay_id " +
@@ -275,7 +281,7 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
                 }) +
                 "o.not_before_minute, d.operation_id LIMIT ?3",
             args,
-        ) { DueStore(OperationId(it.blob(0)), RelayId(it.long(1)), NamespaceId(it.blob(2)), it.int(3)) }
+        ) { DueStore(OperationId(it.blob(0)), RelayId(it.long(1)), NamespaceId(it.blob(2)), it.int(3), it.string(4) == Consumer.MEDIA.code) }
     }
 
     /**

@@ -69,13 +69,16 @@ internal open class ResolveStep {
 /**
  * One `check` per pair event for verification and resolution together (at most
  * [TrafficPolicy.checkBatch] hashes), with the write token (write grants read on the relay) or the
- * read token when there is no write token that reads.
+ * read token when there is no write token that reads. [media] is the pair's consumer class: a media
+ * pair's checks spend the relay's media share of the background budget (Phase 11 design §5.5's
+ * "media work (stores and fetches)… the rest stays for DM, bundle and channel work" is read as the
+ * checks of a media pair's own bundle being media work; §22.6 row 13).
  */
 internal object CheckRound {
 
     /** Returns true if a check request was made. */
-    fun run(ctx: WorkContext, pair: PairKey): Boolean {
-        if (!ctx.allows(pair)) return false
+    fun run(ctx: WorkContext, pair: PairKey, media: Boolean = false): Boolean {
+        if (!ctx.allows(pair, media)) return false
         val batch = ctx.policy.checkBatch
         val plan = ctx.db.transaction { tx ->
             val now = ctx.now()
@@ -94,12 +97,12 @@ internal object CheckRound {
             }
         } ?: return false
         if (plan.verify.isEmpty() && plan.resolve.isEmpty()) return false
-        val deadline = ctx.deadline(pair.relayId) ?: return false
+        val deadline = ctx.deadline(pair.relayId, media) ?: return false
         val hashes = LinkedHashSet<BlobHash>().apply {
             plan.verify.forEach { add(it.hash) }
             plan.resolve.forEach { add(it.hash) }
         }.toList()
-        val result = ctx.timed(pair.relayId) {
+        val result = ctx.timed(pair.relayId, media) {
             relayCall { ctx.port.check(plan.relay, pair.namespace, plan.token.token, hashes, deadline) }
         }
         when (result) {

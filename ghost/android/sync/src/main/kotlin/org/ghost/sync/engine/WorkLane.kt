@@ -87,10 +87,19 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
      * §13.3 item 5).
      *
      * [fetchesDone] counts the media fetches of this item's event already delivered by earlier
-     * slices of the same event (continuations only).
+     * slices of the same event, and [fetchesOnly] marks such a continuation: it exists only to
+     * carry the next fetch slice, so it runs the fetch and nothing else — §5.5's
+     * `mediaStoresPerPairEvent = 8` is an event's bound, and a continuation is not a new event
+     * (the review's F1: without the flag one event delivered 24 media stores). The event body
+     * (check, HIGH stores, registrations) runs on the event's first item only.
      */
-    class PairWork(session: Session, val pair: PairKey, val readPair: Boolean, val fetchesDone: Int = 0) :
-        WorkItem(session, networked = true) {
+    class PairWork(
+        session: Session,
+        val pair: PairKey,
+        val readPair: Boolean,
+        val fetchesDone: Int = 0,
+        val fetchesOnly: Boolean = false,
+    ) : WorkItem(session, networked = true) {
         /** Fetches this item delivered (set by [run], read by [Session.completeWork]). */
         var fetched = 0
             private set
@@ -101,10 +110,10 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
 
         override fun run() {
             val ctx = session.workContext
+            val media = ctx.db.transaction { tx ->
+                ctx.stores.directoryStore.namespace(tx, pair.namespace)?.consumer == Consumer.MEDIA
+            }
             if (readPair) {
-                val media = ctx.db.transaction { tx ->
-                    ctx.stores.directoryStore.namespace(tx, pair.namespace)?.consumer == Consumer.MEDIA
-                }
                 if (media) {
                     val budget = if (ctx.kind == SessionKind.FOREGROUND) {
                         ctx.policy.mediaForegroundFetchesPerEvent
@@ -123,7 +132,8 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
                     ctx.steps.fetch.run(ctx, pair, limit)
                 }
             }
-            CheckRound.run(ctx, pair)
+            if (fetchesOnly) return
+            CheckRound.run(ctx, pair, media)
             if (ctx.mode() == PrivacyMode.HIGH) {
                 ctx.steps.registration.round(ctx, pair, ctx.policy.registrationsPerPass)
                 ctx.steps.store.round(ctx, pair, ctx.policy.storesPerPairEvent)

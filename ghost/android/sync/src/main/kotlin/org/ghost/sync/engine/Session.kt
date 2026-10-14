@@ -186,9 +186,13 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
                 // A media pair's full slice reposts the rest of its bundle as a new item at [now],
                 // behind the non-media items already queued (a fresh sequence number: nothing already
                 // queued at or before [now] is overtaken). A non-media PairWork never queues behind
-                // a media continuation (Phase 11 design §5.5).
+                // a media continuation (Phase 11 design §5.5). The continuation carries fetches only:
+                // the event body (check, HIGH stores, registrations) ran on the event's first item.
                 if (item.continueFetches) {
-                    work.post(WorkItem.PairWork(this, item.pair, readPair = true, item.fetchesDone + item.fetched), now)
+                    work.post(
+                        WorkItem.PairWork(this, item.pair, readPair = true, item.fetchesDone + item.fetched, fetchesOnly = true),
+                        now,
+                    )
                 }
             }
         }

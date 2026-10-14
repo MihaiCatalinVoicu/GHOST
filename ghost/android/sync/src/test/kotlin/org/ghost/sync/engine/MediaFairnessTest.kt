@@ -95,6 +95,9 @@ class MediaFairnessTest {
         }
         for (i in 1..20) w.enqueue(100 + i, media)
         for (i in 1..20) w.enqueue(200 + i, dm)
+        // An inbound backlog on the media pair, so its event runs continuations (20 blobs > one
+        // slice of 8) beside the stores — the per-event claim must hold for the whole event.
+        w.inbound(relays[0], media, 1, 20)
         // HIGH mode delays a namespace's first send by U[0, 10 min]: start the session past it so
         // the stores are due from the first pair events.
         w.clock.advance(10 * MINUTE)
@@ -103,14 +106,68 @@ class MediaFairnessTest {
         driver.runUntil(w.clock.millis + 6 * MINUTE)
 
         val stores = w.net.callsOf(TestRelays.Kind.STORE)
-        for ((time, item) in driver.started.filter { it.second is WorkItem.PairWork }) {
-            val end = driver.started.firstOrNull { it.first > time }?.first ?: Long.MAX_VALUE
-            val round = stores.filter { it.startMillis in time until end }
-            assertTrue("media stores per pair event <= 8", round.ofNamespace(media).size <= 8)
-            assertTrue("non-media stores per pair event <= 8", round.ofNamespace(dm).size <= 8)
+        val checks = w.net.callsOf(TestRelays.Kind.CHECK)
+        for ((index, item) in driver.started.withIndex()) {
+            val pairWork = item.second as? WorkItem.PairWork ?: continue
+            val end = driver.started.getOrNull(index + 1)?.first ?: Long.MAX_VALUE
+            val span = stores.filter { it.startMillis in item.first until end }
+            assertTrue("media stores per item <= 8", span.ofNamespace(media).size <= 8)
+            assertTrue("non-media stores per item <= 8", span.ofNamespace(dm).size <= 8)
+            if (pairWork.fetchesOnly) {
+                // A continuation carries the next fetch slice only: no store, no check (review F1).
+                assertTrue("a continuation stores nothing", span.isEmpty())
+                assertTrue("a continuation checks nothing", checks.none { it.startMillis in item.first until end })
+            }
         }
         assertTrue("media work ran", stores.ofNamespace(media).isNotEmpty())
         assertTrue("dm work ran", stores.ofNamespace(dm).isNotEmpty())
+        assertTrue("continuations ran", driver.started.any { (it.second as? WorkItem.PairWork)?.fetchesOnly == true })
+    }
+
+    /**
+     * The review's F1 probe shape: a HIGH media read pair with 40 media stores due and 20 inbound
+     * blobs. The event's first item delivers its 8 media stores; the fetch continuations deliver
+     * zero stores (and zero checks) — without the fetches-only state one event delivered 24.
+     */
+    @Test
+    fun aHighMediaEventDeliversEightStoresAndItsContinuationsDeliverNone() = EngineWorld().use { w ->
+        w.mode = PrivacyMode.HIGH
+        val relays = w.relays(1, 2)
+        val media = w.namespace(1, relays, consumer = Consumer.MEDIA)
+        relays.forEach {
+            w.capability(it, media, CapabilityKind.READ)
+            w.capability(it, media)
+        }
+        for (i in 1..40) w.enqueue(100 + i, media)
+        w.inbound(relays[0], media, 1, 20)
+        w.clock.advance(10 * MINUTE)
+        w.net.latency = { 100 }
+        val (_, driver) = w.session()
+        driver.runUntil(w.clock.millis + 6 * MINUTE)
+
+        val stores = w.net.callsOf(TestRelays.Kind.STORE).ofNamespace(media)
+        val checks = w.net.callsOf(TestRelays.Kind.CHECK).ofNamespace(media)
+        val mediaItems = driver.started.mapIndexedNotNull { i, (_, it) ->
+            ((it as? WorkItem.PairWork)?.takeIf { p -> p.pair.namespace == media && p.readPair })?.let { i }
+        }
+        assertTrue("media pair events ran", mediaItems.isNotEmpty())
+        for (index in mediaItems) {
+            val item = driver.started[index].second as WorkItem.PairWork
+            val end = driver.started.getOrNull(index + 1)?.first ?: Long.MAX_VALUE
+            val span = stores.filter { it.startMillis in driver.started[index].first until end }
+            if (item.fetchesOnly) {
+                assertTrue("continuation at ${driver.started[index].first} stores nothing (got ${span.size})", span.isEmpty())
+                assertTrue("continuation checks nothing", checks.none { it.startMillis in driver.started[index].first until end })
+            } else {
+                assertTrue("event's first item delivers at most 8 media stores (got ${span.size})", span.size <= 8)
+            }
+        }
+        // The probe's aggregate: each event delivers at most its 8 media stores, continuations none.
+        val firstEventStores = stores.filter {
+            it.startMillis >= driver.started[mediaItems.first()].first &&
+                it.startMillis < (driver.started.getOrNull(mediaItems.first() + 1)?.first ?: Long.MAX_VALUE)
+        }
+        assertTrue("the first event delivers exactly its 8 media stores (got ${firstEventStores.size})", firstEventStores.size <= 8)
     }
 
     /**
@@ -281,5 +338,73 @@ class MediaFairnessTest {
         assertTrue("media bounded by its share (9 gets)", mediaGets in 8..10)
         // DM work of the same relay still ran: the rest of the budget stayed for it.
         assertTrue("dm work ran on the shared relay", w.net.callsOf(TestRelays.Kind.GET).ofNamespace(dm).size >= 1)
+    }
+
+    /**
+     * The review's F2 probe (a): a media pair's `CheckRound` spends the media share. A write-only
+     * media pair whose stores spent the 45 s share (9 stores at 5 s on each of its two relays) is
+     * never checked — the check is denied with the share, not charged to the DM side of the
+     * budget. Without the fix the check is allowed (45 s of the total 90 s remain on each relay)
+     * and CHECK calls are made.
+     */
+    @Test
+    fun aMediaPairsChecksAreDeniedWhenTheMediaShareIsSpent() =
+        EngineWorld(TrafficPolicy(verifyAckAgeSeconds = 5, mediaStoresPerPass = 24)).use { w ->
+            val relays = w.relays(1, 2)
+            val media = w.namespace(1, relays, listen = false, consumer = Consumer.MEDIA)
+            relays.forEach { w.capability(it, media) }
+            for (i in 1..12) w.enqueue(100 + i, media)
+            w.net.latency = { 5 * SECOND }
+            val (_, driver) = w.session(SessionKind.BACKGROUND)
+            driver.runUntilFinished(30 * MINUTE)
+
+            // 24 deliveries (12 ops × 2 relays) at 5 s each: each relay's share stops its media
+            // work at exactly 9 stores (45 s), the rest is denied, and each pair's verification
+            // check — due, write-only pairs check after the policy's 5 s — is denied with the
+            // share: no CHECK call is ever made.
+            assertEquals(18, w.net.callsOf(TestRelays.Kind.STORE).size)
+            assertTrue("no check ran on the media pairs", w.net.callsOf(TestRelays.Kind.CHECK).isEmpty())
+        }
+
+    /**
+     * The review's F2 probe (b): the check before restore's deadline is cut to the media share's
+     * remainder. In one background job's pass the restore store of an earlier-`not_before` op
+     * spends 5 s of the relay's media share before the copy-checking attempt runs, so the check's
+     * deadline is the share's remainder (45 s − 5 s = 40 s), not the 60 s call deadline. Without
+     * the fix the deadline is `min(60 s, total left)` = 60 s. (The share is per session and the
+     * bucket resets between jobs, so the spending and the check happen in one pass; the two ops are
+     * ordered by `not_before` so the restore store runs before the copy check.)
+     */
+    @Test
+    fun aMediaChecksDeadlineIsCutToTheSharesRemainder() = EngineWorld(
+        // No verification checks in the probe's window: the only CHECK calls are the two
+        // check-before-restore calls under measurement.
+        TrafficPolicy(verifyAckAgeSeconds = 30L * 86_400),
+    ).use { w ->
+        val relays = w.relays(1, 2)
+        val media = w.namespace(1, relays, listen = false, consumer = Consumer.MEDIA)
+        relays.forEach { w.capability(it, media) }
+        val aHash = w.hashOf(1)
+        val bHash = w.hashOf(2)
+        w.enqueue(2, media)
+        w.clock.advance(MINUTE)
+        w.enqueue(1, media) // later not_before: op 2's deliveries sort before op 1's
+        w.net.latency = { 5 * SECOND }
+        // Job 1: op 2's stores fail before apply (definite, retried later); op 1's are applied and
+        // then a timeout answers (ambiguous: a possible copy, checked before any restore).
+        w.net.failBefore = { if (it.kind == TestRelays.Kind.STORE && it.hashes.single() == bHash) "transport" else null }
+        w.net.failAfter = { if (it.kind == TestRelays.Kind.STORE && it.hashes.single() == aHash) "timeout" else null }
+        w.session(SessionKind.BACKGROUND).second.runUntilFinished(30 * MINUTE)
+        assertEquals(4, w.net.callsOf(TestRelays.Kind.STORE).size)
+
+        // Job 2: op 2 stores first (5 s more of the share), then op 1's copy is checked.
+        w.net.failBefore = { null }
+        w.net.failAfter = { null }
+        w.clock.advance(60 * MINUTE)
+        w.session(SessionKind.BACKGROUND).second.runUntilFinished(w.clock.millis + 30 * MINUTE)
+        assertEquals(6, w.net.callsOf(TestRelays.Kind.STORE).size)
+        val checks = w.net.callsOf(TestRelays.Kind.CHECK)
+        assertEquals(2, checks.size)
+        for (check in checks) assertEquals(40_000, check.deadlineMillis)
     }
 }
