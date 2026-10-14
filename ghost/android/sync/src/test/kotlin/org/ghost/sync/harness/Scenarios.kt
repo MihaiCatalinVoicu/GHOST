@@ -783,3 +783,40 @@ internal class ScenarioClockStepOffline : Scenario("S-K/clock-step-offline") {
         if (w.otherBlobs.size != 4) violation("S-K: unexpected blobs")
     }
 }
+
+/**
+ * S-M media (Phase 11 design §5.5 and §13.3: the sync-exit-gate's worlds gain a media consumer with
+ * bursts of 17 and 129 blobs): a card holder floods the subject's media namespace `M` with a burst
+ * of [burst] blobs — 17 is three fetch slices of 8, 129 exceeds a background event's media fetch
+ * budget of 128, so the last blob resumes at the pair's next event — while the subject uploads a
+ * media op of its own (media stores run after the pass's non-media stores). The media lane's
+ * slicing, event budgets and store rounds run under the crash enumeration.
+ */
+internal class ScenarioMedia(private val burst: Int) : Scenario("S-M/$burst") {
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val mia = subject(w, "mia")
+        val media = mia.namespace("media", listOf(a, b), listen = true, consumer = Consumer.MEDIA)
+        mia.capability(a, media, CapabilityKind.READ)
+        mia.capability(b, media, CapabilityKind.READ)
+        mia.capability(a, media)
+        mia.capability(b, media)
+        w.at(0, "a card holder deposits a burst of $burst") {
+            for (i in 1..burst) w.otherWrite(if (i % 2 == 0) a else b, media, "m$i")
+        }
+        w.at(3 * MINUTE, "mia uploads a photo") { mia.enqueue("up1", media) }
+        w.jobs(mia, MINUTE, 31 * MINUTE)
+        w.endMillis = 45 * MINUTE
+    }
+
+    override fun finalChecks(w: World) {
+        // Every blob of the burst reached the consumer exactly once (IN-1/IN-2 are the harness's).
+        var consumed = 0L
+        w.subject.jdbc.query(
+            "SELECT count(*) FROM oracle_consumed WHERE namespace_id = ?1",
+            listOf(w.subject.namespaces.getValue("media").toByteArray()),
+        ) { consumed = it.long(0) }
+        if (consumed != burst.toLong()) violation("S-M: $consumed of $burst burst blobs consumed")
+    }
+}

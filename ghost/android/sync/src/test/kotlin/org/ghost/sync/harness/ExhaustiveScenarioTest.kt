@@ -109,6 +109,16 @@ class ExhaustiveScenarioTest {
     @Test
     fun sL_listenLater() = both("S-L", doubles = false) { ScenarioListenLater() }
 
+    /**
+     * Phase 11 design §5.5/§13.3: a media consumer with bursts of 17 blobs (three fetch slices)
+     * and 129 blobs (more than a background event's media fetch budget; the rest resumes at the
+     * next event).
+     */
+    @Test
+    fun sM_mediaBursts() {
+        for (burst in listOf(17, 129)) both("S-M/$burst", doubles = false) { ScenarioMedia(burst) }
+    }
+
     companion object {
         private val started = System.nanoTime()
 

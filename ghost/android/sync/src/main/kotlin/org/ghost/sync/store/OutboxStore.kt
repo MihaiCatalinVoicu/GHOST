@@ -3,6 +3,7 @@ package org.ghost.sync.store
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
 import org.ghost.sync.api.InsufficientReplicasException
 import org.ghost.sync.api.NamespaceId
@@ -44,6 +45,8 @@ internal class StoreLease(
     val acked: Boolean,
     val capability: CapabilityToken,
     val clearableIfAbsent: Boolean,
+    /** The namespace's consumer is `Consumer.MEDIA`: the call charges the relay's media share (§5.5). */
+    val media: Boolean,
 ) {
     private val payload: ByteArray = ciphertext
 
@@ -225,10 +228,20 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
     // ------------------------------------------------------------------ planning and lease (§3.3)
 
     /**
-     * Deliveries due for a store attempt, ordered by `not_before_minute`, then operation id. With
-     * [relay] and [ns] set, only that pair's deliveries (HIGH mode, at the pair's event).
+     * Deliveries due for a store attempt. With [relay] and [ns] set, only that pair's deliveries
+     * (HIGH mode, at the pair's event). [media] selects the consumer class: a media round takes only
+     * `Consumer.MEDIA` namespaces, a non-media round everything else — inside a round the due ops are
+     * ordered `DM, PREKEYS, CHANNEL, IDENTITY` before `MEDIA` (vacuous there), then by
+     * `not_before_minute` and operation id (Phase 11 design §5.5, F7 had no fairness).
      */
-    fun dueStores(tx: SyncTransaction, now: Long, limit: Int, relay: RelayId? = null, ns: NamespaceId? = null): List<DueStore> {
+    fun dueStores(
+        tx: SyncTransaction,
+        now: Long,
+        limit: Int,
+        relay: RelayId? = null,
+        ns: NamespaceId? = null,
+        media: Boolean = false,
+    ): List<DueStore> {
         require(limit > 0) { "limit must be positive" }
         require((relay == null) == (ns == null)) { "pair filter needs relay and namespace" }
         val pairFilter = if (relay != null) "AND d.relay_id = ?4 AND o.namespace_id = ?5 " else ""
@@ -240,18 +253,27 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
         return tx.sql.rows(
             "SELECT d.operation_id, d.relay_id, o.namespace_id, d.attempts FROM outbox_delivery d " +
                 "JOIN outbox_op o ON o.operation_id = d.operation_id " +
+                "JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = d.relay_id " +
                 "WHERE d.state = 'pending' AND d.inflight = 0 " +
                 "AND (d.next_attempt_minute <= ?1 OR d.next_attempt_minute > ?1 + $DUE_CLAMP_SECONDS) " +
                 "AND (o.not_before_minute <= ?1 OR o.not_before_minute > ?1 + $DUE_CLAMP_SECONDS) " +
                 "AND (o.deadline_hour IS NULL OR o.deadline_hour > ?1) " +
                 "AND rd.state = 'active' " +
+                "AND " + (if (media) "n.consumer = 'media' " else "n.consumer <> 'media' ") +
                 "AND EXISTS (SELECT 1 FROM relay_capability c WHERE c.relay_id = d.relay_id AND c.namespace_id = o.namespace_id " +
                 "AND c.kind = 'write' AND c.state = 'usable' AND (c.expires_hour IS NULL OR c.expires_hour > ?1)) " +
                 "AND NOT EXISTS (SELECT 1 FROM outbox_delivery x WHERE x.operation_id = d.operation_id " +
                 "AND x.copy_hour IS NOT NULL AND x.copy_hour + ?2 <= ?1) " +
                 pairFilter +
-                "ORDER BY o.not_before_minute, d.operation_id LIMIT ?3",
+                (if (media) {
+                    "ORDER BY "
+                } else {
+                    // Consumer priority: DM, PREKEYS, CHANNEL, IDENTITY before MEDIA (vacuous in a
+                    // non-media round), each class by not_before_minute, then operation id.
+                    "ORDER BY CASE n.consumer WHEN 'dm' THEN 0 WHEN 'prekeys' THEN 1 WHEN 'channel' THEN 2 ELSE 3 END, "
+                }) +
+                "o.not_before_minute, d.operation_id LIMIT ?3",
             args,
         ) { DueStore(OperationId(it.blob(0)), RelayId(it.long(1)), NamespaceId(it.blob(2)), it.int(3)) }
     }
@@ -280,18 +302,20 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
         )
         if (leased != 1) return null
         val row = sql.single(
-            "SELECT o.ciphertext, o.namespace_id, o.blob_hash, o.ttl_seconds, d.copy_hour, d.ack_minute, rd.onion_address " +
+            "SELECT o.ciphertext, o.namespace_id, o.blob_hash, o.ttl_seconds, d.copy_hour, d.ack_minute, rd.onion_address, n.consumer " +
                 "FROM outbox_op o JOIN outbox_delivery d ON d.operation_id = o.operation_id " +
-                "JOIN relay_directory rd ON rd.relay_id = d.relay_id WHERE o.operation_id = ?1 AND d.relay_id = ?2",
+                "JOIN relay_directory rd ON rd.relay_id = d.relay_id " +
+                "JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
+                "WHERE o.operation_id = ?1 AND d.relay_id = ?2",
             listOf(operationId.raw, relay.value),
-        ) { LeaseRow(it.blob(0), NamespaceId(it.blob(1)), BlobHash(it.blob(2)), it.int(3), it.longOrNull(4), !it.isNull(5), it.string(6)) }
+        ) { LeaseRow(it.blob(0), NamespaceId(it.blob(1)), BlobHash(it.blob(2)), it.int(3), it.longOrNull(4), !it.isNull(5), it.string(6), it.string(7)) }
             ?: throw IllegalStateException("leased delivery vanished")
         val token = capabilities.usable(tx, relay, row.namespace, CapabilityKind.WRITE, now)
             ?: throw IllegalStateException("leased delivery has no write capability")
         val clearable = row.copyHour != null && !row.acked && now < row.copyHour + row.ttlSeconds - SKEW_SECONDS
         return StoreLease(
             operationId, relay, OnionAddress.parse(row.address), row.namespace, row.hash, row.ciphertext, row.ttlSeconds,
-            row.copyHour, row.acked, token, clearable,
+            row.copyHour, row.acked, token, clearable, row.consumer == Consumer.MEDIA.code,
         )
     }
 
@@ -303,6 +327,7 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
         val copyHour: Long?,
         val acked: Boolean,
         val address: String,
+        val consumer: String,
     )
 
     // ------------------------------------------------------------------ result transactions (§3.3)

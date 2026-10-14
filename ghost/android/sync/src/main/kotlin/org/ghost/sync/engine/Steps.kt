@@ -72,31 +72,36 @@ internal class WorkContext(engine: SyncEngine, private val session: Session) : E
     /** The session's transport is READY (budget and stopping aside): a precondition of GC (§11.5 #2). */
     val online: Boolean get() = session.online
 
-    /** A work-lane call for [pair] may be made now: session active, breaker closed, no pause, relay budget left. */
-    fun allows(pair: PairKey): Boolean {
+    /**
+     * A work-lane call for [pair] may be made now: session active, breaker closed, no pause, relay
+     * budget left. A [media] call spends the relay's media share (Phase 11 design §5.5), which is at
+     * most [TrafficPolicy.mediaBackgroundRelayWorkMillis] of the relay's total background budget.
+     */
+    fun allows(pair: PairKey, media: Boolean = false): Boolean {
         val now = monotonic()
         return session.canUseNetwork(now) &&
             session.work.breaker.allows(pair.relayId, now) &&
             !engine.workPaused(pair, now) &&
             !engine.relayWorkPaused(pair.relayId, now) &&
-            session.work.relayBudgetLeft(pair.relayId) > 0
+            session.work.relayBudgetLeft(pair.relayId, media) > 0
     }
 
     /**
      * Deadline of the next work-lane call to [relay]: `min(60 s, remaining session budget − 5 s)`
-     * and, in the background, the relay's remaining work budget; null when too little is left.
+     * and, in the background, the relay's remaining work budget (the media share's remainder when
+     * [media]); null when too little is left.
      */
-    fun deadline(relay: RelayId): Int? {
+    fun deadline(relay: RelayId, media: Boolean = false): Int? {
         var limit = policy.callDeadlineMillis.toLong()
-        if (session.kind == SessionKind.BACKGROUND) limit = minOf(limit, session.work.relayBudgetLeft(relay))
+        if (session.kind == SessionKind.BACKGROUND) limit = minOf(limit, session.work.relayBudgetLeft(relay, media))
         return session.budget.deadline(monotonic(), limit)
     }
 
-    /** Runs one call to [relay] and charges its duration to the relay's work budget. */
-    fun <T> timed(relay: RelayId, call: () -> T): T {
+    /** Runs one call to [relay] and charges its duration to the relay's work budget, and to the media share when [media]. */
+    fun <T> timed(relay: RelayId, media: Boolean = false, call: () -> T): T {
         val start = monotonic()
         val out = call()
-        session.work.recordCall(relay, monotonic() - start)
+        session.work.recordCall(relay, monotonic() - start, media)
         return out
     }
 

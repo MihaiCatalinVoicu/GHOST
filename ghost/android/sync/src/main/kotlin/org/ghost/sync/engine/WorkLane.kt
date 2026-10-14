@@ -1,5 +1,6 @@
 package org.ghost.sync.engine
 
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.TransportStatus
@@ -41,8 +42,9 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
 
     /**
      * Maintenance pass (M2, and M3/M4 with a trusted clock), a refresh of the pair snapshot and, in
-     * STANDARD mode, the due stores (at most [TrafficPolicy.storesPerPass]) and the due key
-     * registrations (at most [TrafficPolicy.registrationsPerPass], Phase 9 design §13.3 item 5).
+     * STANDARD mode, the due stores — at most [TrafficPolicy.storesPerPass] non-media stores, then
+     * at most [TrafficPolicy.mediaStoresPerPass] media stores (Phase 11 design §5.5) — and the due
+     * key registrations (at most [TrafficPolicy.registrationsPerPass], Phase 9 design §13.3 item 5).
      */
     class Pass(session: Session) : WorkItem(session, networked = false) {
         var snapshot: PairSnapshot? = null
@@ -60,7 +62,13 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
                     // Registrations first: there are at most eight of them and they are what keeps
                     // the owner reachable, so a large store backlog never starves them.
                     ctx.steps.registration.round(ctx, null, ctx.policy.registrationsPerPass)
-                    storesAtCap = ctx.steps.store.round(ctx, null, ctx.policy.storesPerPass) >= ctx.policy.storesPerPass
+                    // The media stores are a separate round, taken after the pass's non-media stores:
+                    // a media burst never crowds a pass's DM work out, nor waits behind a later one.
+                    val nonMedia = ctx.steps.store.round(ctx, null, ctx.policy.storesPerPass)
+                    val media = ctx.steps.store.round(ctx, null, ctx.policy.mediaStoresPerPass, media = true)
+                    // The at-cap repost (Session.completeWork) also applies to media, so a media
+                    // backlog keeps passes coming while other queued work interleaves between them.
+                    storesAtCap = nonMedia >= ctx.policy.storesPerPass || media >= ctx.policy.mediaStoresPerPass
                 }
             }
         }
@@ -70,21 +78,56 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
 
     /**
      * The work bundle of one pair event (design §6.1): fetches for a read pair (8 per event in the
-     * foreground, 32 in a background job), one verification/resolution check, and in HIGH mode the
-     * pair's due stores (at most [TrafficPolicy.storesPerPairEvent]) and key registrations (Phase 9
-     * design §13.3 item 5).
+     * foreground, 32 in a background job; a media pair's event fetches at most
+     * [TrafficPolicy.mediaForegroundFetchesPerEvent] or [TrafficPolicy.mediaBackgroundFetchesPerEvent]
+     * blobs, in slices of [TrafficPolicy.mediaFetchesPerItem], each further slice a new item behind
+     * the non-media items already queued — Phase 11 design §5.5), one verification/resolution check,
+     * and in HIGH mode the pair's due stores (at most [TrafficPolicy.storesPerPairEvent] non-media,
+     * then [TrafficPolicy.mediaStoresPerPairEvent] media) and key registrations (Phase 9 design
+     * §13.3 item 5).
+     *
+     * [fetchesDone] counts the media fetches of this item's event already delivered by earlier
+     * slices of the same event (continuations only).
      */
-    class PairWork(session: Session, val pair: PairKey, val readPair: Boolean) : WorkItem(session, networked = true) {
+    class PairWork(session: Session, val pair: PairKey, val readPair: Boolean, val fetchesDone: Int = 0) :
+        WorkItem(session, networked = true) {
+        /** Fetches this item delivered (set by [run], read by [Session.completeWork]). */
+        var fetched = 0
+            private set
+
+        /** True when a full slice was delivered and the event's media budget is not spent: [Session] reposts the rest. */
+        var continueFetches = false
+            private set
+
         override fun run() {
             val ctx = session.workContext
             if (readPair) {
-                val limit = if (ctx.kind == SessionKind.FOREGROUND) ctx.policy.foregroundFetchesPerEvent else ctx.policy.backgroundFetchesPerEvent
-                ctx.steps.fetch.run(ctx, pair, limit)
+                val media = ctx.db.transaction { tx ->
+                    ctx.stores.directoryStore.namespace(tx, pair.namespace)?.consumer == Consumer.MEDIA
+                }
+                if (media) {
+                    val budget = if (ctx.kind == SessionKind.FOREGROUND) {
+                        ctx.policy.mediaForegroundFetchesPerEvent
+                    } else {
+                        ctx.policy.mediaBackgroundFetchesPerEvent
+                    }
+                    val slice = minOf(ctx.policy.mediaFetchesPerItem, budget - fetchesDone)
+                    if (slice > 0) {
+                        fetched = ctx.steps.fetch.run(ctx, pair, slice)
+                        // A full slice means more of the bundle may be due: the rest resumes as a new
+                        // item behind the non-media items already queued (Session.completeWork).
+                        continueFetches = fetched >= slice && fetchesDone + fetched < budget
+                    }
+                } else {
+                    val limit = if (ctx.kind == SessionKind.FOREGROUND) ctx.policy.foregroundFetchesPerEvent else ctx.policy.backgroundFetchesPerEvent
+                    ctx.steps.fetch.run(ctx, pair, limit)
+                }
             }
             CheckRound.run(ctx, pair)
             if (ctx.mode() == PrivacyMode.HIGH) {
                 ctx.steps.registration.round(ctx, pair, ctx.policy.registrationsPerPass)
                 ctx.steps.store.round(ctx, pair, ctx.policy.storesPerPairEvent)
+                ctx.steps.store.round(ctx, pair, ctx.policy.mediaStoresPerPairEvent, media = true)
             }
         }
 
@@ -126,7 +169,6 @@ internal class WorkLane(private val session: Session, private val schedule: Pair
     private var seq = 0L
     private var busy = false
     private val writePairs = TreeMap<PairKey, WritePair>(PairSchedule.PAIR_ORDER)
-    private val relayMillis = HashMap<Long, Long>()
 
     fun post(item: WorkItem, at: Long) {
         queue.add(Entry(at, seq++, item))
@@ -217,14 +259,33 @@ internal class WorkLane(private val session: Session, private val schedule: Pair
 
     // ------------------------------------------------------------------ background per-relay budget
 
-    fun recordCall(relay: RelayId, elapsedMillis: Long) {
+    /**
+     * Per-relay work-lane call time of this session. [relayMillis] is the total,
+     * [mediaRelayMillis] the media share's part of it: media work may use at most
+     * [TrafficPolicy.mediaBackgroundRelayWorkMillis] of the relay's
+     * [TrafficPolicy.backgroundRelayWorkMillis], and what media has spent comes out of the total,
+     * so the rest stays for DM, bundle and channel work of that relay (Phase 11 design §5.5).
+     */
+    private val relayMillis = HashMap<Long, Long>()
+    private val mediaRelayMillis = HashMap<Long, Long>()
+
+    fun recordCall(relay: RelayId, elapsedMillis: Long, media: Boolean) {
         if (session.kind != SessionKind.BACKGROUND) return
         relayMillis[relay.value] = (relayMillis[relay.value] ?: 0L) + maxOf(0L, elapsedMillis)
+        if (media) mediaRelayMillis[relay.value] = (mediaRelayMillis[relay.value] ?: 0L) + maxOf(0L, elapsedMillis)
     }
 
     /** Remaining work-lane call time for [relay] in this session (unlimited in the foreground). */
-    fun relayBudgetLeft(relay: RelayId): Long =
-        if (session.kind != SessionKind.BACKGROUND) Long.MAX_VALUE else policy.backgroundRelayWorkMillis - (relayMillis[relay.value] ?: 0L)
+    fun relayBudgetLeft(relay: RelayId, media: Boolean): Long =
+        if (session.kind != SessionKind.BACKGROUND) {
+            Long.MAX_VALUE
+        } else {
+            val total = policy.backgroundRelayWorkMillis - (relayMillis[relay.value] ?: 0L)
+            if (media) minOf(policy.mediaBackgroundRelayWorkMillis - (mediaRelayMillis[relay.value] ?: 0L), total) else total
+        }
+
+    /** Media call time a relay has spent in this session (tests). */
+    fun mediaRelaySpent(relay: RelayId): Long = mediaRelayMillis[relay.value] ?: 0L
 
     override fun toString(): String = "WorkLane(queued=${queue.size})"
 }
