@@ -593,11 +593,17 @@ internal object ChannelM20 {
         // The hold's settling commit advances the lead one epoch past the rejoiner's; some seeds
         // need more than one settle round for the rejoiner to apply it (the gate-scale sweep's
         // 18 seeds, §19.51), so the settle is guard-bounded like the admission/re-add loops.
+        // The first round is unconditional, as before the gate-scale pins: the twin's held
+        // candidate is settled by a window paste even in the seeds whose epochs already read
+        // equal on entry (the CO-13 hold it arms blocks the lead's posts until it settles; a
+        // conditional loop can skip the one round that settles it — observed at seed 0x5eed_c101
+        // as the catch-up post never displaying).
         var settleGuard = 0
-        while (lead().channel(id)!!.epoch != lost.channel(id)!!.epoch && settleGuard++ < 4) {
+        do {
             w.pastSettleWindow()
             w.quiesce()
-        }
+            settleGuard++
+        } while (lead().channel(id)!!.epoch != lost.channel(id)!!.epoch && settleGuard < 4)
         assertEquals(lead().channel(id)!!.epoch, lost.channel(id)!!.epoch)
         // Catch-up: one pass, no wall-clock wait (SCN-CE's latency claim).
         ChannelScenes.post(lead(), id, "after-the-rejoin-${config.seed}")
