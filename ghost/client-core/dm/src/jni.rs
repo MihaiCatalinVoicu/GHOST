@@ -840,7 +840,7 @@ pub(crate) fn with_context<T>(
 
 /// Every shipped build: the call itself.
 #[cfg(not(feature = "test-vectors"))]
-fn in_hook_scope<T>(_handle: jlong, body: impl FnOnce() -> T) -> T {
+pub(crate) fn in_hook_scope<T>(_handle: jlong, body: impl FnOnce() -> T) -> T {
     body()
 }
 
