@@ -63,6 +63,10 @@ class T19BasicTest {
         // REDEEM so that, unfunded, its registrations are served by a write capability as in Phase 9.
         val writeOnly = w.namespace(3, relays, listen = false, consumer = Consumer.CHANNEL)
             .also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } }
+        // A media namespace in both runs (Phase 11 §5.5: T19 holds with media activity; the bundles
+        // of its pair are sliced, which must not move any list event).
+        val media = w.namespace(4, relays, consumer = Consumer.MEDIA)
+            .also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } }
         // A relay in no namespace's set, as the owner keeps one after a slot change (§21.1 point 3):
         // it adds no read pair, and run (b) gives it key registrations of its own.
         val spare = w.relays(5).single()
@@ -98,19 +102,27 @@ class T19BasicTest {
             for (period in listOf(week, week + 1)) w.registration(spare, writeOnly, period)
             check(w.tx { w.stores.registrationStore.due(it, w.clock.epochSeconds(), 16, null, null) }.size == 2) { "registrations are not due" }
             relays.forEachIndexed { i, r -> listened.forEach { ns -> w.inbound(r, ns, 1_000 * (i + 1) + ns.hashCode() % 7, 7) } }
+            // Media activity (Phase 11 design §5.5): inbound media blobs (more than one fetch slice),
+            // media enqueues with a deadline, and the consumer's claims and outcome releases.
+            relays.forEachIndexed { i, r -> w.inbound(r, media, 2_000 * (i + 1), 21) }
             var items = 0
             var seed = 1
             driver.beforeItem = {
                 items++
                 // Enqueues and consumer transactions between lane items, on every kind of namespace.
                 if (items % 5 == 0 && seed <= 20) {
-                    w.enqueue(seed, if (seed % 3 == 0) writeOnly else listened[seed % 2])
+                    w.enqueue(seed, when {
+                        seed % 3 == 0 -> writeOnly
+                        seed % 3 == 1 -> media
+                        else -> listened[seed % 2]
+                    })
                     session.expedite()
                     seed++
                 }
                 if (items % 7 == 0) {
                     for (b in w.stores.inbox.claim(Consumer.DM, 4)) w.tx { w.stores.inbox.markConsumed(it, b.namespace, b.hash) }
-                    for (consumer in listOf(Consumer.DM, Consumer.CHANNEL)) {
+                    for (b in w.stores.inbox.claim(Consumer.MEDIA, 4)) w.tx { w.stores.inbox.markConsumed(it, b.namespace, b.hash) }
+                    for (consumer in listOf(Consumer.DM, Consumer.CHANNEL, Consumer.MEDIA)) {
                         for (o in w.stores.outbox.outcomes(consumer, 4)) w.tx { w.stores.outbox.release(it, o.operationId) }
                     }
                 }

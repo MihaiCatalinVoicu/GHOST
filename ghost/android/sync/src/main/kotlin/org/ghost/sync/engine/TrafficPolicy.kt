@@ -3,10 +3,11 @@ package org.ghost.sync.engine
 import org.ghost.sync.store.StoreLimits
 
 /**
- * Traffic, capacity and budget parameters (design §6.2, §3.7, §11.2 #1, #2, #12), in one place so
- * Phase 12 can tune them against NFR-1 and NFR-5. [DEFAULT] is the production policy; the exit-gate
- * harness passes a policy with a small [listLimit] (design §8.3). Durations are milliseconds of
- * monotonic time unless the name says seconds.
+ * Traffic, capacity and budget parameters (design §6.2, §3.7, §11.2 #1, #2, #12; the media lane
+ * parameters of Phase 11 design §5.5), in one place so Phase 12 can tune them against NFR-1 and
+ * NFR-5. [DEFAULT] is the production policy; the exit-gate harness passes a policy with a small
+ * [listLimit] (design §8.3). Durations are milliseconds of monotonic time unless the name says
+ * seconds.
  */
 class TrafficPolicy(
     /** T: foreground interval per pair; each step is T × U[0.5, 1.5] (ADR-15). */
@@ -27,6 +28,16 @@ class TrafficPolicy(
     val storesPerPairEvent: Int = 8,
     /** STANDARD: stores per maintenance pass. */
     val storesPerPass: Int = 32,
+    /** HIGH: media stores per pair event, taken after the non-media round (Phase 11 design §5.5). */
+    val mediaStoresPerPairEvent: Int = 8,
+    /** STANDARD: media stores per maintenance pass, taken after the pass's non-media stores (§5.5). */
+    val mediaStoresPerPass: Int = 16,
+    /** Media fetches per pair event in the foreground (§5.5), delivered in slices of [mediaFetchesPerItem]. */
+    val mediaForegroundFetchesPerEvent: Int = 64,
+    /** Media fetches per background pair event (§5.5), delivered in slices of [mediaFetchesPerItem]. */
+    val mediaBackgroundFetchesPerEvent: Int = 128,
+    /** One work-lane item of a media pair fetches at most this many blobs (§5.5). */
+    val mediaFetchesPerItem: Int = 8,
     /** Key registrations per maintenance pass, and per pair event in HIGH mode (Phase 9 design §13.3 item 5). */
     val registrationsPerPass: Int = 8,
     /**
@@ -60,6 +71,8 @@ class TrafficPolicy(
     val consumerTailReserveMillis: Long = 20_000,
     /** Background: work-lane call time per relay per session. */
     val backgroundRelayWorkMillis: Long = 90_000,
+    /** Background: media work's share of [backgroundRelayWorkMillis] per relay per session (§5.5). */
+    val mediaBackgroundRelayWorkMillis: Long = 45_000,
     /** A call's deadline leaves this much of the session budget unused. */
     val deadlineReserveMillis: Long = 5_000,
     /** Shortest deadline worth a call; with less budget left the call is not made. */
@@ -78,6 +91,9 @@ class TrafficPolicy(
         require(standardPagesPerEvent >= 1 && highPagesPerEvent >= 1) { "pages per event out of range" }
         require(foregroundFetchesPerEvent >= 1 && backgroundFetchesPerEvent >= 1) { "fetches per event out of range" }
         require(storesPerPairEvent >= 1 && storesPerPass >= 1) { "stores per event out of range" }
+        require(mediaStoresPerPairEvent >= 1 && mediaStoresPerPass >= 1) { "media stores per event out of range" }
+        require(mediaForegroundFetchesPerEvent >= 1 && mediaBackgroundFetchesPerEvent >= 1) { "media fetches per event out of range" }
+        require(mediaFetchesPerItem >= 1) { "media fetches per item out of range" }
         require(registrationsPerPass >= 1) { "registrations per pass out of range" }
         require(fetchedCap >= 1 && backlogCap >= 1) { "caps out of range" }
         require(checkBatch in 1..StoreLimits.CHECK_BATCH) { "check batch out of range" }
@@ -86,6 +102,7 @@ class TrafficPolicy(
         require(readWorkers >= 1 && maxReadPairs >= 1) { "read capacity out of range" }
         require(minCallMillis in 1..listDeadlineMillis) { "minimum call time out of range" }
         require(backgroundSessionMillis > deadlineReserveMillis && backgroundRelayWorkMillis > 0) { "budget out of range" }
+        require(mediaBackgroundRelayWorkMillis in 1 until backgroundRelayWorkMillis) { "media relay work share out of range" }
         require(jobBudgetMillis >= backgroundSessionMillis && consumerTailReserveMillis in 0 until jobBudgetMillis) { "job budget out of range" }
         require(passIntervalMillis > 0 && gcIntervalMillis > 0 && bootstrapMillis > 0) { "period out of range" }
     }

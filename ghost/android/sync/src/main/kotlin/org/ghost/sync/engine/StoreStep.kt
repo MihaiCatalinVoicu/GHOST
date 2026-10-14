@@ -50,23 +50,25 @@ internal enum class StoreResult {
 internal open class StoreStep {
 
     /**
-     * Attempts due stores: of one pair at its event (HIGH mode, at most [limit]), or of every pair in
-     * a maintenance pass ([pair] null, STANDARD). Deliveries whose relay is held (breaker, pause,
-     * budget) are skipped and stay due. Returns the number of attempts made.
+     * Attempts due stores of one consumer class: of one pair at its event (HIGH mode, at most
+     * [limit]), or of every pair in a maintenance pass ([pair] null, STANDARD). Deliveries whose
+     * relay is held (breaker, pause, budget) are skipped and stay due. [media] selects the class:
+     * a media round ([TrafficPolicy.mediaStoresPerPass] or [TrafficPolicy.mediaStoresPerPairEvent])
+     * runs after the pass's non-media round (Phase 11 design §5.5). Returns the number of attempts.
      */
-    open fun round(ctx: WorkContext, pair: PairKey?, limit: Int): Int {
+    open fun round(ctx: WorkContext, pair: PairKey?, limit: Int, media: Boolean = false): Int {
         if (!ctx.active) return 0
         val due = ctx.db.transaction { tx ->
             if (pair == null) {
-                ctx.stores.outboxStore.dueStores(tx, ctx.now(), limit * PLAN_OVERSAMPLE)
+                ctx.stores.outboxStore.dueStores(tx, ctx.now(), limit * PLAN_OVERSAMPLE, media = media)
             } else {
-                ctx.stores.outboxStore.dueStores(tx, ctx.now(), limit, pair.relayId, pair.namespace)
+                ctx.stores.outboxStore.dueStores(tx, ctx.now(), limit, pair.relayId, pair.namespace, media)
             }
         }
         var attempts = 0
         for (d in due) {
             if (attempts >= limit || !ctx.active) break
-            if (!ctx.allows(PairKey(d.relayId, d.namespace))) continue
+            if (!ctx.allows(PairKey(d.relayId, d.namespace), media)) continue
             if (attempt(ctx, d) != StoreResult.SKIPPED) attempts++
         }
         return attempts
@@ -75,7 +77,9 @@ internal open class StoreStep {
     /** One attempt for one due delivery. */
     open fun attempt(ctx: WorkContext, due: DueStore): StoreResult {
         val relay = due.relayId
-        val deadline = ctx.deadline(relay) ?: return StoreResult.SKIPPED
+        // The planner classified the delivery's consumer class, so the check before restore (step 1)
+        // gets the media share's deadline even before the lease exists (Phase 11 design §5.5).
+        val deadline = ctx.deadline(relay, due.media) ?: return StoreResult.SKIPPED
         val backoff = Backoff.retrySeconds(due.attempts + 1, ctx.selection())
         val lease = ctx.db.transaction { tx -> ctx.stores.outboxStore.lease(tx, due.operationId, relay, ctx.now(), backoff) }
             ?: return StoreResult.SKIPPED
@@ -83,7 +87,7 @@ internal open class StoreStep {
 
         // 1. Check before restore: a previous attempt may have left a copy.
         if (lease.checkFirst) {
-            val checked = ctx.timed(relay) { relayCall { ctx.port.check(lease.relay, lease.namespace, lease.capability.token, listOf(lease.hash), deadline) } }
+            val checked = ctx.timed(relay, lease.media) { relayCall { ctx.port.check(lease.relay, lease.namespace, lease.capability.token, listOf(lease.hash), deadline) } }
             when (checked) {
                 is CallResult.Ok -> {
                     ctx.success(relay)
@@ -101,11 +105,11 @@ internal open class StoreStep {
         }
 
         // 2. Store the frozen bytes.
-        val storeDeadline = ctx.deadline(relay) ?: run {
+        val storeDeadline = ctx.deadline(relay, lease.media) ?: run {
             ctx.db.transaction { tx -> ctx.stores.outboxStore.recordNotApplied(tx, lease.operationId, relay, ctx.now()) }
             return StoreResult.SKIPPED
         }
-        val stored = ctx.timed(relay) {
+        val stored = ctx.timed(relay, lease.media) {
             relayCall { ctx.port.store(lease.relay, lease.namespace, lease.capability.token, lease.ciphertext, lease.ttlSeconds, storeDeadline) }
         }
         return when (stored) {
@@ -176,11 +180,11 @@ internal open class StoreStep {
      * attempt's copy is there (verified) or the token is spent (exhausted, parked).
      */
     protected open fun quota(ctx: WorkContext, lease: StoreLease, pair: PairKey): StoreResult {
-        val deadline = ctx.deadline(lease.relayId)
+        val deadline = ctx.deadline(lease.relayId, lease.media)
         val checked = if (deadline == null) {
             null
         } else {
-            ctx.timed(lease.relayId) { relayCall { ctx.port.check(lease.relay, lease.namespace, lease.capability.token, listOf(lease.hash), deadline) } }
+            ctx.timed(lease.relayId, lease.media) { relayCall { ctx.port.check(lease.relay, lease.namespace, lease.capability.token, listOf(lease.hash), deadline) } }
         }
         if (checked is CallResult.Ok && lease.hash in checked.value) {
             ctx.success(lease.relayId)

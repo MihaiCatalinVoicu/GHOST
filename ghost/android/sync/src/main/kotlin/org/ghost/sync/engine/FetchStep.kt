@@ -3,6 +3,7 @@ package org.ghost.sync.engine
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.Buckets
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.port.PairKey
 import org.ghost.sync.store.CapabilityToken
 import org.ghost.sync.store.sha256
@@ -15,7 +16,7 @@ import org.ghost.sync.store.sha256
  */
 internal open class FetchStep {
 
-    private class Plan(val relay: OnionAddress, val token: CapabilityToken, val due: List<Pair<BlobHash, Int>>)
+    private class Plan(val relay: OnionAddress, val token: CapabilityToken, val due: List<Pair<BlobHash, Int>>, val media: Boolean)
 
     /** Returns the number of blobs fetched. */
     open fun run(ctx: WorkContext, pair: PairKey, limit: Int): Int {
@@ -24,23 +25,24 @@ internal open class FetchStep {
             val now = ctx.now()
             val token = ctx.stores.capabilityStore.forReading(tx, pair.relayId, pair.namespace, now)
             val relay = ctx.stores.directoryStore.address(tx, pair.relayId)
+            val media = ctx.stores.directoryStore.namespace(tx, pair.namespace)?.consumer == Consumer.MEDIA
             if (token == null || relay == null) {
                 null
             } else {
                 val due = ctx.stores.inboxStore.dueFetches(tx, pair.relayId, pair.namespace, now, limit, ctx.policy.fetchedCap).map { hash ->
                     Pair(hash, ctx.stores.inboxStore.fetchAttempts(tx, pair.namespace, hash) ?: 0)
                 }
-                Plan(relay, token, due)
+                Plan(relay, token, due, media)
             }
         } ?: return 0
         var fetched = 0
         for ((hash, attempts) in plan.due) {
-            if (!ctx.allows(pair)) break
-            val deadline = ctx.deadline(pair.relayId) ?: break
+            if (!ctx.allows(pair, plan.media)) break
+            val deadline = ctx.deadline(pair.relayId, plan.media) ?: break
             val backoff = Backoff.retrySeconds(attempts + 1, ctx.selection())
             val leased = ctx.db.transaction { tx -> ctx.stores.inboxStore.leaseFetch(tx, pair.namespace, hash, ctx.now(), backoff) }
             if (!leased) continue
-            val result = ctx.timed(pair.relayId) {
+            val result = ctx.timed(pair.relayId, plan.media) {
                 relayCall { ctx.port.get(plan.relay, pair.namespace, plan.token.token, hash, deadline) }
             }
             when (result) {

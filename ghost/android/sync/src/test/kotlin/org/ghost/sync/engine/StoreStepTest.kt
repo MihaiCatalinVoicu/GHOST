@@ -34,7 +34,7 @@ class StoreStepTest {
         val steps: Steps get() = w.engine.steps
 
         fun due(op: OperationId, relay: RelayId): DueStore? =
-            w.tx { w.stores.outboxStore.dueStores(it, w.clock.epochSeconds(), 32, relay, ns) }.firstOrNull { it.operationId == op }
+            w.tx { w.stores.outboxStore.dueStores(it, w.clock.epochSeconds(), 32, relay, ns, media = true) }.firstOrNull { it.operationId == op }
 
         fun attempt(op: OperationId, relay: RelayId): StoreResult = steps.store.attempt(ctx, checkNotNull(due(op, relay)) { "not due" })
 

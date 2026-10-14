@@ -1,6 +1,7 @@
 package org.ghost.sync.harness
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.Outcome
 import org.ghost.sync.api.PrivacyMode
@@ -80,11 +81,16 @@ internal class SeededWorld(val seed: Long) : Scenario("seed $seed") {
         c.directory(*relays.toTypedArray())
         val nsCount = 1 + rnd.nextInt(3)
         val namespaces = ArrayList<NamespaceId>()
+        val consumers = ArrayList<org.ghost.sync.api.Consumer>()
         for (n in 0 until nsCount) {
             val set = (honest.take(2) + relays.drop(2).filter { rnd.nextBoolean() }).distinct()
             val listen = n == 0 || rnd.nextBoolean()
-            val ns = c.namespace("ns$n", set, listen)
+            // Phase 11 design §13.3: the worlds gain a media consumer — every fourth namespace is
+            // an M, so its sliced fetches and its pass's media store round run under the crashes.
+            val consumer = if (n > 0 && rnd.nextInt(4) == 0) Consumer.MEDIA else Consumer.DM
+            val ns = c.namespace("ns$n", set, listen, consumer = consumer)
             namespaces += ns
+            consumers += consumer
             for (r in set) {
                 val shortLived = rnd.nextInt(6) == 0
                 val quota = if (rnd.nextInt(8) == 0) 4L * 1024 else 64L * 1024 * 1024
@@ -224,7 +230,7 @@ internal class SeededWorld(val seed: Long) : Scenario("seed $seed") {
         pCrash = if (crashBudget == 0) 0.0 else 1.0 / (100 + rnd.nextInt(900))
         pNetwork = rnd.nextInt(20) / 100.0
         pStoreOnly = if (rnd.nextInt(4) == 0) 0.02 else 0.0
-        description.append("relays=$relayCount hostile=$hostileMode mode=$mode ns=$nsCount ops=$opCount inbound=$inboundCount ")
+        description.append("relays=$relayCount hostile=$hostileMode mode=$mode ns=$nsCount consumers=${consumers.distinct().size} ops=$opCount inbound=$inboundCount ")
             .append("longOffline=$longOffline end=${w.endMillis / MINUTE}min crashes<=$crashBudget pCrash=$pCrash pNet=$pNetwork")
     }
 
