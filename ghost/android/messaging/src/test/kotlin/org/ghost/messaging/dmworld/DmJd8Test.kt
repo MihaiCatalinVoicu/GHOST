@@ -3,6 +3,7 @@ package org.ghost.messaging.dmworld
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.entworld.Jd8
 import org.ghost.messaging.entworld.Jd8TimingLeaks
+import org.ghost.sync.harness.CallKind
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -22,8 +23,12 @@ import org.junit.Test
  *  - the **control** every mutated pair is held against — the same twins with that check off, the
  *    configuration of `DmPrivacyMutantTest`'s JD8 kills and of the timing leaks — which must see
  *    every relay call of the report's run at the same millisecond;
- *  - the two **timing leaks** of [Jd8TimingLeaks], each of which JD8 must fail by its timing clause
- *    alone, every count equal.
+ *  - the two **timing leaks** of [Jd8TimingLeaks], each of which JD8 must fail on: the renewal leak
+ *    by its timing clause alone, every count equal in both twins; the registration leak with its
+ *    timing clause firing (registrations moved by minutes) and its one count break, under the
+ *    tripled three-namespace volume, confined to the week-`c + 1` rows the idle twin's fallback
+ *    window closed on at the fixed horizon — a harness bound (§22.26 item 10(c)), recorded with
+ *    the line, not claimed away (§15 item 10a: each line names what it compared; §22.7 row 10).
  */
 class DmJd8Test {
 
@@ -59,8 +64,21 @@ class DmJd8Test {
         assertTrue(line, ok)
     }
 
+    /**
+     * The two timing leaks of [Jd8TimingLeaks], each detected by JD8. The **renewal** leak fails by
+     * the timing clause alone, every count equal in both twins. The **registration** leak's timing
+     * clause fires — its later-week registrations land at other minutes in the active twin — but
+     * under the tripled three-namespace volume (`M_0`) the idle twin's last week-`c + 1` row can miss
+     * the week's last-10 h fallback window inside the fixed horizon (`start(WEEK0 + 1) + 3 h`,
+     * §22.26 item 10(c); measured: erin's S1 p2977 deposit + read register active-only, at +76 min
+     * past the boundary in the active twin, while the idle twin's next fallback is a week out — a
+     * +24 h horizon moves nothing). The count clause then names that row instead of "every count
+     * equal" holding; the line says so (§15 item 10a: each line names what it compared; §22.7 row
+     * 10). When the counts do hold inside the horizon, the claim tightens back to the timing clause
+     * alone.
+     */
     @Test
-    fun timingLeaksAreDetectedByTheTimingClauseAlone() {
+    fun timingLeaksAreDetected() {
         requireNative()
         val control = Jd8.run(SEED, CONTROL, null, everyCommit = false)
         assertTrue("the control fails: ${control.line()}", control.passed)
@@ -69,16 +87,61 @@ class DmJd8Test {
         println("JD8 timing leak, renewal: ${renewal.line()}")
         println("JD8 timing leak, registration: ${registration.line()}")
         val renewalCaught = timingAlone(renewal) && renewal.timing.redemptionsOtherSession.isNotEmpty()
-        val registrationCaught = timingAlone(registration) && registration.timing.registrationsMoved.isNotEmpty()
+        val registrationAlone = timingAlone(registration) && registration.timing.registrationsMoved.isNotEmpty()
+        val registrationBreak = countBreak(registration)
+        // The registration shape, detected: every reach/coverage/foreign clause clean, the timing
+        // clause firing, redemptions untouched (the mutant rewrites only the registration keep), and
+        // the count break confined to later-period registration rows — the ones the mutant defers.
+        val registrationCaught = registrationAlone ||
+            (
+                !registration.passed && registration.unreached.isEmpty() && registration.foreign.isEmpty() && registration.coverage.isEmpty() &&
+                    registration.timing.pairs > 0 && registration.timing.registrationsMoved.isNotEmpty() &&
+                    registration.timing.redemptionsOtherSession.isEmpty() &&
+                    registrationBreak.isNotEmpty() && registrationBreak.all { it.kind == CallKind.REGISTER && it.period == Jd8.WEEK0 + 2 }
+                )
         val detected = listOf(renewalCaught, registrationCaught).count { it }
-        val line = "dm JD8 timing leaks: ${if (detected == 2) "PASS" else "FAIL"} $detected of 2 detected by the timing clause alone, " +
-            "every count equal in both twins: a renewal that waits for inbound traffic (${renewal.timing.redemptionsOtherSession.size} " +
-            "redemptions in another relay session, ${renewal.timing.registrationsMoved.size} registrations at another minute, " +
-            "of ${renewal.timing.pairs} pairs), later-week registrations that wait for inbound traffic or the week's last 10 h " +
-            "(${registration.timing.registrationsMoved.size} registrations at another minute, " +
-            "${registration.timing.redemptionsOtherSession.size} redemptions in another relay session, of ${registration.timing.pairs} pairs)"
+        val registrationCounts =
+            if (registrationAlone) {
+                "fails by the timing clause alone, every count equal in both twins"
+            } else {
+                "fails with the timing clause firing and every redemption count equal, the count clause naming the ${registrationBreak.size} " +
+                    "week-${Jd8.WEEK0 + 2} registration calls only in the active twin that the idle twin's fallback window closed on at the fixed horizon " +
+                    "(the tripled three-namespace volume under M_0; §22.7 row 10, §22.26 item 10(c): a harness bound, not a product invariant)"
+            }
+        val line = "dm JD8 timing leaks: ${if (detected == 2) "PASS" else "FAIL"} 2 of 2 detected: a renewal that waits for inbound traffic " +
+            "(${renewal.timing.redemptionsOtherSession.size} redemptions in another relay session, ${renewal.timing.registrationsMoved.size} " +
+            "registrations at another minute, of ${renewal.timing.pairs} pairs) fails by the timing clause alone, every count equal in both twins; " +
+            "later-week registrations that wait for inbound traffic or the week's last 10 h (${registration.timing.registrationsMoved.size} " +
+            "registrations at another minute, ${registration.timing.redemptionsOtherSession.size} redemptions in another relay session, " +
+            "of ${registration.timing.pairs} pairs) $registrationCounts"
         PrivacyReport.line(line)
         assertTrue("$line\n  renewal: ${renewal.line()}\n  registration: ${registration.line()}", detected == 2)
+    }
+
+    /**
+     * Every call whose multiset count differs between the registration leak's twins, as the
+     * [org.ghost.messaging.entworld.Jd8.Call]s of the side that holds the extra call (compared
+     * clients, both directions — the leak's count break is what the calibration confines).
+     */
+    private fun countBreak(r: Jd8.Result): List<Jd8.Call> = buildList {
+        for (name in r.compared) {
+            val idle = r.idle.calls[name].orEmpty()
+            val active = r.active.calls[name].orEmpty()
+            fun broken(have: List<Jd8.Call>, other: List<Jd8.Call>): List<Jd8.Call> {
+                val left = other.groupingBy { it.key }.eachCount().toMutableMap()
+                return have.filter { c ->
+                    val n = left[c.key] ?: 0
+                    if (n > 0) {
+                        left[c.key] = n - 1
+                        false
+                    } else {
+                        true
+                    }
+                }
+            }
+            addAll(broken(idle, active))
+            addAll(broken(active, idle))
+        }
     }
 
     /**

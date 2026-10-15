@@ -1138,7 +1138,7 @@ object Schema {
                 )""",
         """CREATE TABLE dm_own_namespace (
                   namespace_id BLOB PRIMARY KEY NOT NULL CHECK (length(namespace_id) = 32),
-                  role         TEXT NOT NULL CHECK (role IN ('inbox', 'bundle')),
+                  role         TEXT NOT NULL CHECK (role IN ('inbox', 'bundle', 'media')),
                   card_index   INTEGER NOT NULL CHECK (typeof(card_index) = 'integer' AND card_index BETWEEN 0 AND 65535),
                   UNIQUE (role, card_index)
                 ) WITHOUT ROWID""",

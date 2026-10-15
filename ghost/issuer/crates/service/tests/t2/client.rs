@@ -197,23 +197,28 @@ pub type Outbox = ([u8; 32], Vec<u8>, [u8; 32], [bool; 3]);
 
 /// The DM owner namespaces of an activated identity (Phase 9 design §4.9 point 2, §4.8, §5.1): the
 /// inbox `X` (listened by the owner, registered for DEPOSIT and READ) and the bundle namespace `P`
-/// (write-only for the owner, registered for FETCH). They are registration-only namespaces: the
-/// owner redeems for them at once when a registration row is pending and no write capability exists
-/// (Q31's default, WRITE MISSING; [`Client::dm_pending`]) and renews them at the EXPIRING PRF time
-/// like every other pair. DM deposits are not modelled (§4.9 point 2: they spend no token and
-/// involve no issuer, T27, which the DM privacy world of §15.6 is what proves); nor are bundle
-/// publications, which §4.9 does not mention and which likewise spend no token.
+/// (write-only for the owner, registered for FETCH) and, since Phase 11's S4-owner slice, the
+/// media namespace `M` (listened by the owner, registered for DEPOSIT and READ exactly like the
+/// inbox, Phase 11 design §5.2). They are registration-only namespaces: the owner redeems for
+/// them at once when a registration row is pending and no write capability exists (Q31's default,
+/// WRITE MISSING; [`Client::dm_pending`]) and renews them at the EXPIRING PRF time like every
+/// other pair. DM deposits are not modelled (§4.9 point 2: they spend no token and involve no
+/// issuer, T27, which the DM privacy world of §15.6 is what proves), nor are bundle publications,
+/// which §4.9 does not mention and which likewise spend no token; neither is media traffic —
+/// Phase 11 design §5.2's T2 bullet is a uniform shift of the owner namespace count, and "no
+/// issuer input reaches `M` events".
 #[derive(Clone, Copy)]
 pub struct DmOwner {
     pub inbox: [u8; 32],
     pub bundle: [u8; 32],
+    pub media: [u8; 32],
 }
 
 impl DmOwner {
-    /// The bearer kinds §4.8 keeps registered for one of the two namespaces.
+    /// The bearer kinds §4.8 keeps registered for one of the three namespaces.
     pub fn kinds(&self, ns: &[u8; 32]) -> &'static [ghost_relay_api::BearerKind] {
         use ghost_relay_api::BearerKind;
-        if *ns == self.inbox {
+        if *ns == self.inbox || *ns == self.media {
             &[BearerKind::Deposit, BearerKind::Read]
         } else {
             &[BearerKind::Fetch]
@@ -221,7 +226,7 @@ impl DmOwner {
     }
 
     pub fn owns(&self, ns: &[u8; 32]) -> bool {
-        *ns == self.inbox || *ns == self.bundle
+        *ns == self.inbox || *ns == self.bundle || *ns == self.media
     }
 }
 

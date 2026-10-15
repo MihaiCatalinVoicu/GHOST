@@ -35,15 +35,21 @@ internal class OutcomeStep(
     private val sync: DmSyncPorts,
     private val sendStep: SendStep,
     private val clock: DmClock,
+    private val contexts: SelfContexts,
+    private val mediaOrphans: MediaOrphanSteps,
 ) {
     private val messages = MessageStore()
     private val owner = OwnerStore()
 
     /** How many outcomes this pass released. */
     fun run(): Int {
+        // Resolved before any outcome transaction, like every caller of SelfContexts since the
+        // S8 review: get() opens its own transaction when the cache is cold, and SyncDatabase
+        // refuses a nested one outright.
+        val self = contexts.get()
         var released = 0
         for (outcome in sync.outbox.outcomes(Consumer.DM, DM_OUTCOMES)) {
-            if (applyOne(outcome)) released += 1
+            if (applyOne(outcome, self)) released += 1
         }
         for (outcome in sync.outbox.outcomes(Consumer.PREKEYS, PREKEY_OUTCOMES)) {
             if (applyBundle(outcome)) released += 1
@@ -52,7 +58,7 @@ internal class OutcomeStep(
     }
 
     @Suppress("ReturnCount")
-    private fun applyOne(outcome: OutboundOutcome): Boolean {
+    private fun applyOne(outcome: OutboundOutcome, self: SelfContext?): Boolean {
         val now = clock.nowEpochSeconds()
         return database.transaction { tx ->
             if (!sync.outbox.release(tx, outcome.operationId)) return@transaction false
@@ -63,8 +69,8 @@ internal class OutcomeStep(
             val itemId = op.itemId ?: return@transaction true
             val item = messages.item(tx.sql, itemId) ?: return@transaction true
             when (outcome.outcome) {
-                Outcome.SENT -> terminal(tx, op.operationId, itemId, item, STATE_SENT)
-                Outcome.DEGRADED -> terminal(tx, op.operationId, itemId, item, STATE_DEGRADED)
+                Outcome.SENT -> terminal(tx, op.operationId, itemId, item, STATE_SENT, self)
+                Outcome.DEGRADED -> terminal(tx, op.operationId, itemId, item, STATE_DEGRADED, self)
                 Outcome.FAILED -> {
                     // §7.5: the user may retry, which re-encrypts the same L0 — so `l0_env` stays
                     // until the deadline, unlike at the three terminal outcomes.
@@ -99,7 +105,7 @@ internal class OutcomeStep(
                     // The contact is no longer sendable, or this week's slot table cannot give a
                     // quorum: the release stands and the item ends `indeterminate` — "may not have
                     // been delivered", which is exactly what is true.
-                    if (!resent) terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE)
+                    if (!resent) terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE, self)
                 }
             }
             true
@@ -137,6 +143,7 @@ internal class OutcomeStep(
         itemId: ByteArray,
         item: MessageStore.ItemRow,
         state: String,
+        self: SelfContext?,
     ) {
         messages.setItemState(tx, itemId, item.state, state)
         messages.setMessageState(tx, itemId, MessageStore.STATE_QUEUED, state)
@@ -145,6 +152,11 @@ internal class OutcomeStep(
         // opens, and T25 counts its lifetime from here (L7-D7).
         messages.clearOpBlob(tx, operationId)
         messages.clearItemL0(tx, itemId)
+        // Phase 11 design §5.1/§13.4: a kind-5 (descriptor) item's final outcome may complete the
+        // `M_c` orphan condition — the upload half of the object ended before the descriptor was
+        // even deposited, so the descriptor's outcome is usually the clause that closes. FAILED is
+        // not terminal (the user may retry until the deadline), so it never reaches this call.
+        if (item.kind == KIND_DESCRIPTOR) mediaOrphans.recordIfOrphaned(tx, self, item.contactId)
     }
 
     companion object {
@@ -156,6 +168,12 @@ internal class OutcomeStep(
 
         /** G-7, C-15: at most two identical-bytes resends per op. */
         const val MAX_RESENDS: Int = 2
+
+        /**
+         * The descriptor item's kind (Phase 11 design §4.1's kind-5 L0). The SEND path that
+         * creates kind-5 items is slice S5; until then no such row exists and this guard is inert.
+         */
+        const val KIND_DESCRIPTOR: Int = 5
 
         /** `dm_message.state` and `dm_outbound_item.state` (§13.5). */
         const val STATE_SENT: String = "sent"

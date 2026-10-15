@@ -237,7 +237,9 @@ t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description, 
 # check's line and the result line), and the base itself passes — so each negative fails for the one
 # requirement it names. pass-gate.txt is a measured report, not a made-up one: seed pair 0 at the
 # gate scale after §4.9 (Phase 9 design §22.24), its dm_owner_namespaces field included; its scale
-# is the gate's only.
+# is the gate's only. Its namespace counts are the Phase 11 design §5.2 T2 shift of the §22.24
+# measurement (×1.5, "3 per activated client"), extrapolated by slice S4-owner because the gate
+# scale cannot run locally; the CI gate job re-measures it.
 t2r_case pass base-gate.txt gate "accepts the made-up base every negative gate fixture is one change from"
 t2r_case pass pass-gate.txt gate "accepts the measured gate report (seed pair 0, Phase 9 §4.9, §22.24)"
 t2r_case fail pass-gate.txt pr "rejects the measured gate report as the PR variant's" "the report is not of the pr scale"
@@ -253,12 +255,13 @@ t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an invite
 t2r_case fail no-such-report.txt gate "rejects a missing report" "no report at"
 t2r_case fail missing-a1.txt gate "rejects a report without the A1 amount-uniformity line (FR-6′.7, §19.31)" "no PASS line for A1"
 t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet transfer" "A1 passed with no XMR invoice answer or no wallet transfer"
-# Phase 9 design §4.9 point 3 (slice S11): the population line names the DM owner namespaces, and a
-# world whose relays answered none of their registrations OK did not model them.
+# Phase 9 design §4.9 point 3 (slice S11), extended to three namespaces per owner by Phase 11
+# design §5.2's T2 bullet (slice S4-owner): the population line names the DM owner namespaces, and
+# a world whose relays answered none of their registrations OK did not model them.
 t2r_case fail missing-dm-namespaces.txt gate "rejects a population line without dm_owner_namespaces (Phase 9 §4.9)" "the population line names no dm_owner_namespaces"
 t2r_case fail vacuous-dm-registrations.txt gate "rejects DM owner namespaces with no registration answered OK" "DM owner namespaces with no registration answered OK"
 t2r_case fail failed-dm-registrations.txt gate "rejects DM registrations the loopback failed" "14 DM registrations failed on the loopback"
-t2r_case fail dm-namespaces-per-owner.txt gate "rejects DM owner namespaces that are not two per activated client" "not two per activated client"
+t2r_case fail dm-namespaces-per-owner.txt gate "rejects DM owner namespaces that are not three per activated client (Phase 11 §5.2)" "not three per activated client (Phase 11 design §5.2)"
 # "One change from the base": every negative gate fixture differs from base-gate.txt in at most two
 # lines (diff's `<` and `>` lines, a replaced line counting twice).
 for neg in missing-check failed-check wrong-scale vacuous missing-e30 vacuous-e30 vacuous-reads exempt-twin \

@@ -31,6 +31,9 @@ internal class GroundTruth {
         var olmIdentity: ByteArray? = null
         var inboxNamespace: ByteArray? = null
         var bundleNamespace: ByteArray? = null
+
+        /** The own media namespace `M_0` (Phase 11 design §5.1); recorded since S4-owner. */
+        var mediaNamespace: ByteArray? = null
     }
 
     val clients = HashMap<Int, Client>()
@@ -265,6 +268,7 @@ internal class RecordingCrypto(
         record.olmIdentity = card.olmIdentity
         record.inboxNamespace = card.inboxNamespace
         record.bundleNamespace = card.bundleNamespace
+        record.mediaNamespace = card.mediaNamespace
         truth.bundleOwners[GroundTruth.hex(card.bundleNamespace)] = card.card.copyOfRange(3, 35)
         return card
     }

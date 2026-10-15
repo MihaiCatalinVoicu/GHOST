@@ -132,7 +132,7 @@ class EntDmWorldTest {
         for (dmc in listOf(s.aliceDm, s.bobDm)) {
             val name = dmc.c.name
             val own = snap.own.getValue(name)
-            assertEquals("$name: two own namespaces after ACTIVATE", setOf("bundle", "inbox"), own.keys)
+            assertEquals("$name: three own namespaces after ACTIVATE (Phase 11 §5.1: M_0)", setOf("bundle", "inbox", "media"), own.keys)
             assertTrue("$name: the K20 hook's ACTIVATE ran", dmc.activations.isNotEmpty())
 
             // 1. No fairy: a write row is a redeemed capability for an own namespace, or the DEPOSIT
@@ -166,7 +166,9 @@ class EntDmWorldTest {
             val regs = snap.regs.getValue(name)
             var checked = 0
             for ((role, ns) in own) {
-                val kinds = if (role == "inbox") listOf("deposit", "read") else listOf("fetch")
+                // Since S4-owner the own set has three namespaces (Phase 11 design §5.1): `M_0`
+                // keeps DEPOSIT and READ registrations like `X_0`, only `P_0` keeps FETCH.
+                val kinds = if (role == "inbox" || role == "media") listOf("deposit", "read") else listOf("fetch")
                 for (relay in EntDmEvidence.relaySet(s.dm, dmc, ns)) {
                     for (kind in kinds) {
                         for ((period, payers) in periods) {
@@ -180,7 +182,8 @@ class EntDmWorldTest {
                     }
                 }
             }
-            assertEquals("$name: registrations checked", 9 * periods.size, checked)
+            // 15 per period: 3 relays × (DEPOSIT+READ for `X_0` and `M_0`, FETCH for `P_0`).
+            assertEquals("$name: registrations checked", 15 * periods.size, checked)
             report += "$name: ${caps.count { it.redeemed }} redeemed write capabilities of week $capWeek (+${caps.count { it.bearerKind != null }} DEPOSIT credentials); " +
                 "$checked registrations of weeks ${periods.keys} done, held and paid for (${regs.count { it.state == "pending" }} pending rows); " +
                 "${dmc.timePasses} time / ${dmc.hintPasses} hint passes"
@@ -278,7 +281,7 @@ class EntDmWorldTest {
             s.bob.c.jdbc.query("SELECT count(*) FROM ent_token WHERE kind = 'access'") { tokens = it.long(0) }
             assertTrue("bob holds no token: the control is not a refused redemption", tokens > 0)
             val bobOwn = s.bobDm.ownNamespaces()
-            assertEquals("bob's two own namespaces", setOf("bundle", "inbox"), bobOwn.keys)
+            assertEquals("bob's three own namespaces (Phase 11 §5.1: M_0)", setOf("bundle", "inbox", "media"), bobOwn.keys)
             val tried = world.relayEvents.count { it.client == "bob" && it.kind == CallKind.REDEEM && it.event == EventKind.RELAY_BEFORE_SEND }
             assertTrue("bob never tried to redeem: the control refused nothing", tried > 0)
             assertTrue("a relay received a redemption of bob's", world.redemptions().none { it.client == "bob" })

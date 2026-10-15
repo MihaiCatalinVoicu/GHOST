@@ -172,7 +172,9 @@ internal object PrivacyMutants {
                         val v = real.values
                         return DmCards.DeriveResult.Ok(
                             DmCards.Derived(
-                                public("ghost/v1/card/inbox-ns", pk), p, v.deposit, v.fetch,
+                                public("ghost/v1/card/inbox-ns", pk), p,
+                                public("ghost/v1/card/media-ns", pk),
+                                v.deposit, v.fetch, v.mediaDeposit,
                                 v.recognitionIntro, v.recognitionBundle, v.introKeyEnv, v.bundleKeyEnv,
                             ),
                         )

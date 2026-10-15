@@ -365,7 +365,7 @@ class PhaseReviewRegressionTest {
             assertEquals(AddContactResult.ADDED, alice.engine.addContact(world.bob.card(), CardSource.LINK))
             val contactB = alice.engine.contacts().single().id
             assertTrue(alice.engine.deleteContact(contactB))
-            assertEquals(2, count(alice, "SELECT count(*) FROM dm_orphan_namespace"))
+            assertEquals(3, count(alice, "SELECT count(*) FROM dm_orphan_namespace"))
             assertEquals(0, count(alice, "SELECT count(*) FROM sync_namespace WHERE namespace_id IN (SELECT namespace_id FROM dm_orphan_namespace)"))
             world.advanceTo(alice.clock.now + DmWorld.DAY)
             alice.timeTriggeredPass()
@@ -376,7 +376,7 @@ class PhaseReviewRegressionTest {
             val again = alice.engine.contacts().single().id
             assertEquals(SendResult.QUEUED, alice.engine.send(again, "hello", null))
             assertTrue(alice.engine.deleteContact(again))
-            assertEquals(2, count(alice, "SELECT count(*) FROM dm_orphan_namespace"))
+            assertEquals(3, count(alice, "SELECT count(*) FROM dm_orphan_namespace"))
             assertEquals(AddContactResult.ADDED, alice.engine.addContact(world.bob.card(), CardSource.LINK))
             assertEquals("the card is live again", 0, count(alice, "SELECT count(*) FROM dm_orphan_namespace"))
         }

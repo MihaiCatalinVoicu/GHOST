@@ -906,7 +906,14 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     /** Own namespaces of a client, hex, as its own card says (inbox and bundle). */
     fun ownNamespaces(c: Int): Set<String> {
         val t = truth.clients[c] ?: return emptySet()
-        return setOfNotNull(t.inboxNamespace?.let { hex(it) }, t.bundleNamespace?.let { hex(it) })
+        // Since S4-owner the own set has the three namespaces of Phase 11 design §5.1/§5.2:
+        // `X`, `P` and `M_0` — `M_0`'s listings, registrations and redemption are own work like
+        // the other two, and JD3/JD7 must classify them as such.
+        return setOfNotNull(
+            t.inboxNamespace?.let { hex(it) },
+            t.bundleNamespace?.let { hex(it) },
+            t.mediaNamespace?.let { hex(it) },
+        )
     }
 
     /**
@@ -922,6 +929,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         for (t in truth.clients.values) {
             t.inboxNamespace?.let { out[hex(it)] = t.index }
             t.bundleNamespace?.let { out[hex(it)] = t.index }
+            t.mediaNamespace?.let { out[hex(it)] = t.index }
         }
         return out
     }

@@ -119,6 +119,7 @@ class MessagingRuntime(
     private val scheduledSteps = ScheduledSteps(database, crypto, sendStep, establishment, clock, random, contexts)
     private val pairKeys = PairKeySteps(envelopes)
     private val displayStep = DisplayStep(database, clock)
+    private val mediaOrphans = MediaOrphanSteps(crypto, clock)
     private val sweeper = Sweeper(
         database = database,
         namespaces = stores.namespaces,
@@ -128,6 +129,7 @@ class MessagingRuntime(
         clock = clock,
         contexts = contexts,
         media = media,
+        mediaOrphans = mediaOrphans,
     )
     private val notices = UnreadNotices { sweeper.unreadCount() }
 
@@ -185,7 +187,7 @@ class MessagingRuntime(
         bundleStep = bundleStep,
         sendStep = sendStep,
         receiveStep = receiveStep,
-        outcomeStep = OutcomeStep(database, sync, sendStep, clock),
+        outcomeStep = OutcomeStep(database, sync, sendStep, clock, contexts, mediaOrphans),
         heldReplay = heldReplay,
         scheduledSteps = scheduledSteps,
         contactKeeper = ContactKeeper(database, sync, material, relayResolver, clock, contexts),

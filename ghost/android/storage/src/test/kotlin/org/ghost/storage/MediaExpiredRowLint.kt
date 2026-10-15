@@ -226,6 +226,21 @@ object MediaExpiredRowLint {
             )
         }
 
+        /**
+         * The Phase 7 operation a media op maps to (`MediaOrphanStore`'s third clause joins it).
+         * All three are unreleased in both worlds — the release is a flag, and the row itself is
+         * garbage-collected later; what the sweep cascades is the *mapping* row (0x31's), which is
+         * the difference the bound registry entry judges.
+         */
+        fun outboxOp(opN: Int) {
+            db.exec(
+                "INSERT INTO outbox_op(operation_id, namespace_id, blob_hash, ttl_seconds, " +
+                    "not_before_minute, required_operators, outcome, released) " +
+                    "VALUES (?, ?, ?, 604800, 600, 2, 'pending', 0)",
+                listOf(id(opN), NS, hash(opN)),
+            )
+        }
+
         // ---- messages: live ones, and the expired ones (boundary, a minute, two minutes)
         insertMessage(message(1), NOW + 60) // O1
         insertMessage(message(2), null) // O2
@@ -264,6 +279,8 @@ object MediaExpiredRowLint {
         outFragment(O1, 1, 3, "unsent")
         op(0x21, O1, -1)
         op(0x22, O1, 0)
+        outboxOp(0x21)
+        outboxOp(0x22)
         obj(O2, "out", if (withExpired) "uploading" else "failed", message(2))
         upload(O2, NOW - 3_600L)
         outFragment(O2, 0, 4, "unsent")
@@ -303,6 +320,7 @@ object MediaExpiredRowLint {
             outFragment(O4, -1, 0x11, "open")
             outFragment(O4, 0, 0x12, "unsent")
             op(0x31, O4, -1)
+            outboxOp(0x31)
             obj(O5, "out", "failed", M_E2)
             upload(O5, NOW + 3_600L, ttl = 3_600L)
             outFragment(O5, 0, 0x13, "sent")
@@ -511,6 +529,26 @@ internal object MediaQueryTexts {
         "WHERE f.object_id = ? AND f.state = 'bound' " +
         "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?) " +
         "AND NOT (o.state IN ('awaiting', 'fetching') AND o.incomplete_after_hour <= ?) ORDER BY f.ordinal"
+
+    // ---- MediaOrphanStore (Phase 11 design §5.1, slice S4-owner): the `M_c` orphan rule. The SQL
+    // is copied verbatim from `MediaOrphanStore`'s companion, where each constant's comment names
+    // the §5.1 clause it serves.
+    const val ORPHAN_UPLOAD_BLOCKERS =
+        "SELECT count(*) FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
+            "LEFT JOIN dm_message m ON m.message_id = o.message_id " +
+            "WHERE o.role = 'out' AND o.dest_id = ? AND o.state = 'uploading' AND u.deadline_hour > ? " +
+            "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?)"
+
+    const val ORPHAN_OP_BLOCKERS =
+        "SELECT count(*) FROM media_outbound_op p JOIN outbox_op oo ON oo.operation_id = p.operation_id " +
+            "JOIN media_object o ON o.object_id = p.object_id " +
+            "LEFT JOIN dm_message m ON m.message_id = o.message_id " +
+            "WHERE o.dest_id = ? AND oo.released = 0 " +
+            "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?)"
+
+    const val ORPHAN_CANDIDATES =
+        "SELECT DISTINCT o.dest_id FROM media_object o JOIN dm_message m ON m.message_id = o.message_id " +
+            "WHERE o.role = 'out' AND m.delete_at_minute <= ?"
 }
 
 /**
@@ -582,6 +620,15 @@ object MediaDaoQueries {
         read("theBoundFilesOfALiveDownload", MediaQueryTexts.BLOBS_FILES_OF, listOf(L.I1, NOW, NOW), rows = 2),
         hides("theFilesOfAnExpiredUpload", MediaQueryTexts.BLOBS_FILES_OF, listOf(L.O4, NOW, NOW), "media_fragment", "object_id = ?", listOf(L.O4)),
         hides("theFilesOfADeclaredIncompleteDownload", MediaQueryTexts.BLOBS_FILES_OF, listOf(L.I3, NOW, NOW), "media_fragment", "object_id = ? AND state = 'bound'", listOf(L.I3)),
+        // ---- MediaOrphanStore (§5.1's first clause): the uploads still blocking the `M_c` orphan.
+        // O1 is the only live upload; O4 (its message expired) is hidden by the live filter, O2 and
+        // O6 read as failed past their deadlines — one row, in both worlds.
+        read("theUploadsStillBlockingTheMcOrphan", MediaQueryTexts.ORPHAN_UPLOAD_BLOCKERS, listOf(MediaFixture.DEST, NOW, NOW), rows = 1),
+        // ---- MediaOrphanStore (§5.1's third clause): the media ops not yet released. 0x21 and
+        // 0x22 are O1's (live object, so the live filter keeps them in both worlds — the count
+        // answers 2); 0x31 is O4's and its message has expired, so the filter hides it exactly as
+        // the sweep is about to cascade it — without the filter the unswept world would answer 3.
+        read("theMediaOpsStillBlockingTheMcOrphan", MediaQueryTexts.ORPHAN_OP_BLOCKERS, listOf(MediaFixture.DEST, NOW), rows = 1),
     )
 }
 
@@ -643,5 +690,9 @@ object MediaSweepQueries {
         sweep("theUploadsMediaDeadlineFails", MediaQueryTexts.OBJECTS_PAST_DEADLINE, listOf(NOW, NOW, LIMIT), rows = 2),
         // PX1 (a day past) and PX2 (five days past); P1 is on its last day and stays
         sweep("thePooledBlobsMediaGcCollects", MediaQueryTexts.BLOBS_EXPIRED_POOLED, listOf(TODAY, LIMIT), rows = 2),
+        // MediaOrphanStore's SWEEP candidates (§5.1's "or SWEEP"): O4 and O5 are the `out` objects
+        // whose message is expiring, and both name the fixture's one destination — one row; the
+        // sweep's cascade takes the objects with the messages, so the swept world holds none.
+        sweep("theContactsWhoseExpiredUploadsOrphanMc", MediaQueryTexts.ORPHAN_CANDIDATES, listOf(NOW), rows = 1),
     )
 }

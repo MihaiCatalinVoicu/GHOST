@@ -184,7 +184,7 @@ class MediaExpiredRowLintTest {
 
     @Test
     fun everySweepQueryNamesExactlyTheExpiredRows() {
-        assertEquals(3, MediaSweepQueries.registered.size)
+        assertEquals(4, MediaSweepQueries.registered.size)
         for (query in MediaSweepQueries.registered) {
             val outcome = L.outcomeOf(query.sql, query.args)
             assertTrue("${query.name} still returns rows after the sweep, so it names live rows too", outcome.afterTheSweep.isEmpty())

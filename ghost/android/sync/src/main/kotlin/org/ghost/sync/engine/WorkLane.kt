@@ -59,16 +59,23 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
             if (online) {
                 snapshot = session.loadSnapshot()
                 if (ctx.mode() == PrivacyMode.STANDARD) {
-                    // Registrations first: there are at most eight of them and they are what keeps
-                    // the owner reachable, so a large store backlog never starves them.
-                    ctx.steps.registration.round(ctx, null, ctx.policy.registrationsPerPass)
+                    // Registrations first: at most [TrafficPolicy.registrationsPerPass] of them per
+                    // pass, and they are what keeps the owner reachable, so a large store backlog
+                    // never starves them. Since S4-owner's `M_0` there can be three times eight of
+                    // them at a week change (`X_0`, `P_0` and `M_0` × the set × `{w, c, c + 1}` —
+                    // Phase 11 design §5.2), so the round counts toward the at-cap repost exactly
+                    // like the two store rounds: the leftover rows drain in this pass's reposts, at
+                    // the same minute, instead of waiting for a later session their timing could
+                    // follow (JD8's registration-minute equality across twins, T31, PM-30).
+                    val registrations = ctx.steps.registration.round(ctx, null, ctx.policy.registrationsPerPass)
                     // The media stores are a separate round, taken after the pass's non-media stores:
                     // a media burst never crowds a pass's DM work out, nor waits behind a later one.
                     val nonMedia = ctx.steps.store.round(ctx, null, ctx.policy.storesPerPass)
                     val media = ctx.steps.store.round(ctx, null, ctx.policy.mediaStoresPerPass, media = true)
                     // The at-cap repost (Session.completeWork) also applies to media, so a media
                     // backlog keeps passes coming while other queued work interleaves between them.
-                    storesAtCap = nonMedia >= ctx.policy.storesPerPass || media >= ctx.policy.mediaStoresPerPass
+                    storesAtCap = registrations >= ctx.policy.registrationsPerPass ||
+                        nonMedia >= ctx.policy.storesPerPass || media >= ctx.policy.mediaStoresPerPass
                 }
             }
         }

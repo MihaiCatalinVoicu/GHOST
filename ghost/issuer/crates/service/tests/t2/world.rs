@@ -574,7 +574,8 @@ impl World {
         for c in 0..self.clients.len() {
             self.truth.clients[c].namespaces = self.clients[c].namespaces.len();
         }
-        // Phase 9 design §4.9 point 3 ("2 per activated client"), counted from the client list
+        // Phase 9 design §4.9 point 3 ("3 per activated client" since Phase 11's S4-owner slice,
+        // Phase 11 design §5.2's T2 bullet), counted from the client list
         // rather than from the activation step that increments "dm owner namespaces": the owners,
         // and how many of their namespaces a relay ever answered OK for.
         let owners = self.clients.iter().filter(|cl| cl.dm.is_some()).count() as u64;
@@ -1426,12 +1427,15 @@ impl World {
         // `X` and `P` at activation. They are keyed on the namespace seed with labels of their own
         // (never drawn from `ns_rng`), so the Phase 8 namespace set above is drawn exactly as before
         // and every client gets exactly two: "a uniform shift, not a new signal" (§4.9 point 4).
+        // Phase 11 design §5.2's T2 bullet adds the third, `M`, the same way: keyed on the client's
+        // own seed, a uniform shift for every client, with no issuer input reaching `M` events.
         let idb = cl.id.to_be_bytes();
         cl.dm = Some(DmOwner {
             inbox: derive32(cl.ns_seed, &[b"dm-owner-inbox", &idb]),
             bundle: derive32(cl.ns_seed, &[b"dm-owner-bundle", &idb]),
+            media: derive32(cl.ns_seed, &[b"dm-owner-media", &idb]),
         });
-        for _ in 0..2 {
+        for _ in 0..3 {
             self.log.count("dm owner namespaces");
         }
     }
@@ -3176,10 +3180,13 @@ impl World {
             pairs.push((ns, false, 0));
         }
         // The DM owner namespaces, in every session from activation on (§4.9 point 2): the owner
-        // lists its inbox at every session start (T19) and keeps both registered every week.
+        // lists its inbox at every session start (T19) and keeps all three — `X`, `P` and, since
+        // Phase 11's S4-owner slice, `M` (Phase 11 design §5.2's T2 bullet: the second listened
+        // owner namespace) — registered every week.
         if let Some(dm) = self.clients[c].dm {
             pairs.push((dm.inbox, false, 0));
             pairs.push((dm.bundle, false, 0));
+            pairs.push((dm.media, false, 0));
         }
         let listens: Vec<[u8; 32]> = self.clients[c]
             .drops

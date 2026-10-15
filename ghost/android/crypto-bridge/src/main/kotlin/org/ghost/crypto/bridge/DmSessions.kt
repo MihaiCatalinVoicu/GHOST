@@ -326,6 +326,12 @@ object DmSessions {
         val inboxNamespace: ByteArray,
         /** The bundle namespace `P_i`. */
         val bundleNamespace: ByteArray,
+        /**
+         * The own media namespace `M_i` (Phase 11 design §5.1): card-derived, registered and paid
+         * by the owner. **Added by S4-owner** to §2.6 function 2's outputs — the native side has
+         * returned it since S2; the owner's steps are its consumer.
+         */
+        val mediaNamespace: ByteArray,
         /** The recognition key of the intro outer key. */
         val recognitionIntro: ByteArray,
         /** The recognition key of the bundle seal key. */
@@ -363,6 +369,7 @@ object DmSessions {
             card = result.bytes(DmField.CARD),
             inboxNamespace = result.bytes(DmField.INBOX_NAMESPACE),
             bundleNamespace = result.bytes(DmField.BUNDLE_NAMESPACE),
+            mediaNamespace = result.bytes(DmField.MEDIA_NAMESPACE),
             recognitionIntro = result.bytes(DmField.RECOGNITION_INTRO),
             recognitionBundle = result.bytes(DmField.RECOGNITION_BUNDLE),
             olmIdentity = result.bytes(DmField.OLM_IDENTITY),
@@ -387,12 +394,19 @@ object DmSessions {
         val deposit: ByteArray,
         /** `RP_{i,s}`: card-derived, the bundle fetch secret, registered as kind FETCH. */
         val fetch: ByteArray,
+        /**
+         * `RM_{i,s}`: the own media read secret (Phase 11 design §5.1), seed-derived like `RX`.
+         * **Added by S4-owner** — the native side has returned it since S2; it goes into the
+         * owner's `M_0` read credential v3.
+         */
+        val mediaRead: ByteArray,
     ) {
-        /** Zeroises all three. */
+        /** Zeroises all four. */
         fun clear() {
             read.fill(0)
             deposit.fill(0)
             fetch.fill(0)
+            mediaRead.fill(0)
         }
 
         override fun toString(): String = "OwnSecrets(redacted)"
@@ -407,6 +421,7 @@ object DmSessions {
             read = result.bytes(DmField.READ_SECRET),
             deposit = result.bytes(DmField.DEPOSIT_SECRET),
             fetch = result.bytes(DmField.FETCH_SECRET),
+            mediaRead = result.bytes(DmField.MEDIA_READ_SECRET),
         )
     }
 
