@@ -376,11 +376,16 @@ privacy_suite() {
     || ! grep -qE "^dm JD8 control: PASS the twins with the every-commit check off, the configuration every JD8 kill and timing leak runs in, saw the same [1-9][0-9]* and [1-9][0-9]* relay calls \(idle, active\) at the same milliseconds as the report's run, and JD8 passed on them\$" "$report"; then
     bad "no JD8 control PASS: the twins every JD8 kill is held against did not see the report's run call for call, or failed JD8"
   fi
-  # The timing clause can fail: two leaks that keep every count equal and move calls by the DM
-  # traffic a client received, each detected by the timing clause alone (§22.26).
+  # The timing clause can fail: two leaks that move calls by the DM traffic a client received,
+  # each detected (§22.26). The renewal leak keeps every count equal between the twins and fails
+  # by the timing clause alone. The registration leak's timing clause fires; under the tripled
+  # three-namespace volume its one count break is the week-2977 rows the idle twin's fallback
+  # window closed on at the fixed horizon — named by the line, never claimed away (§22.7 row 10,
+  # §22.26 item 10(c): a harness bound, not a product invariant). A line that claimed "alone" for
+  # the registration shape under three namespaces, or named no count break, does not pass.
   if [ "$(grep -cE '^dm JD8 timing leaks: ' "$report" || true)" -ne 1 ] \
-    || ! grep -qE "^dm JD8 timing leaks: PASS 2 of 2 detected by the timing clause alone, every count equal in both twins: a renewal that waits for inbound traffic \([1-9][0-9]* redemptions in another relay session, [0-9]+ registrations at another minute, of [1-9][0-9]* pairs\), later-week registrations that wait for inbound traffic or the week's last 10 h \([1-9][0-9]* registrations at another minute, [0-9]+ redemptions in another relay session, of [1-9][0-9]* pairs\)\$" "$report"; then
-    bad "no JD8 timing-leak PASS: the timing clause did not detect both leaks on its own"
+    || ! grep -qE "^dm JD8 timing leaks: PASS 2 of 2 detected: a renewal that waits for inbound traffic \([1-9][0-9]* redemptions in another relay session, [0-9]+ registrations at another minute, of [1-9][0-9]* pairs\) fails by the timing clause alone, every count equal in both twins; later-week registrations that wait for inbound traffic or the week's last 10 h \([1-9][0-9]* registrations at another minute, [0-9]+ redemptions in another relay session, of [1-9][0-9]* pairs\) (fails by the timing clause alone, every count equal in both twins|fails with the timing clause firing and every redemption count equal, the count clause naming the [1-9][0-9]* week-2977 registration calls only in the active twin that the idle twin's fallback window closed on at the fixed horizon \(the tripled three-namespace volume under M_0; §22\.7 row 10, §22\.26 item 10\(c\): a harness bound, not a product invariant\))\$" "$report"; then
+    bad "no JD8 timing-leak PASS: a leak was not detected, or the registration shape's count break was not named"
   fi
   # --- end of JD8 ------------------------------------------------------------------------------------
   privacy_edge_controls
