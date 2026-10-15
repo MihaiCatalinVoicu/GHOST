@@ -53,7 +53,11 @@ internal class MediaOrphanSteps(
      * [nowSeconds] is the caller's clock for the deadline clauses (`now_e` in seconds from SWEEP,
      * the wall clock from OUTCOME — both hour-grid comparable).
      *
-     * Returns true exactly when the orphan was recorded by this call.
+     * Returns true when the rule's condition held and the orphan row is present after this call.
+     * The recording is idempotent — the guarded insert adds no second row and the upload delete
+     * is a no-op the second time — so a re-execution (after this call, or after
+     * [ContactSteps.recordOrphans] recorded the same row at block or delete) still reports true
+     * while recording nothing; the producers call it for effect and never count recordings.
      */
     fun recordIfOrphaned(
         tx: SyncTransaction,

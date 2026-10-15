@@ -303,7 +303,10 @@ class MediaOrphanStepsTest {
             val second = world.database.transaction { tx ->
                 steps(world).recordIfOrphaned(tx, world.contexts.get(), fx.contactId)
             }
-            assertTrue("the rule is idempotent: a re-execution records no second row", second)
+            assertTrue(
+                "idempotent: a re-execution is a no-op that still reports true — the guarded insert adds no second row",
+                second,
+            )
             assertEquals(1, orphanRows(world, fx))
         }
     }
@@ -423,6 +426,46 @@ class MediaOrphanStepsTest {
             seedObject(world, fx, objectState = "uploaded", itemState = "sent")
             assertTrue(world.contactSteps.block(fx.contactId))
             assertEquals(1, orphanRows(world, fx))
+        }
+    }
+
+    /**
+     * The S4-owner review's F-1 probe, permanent (§5.1's "deletes c's `media_upload` rows … and
+     * inserts `dm_orphan_namespace(M_c`)" is **one indivisible act**): block a contact whose
+     * `media_upload` row is still live, with its op already released; Phase 7's GC then deletes
+     * the op row, and SWEEP's next pass discharges the orphan — `Namespaces.remove` deleting
+     * `M_c`'s `sync_namespace` row. With the upload rows left behind (the unfixed shape), that
+     * DELETE died on `SQLITE_CONSTRAINT_FOREIGNKEY`, the exception escaped the pass and rolled
+     * back the **entire** sweep — expired messages stopped being erased (T25), and the self-heal
+     * was unreachable: a blocked contact's card is gone, so
+     * [MediaOrphanSteps.recordIfOrphaned] returns false for it for good.
+     */
+    @Test
+    fun blockDeletesTheUploadRowsSoSweepsDischargeRemovesMc() {
+        OwnerWorld().use { world ->
+            val fx = seedContact(world)
+            seedObject(world, fx, objectState = "uploaded", itemState = "sent")
+            assertTrue(world.contactSteps.block(fx.contactId))
+            assertEquals(1, orphanRows(world, fx))
+            // §5.1's indivisible act: the upload rows — the only other foreign key into M_c —
+            // go in the SAME transaction as the orphan insert, not whenever SWEEP later cascades
+            // (nothing names them any more: the contact is blocked, its card erased).
+            assertEquals(0, uploadRows(world, fx))
+
+            // Phase 7's GC deletes the released op row; M_c's sync_namespace row is the only
+            // thing the orphan row still pins. The next sweep must discharge it — before the fix
+            // this pass died on the upload rows' foreign key and rolled back whole.
+            world.sql.exec("DELETE FROM outbox_op WHERE operation_id = ?", listOf(fx.opId))
+            world.sweeper.sweep()
+            assertEquals(0, orphanRows(world, fx))
+            assertEquals(
+                0,
+                world.count("SELECT count(*) FROM sync_namespace WHERE namespace_id = ?", listOf(fx.mediaNs)),
+            )
+            assertEquals(
+                0,
+                world.count("SELECT count(*) FROM relay_capability WHERE namespace_id = ?", listOf(fx.mediaNs)),
+            )
         }
     }
 }
