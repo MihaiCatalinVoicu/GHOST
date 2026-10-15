@@ -311,12 +311,24 @@ internal class MediaSteps(
     }
 
     /** `MEDIA-OUTCOME` (§6.4): drain the media outcomes, then the READY checks they may complete. */
-    @Suppress("ReturnCount")
     fun outcomes(): Int {
         val self = contexts.get()
         var released = 0
+        // The READY flushes run AFTER the outcome transactions: the descriptor SEND opens
+        // transactions of its own (plan, seal-and-enqueue), and SyncDatabase is not reentrant.
+        val ready = ArrayList<List<Any>>()
         for (outcome in sync.outbox.outcomes(Consumer.MEDIA, OUTCOME_BATCH)) {
-            if (applyOne(outcome, self)) released += 1
+            if (applyOne(outcome, self, ready)) released += 1
+        }
+        for (item in ready) {
+            sendStep.flushMediaDescriptor(
+                self = self,
+                contactId = item[0] as ByteArray,
+                itemId = item[1] as ByteArray,
+                ttlSeconds = item[2] as Long,
+                deadlineHour = item[3] as Long,
+                mediaKeyEnv = item[4] as ByteArray,
+            )
         }
         return released
     }
@@ -348,7 +360,11 @@ internal class MediaSteps(
 
     // ---------------------------------------------------------------- internals
 
-    private fun applyOne(outcome: org.ghost.sync.api.OutboundOutcome, self: SelfContext?): Boolean {
+    private fun applyOne(
+        outcome: org.ghost.sync.api.OutboundOutcome,
+        self: SelfContext?,
+        ready: MutableList<List<Any>>,
+    ): Boolean {
         val now = clock.nowEpochSeconds()
         val nowE = expiry.nowSeconds()
         return database.transaction { tx ->
@@ -358,8 +374,8 @@ internal class MediaSteps(
             val upload = objects.upload(tx.sql, op.objectId, nowE) ?: return@transaction true
             val contactId = objects.byId(tx.sql, op.objectId, nowE)?.destId ?: return@transaction true
             when (outcome.outcome) {
-                Outcome.SENT -> settle(tx, op, UploadState.SENT, self, contactId)
-                Outcome.DEGRADED -> settle(tx, op, UploadState.DEGRADED, self, contactId)
+                Outcome.SENT -> settle(tx, op, UploadState.SENT, self, contactId, ready, nowE)
+                Outcome.DEGRADED -> settle(tx, op, UploadState.DEGRADED, self, contactId, ready, nowE)
                 Outcome.INDETERMINATE -> {
                     val resendNotAfter = outcome.resendNotAfterEpochSeconds
                     val mayResend = op.resendCount < MediaLimits.MAX_RESENDS &&
@@ -369,13 +385,13 @@ internal class MediaSteps(
                     if (mayResend && feeder.resend(tx, op.objectId, op.ordinal, op.retryGen, op.resendCount + 1, nowE)) {
                         // The ordinal stays open; the new op is the identical bytes.
                     } else {
-                        settle(tx, op, UploadState.INDETERMINATE, self, contactId)
+                        settle(tx, op, UploadState.INDETERMINATE, self, contactId, ready, nowE)
                     }
                 }
                 Outcome.FAILED -> {
                     mediaFragments.settle(tx, op.objectId, op.ordinal, UploadState.FAILED)
                     objects.markFailed(tx, op.objectId)
-                    failObject(tx, op.objectId, expiry.nowSeconds())
+                    failObject(tx, op.objectId, nowE)
                     mediaOrphans.recordIfOrphaned(tx, self, contactId, now)
                 }
             }
@@ -383,17 +399,22 @@ internal class MediaSteps(
         }
     }
 
-    /** Settle an ordinal final; when the object turns READY, run it (same transaction, §13.5). */
+    /**
+     * Settle an ordinal final; when the object turns READY, queue the descriptor's data for the
+     * flush that [outcomes] runs after its transactions (§13.5's "in the same pass", not the same
+     * transaction — the SEND's own transactions must not nest).
+     */
     private fun settle(
         tx: org.ghost.sync.api.SyncTransaction,
         op: org.ghost.media.store.MediaOp,
         to: UploadState,
         self: SelfContext?,
         contactId: ByteArray,
+        ready: MutableList<List<Any>>,
+        nowE: Long,
     ) {
         mediaFragments.settle(tx, op.objectId, op.ordinal, to)
         val now = clock.nowEpochSeconds()
-        val nowE = expiry.nowSeconds()
         if (!mediaFragments.allAcknowledged(tx.sql, op.objectId)) return
         val obj = objects.byId(tx.sql, op.objectId, nowE) ?: return
         if (obj.role != MediaRole.OUT || obj.state != ObjectState.UPLOADING) return
@@ -401,16 +422,10 @@ internal class MediaSteps(
         val messageId = obj.messageId ?: return
         val message = messages.message(tx.sql, messageId, expiry.nowMinute(tx.sql)) ?: return
         messages.lowerExpireAt(tx, messageId, countdownMinute(now, message.timerCode))
-        // The descriptor SEND in the same pass, with the object's TTL and deadline (R-MT4).
+        // The descriptor SEND in the same pass, with the object's TTL and deadline (R-MT4): queued
+        // for after this transaction (the SEND runs transactions of its own).
         val upload = objects.upload(tx.sql, op.objectId, nowE) ?: return
-        sendStep.flushMediaDescriptor(
-            self = self,
-            contactId = contactId,
-            itemId = messageId,
-            ttlSeconds = upload.ttlSeconds,
-            deadlineHour = upload.deadlineHour,
-            mediaKeyEnv = obj.keyEnv ?: return,
-        )
+        ready += listOf(contactId, messageId, upload.ttlSeconds, upload.deadlineHour, obj.keyEnv ?: return)
         mediaOrphans.recordIfOrphaned(tx, self, contactId, now)
     }
 
