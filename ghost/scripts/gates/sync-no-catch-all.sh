@@ -23,10 +23,15 @@
 # Phase 11 (design faza11-media.md 13.1, 16.1 last row; slice S3): the same rule covers `android/media`
 # (the media store and engine: its crash enumeration, SCN-MA ... SCN-MF, relies on an injected crash
 # reaching the top level, and its file operations catch the one typed `IOException`, never a catch-all).
-# `:media` is read as a DM module **with no allowlist entry possible**: its hits are compared with the
-# allowlist like the DM modules', and the allowlist's path check still names only the two DM modules, so a
-# catch-all in `:media` fails every time until a later slice widens that check on purpose. Its `src/main`
-# must exist and hold sources.
+# Slice S5 (the sender pipeline) is the later slice that widens the allowlist's path check on purpose:
+# the isolated decoding service (`MediaDecodeService`, §9.2) answers a decoder failure with a typed
+# refusal, so a malicious file cannot wedge a request, while an Error (an OOM, a hard crash)
+# propagates and kills the instance — its death by a delivered image is the design's outcome, seen
+# by the main process as DeadObjectException, and the sandbox holds no GHOST state the crash
+# enumeration must see. Its two deliberate `catch (e: RuntimeException)` arms are allowlisted below
+# with that reason, like the DM modules' UnsatisfiedLinkError catches; every other catch in
+# `:media` is typed (IOException, IllegalStateException, IllegalArgumentException, SecurityException,
+# RemoteException, UnsupportedOperationException). Its `src/main` must exist and hold sources.
 #
 # **How the sources are read** (§22.33 item 16, the evasion review of this gate). Each file is one
 # string (`source-text.pl`) with its comments and string contents blanked and Kotlin backtick quoting
@@ -148,7 +153,7 @@ if [ -f "$ALLOW" ]; then
       fail "scripts/gates/sync-no-catch-all.allow:$n: malformed entry (path|clause|count|reason, every field set)"; continue
     fi
     case "$path" in
-      android/messaging/src/*|android/crypto-bridge/src/*) ;;
+      android/messaging/src/*|android/crypto-bridge/src/*|android/media/src/*) ;;
       *) fail "scripts/gates/sync-no-catch-all.allow:$n: $path is outside the DM modules (the sync engine and its participant take no exception)"; continue ;;
     esac
     allowed["$path|$clause"]="$count"

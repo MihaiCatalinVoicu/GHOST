@@ -145,6 +145,13 @@ class GhostApp : Application(), SyncHost {
 
     override fun onCreate() {
         super.onCreate()
+        // Phase 11 design §9.2 (V-M19): Android instantiates the Application in every process,
+        // including the isolated `:mdec` decoding service's. `wiring.onProcessStart()` and
+        // `messagingWiring.onProcessStart` open no-backup files, the Keystore and system
+        // services an isolated process may not touch, so a bind would die before connecting
+        // (measured in S0: no onServiceConnected within 15 s). Nothing of GHOST runs here:
+        // `MediaDecodeService` uses only platform decoder APIs. Mutant MC-M23 removes this.
+        if (android.os.Process.isIsolated()) return
         // The K20 hook (Phase 9 design §13.4) before anything can activate an identity.
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()
