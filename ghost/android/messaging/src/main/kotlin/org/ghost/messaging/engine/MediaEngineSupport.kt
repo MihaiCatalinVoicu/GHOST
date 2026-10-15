@@ -23,7 +23,6 @@ import java.util.concurrent.ExecutorService
 internal class MediaEngineSupport(
     private val database: SyncDatabase,
     private val steps: MediaSteps,
-    private val preparer: org.ghost.media.send.MediaPreparer,
     private val preparations: org.ghost.media.send.Preparations,
     private val pipeline: MediaPipelinePorts,
     private val worker: ExecutorService,
@@ -52,6 +51,32 @@ internal class MediaEngineSupport(
 
     /** The actor-side steps, for the pass hooks (`DmActor` runs them on its thread). */
     fun stepsForPass(): MediaSteps = steps
+
+    /** The sealer factory over the DM context's handle (§3.7); built here so the handle never
+     * leaves the module that owns the context. */
+    private val sealers: org.ghost.media.send.MediaSealerFactory =
+        object : org.ghost.media.send.MediaSealerFactory {
+            override fun begin(
+                destId: ByteArray,
+                kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+                viewOnce: Boolean,
+                maxClass: Int,
+            ): org.ghost.media.send.MediaSealerFactory.Begun =
+                steps.beginMediaSealer(destId, kind, viewOnce, maxClass)
+        }
+
+    /** M9 `jpegCanonicalize` as the preparer's port (§8.2's own-copy check). */
+    private val canonicalizer = org.ghost.media.send.JpegCanonicalizer { bytes ->
+        when (val c = org.ghost.crypto.bridge.MediaCrypto.jpegCanonicalize(bytes)) {
+            is org.ghost.crypto.bridge.MediaCrypto.Canonical.Ok -> c.bytes
+            else -> null
+        }
+    }
+
+    /** The preparer the worker runs: the device ports plus the crypto-bound pieces above. */
+    internal val preparer: org.ghost.media.send.MediaPreparer = org.ghost.media.send.MediaPreparer(
+        pipeline.stripper, pipeline.video, sealers, canonicalizer, pipeline.files, pipeline.preparing,
+    )
 
     /** §13.7's worker thread name. */
     companion object {

@@ -5,6 +5,7 @@ import android.app.Instrumentation
 import android.os.Bundle
 import org.junit.runner.Description
 import org.junit.runner.JUnitCore
+import org.junit.runner.Request
 import org.junit.runner.notification.Failure
 import org.junit.runner.notification.RunListener
 import java.util.Collections
@@ -64,7 +65,27 @@ abstract class DeviceRunner(private val classes: List<Class<*>>) : Instrumentati
                 failures += "${description.displayName}: ignored"
             }
         })
-        val result = core.run(*classes.toTypedArray())
+        // The standard `am instrument -e class <name>` filter: a class name (simple or qualified)
+        // narrows the run, so a suite does not need the shipped library when only one class does.
+        val raw = args.getString("class")
+        // `Class` or `Class#method` (the standard runner's shapes).
+        val wanted = raw?.substringBefore("#")
+        val run = if (wanted == null) {
+            classes.toTypedArray()
+        } else {
+            classes.filter { it.name == wanted || it.name.endsWith("." + wanted) }.toTypedArray()
+        }
+        // `Class#method` narrows to one method (JUnit's Request.method is not on the shrunk
+        // classpath, so the filter walks the class's declared methods instead).
+        val method = if (raw != null && raw.contains("#")) raw.substringAfter("#") else null
+        val result = if (method == null) {
+            core.run(*run)
+        } else if (run.size == 1) {
+            val found = run[0].methods.firstOrNull { it.name == method }
+            if (found == null) core.run() else core.run(Request.method(run[0], method))
+        } else {
+            core.run()
+        }
         val skipped = result.ignoreCount + result.assumptionFailureCount
         val summary = "device tests: ${result.runCount} run, ${result.failureCount} failed, $skipped skipped"
         // JDK calls only, no Kotlin collection function (see the class note): in the release smoke

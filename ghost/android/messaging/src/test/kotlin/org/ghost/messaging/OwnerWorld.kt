@@ -732,6 +732,14 @@ class FakeDmCrypto : DmCrypto {
     /** Set false to model a locked or wiped context (§2.5). */
     var available: Boolean = true
 
+    override fun beginMediaSealer(
+        destId: ByteArray,
+        kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+        viewOnce: Boolean,
+        maxClass: Int,
+    ): org.ghost.media.send.MediaSealerFactory.Begun =
+        org.ghost.media.send.MediaSealerFactory.Begun.Unavailable
+
     /** Counts calls, so a test can show that a guard stopped a step before any native work. */
     var bundleCreateCalls: Int = 0
         private set

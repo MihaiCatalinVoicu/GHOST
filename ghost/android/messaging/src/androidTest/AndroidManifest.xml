@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The device smoke's manifest (Phase 11 slice S5): the isolated decoding service the sandbox
+     binds. The library's androidTest APK is self-instrumenting (the DeviceWorld precedent,
+     Phase 9 design §15.9), so the service is declared here, exactly as the app manifest declares
+     it for production. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <service
+            android:name="org.ghost.media.sandbox.MediaDecodeService"
+            android:isolatedProcess="true"
+            android:process=":mdec"
+            android:exported="false" />
+    </application>
+
+</manifest>

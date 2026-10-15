@@ -84,6 +84,8 @@ dependencies {
     // The emulator suite (§15.9): JUnit 4 through `DeviceRunner`, and SQLCipher opened the way
     // `:storage` opens it. Every coordinate is one the project already ships or tests with (§16.3).
     androidTestImplementation(libs.junit)
+    // The S5 device smoke's `VideoSource.mediaItem()` (media3's type crosses the test boundary).
+    androidTestImplementation(libs.androidx.media3.common)
     androidTestImplementation(libs.sqlcipher.android)
     androidTestImplementation(libs.androidx.sqlite)
     // `DeviceWorld.onion` computes the v3 checksum with the SHA3 `:network`'s `OnionAddress` checks

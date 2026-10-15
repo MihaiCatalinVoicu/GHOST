@@ -199,18 +199,20 @@ class GhostTranscoder(
                 })
                 .build()
         }
-        val watchdog = Handler(thread.looper)
+        // The watchdog runs on its OWN thread: posting it to the transformer's HandlerThread
+        // would leave it unfireable when that thread stalls inside a codec call — the exact
+        // R-M19 scenario it exists for (found on the WHPX emulator, 2026-10-16).
         val progress = ProgressHolder()
         var lastProgress = -1
         var lastAdvanceMs = SystemClock.elapsedRealtime()
         val stalled = booleanArrayOf(false)
-        val poll = object : Runnable {
-            override fun run() {
-                if (latch.count == 0L) return
+        val watchdog = Thread {
+            while (latch.count > 0L) {
+                Thread.sleep(2_000)
                 if (cancelled()) {
                     transformer.cancel()
                     latch.countDown()
-                    return
+                    break
                 }
                 if (transformer.getProgress(progress) == Transformer.PROGRESS_STATE_AVAILABLE) {
                     if (progress.progress != lastProgress) {
@@ -220,16 +222,14 @@ class GhostTranscoder(
                         stalled[0] = true
                         transformer.cancel()
                         latch.countDown()
-                        return
+                        break
                     }
                 }
-                watchdog.postDelayed(this, 2_000)
             }
-        }
-        watchdog.postDelayed(poll, 2_000)
+        }.apply { isDaemon = true; name = "ghost-transcoder-watchdog"; start() }
         runOn(thread) { transformer.start(composition(source.mediaItem(), displayLandscape, maxFps), scratchPath()) }
         latch.await(MediaSendLimits.EXPORT_STALL_MS * 8, TimeUnit.MILLISECONDS)
-        watchdog.removeCallbacks(poll)
+        watchdog.join(2_000)
         thread.quitSafely()
 
         val error = failed

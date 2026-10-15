@@ -15,6 +15,7 @@ import org.ghost.messaging.android.ExpiryAlarmReceiver
 import org.ghost.messaging.android.KeystoreContentKeyWrapper
 import org.ghost.messaging.android.KeystoreStateKeyWrapper
 import org.ghost.messaging.api.Messaging
+import org.ghost.app.media.MediaWiring
 import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.messaging.port.DmCheckpoint
@@ -84,6 +85,11 @@ class GhostApp : Application(), SyncHost {
         return RuntimeStack(
             MessagingRuntime(
                 stores = stores,
+                // Phase 11 §13.7's sender pipeline, wired where every Android port lives
+                // (slice S5): the sandbox, the transcoder, the ciphertext store under
+                // `noBackupFilesDir/m`. Null where the pieces cannot load — the facade then
+                // answers CRYPTO_UNAVAILABLE.
+                mediaPipeline = MediaWiring.pipelinePorts(this, noBackupFilesDir),
                 keys = DmKeys(
                     stateKeys = KeystoreStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
                     random = random,

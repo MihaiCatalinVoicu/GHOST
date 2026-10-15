@@ -150,7 +150,6 @@ class MessagingRuntime(
         MediaEngineSupport(
             database = database,
             steps = mediaSteps,
-            preparer = pipeline.preparer(),
             preparations = org.ghost.media.send.Preparations(),
             pipeline = pipeline,
             worker = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->

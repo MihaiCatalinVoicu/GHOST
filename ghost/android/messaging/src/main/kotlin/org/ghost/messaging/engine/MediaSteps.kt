@@ -109,6 +109,14 @@ internal class MediaSteps(
     /** The expiry clock the media stores read under, for callers outside a pass (R-T7). */
     fun nowE(): Long = expiry.nowSeconds()
 
+    /** M1 `sealBegin` for the media worker, over the DM context's handle (§3.7). */
+    fun beginMediaSealer(
+        destId: ByteArray,
+        kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+        viewOnce: Boolean,
+        maxClass: Int,
+    ): org.ghost.media.send.MediaSealerFactory.Begun = crypto.beginMediaSealer(destId, kind, viewOnce, maxClass)
+
     /** `MEDIA-COMMIT`'s refusal answers, beside [SendStep.Outcome] (UNKNOWN_CONTACT, BLOCKED…). */
     enum class CommitOutcome {
         /** The week whose slot table cannot span two operators (ADR-11). */

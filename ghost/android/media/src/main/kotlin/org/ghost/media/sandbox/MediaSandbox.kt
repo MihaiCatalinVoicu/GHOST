@@ -79,6 +79,10 @@ class MediaSandbox(
             SharedMemory.create("ghost-in", input.size).apply {
                 mapReadWrite().apply {
                     put(input)
+                    // Zeroed after the copy, before the read-only protect: a PROT_READ region
+                    // cannot be mapped read-write again (EPERM), so the section 9.2 zeroing
+                    // hygiene happens here, not in the teardown (the S5 device smoke, 2026-10-16).
+                    while (hasRemaining()) put(0)
                     SharedMemory.unmap(this)
                 }
                 // Read-only for the sandbox.
@@ -104,7 +108,10 @@ class MediaSandbox(
         }
         val binderRef = AtomicReference<IBinder?>()
         val connected = CountDownLatch(1)
-        val instance = "m${random.nextLong()}"
+        // Hex, never a sign: the instance name becomes a process-name suffix, where '-' is
+        // illegal — a negative draw made bindIsolatedService throw and every bind fail (found
+        // by the S5 device smoke, 2026-10-16).
+        val instance = "m" + java.lang.Long.toHexString(random.nextLong())
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 binderRef.set(service)
@@ -166,8 +173,9 @@ class MediaSandbox(
                 // Never bound (a refused bind above): nothing to unbind.
             }
             // The instance dies with the unbind (§9.2); the answer is copied out already.
-            zeroAndClose(inputRegion)
+            // The input was zeroed before its read-only protect; only the output is zeroed here.
             zeroAndClose(outputRegion)
+            inputRegion.close()
             permits.release()
         }
         return result
