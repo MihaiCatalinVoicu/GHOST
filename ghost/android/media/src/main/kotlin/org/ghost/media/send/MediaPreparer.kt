@@ -94,11 +94,13 @@ class MediaPreparer(
     private val preparing: PreparingFiles,
 ) {
     /** What a finished preparation hands to `MEDIA-COMMIT` (plus the identity of the object). */
-    class Prepared(
+    class Prepared internal constructor(
         val kind: MediaCrypto.Kind,
         val viewOnce: Boolean,
         val objectId: ByteArray,
         val sealed: SealedResult,
+        /** Releases the reserved file names: after `MEDIA-COMMIT`, or on abandonment. */
+        val releaseNames: () -> Unit,
     )
 
     /** The one refusal shape: [PrepFailure], mapped once at the boundary. */
@@ -131,7 +133,7 @@ class MediaPreparer(
         try {
             feed(channel, canonical)
             val sealed = channel.finish(preview)
-            return Prepared(MediaCrypto.Kind.IMAGE, viewOnce, sealer.objectId, sealed)
+            return Prepared(MediaCrypto.Kind.IMAGE, viewOnce, sealer.objectId, sealed, channel::releaseNames)
         } catch (e: SealException) {
             channel.abort()
             throw Refused(e.toFailure(shortTimer = false))
@@ -178,7 +180,7 @@ class MediaPreparer(
                 is GhostTranscoder.Outcome.Ok -> {
                     val preview = if (viewOnce) ByteArray(0) else outcome.previewBytes
                     val sealed = channel.finish(preview)
-                    return Prepared(MediaCrypto.Kind.VIDEO, viewOnce, sealer.objectId, sealed)
+                    return Prepared(MediaCrypto.Kind.VIDEO, viewOnce, sealer.objectId, sealed, channel::releaseNames)
                 }
                 is GhostTranscoder.Outcome.Oversized -> {
                     channel.abort()

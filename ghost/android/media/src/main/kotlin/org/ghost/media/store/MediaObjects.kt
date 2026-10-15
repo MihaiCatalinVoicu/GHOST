@@ -160,7 +160,12 @@ class MediaObjects(private val fragments: MediaFragments) {
         val object_ = byId(tx.sql, objectId, nowE) ?: return RetryResult.NO_SUCH_OBJECT
         val upload = upload(tx.sql, objectId, nowE) ?: return RetryResult.NOT_FAILED
         if (object_.state != ObjectState.FAILED) return RetryResult.NOT_FAILED
+        // §6.4: after the deadline the answer is DEADLINE_PASSED whatever the failure's shape.
         if (upload.deadlineHour <= nowE) return RetryResult.DEADLINE_PASSED
+        // §6.4's corrupt-file rule: a failed object with **no** failed ordinal was failed by the
+        // feed's hash check (or the fragment bound at preparation), not by a FAILED outcome — no
+        // copy ever existed to retry from the same ciphertext, the user picks the file again.
+        if (!fragments.hasFailed(tx.sql, objectId)) return RetryResult.NOT_RETRYABLE
         if (upload.retryGen >= MediaLimits.MAX_RETRIES) return RetryResult.RETRIES_EXHAUSTED
         tx.sql.exec("UPDATE media_upload SET retry_gen = retry_gen + 1 WHERE object_id = ?", listOf(objectId))
         move(tx, objectId, listOf(ObjectState.FAILED), ObjectState.UPLOADING)
@@ -436,6 +441,9 @@ enum class RetryResult {
 
     /** There is no such object (or it is gone with its message). */
     NO_SUCH_OBJECT,
+
+    /** §6.4's corrupt-file failure: failed with no failed ordinal, so no retry is possible. */
+    NOT_RETRYABLE,
 
     /** The object is not in the `failed` state: nothing to retry. */
     NOT_FAILED,

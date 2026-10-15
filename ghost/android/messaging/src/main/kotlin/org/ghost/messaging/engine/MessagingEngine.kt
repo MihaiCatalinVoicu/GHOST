@@ -15,8 +15,12 @@ import org.ghost.messaging.api.MessageId
 import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.MessageView
+import org.ghost.messaging.api.MediaSendResult
+import org.ghost.messaging.api.MediaSource
 import org.ghost.messaging.api.MessagingStatus
 import org.ghost.messaging.api.NotificationPort
+import org.ghost.messaging.api.PreparationId
+import org.ghost.messaging.api.PreparationView
 import org.ghost.messaging.api.RevocationReason
 import org.ghost.messaging.api.SafetyNumberView
 import org.ghost.messaging.api.SendResult
@@ -63,6 +67,8 @@ internal class MessagingEngine(
      * branch of ACTIVATE (found by the S8 review).
      */
     private val recognition: RecognitionKeys,
+    /** Phase 11 §6.5's media half; null where the sender pipeline is not wired (Phase 9 worlds). */
+    private val media: MediaEngineSupport? = null,
 ) : Messaging {
 
     private val contacts = ContactStore()
@@ -275,6 +281,96 @@ internal class MessagingEngine(
      * fresh send does — so it owes the same follow-up. Without it the retry answered `QUEUED` and
      * left an item no step would ever flush and no establishment would ever start.
      */
+    override fun sendMedia(
+        contact: ContactId,
+        source: MediaSource,
+        caption: String?,
+        viewOnce: Boolean,
+    ): MediaSendResult = onActor {
+        val support = media ?: return@onActor MediaSendResult.Refused(SendResult.CRYPTO_UNAVAILABLE)
+        val contactId = contact.toByteArray()
+        val captionBytes = caption?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+        if (captionBytes.size > org.ghost.media.send.MediaSendLimits.MAX_CAPTION_BYTES) {
+            return@onActor MediaSendResult.Refused(SendResult.TOO_LARGE)
+        }
+        // The contact checks mirror a text's (the caller's own list, §6.5): the refusal is local.
+        val contactRow = database.transaction { tx -> contacts.contact(tx.sql, contactId) }
+            ?: return@onActor MediaSendResult.Refused(SendResult.UNKNOWN)
+        when (contactRow.trust) {
+            ContactStore.Trust.BLOCKED -> return@onActor MediaSendResult.Refused(SendResult.BLOCKED)
+            ContactStore.Trust.REVOKED -> return@onActor MediaSendResult.Refused(SendResult.REVOKED)
+            ContactStore.Trust.REQUEST -> return@onActor MediaSendResult.Refused(SendResult.REQUEST_NOT_ACCEPTED)
+            else -> Unit
+        }
+        // §6.1's sniff: the magic bytes decide which pipeline runs; anything else refuses before work.
+        val sniffed = org.ghost.crypto.bridge.MediaCrypto.sniff(
+            source.imageBytes?.copyOfRange(0, 64) ?: source.videoFirst64 ?: ByteArray(0),
+        )
+        val isImage = source.imageBytes != null
+        if (isImage && sniffed !is org.ghost.crypto.bridge.MediaCrypto.Sniffed.Ok) {
+            return@onActor MediaSendResult.Refused(SendResult.UNKNOWN)
+        }
+        if (!isImage && (sniffed !is org.ghost.crypto.bridge.MediaCrypto.Sniffed.Ok ||
+                sniffed.type != org.ghost.crypto.bridge.MediaCrypto.SourceType.ISO_BMFF_VIDEO)
+        ) {
+            return@onActor MediaSendResult.Refused(SendResult.UNKNOWN)
+        }
+        // §6.1's header limits, before a byte is re-encoded.
+        if (isImage && source.imageBytes!!.size.toLong() > org.ghost.media.send.MediaSendLimits.IMAGE_SOURCE_MAX_BYTES) {
+            return@onActor MediaSendResult.Refused(SendResult.TOO_LARGE)
+        }
+        val conversation = database.transaction { tx -> contacts.conversation(tx.sql, contactId) }
+        if (!isImage) {
+            val durationUs = source.videoSource!!.durationUs()
+            val shortTimer = conversation != null && conversation.timerCode == 0 // 1-hour bucket, R-MT2
+            val boundMs = if (shortTimer) {
+                org.ghost.media.send.MediaSendLimits.VIDEO_MAX_MS_SHORT
+            } else {
+                org.ghost.media.send.MediaSendLimits.VIDEO_MAX_MS
+            }
+            if (durationUs < 0 || durationUs / 1_000 > boundMs) {
+                return@onActor MediaSendResult.Refused(SendResult.TOO_LARGE)
+            }
+        }
+        // §6.6's free-space floor: 3 × F × 64 KiB at the largest class.
+        val free = try {
+            support.freeSpace()
+        } catch (e: org.ghost.media.store.CiphertextFilesException) {
+            -1L
+        }
+        if (free < org.ghost.media.send.MediaSendLimits.SEND_FREE_FLOOR) {
+            return@onActor MediaSendResult.Refused(SendResult.STORAGE_FULL)
+        }
+        val preparation = support.newPreparationId()
+        if (!support.begin(preparation)) {
+            return@onActor MediaSendResult.Refused(SendResult.LIMIT_REACHED)
+        }
+        support.startPreparation(
+            preparation = preparation,
+            caption = captionBytes,
+            contactId = contactId,
+            run = {
+                if (isImage) {
+                    support.prepareImage(source.imageBytes!!, contactId, viewOnce)
+                } else {
+                    val shortTimer = conversation != null && conversation.timerCode == 0
+                    support.prepareVideo(
+                        source.videoSource!!, contactId, viewOnce,
+                        maxClass = if (shortTimer) 8 else 10,
+                    )
+                }
+            },
+        )
+        MediaSendResult.Queued(preparation)
+    }
+
+    override fun preparationState(preparation: PreparationId): PreparationView? =
+        media?.preparationState(preparation)
+
+    override fun retryMedia(message: MessageId): SendResult = onActor {
+        media?.retryMedia(message.toByteArray()) ?: SendResult.CRYPTO_UNAVAILABLE
+    }
+
     override fun retry(message: MessageId): SendResult = onActor {
         val itemId = message.toByteArray()
         val sent = sendStep.retry(itemId)

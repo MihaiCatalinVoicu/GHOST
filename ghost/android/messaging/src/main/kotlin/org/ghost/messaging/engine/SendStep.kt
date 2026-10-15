@@ -1184,6 +1184,12 @@ internal class SendStep(
         deadlineHour: Long,
         ttl: TtlBucket,
         credentials: Map<Long, ByteArray>,
+        /**
+         * Phase 11 §4.2's kind-5 envelope (empty for a non-media message): the descriptor's
+         * `key_env`, whose binding the native side reads from the L0 itself. Only the media
+         * descriptor path passes it (R-MT4's flush, [flushMediaDescriptor]).
+         */
+        mediaKeyEnv: ByteArray = EMPTY,
     ): SealOutcome {
         val step = when (
             val encrypted = envelopes.encrypt(
@@ -1191,6 +1197,7 @@ internal class SendStep(
                 current = DmSessions.StoredSlot(session.sessionId, session.stateEnv),
                 l0 = l0,
                 today = DmTime.day(now).toInt(),
+                mediaKeyEnv = mediaKeyEnv,
             )
         ) {
             is DmSessions.Encrypted.Ok -> encrypted
@@ -1261,6 +1268,131 @@ internal class SendStep(
         )
         return SealOutcome.OK
     }
+
+    /**
+     * `MEDIA-READY`'s descriptor SEND (Phase 11 design §6.4, §13.4): the kind-5 item goes out
+     * with the **object's** TTL and deadline from `media_upload` (R-MT4 — a timer change during
+     * the upload must not split the object's bucket), and the key slot is filled inside
+     * `encrypt` from [mediaKeyEnv] (§4.2). Mirrors [flushOne]; the differences are the media
+     * envelope and that the TTL/deadline come from the object's upload row, not the L0's timer.
+     */
+    @Suppress("ReturnCount")
+    internal fun flushMediaDescriptor(
+        self: SelfContext?,
+        contactId: ByteArray,
+        itemId: ByteArray,
+        ttlSeconds: Long,
+        deadlineHour: Long,
+        mediaKeyEnv: ByteArray,
+    ): Boolean {
+        if (self == null) {
+            queuePending(contactId, itemId)
+            return false
+        }
+        val now = clock.nowEpochSeconds()
+        val plan = try {
+            database.transaction { tx ->
+                plan(tx, contactId, DmContent.Kind.MEDIA, null, now, createOffer = false)
+            }
+        } catch (e: StorageFullException) {
+            return false
+        }
+        val prepared = plan.prepared ?: run {
+            queuePending(contactId, itemId)
+            return false
+        }
+        val credentials = depositCredentials(prepared) ?: return false
+        val ttl = ttlBucketOf(ttlSeconds)
+        val operationId = random.bytes(OperationId.SIZE)
+        return try {
+            database.transaction { tx ->
+                val contact = contacts.contact(tx.sql, contactId) ?: return@transaction false
+                if (!maySend(contact.trust)) return@transaction false
+                val item = messages.item(tx.sql, itemId) ?: return@transaction false
+                if (item.state != MessageStore.ITEM_PENDING || item.kind != KIND_DESCRIPTOR) {
+                    return@transaction false
+                }
+                val l0 = self.content.open(item.l0Env ?: return@transaction false, itemId)
+                    ?: return@transaction false
+                val decoded = envelopes.decodeContent(contactId, l0)
+                if (decoded !is DmContent.DecodeResult.Ok || decoded.content.kind != DmContent.Kind.MEDIA) {
+                    return@transaction false
+                }
+                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
+                if (isStale(session, now)) {
+                    demoteForReestablishment(tx, contactId, now)
+                    queuePendingInTx(tx, itemId, contactId, now)
+                    return@transaction false
+                }
+                val outcome = sealAndEnqueue(
+                    tx = tx,
+                    self = self,
+                    contact = contact,
+                    prepared = prepared,
+                    session = session,
+                    itemId = itemId,
+                    l0 = l0,
+                    bucket = decoded.content.bucket,
+                    authorMinute = decoded.content.authorMinute * DmTime.MINUTE,
+                    now = now,
+                    operationId = operationId,
+                    deadlineHour = deadlineHour,
+                    ttl = ttl,
+                    credentials = credentials,
+                    mediaKeyEnv = mediaKeyEnv,
+                )
+                if (outcome == SealOutcome.NO_SEAL_KEY) {
+                    demoteForReestablishment(tx, contactId, now)
+                    queuePendingInTx(tx, itemId, contactId, now)
+                    return@transaction false
+                }
+                if (outcome == SealOutcome.INVALID_SESSION) {
+                    sessions.deleteSessions(tx, contactId)
+                    queuePendingInTx(tx, itemId, contactId, now)
+                    return@transaction false
+                }
+                if (outcome != SealOutcome.OK) return@transaction false
+                messages.deletePendingSend(tx, itemId)
+                true
+            }
+        } catch (e: InsufficientReplicasException) {
+            false
+        } catch (e: StorageFullException) {
+            false
+        }
+    }
+
+    /** No usable session at READY: the descriptor waits like a text (§6.3's last paragraph). */
+    private fun queuePending(contactId: ByteArray, itemId: ByteArray) {
+        try {
+            database.transaction { tx ->
+                val now = clock.nowEpochSeconds()
+                queuePendingInTx(tx, itemId, contactId, now)
+            }
+        } catch (e: StorageFullException) {
+            // The queueing is retried at the next pass that finds the item pending.
+        }
+    }
+
+    private fun queuePendingInTx(tx: SyncTransaction, itemId: ByteArray, contactId: ByteArray, now: Long) {
+        val item = messages.item(tx.sql, itemId) ?: return
+        if (item.state != MessageStore.ITEM_PENDING) return
+        if (messages.pendingSends(tx.sql, contactId).any { it.itemId.contentEquals(itemId) }) return
+        val ttlSeconds = item.ttlSeconds
+        messages.insertPendingSend(
+            tx, itemId, contactId,
+            DmTime.ceilHour(
+                minOf(
+                    DmTime.floorMinute(now) + DmTimers.DEADLINE_CAP_SECONDS,
+                    DmTimers.deadlineSeconds(now, ttlBucketOf(ttlSeconds)),
+                ),
+            ),
+        )
+    }
+
+    private fun ttlBucketOf(seconds: Long): TtlBucket =
+        TtlBucket.entries.firstOrNull { it.seconds.toLong() == seconds }
+            ?: throw IllegalStateException("unknown ttl bucket")
 
     /** §6.8, in the order the rule gives: intro, pair, provisional, `NO_SEAL_KEY`. */
     @Suppress("LongParameterList", "ReturnCount")
@@ -1588,5 +1720,8 @@ internal class SendStep(
         private const val ANY_SLOT: Int = 0
 
         private val EMPTY = ByteArray(0)
+
+        /** The descriptor item's kind (Phase 11 design §4.1's kind-5 L0); [OutcomeStep] holds the state names. */
+        internal const val KIND_DESCRIPTOR: Int = 5
     }
 }

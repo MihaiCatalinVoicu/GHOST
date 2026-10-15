@@ -47,6 +47,10 @@ object DmContent {
 
         /** A control message: no body, TLVs only (§7.1). */
         CONTROL(0x04),
+
+        /** A media descriptor (Phase 11 design §4.1): the object id, the zero key slot and the
+         * manifest hash, with the caption as the body. The key slot is filled inside `encrypt`. */
+        MEDIA(0x05),
         ;
 
         internal companion object {

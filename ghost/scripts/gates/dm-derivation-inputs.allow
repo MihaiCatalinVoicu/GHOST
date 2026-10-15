@@ -25,6 +25,7 @@ site|android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/Channe
 site|android/messaging/src/main/kotlin/org/ghost/messaging/store/ContentCipher.kt|SecretKeySpec(key, "ChaCha20")|2|private val key: ByteArray|not a derivation: the random content key (§3.2, random and never derived) sealing and opening local rows with ChaCha20-Poly1305
 #
 # The DM labels of these modules:
+label|android/messaging/src/main/kotlin/org/ghost/messaging/engine/MediaOpIds.kt|ghost/v1/media/op|1|-|Phase 11 design section 6.4's media operation id, SHA-256(label || object_id || ordinal || retry_gen || resend_count)[0..16]: an unkeyed digest of structured non-secret material whose determinism makes a repeated feed idempotent; computed in :messaging because G-DM3 keeps ghost/v<n>/ labels out of :media
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|ghost/v1/dm-hint|1|-|the §6.2 hint label, fed to the recognition-key HMAC above
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/ChannelRecognition.kt|ghost/v1/ch-hint|1|-|the Phase 10 §5.6 channel hint label, fed to the recognition-key HMAC above (the one channel literal G-M3 rule 4 admits in Kotlin)
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/RelaySets.kt|ghost/v1/dm/slot-order|1|-|the §5.2 slot-order label, fed to the namespace-keyed HMAC above

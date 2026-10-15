@@ -116,6 +116,12 @@ internal class DmActor(
      * ([nextReadySeconds]). Null where no channel engine is wired (every Phase 9 world).
      */
     private val channels: ChannelPassSteps? = null,
+    /**
+     * The sender pipeline's pass (Phase 11 §13.5): `MEDIA-OUTCOME` and `MEDIA-FEED` after F9's
+     * OUTCOME (they read the outbox it released), `MEDIA-DEADLINE` on time-triggered passes
+     * (§21.9 rule 1's shape: nothing a media outcome arrives can cause timer-visible work).
+     */
+    private val media: MessagingRuntime.MediaPassSteps? = null,
 ) : AutoCloseable {
 
     private val contacts = ContactStore()
@@ -476,6 +482,8 @@ internal class DmActor(
             if (contexts.get() == null) return
         }
         outcomeStep.run()
+        // Phase 11 §13.5's `MEDIA-OUTCOME`/`MEDIA-FEED`: after F9's OUTCOME released the ops.
+        media?.runOutcomesAndFeed()
         claimBundles()
         // §22.8.1 rule 3: HELD runs **before** the peek and the RECV claims. Rule 2 makes either
         // order correct — a session a RECV pass created first is matched by `session_id` and
@@ -498,6 +506,8 @@ internal class DmActor(
             // is the whole of PM-30 for them: a card holder must not be able to deposit a probe
             // during this device's session and watch a reconnect or revocation notice follow.
             scheduledSteps.runDue()
+            // §6.4's deadline: time-triggered, like the steps above.
+            media?.runDeadline()
         }
         consumeInbox(deadlineMonotonicMillis)
         // D16: the channel engine's pass, with this pass's trigger (its time-triggered steps run on a time-triggered pass

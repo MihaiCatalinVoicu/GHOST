@@ -221,6 +221,10 @@ class MediaFragments {
         )
     }
 
+    /** §6.4's corrupt-file rule ([MediaObjects.retryUpload]): whether any ordinal of the object failed. */
+    fun hasFailed(sql: SqlExecutor, objectId: ByteArray): Boolean =
+        sql.queryCount(HAS_FAILED, listOf(Fields.objectId(objectId))) > 0
+
     /**
      * `MEDIA-OUTCOME` (§6.4): an ordinal's final state. `open` → `sent`, `degraded`, `indeterminate` or `failed`; anything
      * else is not an outcome ([MediaStoreError.ILLEGAL_TRANSITION]).
@@ -319,6 +323,7 @@ class MediaFragments {
 
         const val OPEN_OF_OBJECT = "SELECT count(*) FROM media_fragment WHERE object_id = ? AND upload_state = 'open'"
         const val OPEN_OF_DEVICE = "SELECT count(*) FROM media_fragment WHERE upload_state = 'open'"
+        const val HAS_FAILED = "SELECT count(*) FROM media_fragment WHERE object_id = ? AND upload_state = 'failed'"
         const val EXPECTED_OF_OBJECT = "SELECT count(*) FROM media_fragment WHERE object_id = ? AND state = 'expected'"
         const val BOUND_OF_OBJECT = "SELECT count(*) FROM media_fragment WHERE object_id = ? AND state = 'bound'"
         const val OBJECTS_NAMING = "SELECT DISTINCT object_id FROM media_fragment WHERE blob_hash = ? ORDER BY object_id"

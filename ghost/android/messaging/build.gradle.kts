@@ -60,6 +60,10 @@ dependencies {
     // and the ES slot table reaches the owner steps through `EsSlots`, for the same reason.
     api(project(":sync"))
     implementation(project(":crypto-bridge"))
+    // Phase 11 design §13.1 (slice S5): the sender pipeline lives in `:media`; the MEDIA-* steps
+    // and the facade's media half drive its stores and ports (G-DM1's text rule still bans a
+    // network name in either module).
+    implementation(project(":media"))
     // `ZBase32`: the `ghost://contact/` link of §3.3 is the same encoding as the `ghost1…` string
     // and the invite payload, and a second copy of an alphabet is a second place to get it wrong.
     implementation(project(":identity"))

@@ -201,6 +201,12 @@ interface DmEnvelopes {
         current: DmSessions.StoredSlot,
         l0: ByteArray,
         today: Int,
+        /**
+         * The kind-5 envelope of Phase 11 design §4.2 (empty for a non-media message): for a
+         * MEDIA L0 the native side unwraps it under the L0's binding and writes `K_f` into the
+         * descriptor's key slot before encrypting.
+         */
+        mediaKeyEnv: ByteArray = ByteArray(0),
     ): DmSessions.Encrypted
 
     /** §2.6 function 13: the two-slot trial of §7.6. */
@@ -614,9 +620,10 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
         current: DmSessions.StoredSlot,
         l0: ByteArray,
         today: Int,
+        mediaKeyEnv: ByteArray,
     ): DmSessions.Encrypted {
         val handle = context.handleOrNull() ?: return DmSessions.Encrypted.Unavailable
-        return DmSessions.encrypt(handle, contactId, current, l0, today)
+        return DmSessions.encrypt(handle, contactId, current, l0, today, mediaKeyEnv)
     }
 
     @Suppress("LongParameterList")

@@ -25,6 +25,67 @@ import org.ghost.messaging.store.ContactStore
  * returns after its transaction commits (§13.7), none performs network I/O (gate G-DM1), and
  * `toString()` of every value type is redacted (T3).
  */
+/** §6.5's `PreparationId`: random, local, no row before `MEDIA-COMMIT` (T33). Redacted. */
+class PreparationId(internal val id: String) {
+    override fun equals(other: Any?): Boolean = other is PreparationId && other.id == id
+    override fun hashCode(): Int = id.hashCode()
+    override fun toString(): String = "PreparationId(redacted)"
+}
+
+/**
+ * §6.5's `sendMedia` answer. The design words it `QUEUED(preparation) | TOO_LARGE | …`: the
+ * refusal values are [SendResult]'s (the F9 enum, extended with [SendResult.LIMIT_REACHED] and
+ * [SendResult.NOT_RETRYABLE]); `QUEUED` carries the [PreparationId] the UI polls with
+ * [Messaging.preparationState]. (A wrapper rather than a carrier on `SendResult.QUEUED` itself:
+ * 158 F9 call sites read the plain value; §22.8 records the reading.)
+ */
+sealed class MediaSendResult {
+    /** The preparation runs on the media worker; poll [Messaging.preparationState]. */
+    class Queued(val preparation: PreparationId) : MediaSendResult()
+
+    /** A check made before any work refused the send (a local refusal, visible to nobody else). */
+    class Refused(val result: SendResult) : MediaSendResult()
+}
+
+/** §6.5's `preparationState` answer; null for an unknown id or after the final state was read once. */
+sealed class PreparationView {
+    /** Work is running; [progress] is 0–99, a UI hint. */
+    data class Preparing(val progress: Int) : PreparationView()
+
+    /** `MEDIA-COMMIT` committed; the message id is the item the UI follows. */
+    class Committed(val message: MessageId) : PreparationView()
+
+    /** The typed refusal (§6.2's list). */
+    class Failed(val failure: org.ghost.media.send.PrepFailure) : PreparationView()
+}
+
+/**
+ * §6.5's `MediaSource`: the picked source and nothing else. The app builds it — the bytes for an
+ * image (read straight into memory, §6.1's no-copy rule is the app's contract), or the video
+ * source port plus its first 64 bytes for the sniff. No platform content-handle package name
+ * crosses into the DM modules (G-DM1; §22.8 F-S5-3's pattern).
+ */
+class MediaSource private constructor(
+    internal val imageBytes: ByteArray?,
+    internal val videoSource: org.ghost.media.send.VideoSource?,
+    internal val videoFirst64: ByteArray?,
+) {
+    init {
+        require((imageBytes != null) != (videoSource != null)) { "exactly one of image or video" }
+        if (imageBytes != null) require(imageBytes.size >= 64) { "the sniff needs the first 64 bytes" }
+        if (videoSource != null) require(videoFirst64 != null && videoFirst64.size >= 8) { "the sniff needs the ftyp" }
+    }
+
+    companion object {
+        /** A picked still image: its full encoded bytes (the engine sniffs the head). */
+        fun image(bytes: ByteArray): MediaSource = MediaSource(bytes, null, null)
+
+        /** A picked video: the opaque source port and its first bytes for the sniff. */
+        fun video(source: org.ghost.media.send.VideoSource, first64: ByteArray): MediaSource =
+            MediaSource(null, source, first64)
+    }
+}
+
 interface Messaging {
 
     /**
@@ -160,6 +221,19 @@ interface Messaging {
      * while `now` is before the original deadline; after it, `DEADLINE_PASSED`.
      */
     fun retry(message: MessageId): SendResult
+
+    /**
+     * Phase 11 §6.5: send a photo or a video. The checks before any work — the contact's state,
+     * the sniff, the header limits, the free-space floor — refuse locally; the rest of the
+     * outcome arrives through [preparationState].
+     */
+    fun sendMedia(contact: ContactId, source: MediaSource, caption: String?, viewOnce: Boolean): MediaSendResult
+
+    /** The preparation's state; null for an unknown id or after its final state was read once. */
+    fun preparationState(preparation: PreparationId): PreparationView?
+
+    /** §6.5: retry a FAILED object before its deadline (at most three times); see [SendResult]. */
+    fun retryMedia(message: MessageId): SendResult
 
     // -------------------------------------------------------- trust and restore
 
@@ -470,6 +544,12 @@ enum class SendResult {
 
     /** A retry past the original deadline (§7.5). */
     DEADLINE_PASSED,
+
+    /** Phase 11 §6.5: the concurrent-preparation bound (`MediaSendLimits.MAX_CONCURRENT_PREPARATIONS`). */
+    LIMIT_REACHED,
+
+    /** Phase 11 §6.4/§6.5: a media retry of an object whose ciphertext is gone (the feed's hash rule). */
+    NOT_RETRYABLE,
     ;
 
     internal companion object {

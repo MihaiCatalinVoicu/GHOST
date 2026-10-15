@@ -350,8 +350,9 @@ internal class RecordingEnvelopes(
         current: DmSessions.StoredSlot,
         l0: ByteArray,
         today: Int,
+        mediaKeyEnv: ByteArray,
     ): DmSessions.Encrypted {
-        val encrypted = inner.encrypt(contactId, current, l0, today)
+        val encrypted = inner.encrypt(contactId, current, l0, today, mediaKeyEnv)
         if (encrypted is DmSessions.Encrypted.Ok) {
             truth.recordL1(l0, encrypted.l1)
             truth.recordHeader(inner.parseL1(encrypted.l1, encrypted.isPreKey))
