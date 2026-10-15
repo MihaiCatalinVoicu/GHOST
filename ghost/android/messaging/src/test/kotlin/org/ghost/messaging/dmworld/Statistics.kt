@@ -111,7 +111,8 @@ internal object Sdm3 {
 
         // The positive control: the same attacker, its dictionary extended with a colluding subset's
         // cards — every card a colluder holds (its own and its accepted contacts'), derived with the
-        // colluder's own DM context into the card's two namespaces, each naming the card's owner.
+        // colluder's own DM context into the card's three namespaces (Phase 11 design §5.1: `X`, `P`
+        // and `M`), each naming the card's owner.
         val residue = Math.floorMod(seed, 10L).toInt()
         val colluders = (0 until identities).filter { it % 10 == residue }.toSet()
         val held = HashSet<Int>()
@@ -130,6 +131,10 @@ internal object Sdm3 {
             if (derived is org.ghost.crypto.bridge.DmCards.DeriveResult.Ok) {
                 controlMap[Joins.hex(derived.values.inboxNamespace)] = holder
                 controlMap[Joins.hex(derived.values.bundleNamespace)] = holder
+                // Since S4-owner every card opens three namespaces (Phase 11 design §5.1): the
+                // control's dictionary must name `M_i` like the other two, or it cannot map the
+                // media namespaces of the cards the colluders hold.
+                controlMap[Joins.hex(derived.values.mediaNamespace)] = holder
                 derived.values.clearSecrets()
             }
         }

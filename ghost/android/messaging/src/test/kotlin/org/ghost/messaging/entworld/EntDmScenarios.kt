@@ -2,6 +2,7 @@ package org.ghost.messaging.entworld
 
 import org.ghost.entitlement.api.ActivationState
 import org.ghost.entitlement.harness.EntClient
+import org.ghost.entitlement.harness.EntConfig
 import org.ghost.entitlement.harness.EntScenario
 import org.ghost.entitlement.harness.EntWorld
 import org.ghost.entitlement.harness.inviteText
@@ -37,6 +38,17 @@ import org.ghost.sync.harness.jobs
  * of §12.2 as user actions at scripted times is [EntDmConversation]'s.
  */
 internal abstract class EntDmScenario(name: String) : EntScenario(name) {
+
+    /**
+     * The trial arms three ACCESS tokens per ES slot, not the Grid's two: since S4-owner every
+     * activated identity redeems one token per (relay, own namespace, week) for `X_0`, `P_0` **and
+     * `M_0` (Phase 11 design §5.2's token accounting — at most 3 per slot against
+     * `access_per_slot = 16`), and a registration row is only served where a usable, funded write
+     * capability exists (the `SERVING` join of the registration lane). With two, the third own
+     * namespace's capability starves at some relays and its registration rows never serve — bob's
+     * deposits are then refused exactly where alice never registered (F-S4o-5, §22.7).
+     */
+    override fun config(): EntConfig = configured(EntConfig(trialPerSlot = 3))
     lateinit var dm: EntDmWorld
     lateinit var bob: EntClient
     lateinit var aliceDm: EntDmClient
