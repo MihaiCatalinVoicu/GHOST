@@ -164,18 +164,18 @@ internal class MediaEngineSupport(
         try {
             val previewBytes = opened.preview
             if (previewBytes.isEmpty()) return null // view-once carries none (ADR-44 point 5)
+            var decodeReturned = false
             val decoded = try {
                 pipeline.decoder.decode(
                     previewBytes,
                     org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
                     org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
-                )
-            } catch (t: Throwable) {
-                // The manifest's preview bytes are plaintext media: a sandbox defect that
-                // throws (rather than answering null) must not leave them live either — the
-                // finally below only closed the reader (F-S7 review, LOW).
-                previewBytes.fill(0)
-                throw t
+                ).also { decodeReturned = it != null }
+            } finally {
+                // The manifest's preview bytes are plaintext media: whatever leaves this
+                // block — a null answer or a sandbox defect that throws (rather than
+                // answering null) — must not leave them live (F-S7 review, LOW).
+                if (!decodeReturned) previewBytes.fill(0)
             } ?: run {
                 previewBytes.fill(0)
                 previewDecodeFailed(gate.objectId)
