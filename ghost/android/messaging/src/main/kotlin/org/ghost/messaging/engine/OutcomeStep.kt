@@ -37,9 +37,19 @@ internal class OutcomeStep(
     private val clock: DmClock,
     private val contexts: SelfContexts,
     private val mediaOrphans: MediaOrphanSteps,
+    /**
+     * §11.1's checkpoint, run after a transaction that erased a view-once sender's `key_env`
+     * (§6.4's cleanup, §13.5's "checkpoint … after the cleanup"). Defaulted, not omitted, at the
+     * one harness (`DmWorld`) that runs no media: its tests drive no view-once sends, and the
+     * media worlds wire real ones, exactly as `DmCheckpoint`'s KDoc demands.
+     */
+    private val checkpoint: org.ghost.messaging.port.DmCheckpoint = org.ghost.messaging.port.DmCheckpoint { true },
+    /** The reconcile half of §13.5's "after the cleanup", run after [checkpoint]. */
+    private val onSenderCopyErased: () -> Unit = {},
 ) {
     private val messages = MessageStore()
     private val owner = OwnerStore()
+    private val mediaObjects = org.ghost.media.store.MediaObjects(org.ghost.media.store.MediaFragments())
 
     /** How many outcomes this pass released. */
     fun run(): Int {
@@ -48,17 +58,24 @@ internal class OutcomeStep(
         // refuses a nested one outright.
         val self = contexts.get()
         var released = 0
+        var viewOnceCleaned = false
         for (outcome in sync.outbox.outcomes(Consumer.DM, DM_OUTCOMES)) {
-            if (applyOne(outcome, self)) released += 1
+            if (applyOne(outcome, self) { viewOnceCleaned = true }) released += 1
         }
         for (outcome in sync.outbox.outcomes(Consumer.PREKEYS, PREKEY_OUTCOMES)) {
             if (applyBundle(outcome)) released += 1
+        }
+        // §13.5's "checkpoint and reconcile after the cleanup": the erasure stood inside an
+        // outcome transaction above; both run here, after the commits, outside any transaction.
+        if (viewOnceCleaned) {
+            checkpoint.truncate()
+            onSenderCopyErased()
         }
         return released
     }
 
     @Suppress("ReturnCount")
-    private fun applyOne(outcome: OutboundOutcome, self: SelfContext?): Boolean {
+    private fun applyOne(outcome: OutboundOutcome, self: SelfContext?, onViewOnceCleaned: () -> Unit): Boolean {
         val now = clock.nowEpochSeconds()
         return database.transaction { tx ->
             if (!sync.outbox.release(tx, outcome.operationId)) return@transaction false
@@ -69,8 +86,8 @@ internal class OutcomeStep(
             val itemId = op.itemId ?: return@transaction true
             val item = messages.item(tx.sql, itemId) ?: return@transaction true
             when (outcome.outcome) {
-                Outcome.SENT -> terminal(tx, op.operationId, itemId, item, STATE_SENT, self)
-                Outcome.DEGRADED -> terminal(tx, op.operationId, itemId, item, STATE_DEGRADED, self)
+                Outcome.SENT -> terminal(tx, op.operationId, itemId, item, STATE_SENT, self, onViewOnceCleaned)
+                Outcome.DEGRADED -> terminal(tx, op.operationId, itemId, item, STATE_DEGRADED, self, onViewOnceCleaned)
                 Outcome.FAILED -> {
                     // §7.5: the user may retry, which re-encrypts the same L0 — so `l0_env` stays
                     // until the deadline, unlike at the three terminal outcomes.
@@ -105,7 +122,7 @@ internal class OutcomeStep(
                     // The contact is no longer sendable, or this week's slot table cannot give a
                     // quorum: the release stands and the item ends `indeterminate` — "may not have
                     // been delivered", which is exactly what is true.
-                    if (!resent) terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE, self)
+                    if (!resent) terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE, self, onViewOnceCleaned)
                 }
             }
             true
@@ -144,6 +161,7 @@ internal class OutcomeStep(
         item: MessageStore.ItemRow,
         state: String,
         self: SelfContext?,
+        onViewOnceCleaned: () -> Unit,
     ) {
         messages.setItemState(tx, itemId, item.state, state)
         messages.setMessageState(tx, itemId, MessageStore.STATE_QUEUED, state)
@@ -156,7 +174,19 @@ internal class OutcomeStep(
         // `M_c` orphan condition — the upload half of the object ended before the descriptor was
         // even deposited, so the descriptor's outcome is usually the clause that closes. FAILED is
         // not terminal (the user may retry until the deadline), so it never reaches this call.
-        if (item.kind == KIND_DESCRIPTOR) mediaOrphans.recordIfOrphaned(tx, self, item.contactId)
+        if (item.kind == KIND_DESCRIPTOR) {
+            mediaOrphans.recordIfOrphaned(tx, self, item.contactId)
+            // §6.4/§11.2's view-once sender cleanup: a descriptor's final outcome other than
+            // FAILED (this call is never reached for FAILED) erases the sender's copy — key,
+            // fragment rows, unshared blobs — in the same transaction; the checkpoint and the
+            // reconcile follow the commit (§13.5, §11.1; MC-M20 is this erasure skipped on a
+            // final INDETERMINATE).
+            val objectId = mediaObjects.keyedViewOnceOfMessage(tx.sql, itemId)
+            if (objectId != null) {
+                mediaObjects.eraseSenderCopy(tx, objectId)
+                onViewOnceCleaned()
+            }
+        }
     }
 
     companion object {

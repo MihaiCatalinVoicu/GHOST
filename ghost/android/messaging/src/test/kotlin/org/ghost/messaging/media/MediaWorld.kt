@@ -39,6 +39,7 @@ import org.ghost.messaging.engine.MediaOpIds
 import org.ghost.messaging.engine.MediaOrphanSteps
 import org.ghost.messaging.engine.MediaReceiveSteps
 import org.ghost.messaging.engine.MediaSteps
+import org.ghost.messaging.engine.OutcomeStep
 import org.ghost.messaging.port.MediaReaders.Chunked
 import org.ghost.messaging.port.MediaReaders.Opened
 import org.ghost.messaging.port.MediaReaders.Validated
@@ -91,7 +92,12 @@ internal class MediaWorld(
     val relay: ScriptedOutbox = ScriptedOutbox(),
 ) : AutoCloseable {
 
-    val sql: JdbcSqlExecutor = JdbcSqlExecutor(dbPath).also { MigrationRunner(it).migrate() }
+    val sql: JdbcSqlExecutor = JdbcSqlExecutor(dbPath).also {
+        MigrationRunner(it).migrate()
+        // The device's journal mode (GhostDatabase sets WAL; the JDBC executor carries the rest
+        // of the production pragmas on open): S8's EP-M suite scans the raw `.db`/`-wal` bytes.
+        it.query("PRAGMA journal_mode = WAL") { }
+    }
     val database: SyncDatabase = SyncDatabase(sql)
     val clock = MovableClock()
     val stores: SyncStores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
@@ -197,6 +203,10 @@ internal class MediaWorld(
         random = random,
         contexts = contexts,
         mediaOrphans = MediaOrphanSteps(crypto, clock),
+        // The FAILED-descriptor cleanup's after-commit half (§11.1, §13.5); the lambdas run at
+        // deadline time, after the whole world exists.
+        checkpoint = { realCheckpoint() },
+        onSenderCopyErased = { receiveSteps.reconcile() },
     )
 
     /** The preparation pipeline over the fake ports. */
@@ -215,10 +225,39 @@ internal class MediaWorld(
         files = files,
         readers = readers,
         preparing = { preparing.snapshot() },
-        checkpoint = { checkpointLog += true; true },
+        checkpoint = { realCheckpoint() },
         contexts = contexts,
         clock = clock,
     )
+
+    /**
+     * F9's OUTCOME step over the world (slice S8): drives the descriptor outcomes whose terminal
+     * ones trigger §6.4's view-once sender cleanup, with the world's recording checkpoint and the
+     * recipient reconcile as the after-commit hooks.
+     */
+    val outcomeStep: OutcomeStep = OutcomeStep(
+        database = database,
+        sync = sync,
+        sendStep = SendStep(database, sync, envelopes, material, RelaySetResolver(EsSlotsLike { slots }), clock, random, contexts),
+        clock = clock,
+        contexts = contexts,
+        mediaOrphans = MediaOrphanSteps(crypto, clock),
+        checkpoint = { realCheckpoint() },
+        onSenderCopyErased = { receiveSteps.reconcile() },
+    )
+
+    /**
+     * The §11.1 checkpoint over the world's executor — what the production wiring hands every
+     * media component, and what the EP-M physical scans need to be real: the recording stub in
+     * [checkpointLog] never truncates the log.
+     */
+    fun realCheckpoint(): Boolean {
+        checkpointLog += true
+        return org.ghost.storage.Checkpoint.truncate(sql)
+    }
+
+    /** The raw database file and its write-ahead log, for the EP-M byte scans. */
+    fun dbFiles(): List<File> = listOf(File(dbPath), File("$dbPath-wal")).filter { it.isFile }
 
     /** The own media namespace `M_0`, registered `Consumer.MEDIA` at [activate]. */
     val m0: ByteArray by lazy { crypto.ownCard(0)!!.mediaNamespace }
@@ -846,6 +885,9 @@ internal class ScriptedOutbox : Outbox {
     private val released = HashSet<String>()
     private val script = ArrayDeque<Scripted>()
 
+    /** The descriptor (and any other DM) outcomes, drained by `OutcomeStep` (slice S8). */
+    private val dmScript = ArrayDeque<Scripted>()
+
     /** The outcomes drained so far, by op id: release() decides the row before releasing it
      * (outbox_op_release refuses a release while the outcome is 'pending'). */
     private val decided = HashMap<String, Outcome>()
@@ -858,6 +900,11 @@ internal class ScriptedOutbox : Outbox {
 
     fun script(operationId: org.ghost.sync.api.OperationId, outcome: Outcome, resendNotAfter: Long? = null) {
         script += Scripted(operationId, outcome, resendNotAfter)
+    }
+
+    /** A DM-consumer outcome (the descriptor's op): drained by `outcomes(Consumer.DM)`. */
+    fun scriptDm(operationId: org.ghost.sync.api.OperationId, outcome: Outcome, resendNotAfter: Long? = null) {
+        dmScript += Scripted(operationId, outcome, resendNotAfter)
     }
 
     /** The deterministic op id the steps will derive for (object, ordinal, generation, resend). */
@@ -898,10 +945,14 @@ internal class ScriptedOutbox : Outbox {
     override fun progress(operationId: org.ghost.sync.api.OperationId): OutboxProgress? = null
 
     override fun outcomes(consumer: Consumer, limit: Int): List<OutboundOutcome> {
-        if (consumer != Consumer.MEDIA) return emptyList()
+        val source = when (consumer) {
+            Consumer.MEDIA -> script
+            Consumer.DM -> dmScript
+            else -> return emptyList()
+        }
         val out = ArrayList<OutboundOutcome>()
-        repeat(minOf(limit, script.size)) {
-            val s = script.removeFirst()
+        repeat(minOf(limit, source.size)) {
+            val s = source.removeFirst()
             decided[hexOf(s.operationId.toByteArray())] = s.outcome
             out += OutboundOutcome(
                 s.operationId,

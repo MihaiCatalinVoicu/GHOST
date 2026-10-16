@@ -77,6 +77,27 @@ class MediaObjects(private val fragments: MediaFragments) {
     fun objectsOfMessage(sql: SqlExecutor, messageId: ByteArray): List<ByteArray> =
         ids(sql, OBJECTS_OF_MESSAGE, listOf(Fields.bytes("media_object.message_id", messageId, 16)))
 
+    /**
+     * Outgoing view-once objects whose descriptor FAILED and whose deadline has passed (§6.4's last
+     * rule: a FAILED descriptor keeps the sender's copy for a retry until the deadline, then the
+     * same cleanup as any other final outcome runs). `MEDIA-DEADLINE` asks, the caller erases.
+     */
+    fun failedViewOnceDescriptors(sql: SqlExecutor, nowE: Long, limit: Int): List<ByteArray> =
+        ids(sql, FAILED_VIEW_ONCE_DESCRIPTORS, listOf(nowE, nowE, limit.toLong()))
+
+    /**
+     * The outgoing, still-keyed view-once object of a descriptor's message — OUTCOME's cleanup
+     * half. No expiry filter: a swept message took its object with it (the cascade), so a row
+     * here means a live object that owes the erasure.
+     */
+    fun keyedViewOnceOfMessage(sql: SqlExecutor, messageId: ByteArray): ByteArray? {
+        var out: ByteArray? = null
+        sql.query(KEYED_VIEW_ONCE_OF_MESSAGE, listOf(Fields.bytes("media_object.message_id", messageId, 16))) {
+            out = it.blob(0)
+        }
+        return out
+    }
+
     // ---------------------------------------------------------------- reads (sweeps: they name exactly the expired rows)
 
     /** Incoming objects past `incomplete_after_hour` that `MEDIA-GC` declares `incomplete` (§7.5). */
@@ -405,6 +426,9 @@ class MediaObjects(private val fragments: MediaFragments) {
                 "ORDER BY o.object_id LIMIT ?"
 
         const val EXISTS = "SELECT count(*) FROM media_object WHERE object_id = ?"
+        const val KEYED_VIEW_ONCE_OF_MESSAGE =
+            "SELECT object_id FROM media_object WHERE message_id = ? " +
+                "AND role = 'out' AND view_once = 1 AND key_env IS NOT NULL"
         const val EXISTS_FOR_MESSAGE = "SELECT count(*) FROM media_object WHERE message_id = ?"
         const val OBJECTS_OF_MESSAGE = "SELECT object_id FROM media_object WHERE message_id = ? ORDER BY object_id"
         const val RAW_STATE = "SELECT state FROM media_object WHERE object_id = ?"
@@ -420,6 +444,15 @@ class MediaObjects(private val fragments: MediaFragments) {
             "SELECT o.object_id FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
                 "LEFT JOIN dm_message m ON m.message_id = o.message_id " +
                 "WHERE o.state = 'uploading' AND u.deadline_hour <= ? " +
+                "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?) " +
+                "ORDER BY u.deadline_hour, o.object_id LIMIT ?"
+
+        const val FAILED_VIEW_ONCE_DESCRIPTORS =
+            "SELECT o.object_id FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
+                "JOIN dm_outbound_item i ON i.message_ref = o.message_id " +
+                "LEFT JOIN dm_message m ON m.message_id = o.message_id " +
+                "WHERE o.role = 'out' AND o.view_once = 1 AND o.key_env IS NOT NULL " +
+                "AND i.kind = 5 AND i.state = 'failed' AND u.deadline_hour <= ? " +
                 "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?) " +
                 "ORDER BY u.deadline_hour, o.object_id LIMIT ?"
     }

@@ -146,6 +146,11 @@ class MessagingRuntime(
             random = random,
             contexts = contexts,
             mediaOrphans = mediaOrphans,
+            // §6.4's FAILED-descriptor cleanup: the checkpoint and reconcile run after the
+            // deadline transaction's commit (§11.1, §13.5). The lambda reads the support built
+            // just below — it runs at deadline time, long after construction.
+            checkpoint = checkpoint,
+            onSenderCopyErased = { mediaSupport?.reconcileAfterSenderCopyErased() },
         )
         // Slice S6's recipient pipeline: the same actor and stores, the reader surface and the
         // reconcile over the pipeline's file store.
@@ -190,10 +195,27 @@ class MessagingRuntime(
         @Volatile
         var filesDereferenced: Boolean = false
 
+        /**
+         * The object ids each sweep took, drained by the media pass: §10.5's "cleared … when an
+         * object is deleted" — the preview cache erases their decoded pixels (EP-M's assertion 6).
+         * Collected inside the sweep transaction, before the cascade deletes the rows; both the
+         * write (sweep) and the drain (media pass) run on the actor.
+         */
+        private val deletedObjectIds = ArrayList<ByteArray>()
+
         override fun onMessagesDeleted(tx: org.ghost.sync.api.SyncTransaction, ids: List<org.ghost.messaging.api.MessageId>) {
             if (ids.isEmpty()) return
+            for (id in ids) deletedObjectIds += objects.objectsOfMessage(tx.sql, id.toByteArray())
             objects.deleteObjectsOfMessages(tx, ids.map { it.toByteArray() })
             filesDereferenced = true
+        }
+
+        /** The object ids the sweeps since the last drain took (and clears the list). */
+        fun drainDeletedObjectIds(): List<ByteArray> {
+            if (deletedObjectIds.isEmpty()) return emptyList()
+            val out = deletedObjectIds.toList()
+            deletedObjectIds.clear()
+            return out
         }
     }
 
@@ -204,7 +226,11 @@ class MessagingRuntime(
         private val steps: MediaSteps,
         private val receiveSteps: MediaReceiveSteps,
         private val sweepPort: SweepMediaPort?,
+        private val support: MediaEngineSupport?,
     ) {
+        /** Whether §11.2's start pass (a crashed process's `viewing` rows) has run. */
+        private var viewOnceStartDone = false
+
         /** After OUTCOME, on commit, on retry and on time passes (§13.5's `MEDIA-FEED` row). */
         fun runOutcomesAndFeed() {
             steps.outcomes()
@@ -217,8 +243,16 @@ class MessagingRuntime(
          * The recipient pipeline (§13.5's `MEDIA-INGEST`/`MEDIA-BIND`/`MEDIA-VERIFY` rows): every
          * pass, in that order — an ingested manifest binds its awaiting objects, a completed object
          * verifies. `MEDIA-GC` is time-triggered ([runGc]), like the deadline.
+         *
+         * The first pass also runs §11.2's start rule ([MediaEngineSupport.closeInterruptedViews]):
+         * rows a dead process left `viewing` become `viewed` before any handle can exist here.
          */
         fun runIngestBindVerify() {
+            if (!viewOnceStartDone) {
+                viewOnceStartDone = true
+                support?.closeInterruptedViews()
+            }
+            support?.evictPreviews(sweepPort?.drainDeletedObjectIds().orEmpty())
             // §13.5's "reconcile after SWEEP": the cascade dereferenced files in its transaction;
             // the directory catches up here, on the next pass that runs anyway.
             if (sweepPort?.filesDereferenced == true) {
@@ -304,7 +338,11 @@ class MessagingRuntime(
         bundleStep = bundleStep,
         sendStep = sendStep,
         receiveStep = receiveStep,
-        outcomeStep = OutcomeStep(database, sync, sendStep, clock, contexts, mediaOrphans),
+        outcomeStep = OutcomeStep(
+            database, sync, sendStep, clock, contexts, mediaOrphans,
+            checkpoint = checkpoint,
+            onSenderCopyErased = { mediaSupport?.reconcileAfterSenderCopyErased() },
+        ),
         heldReplay = heldReplay,
         scheduledSteps = scheduledSteps,
         contactKeeper = ContactKeeper(database, sync, material, relayResolver, clock, contexts),
@@ -327,7 +365,7 @@ class MessagingRuntime(
         channels = channelEngine,
         media = mediaSupport?.let { support ->
             // Built after the support; the pass hooks below run on the actor.
-            MediaPassSteps(support.stepsForPass(), support.receiveStepsForPass(), mediaSweep)
+            MediaPassSteps(support.stepsForPass(), support.receiveStepsForPass(), mediaSweep, support)
         },
     )
 
