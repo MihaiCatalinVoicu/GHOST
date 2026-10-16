@@ -36,7 +36,14 @@
 # The bytecode half of §16.1's G-M3 (javap -c over the release variant's org.ghost classes, so
 # an alias or a helper call cannot slip past a name list) runs in the CI android job over the
 # built release classes; it is not runnable in the source-only run-all sweep (F-S7 pending
-# note, with G-M10's release-dex check covering the same classes in the same job).
+# note, with G-M10's release-dex check covering the same classes in the same job). The source
+# gate's own forward-looking blind spots, recorded per F-S7-3 as that half's to-cover: (i) the
+# platform's other decode entry points — MediaExtractor, MediaPlayer, MediaParser — name no
+# decoder class this gate bans, so a future call would pass the source sweep and is caught only
+# by the bytecode name list; (ii) a renderer built directly (an ImageRenderer or a
+# MediaCodecVideoRenderer constructed outside GhostPlayer's factory in a shape the source
+# assertions do not name) — the shape assertions pin GhostPlayer.kt's own text, the bytecode
+# half pins what the tree actually links.
 # Vacuity: the sweep must read at least one file; the sandbox package must exist.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 TMP="$(mktemp -d)"

@@ -18,6 +18,14 @@ import java.io.IOException
  * A refusal of the playable surfaces as the typed [MediaPlayException] — the player ends
  * with a playback error (the UI shows "media unavailable"), the process does not crash,
  * and the corrupt half has already been recorded by the engine (§7.3's `verified → corrupt`).
+ *
+ * `close` releases only this source's cached chunk copy: Media3 closes and re-opens its
+ * data sources around its own needs (the `mfra` seek-map load rewinds the stream — the
+ * extractor seeks to the index and back before playback starts), and the reader the
+ * [androidx.media3.datasource.DataSource] reads through outlives any one source instance —
+ * it closes with the handle's owner (the engine's lock/trim, §13.7), never with a source
+ * close (F-S7's device re-run found this: the first rewind closed the reader and every
+ * subsequent read answered the typed `Closed`).
  */
 @UnstableApi
 class GhostMediaDataSource(
@@ -54,7 +62,9 @@ class GhostMediaDataSource(
     override fun close() {
         if (!opened) return
         opened = false
-        cursor.close()
+        // Not cursor.close(): the reader outlives this source (see the class KDoc) — only
+        // the JVM-held plaintext copy is erased here (§10.5).
+        cursor.releaseBuffer()
         transferEnded()
     }
 }

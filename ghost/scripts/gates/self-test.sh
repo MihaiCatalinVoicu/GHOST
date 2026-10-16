@@ -151,6 +151,8 @@ expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-simple-c
 expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-cache-dir"
 expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-mediastore"
 expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-writer"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-writer-async-channel"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-writer-new-byte-channel"
 expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-transformer"
 # The PM-M10 fixture is the sink half's shape: the player wrapped over a caching data source.
 pm10_out="$(GHOST_WRITER_ALLOWLIST=/dev/null GHOST_ROOT="$HARNESS/media-no-plaintext/negative-simple-cache" bash "$DIR/media-no-plaintext-io.sh" 2>&1 || true)"

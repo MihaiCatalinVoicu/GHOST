@@ -164,11 +164,19 @@ internal class MediaEngineSupport(
         try {
             val previewBytes = opened.preview
             if (previewBytes.isEmpty()) return null // view-once carries none (ADR-44 point 5)
-            val decoded = pipeline.decoder.decode(
-                previewBytes,
-                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
-                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
-            ) ?: run {
+            val decoded = try {
+                pipeline.decoder.decode(
+                    previewBytes,
+                    org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+                    org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+                )
+            } catch (t: Throwable) {
+                // The manifest's preview bytes are plaintext media: a sandbox defect that
+                // throws (rather than answering null) must not leave them live either — the
+                // finally below only closed the reader (F-S7 review, LOW).
+                previewBytes.fill(0)
+                throw t
+            } ?: run {
                 previewBytes.fill(0)
                 previewDecodeFailed(gate.objectId)
                 return null
@@ -628,7 +636,13 @@ internal class MediaEngineSupport(
             val key = hexOf(objectId)
             val size = preview.pixels.size
             if (size > budgetBytes) return@synchronized // never fits: don't cache
-            byObject.remove(key)?.let { bytes -= it.pixels.size }
+            byObject.remove(key)?.let {
+                // The replaced entry is erased, not just uncounted — the same hygiene as the
+                // eviction loop below (F-S7 review, LOW; latent: the same object id is re-put
+                // only after a trim or a state change, but the erase is the rule itself).
+                it.pixels.fill(0)
+                bytes -= it.pixels.size
+            }
             while (bytes + size > budgetBytes && byObject.isNotEmpty()) {
                 val oldest = byObject.entries.iterator().next()
                 oldest.value.pixels.fill(0)

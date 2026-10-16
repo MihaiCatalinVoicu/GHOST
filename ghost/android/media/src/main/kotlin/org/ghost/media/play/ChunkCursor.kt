@@ -66,9 +66,19 @@ internal class ChunkCursor(private val playable: MediaPlayable) {
         return toCopy
     }
 
+    /**
+     * Erases the cached chunk copy without closing the playable: the data source's `close`
+     * (Media3 re-opens its sources around its own seeks — the `mfra` seek-map load rewinds
+     * the stream), which must not tear down the reader. The playable closes with the
+     * handle's owner ([close]).
+     */
+    fun releaseBuffer() {
+        eraseChunk()
+    }
+
     /** Erase the cached copy and close the playable (the native reader, §13.2 M8). */
     fun close() {
-        eraseChunk()
+        releaseBuffer()
         playable.close()
     }
 

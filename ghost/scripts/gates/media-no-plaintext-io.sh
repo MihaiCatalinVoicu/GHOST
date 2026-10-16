@@ -31,11 +31,19 @@
 #     (both directions — a new writer in a listed file fails too). The writers: FileOutputStream,
 #     RandomAccessFile, FileWriter, PrintWriter, Files.write/writeString/newOutputStream/
 #     newBufferedWriter/copy/move (the `java.nio.file.Files` forms — `CiphertextFiles.write`
-#     in a comment is not `Files.write`), FileChannel.open, AtomicFile, File.writeBytes/
+#     in a comment is not `Files.write`), FileChannel.open, AsynchronousFileChannel.open,
+#     Files.newByteChannel, AtomicFile, File.writeBytes/
 #     writeText/appendBytes/appendText/outputStream()/bufferedWriter()/printWriter()/copyTo()/
 #     copyRecursively(), ContentResolver.openOutputStream, openFileDescriptor/
 #     openAssetFileDescriptor (any mode; the "r"-only form would need a parser to grade),
 #     ParcelFileDescriptor.open, openFileOutput.
+#     The count claim, narrowed (F-S7 review): the counts are line-granular — one regex over
+#     the whole file, not a parse of the option list — so `FileChannel.open` ×3 covers the
+#     READ-only directory sync, and the `(WRITE)` in the two new writers' prose is the banned
+#     shape, not a graded option: a READ-only `AsynchronousFileChannel.open` or
+#     `Files.newByteChannel` in an allowlisted file counts against the row like any other.
+#     A write-option-less open in an unlisted file still fails (the name is banned outside
+#     the allowlist).
 # What a text gate cannot see: a name built at run time, a writer reached through a helper
 # this list does not name. Those are the reviewer's (§16.1's note is the same).
 # Vacuity: android/media/src/main must hold at least one source.
@@ -98,6 +106,8 @@ files-new-buffered-writer|(^|[^A-Za-z0-9_.])Files\.newBufferedWriter($|[^A-Za-z0
 files-copy|(^|[^A-Za-z0-9_.])Files\.copy($|[^A-Za-z0-9_])
 files-move|(^|[^A-Za-z0-9_.])Files\.move($|[^A-Za-z0-9_])
 file-channel-open|(^|[^A-Za-z0-9_])FileChannel\.open($|[^A-Za-z0-9_])
+async-file-channel-open|(^|[^A-Za-z0-9_])AsynchronousFileChannel\.open($|[^A-Za-z0-9_])
+files-new-byte-channel|(^|[^A-Za-z0-9_.])Files\.newByteChannel($|[^A-Za-z0-9_])
 atomic-file|(^|[^A-Za-z0-9_])AtomicFile($|[^A-Za-z0-9_])
 file-write-bytes|\.writeBytes\(
 file-write-text|\.writeText\(
@@ -113,10 +123,12 @@ open-file-descriptor|\.openFileDescriptor\(|\.openAssetFileDescriptor\(
 pfd-open|(^|[^A-Za-z0-9_])ParcelFileDescriptor\.open($|[^A-Za-z0-9_])
 EOF
 
-# The exact, counted sink exemptions: file-basename|label|expected-times.
+# The exact, counted sink exemptions: module-relative-path|label|expected-times — the path
+# is relative to android/ (F-S7 review: keyed by path, not basename, so a same-named file in
+# another module does not inherit the exemption).
 cat > "$TMP/sink-exemptions" <<'EOF'
-GhostTranscoder.kt|cache-dir|3
-GhostTranscoder.kt|transformer|6
+media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|cache-dir|3
+media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|transformer|6
 EOF
 
 mapfile -t files < <({ android_main_files; android_gate_files; } | sort -u)
@@ -179,10 +191,10 @@ while IFS='|' read -r kind a b c; do
   fi
   [ "$kind" = "COUNT" ] || continue
   path="$a"; label="$b"; n="$c"
-  base="${path##*/}"
+  rel="${path#"$GHOST_ROOT"/android/}"
   exempted=0
   while IFS='|' read -r eb el ex; do
-    if [ "$base" = "$eb" ] && [ "$el" = "$label" ] && [ "$n" = "$ex" ]; then exempted=1; fi
+    if [ "$rel" = "$eb" ] && [ "$el" = "$label" ] && [ "$n" = "$ex" ]; then exempted=1; fi
   done < "$TMP/sink-exemptions"
   if [ "$exempted" = 0 ]; then
     while IFS='|' read -r p l line; do

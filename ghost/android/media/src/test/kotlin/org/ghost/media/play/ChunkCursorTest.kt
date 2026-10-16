@@ -131,6 +131,29 @@ class ChunkCursorTest {
     }
 
     @Test
+    fun releaseBufferErasesTheCopyWithoutClosingThePlayable() {
+        // The data source's close is Media3's, not the owner's: around its own re-opens
+        // (the mfra seek-map load rewinds the stream) it closes and re-opens the source,
+        // and the reader must survive — only the JVM-held copy goes (F-S7's device re-run
+        // found the reader closed by the first rewind, every later read typed-Closed).
+        val content = content(2 * CHUNK)
+        val playable = FakePlayable(content)
+        val cursor = ChunkCursor(playable)
+
+        cursor.seekTo(0)
+        val buffer = ByteArray(100)
+        cursor.read(buffer, 0, 100)
+        cursor.releaseBuffer()
+        assertTrue("releaseBuffer erases the cached copy", playable.handedOut[0].all { it == 0.toByte() })
+        assertEquals("the playable (the reader) survives a source close", 0, playable.closeCount)
+        // The re-opened source seeks and reads on — the cursor serves after the release.
+        assertEquals(content.size - 100L, cursor.seekTo(100))
+        assertArrayEquals(content.copyOfRange(100, content.size), readAll(cursor))
+        cursor.close()
+        assertEquals(1, playable.closeCount)
+    }
+
+    @Test
     fun thePlayableRefusalsSurfaceAsTypedErrors() {
         val closed = object : MediaPlayable {
             override val contentLength: Long = CHUNK.toLong()

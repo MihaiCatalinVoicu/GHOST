@@ -11,6 +11,7 @@ import org.ghost.messaging.device.DeviceWorld
 import org.ghost.messaging.port.MediaReaders
 import org.ghost.messaging.port.NativeMediaReaders
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -65,10 +66,9 @@ class MediaPlaybackRestartTest {
         try {
             world.alice.unlock()
             val handle = world.alice.keys.handleOrNull() ?: error("the DM context is open after unlock")
-            // An image object: the canonical strip the sandbox proves on this emulator (the
-            // video goldens are raw encoder outputs the walker refuses until S0a's generated
-            // corpus lands - F-S7-9; the restart run's subject is the reader's resume, and the
-            // kind is incidental to it).
+            // An image object: the restart run's subject is the reader's resume, and the kind
+            // is incidental to it (F-S7-9's corrected reading — the video goldens are canonical
+            // too, minus their `mfra`; the playback device test is their subject).
             val sandbox = org.ghost.media.sandbox.MediaSandbox(context)
             val source = context.assets.open("strip_orient1.jpg").use { it.readBytes() }
             val stripped = sandbox.stripImage(
@@ -77,6 +77,15 @@ class MediaPlaybackRestartTest {
             )
             assertTrue("strip: $stripped", stripped is org.ghost.media.sandbox.MediaSandbox.Result.Ok)
             val image = (stripped as org.ghost.media.sandbox.MediaSandbox.Result.Ok).bytes
+            // The stripper's fixed point, checked cheaply before the seal: the sandbox's strip
+            // of an already-canonical golden must answer bytes a JPEG decoder accepts (F-S7-9's
+            // corrected reading — the strip output has never before been fed to a real check;
+            // the walker's own verdict is the sealAppend below). The decoder here is the
+            // test's probe on a GHOST-generated golden, not a recipient path (G-M3 scans
+            // production sources only).
+            val probe = android.graphics.BitmapFactory.decodeByteArray(image, 0, image.size)
+            assertNotNull("the stripped golden is a decodable JPEG (the stripper's fixed point)", probe)
+            DeviceRunner.report("media-restart: the stripped golden decodes (${probe!!.width}x${probe.height})")
             val strippedPreview = sandbox.stripImage(source, preview = true, maxBytes = 100_000)
             assertTrue("strip preview: $strippedPreview", strippedPreview is org.ghost.media.sandbox.MediaSandbox.Result.Ok)
             val preview = (strippedPreview as org.ghost.media.sandbox.MediaSandbox.Result.Ok).bytes
