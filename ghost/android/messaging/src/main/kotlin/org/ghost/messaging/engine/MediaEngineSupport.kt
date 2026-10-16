@@ -107,7 +107,9 @@ internal class MediaEngineSupport(
      * §6.5's `mediaPreview`: decoded pixels from the RAM cache or the sandbox — null unless §7.4
      * allows (§9.3's zero-click rules). Runs off the actor: the gates read on the actor, the
      * sandbox bind/decode blocks this caller (never the DM actor), and the failure counting writes
-     * on the actor.
+     * on the actor. The gate is held across the decode: the flags are re-read when the sandbox
+     * answer returns and the result is dropped (pixels erased, never cached) if ON_STOP or an
+     * on-screen change landed mid-decode (T46's shape).
      */
     fun preview(messageId: ByteArray): org.ghost.messaging.api.MediaPreview? {
         if (!foreground) return null
@@ -165,6 +167,18 @@ internal class MediaEngineSupport(
                 decoded.pixels.fill(0)
                 previewBytes.fill(0)
                 previewDecodeFailed(gate.objectId)
+                return null
+            }
+            // Hold the zero-click gate across the blocking sandbox decode: the flags were read
+            // at entry, and ON_STOP can land while the decode runs — a decode entered in the
+            // foreground completes in the background unless the result is re-checked. §9.3's
+            // "nothing is decoded in the background" must hold of the answer too: re-read the
+            // signal, and drop the result if it changed, erasing the pixels. A dropped answer
+            // is not a sandbox failure — nothing counts towards the two-strikes rule.
+            val after = onScreenContact
+            if (!foreground || after == null || !onScreen.contentEquals(after)) {
+                decoded.pixels.fill(0)
+                previewBytes.fill(0)
                 return null
             }
             previewBytes.fill(0)

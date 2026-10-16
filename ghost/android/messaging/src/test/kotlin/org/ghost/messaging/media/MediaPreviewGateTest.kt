@@ -23,7 +23,9 @@ import java.util.concurrent.Executors
  * answers a second call without a second decode; two sandbox failures make the object
  * `undecodable` (CS-M8) and it is never offered to the sandbox again; `mediaState` reports the
  * state and held/F progress, and `NOT_KEPT` for a kind-5 message whose descriptor arrived in a
- * request (D28).
+ * request (D28); and a decode entered in the foreground but finished in the background (ON_STOP
+ * mid-decode, a blocking decorator over the seam) is dropped — erased, never cached — so §9.3's
+ * "nothing is decoded in the background" holds of the answer too.
  */
 class MediaPreviewGateTest {
 
@@ -68,13 +70,16 @@ class MediaPreviewGateTest {
         return Fx(world, contact, messageId, prepared.objectId)
     }
 
-    private fun support(world: MediaWorld): MediaEngineSupport = MediaEngineSupport(
+    private fun support(
+        world: MediaWorld,
+        decoder: org.ghost.media.send.ImageDecoder = world.decoder,
+    ): MediaEngineSupport = MediaEngineSupport(
         database = world.database,
         steps = world.steps,
         receiveSteps = world.receiveSteps,
         preparations = org.ghost.media.send.Preparations(),
         pipeline = MediaPipelinePorts(
-            world.files, world.preparing, FakeStripper, FakeVideoExport, world.readers, world.decoder,
+            world.files, world.preparing, FakeStripper, FakeVideoExport, world.readers, decoder,
         ),
         worker = Executors.newSingleThreadExecutor(),
         random = world.random,
@@ -186,6 +191,53 @@ class MediaPreviewGateTest {
                 fx.world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(fx.objectId)),
             )
             assertNull(facade.preview(fx.messageId))
+            assertEquals(2, fx.world.decoder.requests.size)
+        }
+    }
+
+    @Test
+    fun aDecodeThatCompletesInTheBackgroundIsDroppedAndNeverCached() {
+        val box = Box()
+        verifiedWorld(box).use { fx ->
+            // A blocking decorator over the recording fake: the decode enters, then waits for
+            // the test — the ON_STOP-during-decode interleave the recording-fake oracle cannot
+            // produce (T46/§9.3: nothing is decoded in the background).
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val blocking = object : org.ghost.media.send.ImageDecoder {
+                override fun decode(jpeg: ByteArray, maxW: Int, maxH: Int): org.ghost.media.send.ImageDecoder.Decoded? {
+                    entered.countDown()
+                    if (!release.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw AssertionError("the decode was never released")
+                    }
+                    return fx.world.decoder.decode(jpeg, maxW, maxH)
+                }
+            }
+            val facade = support(fx.world, blocking)
+            facade.onForeground(true)
+            facade.onScreen(fx.contact)
+
+            val answer = arrayOfNulls<org.ghost.messaging.api.MediaPreview>(1)
+            val caller = Thread {
+                answer[0] = facade.preview(fx.messageId)
+            }
+            caller.start()
+            assertTrue("the decode entered", entered.await(30, java.util.concurrent.TimeUnit.SECONDS))
+            // ON_STOP lands while the sandbox decode is blocked.
+            facade.onForeground(false)
+            release.countDown()
+            caller.join(30_000)
+            assertTrue("the preview caller finished", caller.state == Thread.State.TERMINATED)
+
+            assertNull(
+                "a decode started in the foreground but finished in the background is dropped",
+                answer[0],
+            )
+            assertEquals(1, fx.world.decoder.requests.size)
+
+            // Never cached: back in the foreground, the same preview decodes again.
+            facade.onForeground(true)
+            assertNotNull(facade.preview(fx.messageId))
             assertEquals(2, fx.world.decoder.requests.size)
         }
     }

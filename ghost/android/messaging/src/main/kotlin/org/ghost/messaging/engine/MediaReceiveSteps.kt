@@ -143,9 +143,10 @@ internal class MediaReceiveSteps(
                 }
                 WriteResult.BelowFloor -> {
                     // §7.5: below the free-space floor the blob is consumed without a file,
-                    // counted — what is fetched never follows local state.
-                    consumeOnly(blob.namespace, blob.hash)
-                    stats.addBelowFloor()
+                    // counted — what is fetched never follows local state. Counted only when
+                    // the consume landed: a StorageFullException from markConsumed means the
+                    // blob was deferred, not consumed.
+                    if (consumeOnly(blob.namespace, blob.hash)) stats.addBelowFloor()
                     continue
                 }
                 is WriteResult.Written -> {
@@ -398,12 +399,15 @@ internal class MediaReceiveSteps(
         return out.toByteArray()
     }
 
-    /** Consume a claimed blob without writing anything (§7.2's counted drops). */
-    private fun consumeOnly(namespace: org.ghost.sync.api.NamespaceId, hash: org.ghost.sync.api.BlobHash) {
-        try {
+    /** Consume a claimed blob without writing anything (§7.2's counted drops); false when a
+     * storage-full deferral replaced the consume (the caller then must not count it). */
+    private fun consumeOnly(namespace: org.ghost.sync.api.NamespaceId, hash: org.ghost.sync.api.BlobHash): Boolean {
+        return try {
             database.transaction { tx -> sync.inbox.markConsumed(tx, namespace, hash) }
+            true
         } catch (e: StorageFullException) {
             deferQuietly(namespace, hash)
+            false
         }
     }
 
