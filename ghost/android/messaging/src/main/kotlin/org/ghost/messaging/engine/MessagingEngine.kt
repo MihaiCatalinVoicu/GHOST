@@ -393,6 +393,11 @@ internal class MessagingEngine(
         // and the chunk reads run on this caller's and Media3's threads, never the DM actor.
         media?.openMedia(message.toByteArray())
 
+    override fun openViewOnce(message: MessageId): MediaHandle? =
+        // §11.2's order lives in the support: the row half on the actor, the checkpoint after
+        // the commit and before the answer, the reader and the reads off it.
+        media?.openViewOnce(message.toByteArray())
+
     override fun retry(message: MessageId): SendResult = onActor {
         val itemId = message.toByteArray()
         val sent = sendStep.retry(itemId)

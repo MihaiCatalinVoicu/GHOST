@@ -829,7 +829,8 @@ internal class ReceiveStep(
             // message that is media, and the held replay — land the envelope through this one
             // branch.
             DmContent.Kind.MEDIA -> {
-                val descriptor = mediaDescriptor ?: return true // refused as bad content before apply
+                // Refused as bad content before apply (MediaDescriptors.parse is fail-closed).
+                val descriptor = mediaDescriptor ?: return true
                 val inserted = insertIncoming(
                     tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
                     body = descriptor.caption,

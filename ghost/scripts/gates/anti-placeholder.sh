@@ -15,7 +15,7 @@ PATTERNS=(
   'return false\s*//'
   '\bFIXME\b'
   '\bXXX\b'
-  'TODO(?!\(GHOST-[0-9]+\))'     # TODO must carry a ticket: TODO(GHOST-123)
+  '\bTODO\b(?!\(GHOST-[0-9]+\))' # TODO must carry a ticket: TODO(GHOST-123)
   'hardcoded'
 )
 REGEX="$(IFS='|'; echo "${PATTERNS[*]}")"

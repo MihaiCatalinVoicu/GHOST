@@ -82,6 +82,20 @@ internal class MediaSteps(
     private val random: DmRandom,
     private val contexts: SelfContexts,
     private val mediaOrphans: MediaOrphanSteps,
+    /**
+     * §11.1's checkpoint and §13.5's reconcile hook for the view-once sender cleanup that
+     * `MEDIA-DEADLINE` runs when a FAILED descriptor outlived its retry window (§6.4's last
+     * rule). Defaulted for the harnesses that drive no view-once sends; the production wiring
+     * and the media world pass real ones.
+     */
+    private val checkpoint: org.ghost.messaging.port.DmCheckpoint = org.ghost.messaging.port.DmCheckpoint { true },
+    private val onSenderCopyErased: () -> Unit = {},
+    /**
+     * §11.1's debt for the deadline cleanup's checkpoint (the S8 review's R1): a busy or
+     * failed pragma is recorded here and SWEEP re-asks it. Defaulted; `MessagingRuntime`
+     * wires the one shared instance (a default would leave the debt unread there).
+     */
+    private val mediaCheckpoint: MediaCheckpointState = MediaCheckpointState(),
 ) {
     private val contacts = ContactStore()
     private val messages = MessageStore()
@@ -387,6 +401,7 @@ internal class MediaSteps(
         val self = contexts.get()
         val now = clock.nowEpochSeconds()
         val nowE = expiry.nowSeconds()
+        var senderCopyErased = false
         database.transaction { tx ->
             for (objectId in objects.pastDeadline(tx.sql, nowE, DEADLINE_BATCH)) {
                 objects.markFailed(tx, objectId)
@@ -401,6 +416,19 @@ internal class MediaSteps(
                 val contact = obj?.destId ?: continue
                 mediaOrphans.recordIfOrphaned(tx, self, contact, now)
             }
+            // §6.4's last rule: a FAILED descriptor keeps the sender's copy for a retry until the
+            // deadline; once the deadline passed, the same cleanup as any other final outcome
+            // runs (the erasure stands in this transaction, the checkpoint and reconcile after).
+            for (objectId in objects.failedViewOnceDescriptors(tx.sql, nowE, DEADLINE_BATCH)) {
+                objects.eraseSenderCopy(tx, objectId)
+                senderCopyErased = true
+            }
+        }
+        if (senderCopyErased) {
+            // A busy answer keeps the debt: SWEEP re-asks the pragma at its next pass
+            // (§10.7's shape, the S8 review's R1).
+            mediaCheckpoint.record(checkpoint.truncate())
+            onSenderCopyErased()
         }
     }
 

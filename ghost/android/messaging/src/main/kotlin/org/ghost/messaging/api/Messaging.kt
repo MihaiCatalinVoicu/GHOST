@@ -343,6 +343,15 @@ interface Messaging {
      */
     fun openMedia(message: MessageId): MediaHandle?
 
+    /**
+     * §6.5/§11.2's `openViewOnce`: the single display of a verified view-once object. The key is
+     * erased in the opening transaction and the WAL checkpointed before the handle returns (a
+     * crash after the commit loses the object — at most one display per device, CS-M5); closing
+     * the handle — the UI, a lock, a wipe — is `VIEW-ONCE-CLOSE`, and a process that died mid-view
+     * closes it at its next start. Null unless the object is verified, view-once and never opened.
+     */
+    fun openViewOnce(message: MessageId): MediaHandle?
+
     // -------------------------------------------------------- trust and restore
 
     /**
