@@ -15,7 +15,9 @@ import org.ghost.messaging.api.MessageId
 import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.MessageView
+import org.ghost.messaging.api.MediaPreview
 import org.ghost.messaging.api.MediaSendResult
+import org.ghost.messaging.api.MediaStateView
 import org.ghost.messaging.api.MediaSource
 import org.ghost.messaging.api.MessagingStatus
 import org.ghost.messaging.api.NotificationPort
@@ -370,6 +372,20 @@ internal class MessagingEngine(
     override fun retryMedia(message: MessageId): SendResult = onActor {
         media?.retryMedia(message.toByteArray()) ?: SendResult.CRYPTO_UNAVAILABLE
     }
+
+    override fun mediaState(message: MessageId): MediaStateView? = onActor {
+        media?.mediaState(message.toByteArray())
+    }
+
+    override fun setConversationOnScreen(contact: ContactId?) {
+        // A volatile write, not a pass: no transaction, nothing a relay can see.
+        media?.onScreen(contact?.toByteArray())
+    }
+
+    override fun mediaPreview(message: MessageId): MediaPreview? =
+        // Deliberately not onActor: the gates run on the actor, the sandbox decode blocks this
+        // caller (the UI's thread), never the DM actor.
+        media?.preview(message.toByteArray())
 
     override fun retry(message: MessageId): SendResult = onActor {
         val itemId = message.toByteArray()

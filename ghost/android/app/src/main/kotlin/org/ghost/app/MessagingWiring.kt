@@ -50,6 +50,15 @@ internal interface DmStack : AutoCloseable {
     fun lock()
 
     /**
+     * The app lifecycle's ON_START/ON_STOP (§6.5's foreground half of the on-screen signal; slice
+     * S6). Default no-op: stacks without the media pipeline have nothing to tell.
+     */
+    fun onForeground(visible: Boolean) = Unit
+
+    /** §13.7's lock half for the media layer: the preview cache and the on-screen signal go. */
+    fun onMediaLock() = Unit
+
+    /**
      * Stops the stack for good: no pass that has not started runs, the context closes and both
      * wakes are cancelled in the actor's last turn, then the actor and the timer stop. Blocks for as
      * long as the pass in flight takes.
@@ -72,6 +81,10 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
         runtime.reopenAndActivate(root, restored, wanted)
 
     override fun lock() = runtime.requestLock()
+
+    override fun onForeground(visible: Boolean) = runtime.onForeground(visible)
+
+    override fun onMediaLock() = runtime.onMediaLocked()
 
     override fun close() = runtime.close()
 
@@ -162,6 +175,13 @@ internal class MessagingWiring(
     @Volatile
     private var locked = false
 
+    /**
+     * The app's foreground state (§6.5's signal): kept here, not in the stack, because ON_START
+     * can precede the first stack; every stack is handed the flag when built.
+     */
+    @Volatile
+    private var foreground = false
+
     /** Local data is being wiped: no stack is built and no context opens until [onKeyCreated]. */
     @Volatile
     private var wiped = false
@@ -197,10 +217,24 @@ internal class MessagingWiring(
     /**
      * The app became visible. A database opened by a background job or after an unlock gets its
      * stack here if it has none yet; an existing stack is left as it is (a relay session start is
-     * the foreground's time trigger, through [sessionHooks]).
+     * the foreground's time trigger, through [sessionHooks]). The foreground flag itself is kept
+     * here, in the wiring, and handed to every stack as it is built (slice S6): ON_START can fire
+     * before the first stack exists.
      */
     fun onVisible() {
+        foreground = true
+        stack?.onForeground(true)
         whenStoresOpen(::onDatabaseOpen)
+    }
+
+    /**
+     * ON_STOP (the ProcessLifecycleOwner observer): the zero-click gate shuts at once — no
+     * preview decodes while the app is in the background (§9.3, T46). A stack built later is
+     * handed the flag at build.
+     */
+    fun onHidden() {
+        foreground = false
+        stack?.onForeground(false)
     }
 
     /**
@@ -246,6 +280,7 @@ internal class MessagingWiring(
             try {
                 open.inbox.setListener(built.listener)
                 stack = built
+                built.onForeground(foreground)
                 built.open(identity, ::contextWanted)
                 built.onTimeTrigger()
                 built
@@ -346,6 +381,7 @@ internal class MessagingWiring(
      */
     fun onLock() {
         locked = true
+        stack?.onMediaLock()
         stack?.lock()
     }
 

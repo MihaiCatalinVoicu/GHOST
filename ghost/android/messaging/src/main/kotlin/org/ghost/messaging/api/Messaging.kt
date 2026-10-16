@@ -60,6 +60,54 @@ sealed class PreparationView {
 }
 
 /**
+ * §6.5's `mediaPreview` answer: decoded pixels from the RAM cache or the sandbox. ARGB_8888,
+ * row-major, `pixels.size == width * height * 4`; the UI wraps them in a Bitmap (Phase 13).
+ * Every value type's `toString()` is redacted (T3).
+ */
+class MediaPreview(
+    val width: Int,
+    val height: Int,
+    val pixels: ByteArray,
+) {
+    init {
+        require(width > 0 && height > 0 && pixels.size == width * height * 4) { "not ARGB_8888 pixels" }
+    }
+
+    override fun toString(): String = "MediaPreview(${width}x$height)"
+}
+
+/**
+ * §6.5's `mediaState` answer: the object's kind, class, state and held/F progress — no times.
+ * [NOT_KEPT] is the request rule's answer (D28): the message is there, the object is not, and
+ * nothing on the device can open it.
+ */
+class MediaStateView(
+    /**
+     * The store's state (the sender's uploads show the outgoing states, §7.6); **null exactly for
+     * [NOT_KEPT]** — a message whose object the request rule (D28) never created has no state.
+     */
+    val state: org.ghost.media.store.ObjectState?,
+    val kind: org.ghost.media.store.MediaKind?,
+    val classCode: Int,
+    /** The fragments the device holds bound, of [totalFragments] (the manifest excluded). */
+    val heldFragments: Int,
+    val totalFragments: Int,
+) {
+    override fun toString(): String = "MediaStateView(state=$state, kind=$kind, class=$classCode, $heldFragments/$totalFragments)"
+
+    companion object {
+        /** A kind-5 message whose descriptor arrived in a request (D28): stored, never openable. */
+        val NOT_KEPT: MediaStateView = MediaStateView(
+            state = null,
+            kind = null,
+            classCode = -1,
+            heldFragments = 0,
+            totalFragments = 0,
+        )
+    }
+}
+
+/**
  * §6.5's `MediaSource`: the picked source and nothing else. The app builds it — the bytes for an
  * image (read straight into memory, §6.1's no-copy rule is the app's contract), or the video
  * source port plus its first 64 bytes for the sniff. No platform content-handle package name
@@ -234,6 +282,28 @@ interface Messaging {
 
     /** §6.5: retry a FAILED object before its deadline (at most three times); see [SendResult]. */
     fun retryMedia(message: MessageId): SendResult
+
+    /**
+     * §6.5's `mediaState`: the object's kind, class, state and held/F progress; [MediaStateView.NOT_KEPT]
+     * for a kind-5 message received in a request (D28); null for a message that is not media (or
+     * is gone). A local read, no traffic.
+     */
+    fun mediaState(message: MessageId): MediaStateView?
+
+    /**
+     * §6.5/§7.4's `setConversationOnScreen`: the UI's statement of which conversation is visible
+     * (null: none). With the foreground signal (the app lifecycle's ON_START/ON_STOP) it is the
+     * gate every preview decode passes (§9.3's zero-click rules).
+     */
+    fun setConversationOnScreen(contact: ContactId?)
+
+    /**
+     * §6.5's `mediaPreview`: decoded pixels from the RAM cache or the sandbox; null unless §7.4
+     * allows — the conversation named on screen, the process in the foreground, a contact the
+     * zero-click rules allow, and an object `MEDIA-VERIFY` passed. A sandbox failure counts
+     * towards the object's two-strikes rule (CS-M8) and answers null.
+     */
+    fun mediaPreview(message: MessageId): MediaPreview?
 
     // -------------------------------------------------------- trust and restore
 

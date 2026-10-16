@@ -81,8 +81,11 @@ class MediaReviewRegressionsTest {
     private fun support(world: MediaWorld): MediaEngineSupport = MediaEngineSupport(
         database = world.database,
         steps = world.steps,
+        receiveSteps = world.receiveSteps,
         preparations = Preparations(),
-        pipeline = MediaPipelinePorts(world.files, world.preparing, FakeStripper, FakeVideoExport),
+        pipeline = MediaPipelinePorts(
+            world.files, world.preparing, FakeStripper, FakeVideoExport, world.readers, world.decoder,
+        ),
         worker = Executors.newSingleThreadExecutor(),
         random = world.random,
         contexts = world.contexts,
