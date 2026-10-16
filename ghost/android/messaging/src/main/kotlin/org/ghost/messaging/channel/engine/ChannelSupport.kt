@@ -301,7 +301,18 @@ internal object MlsRows {
         return byKey.values.toList()
     }
 
-    private fun key(scope: Int, key: ByteArray): String = "$scope:" + key.joinToString("") { "%02x".format(it) }
+    /** Table-driven lowercase hex (the per-byte `"%02x".format` ran `java.util.Formatter` per byte;
+     *  this runs per row of every applied receive batch). Identical output. */
+    private fun key(scope: Int, key: ByteArray): String {
+        val digits = "0123456789abcdef"
+        val out = CharArray(key.size * 2)
+        for (i in key.indices) {
+            val b = key[i].toInt() and 0xff
+            out[2 * i] = digits[b shr 4]
+            out[2 * i + 1] = digits[b and 0x0f]
+        }
+        return "$scope:" + String(out)
+    }
 }
 
 /**

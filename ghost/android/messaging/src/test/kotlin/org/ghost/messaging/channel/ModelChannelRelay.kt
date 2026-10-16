@@ -172,6 +172,15 @@ internal class ModelChannelRelay {
         /** The DEPOSIT credential a store presents (JC-3's store scope), null for an injected blob. */
         val storeCredential: ByteArray? = null,
     ) {
+        // Computed once: serve()'s per-round filter reads the namespace's hex for every client, and
+        // the served-set key for every candidate — the per-byte format-based hex they used to spend
+        // dominated the crash enumeration's wall time (measured 2026-10-16: ~half the worker's CPU).
+        /** [namespace] hex-encoded, once. */
+        val namespaceHex: String by lazy { hex(namespace) }
+
+        /** [namespaceHex] + [hash] hex: serve()'s per-client served-set key. */
+        val keyHex: String by lazy { namespaceHex + hex(hash) }
+
         override fun toString(): String = "Stored($purpose from $from)"
     }
 
@@ -241,7 +250,7 @@ internal class ModelChannelRelay {
         val again = stored.filter(which).map {
             Stored(it.namespace, it.hash, it.ciphertext, now, it.ttl, it.from, it.purpose, it.injected, it.notBeforeMinute, it.storeCredential)
         }
-        for (blob in again) served.removeAll { key -> key.startsWith(hex(blob.namespace) + hex(blob.hash) + "@") }
+        for (blob in again) served.removeAll { key -> key.startsWith(blob.keyHex + "@") }
         stored += again
         return again.size
     }
@@ -434,7 +443,10 @@ internal class ModelChannelRelay {
         val openedAt = now
         var moved = 0
         try {
-            var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
+            // Cheap checks first; the namespace hex is cached on the Stored (the filter reads every
+            // blob for every client every round — the per-byte format-hex this line used to spin was
+            // the crash enumeration's dominant cost, measured 2026-10-16).
+            var candidates = stored.filter { it.from != client.name && now < it.storedAt + it.ttl && it.namespaceHex in listening }
             // FAKE_WELCOME: the adversary's blobs first; otherwise in the order they were stored.
             candidates = if (Mode.FAKE_WELCOME in modes) candidates.sortedBy { !it.injected } else candidates
             if (Mode.REORDER_ACROSS_EPOCH in modes) {
@@ -476,7 +488,7 @@ internal class ModelChannelRelay {
                     if (subset != null && client.name !in subset) continue
                 }
                 if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
-                val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
+                val key = blob.keyHex + "@" + client.name
                 if (key !in served && atCap(client, blob.namespace, now)) continue
                 val fresh = served.add(key)
                 if (!fresh && Mode.REPEATS !in modes) continue
@@ -555,7 +567,21 @@ internal class ModelChannelRelay {
 
         fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
-        fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+        /**
+         * Lowercase hex, table-driven: the per-byte `"%02x".format` this was ran a fresh
+         * `java.util.Formatter` (with its regex machinery) per byte — measured 2026-10-16 as
+         * ~half the crash enumeration's CPU. Identical output.
+         */
+        fun hex(bytes: ByteArray): String {
+            val digits = "0123456789abcdef"
+            val out = CharArray(bytes.size * 2)
+            for (i in bytes.indices) {
+                val b = bytes[i].toInt() and 0xff
+                out[2 * i] = digits[b shr 4]
+                out[2 * i + 1] = digits[b and 0x0f]
+            }
+            return String(out)
+        }
 
         fun unhex(text: String): ByteArray = ByteArray(text.length / 2) { i -> text.substring(2 * i, 2 * i + 2).toInt(16).toByte() }
     }

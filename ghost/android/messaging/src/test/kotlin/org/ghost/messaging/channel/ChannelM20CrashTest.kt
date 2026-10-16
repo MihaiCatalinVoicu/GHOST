@@ -185,8 +185,13 @@ class ChannelM20CrashTest {
         assertEquals(PostResult.QUEUED, anchor.engine.post(id, "înapoi".toByteArray(), null))
         world.quiesce()
         assertTrue(newest.displayed(id).contains("înapoi"))
+        // One integrity run per active client; the message is built only on failure — the eager
+        // assertTrue template called integrity() twice per client per enumeration run, and
+        // integrity_check over a file database is O(db) (measured hot in the jstack evidence).
         for (c in world.clients) {
-            if (c.channel(id)?.state == ChannelState.ACTIVE) assertTrue("${c.name}: ${c.integrity()}", c.integrity().isEmpty())
+            if (c.channel(id)?.state != ChannelState.ACTIVE) continue
+            val problems = c.integrity()
+            if (problems.isNotEmpty()) fail("${c.name}: $problems")
         }
     }
 

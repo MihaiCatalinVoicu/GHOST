@@ -193,7 +193,17 @@ internal class ChannelWorld(
 
         fun sha256(text: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
 
-        fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+        /** Lowercase hex, table-driven (the per-byte format-based hex was a measured hot spot of the crash enumeration). */
+        fun hex(bytes: ByteArray): String {
+            val digits = "0123456789abcdef"
+            val out = CharArray(bytes.size * 2)
+            for (i in bytes.indices) {
+                val b = bytes[i].toInt() and 0xff
+                out[2 * i] = digits[b shr 4]
+                out[2 * i + 1] = digits[b and 0x0f]
+            }
+            return String(out)
+        }
     }
 }
 

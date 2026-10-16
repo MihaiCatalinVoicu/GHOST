@@ -252,7 +252,18 @@ internal class ChannelPeekOrder {
     private fun senderKey(e: Entry<*>): List<Byte> =
         e.channelId.toList() + ChannelAd.u64(e.epoch).toList() + ChannelAd.u64(e.leaf).toList()
 
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    /** Lowercase hex, table-driven: [plan]'s sort key calls this per comparison — the per-byte
+     *  `"%02x".format` it used ran `java.util.Formatter` (and its regex) per byte. Identical output. */
+    private fun ByteArray.toHex(): String {
+        val digits = "0123456789abcdef"
+        val out = CharArray(size * 2)
+        for (i in indices) {
+            val b = this[i].toInt() and 0xff
+            out[2 * i] = digits[b shr 4]
+            out[2 * i + 1] = digits[b and 0x0f]
+        }
+        return String(out)
+    }
 
     override fun toString(): String = "ChannelPeekOrder"
 
