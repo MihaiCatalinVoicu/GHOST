@@ -15,6 +15,7 @@ import org.ghost.messaging.android.ExpiryAlarmReceiver
 import org.ghost.messaging.android.KeystoreContentKeyWrapper
 import org.ghost.messaging.android.KeystoreStateKeyWrapper
 import org.ghost.messaging.api.Messaging
+import org.ghost.app.media.MediaWiring
 import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.messaging.port.DmCheckpoint
@@ -84,6 +85,11 @@ class GhostApp : Application(), SyncHost {
         return RuntimeStack(
             MessagingRuntime(
                 stores = stores,
+                // Phase 11 §13.7's sender pipeline, wired where every Android port lives
+                // (slice S5): the sandbox, the transcoder, the ciphertext store under
+                // `noBackupFilesDir/m`. Null where the pieces cannot load — the facade then
+                // answers CRYPTO_UNAVAILABLE.
+                mediaPipeline = MediaWiring.pipelinePorts(this, noBackupFilesDir),
                 keys = DmKeys(
                     stateKeys = KeystoreStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
                     random = random,
@@ -145,6 +151,13 @@ class GhostApp : Application(), SyncHost {
 
     override fun onCreate() {
         super.onCreate()
+        // Phase 11 design §9.2 (V-M19): Android instantiates the Application in every process,
+        // including the isolated `:mdec` decoding service's. `wiring.onProcessStart()` and
+        // `messagingWiring.onProcessStart` open no-backup files, the Keystore and system
+        // services an isolated process may not touch, so a bind would die before connecting
+        // (measured in S0: no onServiceConnected within 15 s). Nothing of GHOST runs here:
+        // `MediaDecodeService` uses only platform decoder APIs. Mutant MC-M23 removes this.
+        if (android.os.Process.isIsolated()) return
         // The K20 hook (Phase 9 design §13.4) before anything can activate an identity.
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()

@@ -44,6 +44,15 @@
             android:name="org.ghost.messaging.android.ExpiryAlarmReceiver"
             android:exported="false" />
 
+        <!-- Phase 11 design §9.2 (slice S5): the isolated image-decoding service. One process
+             instance per request (a fresh random instance name per bind); no permissions of its
+             own, not exported, no intent filter; GhostApp returns before any wiring in it. -->
+        <service
+            android:name="org.ghost.media.sandbox.MediaDecodeService"
+            android:isolatedProcess="true"
+            android:process=":mdec"
+            android:exported="false" />
+
         <!-- Design 11.1 Q7: no exported component besides the launcher. The profile installer's
              exported receiver (protected by DUMP) is removed from the merged manifest. The library
              is a transitive runtime dependency only, so lint cannot resolve the class it removes. -->

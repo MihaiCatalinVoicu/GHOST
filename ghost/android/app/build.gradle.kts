@@ -205,6 +205,9 @@ dependencies {
     implementation(project(":network"))
     implementation(project(":entitlement"))
     implementation(project(":media"))
+    // `PickedVideo` and `NoBitmapsLoader` (the sender pipeline's `:app` half, slice S5): media3's
+    // `MediaItem`/`BitmapLoader` types cross the module boundary; the pipeline itself is `:media`.
+    implementation(libs.androidx.media3.common)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

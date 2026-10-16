@@ -60,6 +60,10 @@ dependencies {
     // and the ES slot table reaches the owner steps through `EsSlots`, for the same reason.
     api(project(":sync"))
     implementation(project(":crypto-bridge"))
+    // Phase 11 design §13.1 (slice S5): the sender pipeline lives in `:media`; the MEDIA-* steps
+    // and the facade's media half drive its stores and ports (G-DM1's text rule still bans a
+    // network name in either module).
+    implementation(project(":media"))
     // `ZBase32`: the `ghost://contact/` link of §3.3 is the same encoding as the `ghost1…` string
     // and the invite payload, and a second copy of an alphabet is a second place to get it wrong.
     implementation(project(":identity"))
@@ -80,6 +84,8 @@ dependencies {
     // The emulator suite (§15.9): JUnit 4 through `DeviceRunner`, and SQLCipher opened the way
     // `:storage` opens it. Every coordinate is one the project already ships or tests with (§16.3).
     androidTestImplementation(libs.junit)
+    // The S5 device smoke's `VideoSource.mediaItem()` (media3's type crosses the test boundary).
+    androidTestImplementation(libs.androidx.media3.common)
     androidTestImplementation(libs.sqlcipher.android)
     androidTestImplementation(libs.androidx.sqlite)
     // `DeviceWorld.onion` computes the v3 checksum with the SHA3 `:network`'s `OnionAddress` checks

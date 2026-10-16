@@ -229,6 +229,8 @@ OwnerSteps.kt          ACTIVATE, OWNER-WEEK, KEEPER, REGROWS (slice S6)
 SendStep.kt            SEND, RESEND (slice S7)
 EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7; BUNDLE is BundleStep.kt, not here)
 ContactKeeper.kt       KEEPER, the contact half of §7.2 KEEPER row (slice S7)
+MediaFeeder.kt         MEDIA-FEED (Phase 11 slice S5; the one file that enqueues Consumer.MEDIA, design faza11-media.md 16.1 G-M6)
+MediaSteps.kt          MEDIA-COMMIT (the section 6.3 M_c registration and credentials), the MEDIA-OUTCOME identical-bytes resend (OUTCOME-driven, section 6.4; an allowed driver per the gates own rule text)
 '
 # Files that may call `Funding.set` (Phase 10 slice S4): none. The check applies to the files of ALLOWED_FILES,
 # which the restricted rule would otherwise let fund; every other file is refused the call by that rule already.
@@ -292,15 +294,24 @@ TRIGGER_ALLOWED='Messaging.kt MessagingEngine.kt MessagingWiring.kt MessagingRun
 STEP_TRIGGERS='sendControl|flushPending|resend|estStart|estReady|estEnd'
 # The two files that declare them, and the four that drive them: the actor's time-triggered and
 # establishment passes, the facade's user actions, OUTCOME's resend, and the due scheduled control.
-STEP_ALLOWED='SendStep.kt EstablishmentSteps.kt DmActor.kt MessagingEngine.kt OutcomeStep.kt ScheduledSteps.kt'
+# Phase 11 slice S5 adds MediaSteps.kt (the MEDIA-OUTCOME identical-bytes resend, driven by
+# `Outbox.outcomes(Consumer.MEDIA)` exactly as OutcomeStep's resend is) and MediaFeeder.kt (the
+# resend's enqueue, in `:media`'s send package). Both are the OUTCOME driver the rule names.
+STEP_ALLOWED='SendStep.kt EstablishmentSteps.kt DmActor.kt MessagingEngine.kt OutcomeStep.kt ScheduledSteps.kt MediaSteps.kt MediaFeeder.kt'
 
 # The DM engine's own directory (relative to GHOST_ROOT; the source set is any): the files the allowlists below name
 # are files of it, and of no other directory (the review of S4, §19.38).
 DM_ENGINE_GLOB='android/messaging/src/*/org/ghost/messaging/engine/*'
+# Phase 11 slice S5, the widening the S3 note anticipated ("`MediaFeeder` (org.ghost.media.send) ...
+# joins `ALLOWED_FILES` deliberately with the slice that builds it"): the sender pipeline's feeder
+# lives in `:media`'s send package, and MEDIA-FEED's enqueue is the one restricted call the design
+# gives it (faza11-media.md 16.1 G-M6). The store, receive, play and sandbox packages are NOT here:
+# a restricted call in any of them is refused exactly as before.
+MEDIA_SEND_GLOB='android/media/src/*/org/ghost/media/send/*'
 
 in_dm_engine() { # $1 = path relative to GHOST_ROOT
   # shellcheck disable=SC2254
-  case "$1" in $DM_ENGINE_GLOB) return 0 ;; esac
+  case "$1" in $DM_ENGINE_GLOB|$MEDIA_SEND_GLOB) return 0 ;; esac
   return 1
 }
 

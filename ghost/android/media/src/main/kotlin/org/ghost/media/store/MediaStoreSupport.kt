@@ -39,6 +39,9 @@ object MediaLimits {
     /** The relay blob size of every media blob and the size of every ciphertext file (the 64 KiB bucket, §3.1). */
     const val FRAGMENT_BYTES: Int = 65_536
 
+    /** The plaintext of one chunk: four fragments minus one 16-byte tag each (§3.1 `CHUNK_PT`). */
+    const val CHUNK_PLAINTEXT: Int = 4 * FRAGMENT_BYTES - 4 * 16
+
     /** The fragment counts `F` of the eleven size classes; `class_code` is the index (§3.1). An object has `F + 1` blobs. */
     val CLASSES: IntArray = intArrayOf(16, 24, 36, 56, 84, 128, 192, 288, 432, 648, 804)
 

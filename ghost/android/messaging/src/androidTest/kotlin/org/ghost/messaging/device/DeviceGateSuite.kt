@@ -322,4 +322,8 @@ class DeviceGateSuite {
 }
 
 /** The `:messaging` device suite (§15.9 items 2, 4, 5 and 6). */
-class MessagingDeviceRunner : DeviceRunner(listOf(DeviceGateSuite::class.java))
+// The S5 media smoke joins the device suite (Phase 11 design §17.1 row S5: one image and one
+// video on an emulator, one a matching source); the runner's list is fixed, so it is named here.
+class MessagingDeviceRunner : DeviceRunner(
+    listOf(DeviceGateSuite::class.java, org.ghost.messaging.media.MediaDeviceSmokeTest::class.java),
+)

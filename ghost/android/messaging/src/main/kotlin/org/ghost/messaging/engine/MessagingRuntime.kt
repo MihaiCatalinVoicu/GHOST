@@ -76,6 +76,8 @@ class MessagingRuntime(
     /** `Checkpoint.truncate` over the database's executor (§10.7), which `:messaging` cannot reach. */
     checkpoint: DmCheckpoint,
     media: MediaPort = MediaPort.NONE,
+    /** The sender pipeline's device ports (Phase 11, slice S5); null where media is not wired. */
+    mediaPipeline: MediaPipelinePorts? = null,
     /** The channel engine's own ports (Phase 10, slice S4); null builds the DM stack alone, as every Phase 9 caller does. */
     channelPorts: ChannelPorts? = null,
 ) : AutoCloseable {
@@ -120,6 +122,58 @@ class MessagingRuntime(
     private val pairKeys = PairKeySteps(envelopes)
     private val displayStep = DisplayStep(database, clock)
     private val mediaOrphans = MediaOrphanSteps(crypto, clock)
+
+    // Phase 11 §13.7's sender pipeline (slice S5): the stores, the feeder over the real outbox,
+    // the steps on the DM actor, the registry, and the one media worker. Null without ports.
+    private val mediaSupport: MediaEngineSupport? = mediaPipeline?.let { pipeline ->
+        val mediaFragments = org.ghost.media.store.MediaFragments()
+        val mediaObjects = org.ghost.media.store.MediaObjects(mediaFragments)
+        val mediaBlobs = org.ghost.media.store.MediaBlobs(mediaFragments)
+        val feeder = org.ghost.media.send.MediaFeeder(
+            pipeline.files, mediaObjects, mediaFragments, mediaBlobs, sync.outbox, MediaOpIds.sha256(),
+        )
+        val mediaSteps = MediaSteps(
+            database = database,
+            sync = sync,
+            crypto = crypto,
+            envelopes = envelopes,
+            material = material,
+            relays = relayResolver,
+            sendStep = sendStep,
+            feeder = feeder,
+            opIds = MediaOpIds.sha256(),
+            clock = clock,
+            random = random,
+            contexts = contexts,
+            mediaOrphans = mediaOrphans,
+        )
+        MediaEngineSupport(
+            database = database,
+            steps = mediaSteps,
+            preparations = org.ghost.media.send.Preparations(),
+            pipeline = pipeline,
+            worker = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, MediaEngineSupport.WORKER_THREAD).apply { isDaemon = true }
+            },
+            random = random,
+            contexts = contexts,
+            actorCall = { body -> actor.call(body) },
+        )
+    }
+
+    /** The actor-side media steps the pass runs (outcomes, feed, the deadline). */
+    internal class MediaPassSteps(private val steps: MediaSteps) {
+        /** After OUTCOME, on commit, on retry and on time passes (§13.5's `MEDIA-FEED` row). */
+        fun runOutcomesAndFeed() {
+            steps.outcomes()
+            steps.feed()
+            // F-S5-17: a READY descriptor left pending by a crash or a transient gets its SEND again.
+            steps.recoverDescriptors()
+        }
+
+        /** Time-triggered only (§6.4's deadline; §21.9 rule 1's shape). */
+        fun runDeadline() = steps.deadline()
+    }
     private val sweeper = Sweeper(
         database = database,
         namespaces = stores.namespaces,
@@ -145,6 +199,7 @@ class MessagingRuntime(
     private val engine = MessagingEngine(
         database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
         scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
+        media = mediaSupport,
     )
 
     /**
@@ -208,6 +263,10 @@ class MessagingRuntime(
         clock = clock,
         contexts = contexts,
         channels = channelEngine,
+        media = mediaSupport?.let { support ->
+            // Built after the support; the pass hooks below run on the actor.
+            MediaPassSteps(support.stepsForPass())
+        },
     )
 
     init {
@@ -326,6 +385,7 @@ class MessagingRuntime(
      * runs after it. Blocks for as long as the pass in flight takes; idempotent.
      */
     override fun close() {
+        mediaSupport?.close()
         actor.retire {
             lockOnActor()
             schedule.cancel()

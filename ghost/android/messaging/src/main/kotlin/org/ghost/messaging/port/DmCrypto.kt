@@ -26,6 +26,18 @@ interface DmCrypto {
     /** True while a DM context is open; false maps to `CRYPTO_UNAVAILABLE` at the facade (§13.2). */
     fun isAvailable(): Boolean
 
+    /**
+     * M1 `sealBegin` for the sender pipeline (Phase 11 design §3.7): the media worker's sealer,
+     * over this context's handle. `K_f` never crosses this boundary; a null handle (a locked or
+     * missing context) answers [MediaSealerFactory.Begun.Unavailable].
+     */
+    fun beginMediaSealer(
+        destId: ByteArray,
+        kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+        viewOnce: Boolean,
+        maxClass: Int,
+    ): org.ghost.media.send.MediaSealerFactory.Begun
+
     /** §2.6 function 2: the own card, its two namespaces, and the publication offset of §5.4. */
     fun ownCard(cardIndex: Int): DmSessions.OwnCard?
 
@@ -78,6 +90,26 @@ interface DmCrypto {
 class NativeDmCrypto(private val context: DmContext) : DmCrypto {
 
     override fun isAvailable(): Boolean = context.handleOrNull() != null
+
+    override fun beginMediaSealer(
+        destId: ByteArray,
+        kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+        viewOnce: Boolean,
+        maxClass: Int,
+    ): org.ghost.media.send.MediaSealerFactory.Begun {
+        val handle = context.handleOrNull() ?: return org.ghost.media.send.MediaSealerFactory.Begun.Unavailable
+        return when (val begun = org.ghost.media.send.NativeStreamSealer.begin(handle, destId, kind, viewOnce, maxClass)) {
+            is org.ghost.media.send.NativeStreamSealer.Companion.Begun.Ok ->
+                org.ghost.media.send.MediaSealerFactory.Begun.Ok(begun.sealer, begun.sealer.objectId)
+            org.ghost.media.send.NativeStreamSealer.Companion.Begun.Limited ->
+                org.ghost.media.send.MediaSealerFactory.Begun.Limited
+            // A kind the surface refuses is this caller's own bug, unreachable from the engine's
+            // two kinds; surfaced as Unavailable rather than a third shape at the port.
+            org.ghost.media.send.NativeStreamSealer.Companion.Begun.NonCanonical,
+            org.ghost.media.send.NativeStreamSealer.Companion.Begun.Unavailable,
+            -> org.ghost.media.send.MediaSealerFactory.Begun.Unavailable
+        }
+    }
 
     override fun ownCard(cardIndex: Int): DmSessions.OwnCard? {
         val handle = context.handleOrNull() ?: return null

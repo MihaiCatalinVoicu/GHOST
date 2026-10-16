@@ -793,6 +793,12 @@ internal class ReceiveStep(
             }
             // §7.1: a CONTROL message carries TLVs and no row.
             DmContent.Kind.CONTROL -> Unit
+
+            // Phase 11 §13.4's RECV half is the recipient pipeline (slice S6): a kind-5 L0
+            // received before S6 (`MEDIA-INGEST`, `onDescriptor`) is consumed and dropped here,
+            // never shown — the blob is spent, no row is written, and the loss is the declared
+            // cost of the slice order inside the unshipped phase. Declared in §22.8.
+            DmContent.Kind.MEDIA -> Unit
         }
         // R-T9 (§10.5): a greater timer version is adopted from **any** message, so a lost
         // TIMER_SET heals implicitly; equal versions take the shorter timer.
