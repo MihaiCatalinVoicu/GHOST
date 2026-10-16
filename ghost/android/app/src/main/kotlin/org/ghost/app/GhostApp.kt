@@ -82,23 +82,24 @@ class GhostApp : Application(), SyncHost {
         // outside one (§10.7), on the connection the sync runtime opened.
         val executor = stores.database.transaction { tx -> tx.sql }
         val random = SecureDmRandom()
+        val dmKeys = DmKeys(
+            stateKeys = KeystoreStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
+            random = random,
+            // `DmBranch` is defined per build type: the plain derivation in `src/release`
+            // and `src/debug`, the debug key-change hook in `src/gate` only (§21.13 point 7,
+            // gate G-DM5). An argument fixed at build time, not a member a subclass could
+            // override: the release carries no such seam (S12 review).
+            messagingBranch = DmBranch.forApp(this),
+        )
         return RuntimeStack(
             MessagingRuntime(
                 stores = stores,
-                // Phase 11 §13.7's sender pipeline, wired where every Android port lives
-                // (slice S5): the sandbox, the transcoder, the ciphertext store under
-                // `noBackupFilesDir/m`. Null where the pieces cannot load — the facade then
-                // answers CRYPTO_UNAVAILABLE.
-                mediaPipeline = MediaWiring.pipelinePorts(this, noBackupFilesDir),
-                keys = DmKeys(
-                    stateKeys = KeystoreStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
-                    random = random,
-                    // `DmBranch` is defined per build type: the plain derivation in `src/release`
-                    // and `src/debug`, the debug key-change hook in `src/gate` only (§21.13 point 7,
-                    // gate G-DM5). An argument fixed at build time, not a member a subclass could
-                    // override: the release carries no such seam (S12 review).
-                    messagingBranch = DmBranch.forApp(this),
-                ),
+                // Phase 11 §13.7's media pipelines, wired where every Android port lives
+                // (slices S5/S6): the sandbox, the transcoder, the ciphertext store under
+                // `noBackupFilesDir/m`, the reader surface over the DM context. Null where the
+                // pieces cannot load — the facade then answers CRYPTO_UNAVAILABLE.
+                mediaPipeline = MediaWiring.pipelinePorts(this, noBackupFilesDir, org.ghost.messaging.port.NativeMediaReaders(dmKeys)),
+                keys = dmKeys,
                 contentKeys = KeystoreContentKeyWrapper(DatabaseAccess.AUTH_BOUND),
                 esSlots = DirectoryEsSlots(stores.database) { entitlementWiring.acceptedScheduleIfKnown()?.slots },
                 clock = AndroidDmClock,
@@ -145,7 +146,10 @@ class GhostApp : Application(), SyncHost {
                 entitlementWiring.onVisible()
                 messagingWiring.onVisible()
             },
-            hidden = { entitlementWiring.onHidden() },
+            hidden = {
+                entitlementWiring.onHidden()
+                messagingWiring.onHidden()
+            },
         )
     }
 

@@ -78,6 +78,10 @@ internal class ReceiveStep(
     private val heldRows = HeldStore()
     private val expiry = ExpiryClock(database, clock)
 
+    /** §7.2's descriptor half: the media object an incoming kind-5 L0 names, created in RECV's transaction. */
+    private val mediaFragments = org.ghost.media.store.MediaFragments()
+    private val mediaObjects = org.ghost.media.store.MediaObjects(mediaFragments)
+
     /** What one blob did. Counts only ever leave through [DmCounters] (T33). */
     enum class Result {
         /** A message row, a reaction or a contact event was applied. */
@@ -521,6 +525,11 @@ internal class ReceiveStep(
         val plaintext: ByteArray
         var usedSlot: String
         var createdSession = false
+        // Phase 11 §4.2: present exactly when the decrypted L0 is kind 5 — the native side wrapped
+        // the slot's K_f into a fresh envelope bound to (in, contactId, objectId, manifestHash)
+        // and re-zeroed the slot. Whichever function produced the L0 (13 or 14), RECV stores it
+        // in media_object in the same transaction — except in a request (D28), where it is dropped.
+        var mediaKeyEnv: ByteArray? = null
 
         val matchesStored = intro != null &&
             listOfNotNull(current, previous).any { it.sessionId.contentEquals(intro.sessionId) }
@@ -607,6 +616,7 @@ internal class ReceiveStep(
                 contacts.supersedeOffers(tx, contact.contactId)
             }
             plaintext = created.plaintext
+            mediaKeyEnv = created.mediaKeyEnv
             usedSlot = slot
             createdSession = true
         } else {
@@ -640,6 +650,7 @@ internal class ReceiveStep(
                 sessions.raisePeerBindMinute(tx, contact.contactId, usedSlot, bindingSeconds)
             }
             plaintext = ok.plaintext
+            mediaKeyEnv = ok.mediaKeyEnv
         }
 
         // R8: the canonical L0. The new session state commits anyway — the message key was used.
@@ -663,6 +674,17 @@ internal class ReceiveStep(
         // item 3 left to the owner; this rule only stops a peer from crashing the receiver with it.
         if (content.kind == DmContent.Kind.TEXT && content.quoteRef == null && content.body.isEmpty()) {
             return dropped(DmCounters.Reason.BAD_CONTENT)
+        }
+
+        // Phase 11 §7.2: a kind-5 L0 carries the media descriptor (§4.1). A malformed descriptor,
+        // or one whose key envelope the native side did not return, is bad content — refused
+        // before R9/R10 and before any row exists, exactly as the empty text above.
+        val mediaDescriptor: MediaDescriptors.Parsed? = if (content.kind == DmContent.Kind.MEDIA) {
+            val parsed = MediaDescriptors.parse(content.body)
+            if (parsed == null || mediaKeyEnv == null) return dropped(DmCounters.Reason.BAD_CONTENT)
+            parsed
+        } else {
+            null
         }
 
         // R9: freshness (§7.6, §21.10 points 3 and 5), measured from when the ciphertext arrived;
@@ -711,6 +733,8 @@ internal class ReceiveStep(
             now = now,
             createdSession = createdSession,
             usedSlot = usedSlot,
+            mediaDescriptor = mediaDescriptor,
+            mediaKeyEnv = mediaKeyEnv,
         )
         // An id another row already holds (see [insertIncoming]): the message is dropped whole, its
         // TLVs and its timer version with it, as R10 drops a duplicate — under its own reason, so a
@@ -735,6 +759,8 @@ internal class ReceiveStep(
         now: Long,
         createdSession: Boolean,
         usedSlot: String,
+        mediaDescriptor: MediaDescriptors.Parsed?,
+        mediaKeyEnv: ByteArray?,
     ): Boolean {
         val conversation = contacts.conversation(tx.sql, contact.contactId) ?: return true
         // §22.8.5 rule 4: an initiator session's anchor is its **first decryption**, which is its
@@ -794,11 +820,36 @@ internal class ReceiveStep(
             // §7.1: a CONTROL message carries TLVs and no row.
             DmContent.Kind.CONTROL -> Unit
 
-            // Phase 11 §13.4's RECV half is the recipient pipeline (slice S6): a kind-5 L0
-            // received before S6 (`MEDIA-INGEST`, `onDescriptor`) is consumed and dropped here,
-            // never shown — the blob is spent, no row is written, and the loss is the declared
-            // cost of the slice order inside the unshipped phase. Declared in §22.8.
-            DmContent.Kind.MEDIA -> Unit
+            // Phase 11 §7.2: the message row (the caption, like a text request) is stored as F9
+            // stores any incoming message; the media object follows in the same transaction —
+            // except in a request (D28), where the key_env the native side returned is dropped
+            // unstored and no media_object exists: media in a request is downloaded but never
+            // kept openable, before or after the request is accepted (Q36), and mediaState of
+            // the message answers NOT_KEPT. Both decrypt (13) and sessionInbound (14) — a first
+            // message that is media, and the held replay — land the envelope through this one
+            // branch.
+            DmContent.Kind.MEDIA -> {
+                val descriptor = mediaDescriptor ?: return true // refused as bad content before apply
+                val inserted = insertIncoming(
+                    tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
+                    body = descriptor.caption,
+                    framed = false,
+                )
+                if (!inserted) return false
+                if (contact.trust != ContactStore.Trust.REQUEST) {
+                    // A second descriptor naming an existing object_id is drop(duplicate_object)
+                    // for the object: the message row stands (F9's dedup decided it), the object
+                    // is not created twice.
+                    mediaObjects.onDescriptor(
+                        tx = tx,
+                        messageId = content.messageId,
+                        contactId = contact.contactId,
+                        descriptor = descriptor.store,
+                        keyEnv = mediaKeyEnv!!,
+                        incompleteAfterHour = relayExpiryHour,
+                    )
+                }
+            }
         }
         // R-T9 (§10.5): a greater timer version is adopted from **any** message, so a lost
         // TIMER_SET heals implicitly; equal versions take the shorter timer.
@@ -840,9 +891,11 @@ internal class ReceiveStep(
     }
 
     /**
-     * The row of an incoming TEXT or TIMER_SET. False only when another row already holds the
-     * message's id (phase review ENG-1, ENG-3: [MessageStore.insertIncomingIfAbsent]); a message
-     * past its unread cap is counted and not inserted, and that is still true — it was applied.
+     * The row of an incoming TEXT, TIMER_SET or MEDIA message. False only when another row
+     * already holds the message's id (phase review ENG-1, ENG-3: [MessageStore.insertIncomingIfAbsent]);
+     * a message past its unread cap is counted and not inserted, and that is still true — it was applied.
+     * [framed] is false for a media caption, which §13.6's kind-5 CHECK bounds to `28 + 1 024`
+     * bytes with no byte left for the quote flag (F-S6-1 in §22.9).
      */
     @Suppress("LongParameterList")
     private fun insertIncoming(
@@ -854,6 +907,7 @@ internal class ReceiveStep(
         arrivalSeconds: Long,
         now: Long,
         body: ByteArray?,
+        framed: Boolean = true,
     ): Boolean {
         val authorSeconds = content.authorMinute * DmTime.MINUTE
         val unreadDeadline = DmTimers.unreadDeadlineMinute(
@@ -890,7 +944,7 @@ internal class ReceiveStep(
                 self.content.seal(
                     random.bytes(ContentCipher.NONCE_BYTES),
                     content.messageId,
-                    quotedBody(content.quoteRef, it),
+                    if (framed) quotedBody(content.quoteRef, it) else it,
                 )
             },
             unreadDeadlineMinute = unreadDeadline,

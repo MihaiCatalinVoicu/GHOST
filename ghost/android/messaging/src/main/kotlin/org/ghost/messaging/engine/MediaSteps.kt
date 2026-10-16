@@ -215,10 +215,13 @@ internal class MediaSteps(
                     sortMinute = authorMinute,
                     minuteIndex = minuteIndex,
                     timerCode = conversation.timerCode,
+                    // The kind-5 message's body is the caption raw — a descriptor carries no quote
+                    // reference, and §13.6's kind-5 CHECK (`length(body_env) ≤ 28 + 1 024`) leaves no
+                    // byte for a quote flag (F-S6-1 in §22.9).
                     bodyEnv = self.content.seal(
                         random.bytes(ContentCipher.NONCE_BYTES),
                         messageId,
-                        bodyPlain(null, req.caption),
+                        req.caption,
                     ),
                     state = MessageStore.STATE_QUEUED,
                     expireAtMinute = ceilMinute(deadlineHour + timerSeconds),

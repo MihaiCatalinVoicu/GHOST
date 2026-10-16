@@ -8,6 +8,7 @@ import org.ghost.messaging.api.PreparationId
 import org.ghost.messaging.api.PreparationView
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.port.DmRandom
+import org.ghost.messaging.store.ContactStore
 import org.ghost.sync.api.SyncDatabase
 import java.util.concurrent.ExecutorService
 
@@ -23,6 +24,7 @@ import java.util.concurrent.ExecutorService
 internal class MediaEngineSupport(
     private val database: SyncDatabase,
     private val steps: MediaSteps,
+    private val receiveSteps: MediaReceiveSteps,
     private val preparations: org.ghost.media.send.Preparations,
     private val pipeline: MediaPipelinePorts,
     private val worker: ExecutorService,
@@ -31,6 +33,227 @@ internal class MediaEngineSupport(
     private val actorCall: (() -> Unit) -> Unit,
 ) {
     private val objects = MediaObjects(org.ghost.media.store.MediaFragments())
+    private val contacts = ContactStore()
+
+    /**
+     * §7.4/§9.3's zero-click gates, both default-deny: no conversation named, or the app in the
+     * background (a process started for the background job never saw ON_START). `onLock` clears
+     * both and the preview cache (§13.7) — wired in slice S6's `MessagingWiring.onHidden`/lock path
+     * with the foreground signal of §6.5.
+     */
+    @Volatile
+    private var onScreenContact: ByteArray? = null
+
+    @Volatile
+    private var foreground: Boolean = false
+
+    /** The decoded-preview RAM cache of §10.5 (≤ 16 MiB, erased on eviction). */
+    private val previewCache = PreviewCache()
+
+    /** §6.5's `setConversationOnScreen`: the UI's statement of which conversation is visible. */
+    fun onScreen(contact: ByteArray?) {
+        onScreenContact = contact?.copyOf()
+    }
+
+    /** The foreground half of the on-screen signal (§6.5; GhostApp's ON_START/ON_STOP). */
+    fun onForeground(visible: Boolean) {
+        foreground = visible
+    }
+
+    /** §13.7's lock/wipe half: the signal and the cache go; the sandbox instances die with the unbind. */
+    fun onLocked() {
+        foreground = false
+        onScreenContact = null
+        previewCache.clear()
+    }
+
+    /** §6.5's `mediaState`: kind, class, state and held/F progress; no times. */
+    fun mediaState(messageId: ByteArray): org.ghost.messaging.api.MediaStateView? {
+        // The no-arg expiry clock opens a transaction of its own: read it before ours.
+        val nowE = steps.nowE()
+        return database.transaction { tx ->
+            val obj = objects.byMessage(tx.sql, messageId, nowE)
+            if (obj != null) {
+                var bound = 0L
+                tx.sql.query(
+                    "SELECT count(*) FROM media_fragment WHERE object_id = ? AND state = 'bound' AND ordinal >= 0",
+                    listOf(obj.objectId),
+                ) { r -> bound = r.long(0) }
+                org.ghost.messaging.api.MediaStateView(
+                    state = obj.state,
+                    kind = obj.kind,
+                    classCode = obj.classCode,
+                    heldFragments = bound.toInt(),
+                    totalFragments = org.ghost.media.store.MediaLimits.CLASSES[obj.classCode],
+                )
+            } else {
+                // No object: a live kind-5 message is one received in a request (D28) — NOT_KEPT.
+                var kind = 0L
+                tx.sql.query(
+                    "SELECT kind FROM dm_message WHERE message_id = ? " +
+                        "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+                    listOf(messageId, DmTime.floorMinute(nowE)),
+                ) { r -> kind = r.long(0) }
+                if (kind == org.ghost.crypto.bridge.DmContent.Kind.MEDIA.wire.toLong()) {
+                    org.ghost.messaging.api.MediaStateView.NOT_KEPT
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+    /**
+     * §6.5's `mediaPreview`: decoded pixels from the RAM cache or the sandbox — null unless §7.4
+     * allows (§9.3's zero-click rules). Runs off the actor: the gates read on the actor, the
+     * sandbox bind/decode blocks this caller (never the DM actor), and the failure counting writes
+     * on the actor. The gate is held across the decode: the flags are re-read when the sandbox
+     * answer returns and the result is dropped (pixels erased, never cached) if ON_STOP or an
+     * on-screen change landed mid-decode (T46's shape).
+     */
+    fun preview(messageId: ByteArray): org.ghost.messaging.api.MediaPreview? {
+        if (!foreground) return null
+        val onScreen = onScreenContact ?: return null
+        val nowE = steps.nowE()
+
+        // The gates, on the actor: the object of the message, verified, of the named contact,
+        // and a contact the zero-click rules allow (a request has no object at all — D28).
+        val gateHolder = arrayOfNulls<PreviewGate>(1)
+        actorCall {
+            gateHolder[0] = database.transaction { tx ->
+                val obj = objects.byMessage(tx.sql, messageId, nowE) ?: return@transaction null
+                val contact = contacts.contact(tx.sql, obj.destId) ?: return@transaction null
+                val allowed = when (contact.trust) {
+                    ContactStore.Trust.UNVERIFIED,
+                    ContactStore.Trust.VERIFIED,
+                    ContactStore.Trust.CHANGED,
+                    -> true
+                    ContactStore.Trust.REQUEST,
+                    ContactStore.Trust.BLOCKED,
+                    ContactStore.Trust.REVOKED,
+                    -> false
+                }
+                if (!allowed || !onScreen.contentEquals(obj.destId)) return@transaction null
+                if (obj.state != org.ghost.media.store.ObjectState.VERIFIED) return@transaction null
+                PreviewGate(obj.objectId)
+            }
+        }
+        val gate = gateHolder[0] ?: return null
+
+        previewCache.get(gate.objectId)?.let { return it }
+
+        // The manifest's preview: open the reader (its VERIFY pass already authenticated the
+        // manifest, so these bytes are canonical by construction), take the preview, close.
+        val opened = openPreviewReader(gate.objectId, nowE) ?: return null
+        try {
+            val previewBytes = opened.preview
+            if (previewBytes.isEmpty()) return null // view-once carries none (ADR-44 point 5)
+            val decoded = pipeline.decoder.decode(
+                previewBytes,
+                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+            ) ?: run {
+                previewBytes.fill(0)
+                previewDecodeFailed(gate.objectId)
+                return null
+            }
+            val w = decoded.width
+            val h = decoded.height
+            val expected = w * h * 4
+            if (w <= 0 || h <= 0 || w > org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE ||
+                h > org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE || decoded.pixels.size != expected
+            ) {
+                // §9.2: an out-of-range answer is a failure, never parsed further.
+                decoded.pixels.fill(0)
+                previewBytes.fill(0)
+                previewDecodeFailed(gate.objectId)
+                return null
+            }
+            // Hold the zero-click gate across the blocking sandbox decode: the flags were read
+            // at entry, and ON_STOP can land while the decode runs — a decode entered in the
+            // foreground completes in the background unless the result is re-checked. §9.3's
+            // "nothing is decoded in the background" must hold of the answer too: re-read the
+            // signal, and drop the result if it changed, erasing the pixels. A dropped answer
+            // is not a sandbox failure — nothing counts towards the two-strikes rule.
+            val after = onScreenContact
+            if (!foreground || after == null || !onScreen.contentEquals(after)) {
+                decoded.pixels.fill(0)
+                previewBytes.fill(0)
+                return null
+            }
+            previewBytes.fill(0)
+            val view = org.ghost.messaging.api.MediaPreview(w, h, decoded.pixels)
+            previewCache.put(gate.objectId, view)
+            return view
+        } finally {
+            readersCloseQuietly(opened.reader)
+        }
+    }
+
+    /** What the gate read yields: the object id alone; nothing else crosses the actor boundary. */
+    private class PreviewGate(val objectId: ByteArray)
+
+    /** One decode failure towards the two-strikes rule (CS-M8, §9.2). */
+    private fun previewDecodeFailed(objectId: ByteArray) {
+        actorCall {
+            try {
+                val nowE = steps.nowE()
+                val count = database.transaction { tx -> objects.recordDecodeFailure(tx, objectId) }
+                if (count >= org.ghost.media.store.MediaLimits.MAX_DECODE_FAILURES) {
+                    database.transaction { tx -> objects.markUndecodable(tx, objectId) }
+                }
+            } catch (e: org.ghost.media.store.MediaStoreException) {
+                // A third failure or a state that moved: the object is already undecodable or gone.
+                Unit
+            }
+        }
+    }
+
+    /** The reader over a verified object, opened readable for the preview bytes; null on any refusal. */
+    private fun openPreviewReader(objectId: ByteArray, nowE: Long): org.ghost.messaging.port.MediaReaders.Opened.Ok? {
+        // The object's row again (off-actor reads stay transactional and short; this is the worker).
+        val obj = database.transaction { tx -> objects.byId(tx.sql, objectId, nowE) } ?: return null
+        val keyEnv = obj.keyEnv ?: return null
+        val manifestRow = database.transaction { tx ->
+            org.ghost.media.store.MediaBlobs(org.ghost.media.store.MediaFragments())
+                .byHash(tx.sql, obj.manifestHash)
+        } ?: return null
+        val manifest = try {
+            pipeline.files.read(manifestRow.fileName)
+        } catch (e: java.io.IOException) {
+            return null
+        }
+        if (manifest.size != org.ghost.media.store.MediaLimits.FRAGMENT_BYTES) return null
+        return when (
+            val opened = pipeline.readers.open(
+                org.ghost.messaging.port.MediaReaders.OpenSpec(
+                    keyEnv = keyEnv,
+                    role = org.ghost.crypto.bridge.MediaCrypto.Role.IN,
+                    destId = obj.destId,
+                    objectId = obj.objectId,
+                    manifestHash = obj.manifestHash,
+                    manifestBlob = manifest,
+                    kind = if (obj.kind == org.ghost.media.store.MediaKind.IMAGE) {
+                        org.ghost.crypto.bridge.MediaCrypto.Kind.IMAGE
+                    } else {
+                        org.ghost.crypto.bridge.MediaCrypto.Kind.VIDEO
+                    },
+                    viewOnce = obj.viewOnce,
+                    classCode = obj.classCode,
+                    readable = true,
+                ),
+            )
+        ) {
+            is org.ghost.messaging.port.MediaReaders.Opened.Ok -> opened
+            else -> null
+        }
+    }
+
+    private fun readersCloseQuietly(reader: Long) {
+        // No catch-all: the native close is typed inside `MediaCrypto.closeReader`, and a defect
+        // there must surface, not vanish (sync-no-catch-all; F-S5-4's lesson).
+        pipeline.readers.close(reader)
+    }
 
     /** §6.6's free-space check the engine's pre-checks read (the store's typed answer). */
     fun freeSpace(): Long = pipeline.files.freeSpace()
@@ -51,6 +274,9 @@ internal class MediaEngineSupport(
 
     /** The actor-side steps, for the pass hooks (`DmActor` runs them on its thread). */
     fun stepsForPass(): MediaSteps = steps
+
+    /** The recipient half's actor-side steps, for the same pass hooks. */
+    fun receiveStepsForPass(): MediaReceiveSteps = receiveSteps
 
     /** The sealer factory over the DM context's handle (§3.7); built here so the handle never
      * leaves the module that owns the context. */
@@ -208,5 +434,49 @@ internal class MediaEngineSupport(
 
     fun close() {
         worker.shutdown()
+    }
+
+    /**
+     * The decoded-preview RAM cache (§10.5, CS-M6): at most [budgetBytes] of pixels, the oldest
+     * entries evicted first and **erased before they are dropped** (§10.5's hygiene; a ByteArray
+     * has no `recycle`, so the erasure is the rule itself).
+     */
+    private class PreviewCache(private val budgetBytes: Int = MAX_PREVIEW_CACHE_BYTES) {
+        private val lock = Any()
+        private val byObject = LinkedHashMap<String, org.ghost.messaging.api.MediaPreview>()
+        private var bytes: Int = 0
+
+        fun get(objectId: ByteArray): org.ghost.messaging.api.MediaPreview? = synchronized(lock) {
+            byObject[hexOf(objectId)]
+        }
+
+        fun put(objectId: ByteArray, preview: org.ghost.messaging.api.MediaPreview) = synchronized(lock) {
+            val key = hexOf(objectId)
+            val size = preview.pixels.size
+            if (size > budgetBytes) return@synchronized // never fits: don't cache
+            byObject.remove(key)?.let { bytes -= it.pixels.size }
+            while (bytes + size > budgetBytes && byObject.isNotEmpty()) {
+                val oldest = byObject.entries.iterator().next()
+                oldest.value.pixels.fill(0)
+                byObject.remove(oldest.key)
+                bytes -= oldest.value.pixels.size
+            }
+            byObject[key] = preview
+            bytes += size
+        }
+
+        fun clear() = synchronized(lock) {
+            for (preview in byObject.values) preview.pixels.fill(0)
+            byObject.clear()
+            bytes = 0
+        }
+
+        private fun hexOf(bytes: ByteArray): String =
+            bytes.joinToString("") { "%02x".format(it) }
+
+        companion object {
+            /** §10.5/CS-M6: previews in RAM ≤ 16 MiB. */
+            const val MAX_PREVIEW_CACHE_BYTES: Int = 16 * 1024 * 1024
+        }
     }
 }

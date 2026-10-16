@@ -34,9 +34,14 @@ import org.ghost.messaging.OwnerWorld
 import org.ghost.messaging.SequentialRandom
 import org.ghost.messaging.engine.ContactMaterial
 import org.ghost.messaging.engine.DmSyncPorts
+import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.engine.MediaOpIds
 import org.ghost.messaging.engine.MediaOrphanSteps
+import org.ghost.messaging.engine.MediaReceiveSteps
 import org.ghost.messaging.engine.MediaSteps
+import org.ghost.messaging.port.MediaReaders.Chunked
+import org.ghost.messaging.port.MediaReaders.Opened
+import org.ghost.messaging.port.MediaReaders.Validated
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.engine.RelaySetResolver
 import org.ghost.messaging.engine.SelfContexts
@@ -68,15 +73,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * (file-backed, so a "reboot" reopens it), a real ciphertext directory behind a crash-injecting
  * file system, the real stores, `MediaSteps`, `MediaFeeder`, `MediaPreparer` and the real
  * `SealingChannel` (so the `tfdt` insertion, the chunking and the file protocol run on real
- * bytes), with deterministic fakes at the three Android-only seams: the sandbox stripper (a
- * committed S0 golden), the video export (a committed golden canonical fMP4) and the sealer (a
- * JVM stand-in, contract-faithful; the host build's `testSealBeginWithKey` re-derivation is
- * §15.6's relay fidelity, S9's concern — this world's oracles are structural).
+ * bytes), with deterministic fakes at the seams: the sandbox stripper and image decoder
+ * (committed S0 goldens; the decoder records its requests, which is what proves the zero-click
+ * rules), the video export (a committed golden canonical fMP4) and the sealer/reader pair
+ * (contract-faithful JVM stand-ins over one manifest wire; the host build's
+ * `testSealBeginWithKey` re-derivation is §15.6's relay fidelity, S9's concern — this world's
+ * oracles are structural).
  *
- * The outbox is [ScriptedOutbox], the relay's decided outcomes scripted; it survives a reboot
- * like the external relay would. The world is driven single-threaded (the actor's seriality is
- * the test's). A crash run: drive the scripted body, [close], reopen with
- * `MediaWorld(path, dir, relay)`, [reconcile], [assertSendInvariants], resume or finish.
+ * The outbox is [ScriptedOutbox]; media deposits into `M_0` are [depositMedia]. The world is driven
+ * single-threaded (the actor's seriality is the test's). A crash run: drive the scripted body,
+ * [close], reopen with `MediaWorld(path, dir, relay)`, [reconcile], [assertSendInvariants],
+ * resume or finish.
  */
 internal class MediaWorld(
     val dbPath: String,
@@ -96,7 +103,7 @@ internal class MediaWorld(
     /** The crash-injecting file system behind [files], for the scenario suites. */
     val crashFs = CrashableFileSystem(NioCiphertextFileSystem())
     val files: CiphertextFiles = CiphertextFiles(
-        File(dir, "m"), crashFs, WorldNames(), 0L,
+        File(dir, "m"), crashFs, WorldNames(), MediaLimits.FREE_FLOOR_BYTES,
     ).also { it.open() }
     val preparing = PreparingFiles()
     val fragments = MediaFragments()
@@ -104,9 +111,21 @@ internal class MediaWorld(
     val blobs = MediaBlobs(fragments)
     private val reconcile = MediaReconcile(files, blobs, fragments)
 
+    /** S6's reader seam: the registry the [FakeSealerFactory] records into and [FakeReaders] judges by. */
+    val readers = FakeReaders()
+
+    /** S6's decode seam: records every request (the zero-click oracle); can be told to fail. */
+    val decoder = FakeDecoder()
+
+    /** Every checkpoint the recipient steps asked for, in order (§11.1's caller). */
+    val checkpointLog = ArrayList<Boolean>()
+
     private val sync = DmSyncPorts(
         stores.namespaces, stores.capabilities, stores.registrations, relay, stores.inbox,
     )
+
+    /** The sync ports the recipient steps claim the scripted inbox through (tests that build their own steps). */
+    val syncPorts: DmSyncPorts get() = sync
 
     /** The envelope seam: the owner world's closed-context shape, with a canned kind-5 encode. */
     private val envelopes: DmEnvelopes =
@@ -182,9 +201,101 @@ internal class MediaWorld(
 
     /** The preparation pipeline over the fake ports. */
     val preparer: MediaPreparer = MediaPreparer(
-        FakeStripper, FakeVideoExport, FakeSealerFactory, JpegCanonicalizer { it.copyOf() },
+        FakeStripper, FakeVideoExport, FakeSealerFactory(readers), JpegCanonicalizer { it.copyOf() },
         files, preparing,
     )
+
+    /**
+     * The recipient pipeline under test (slice S6): the real steps over the world's stores, files
+     * and scripted inbox, with the fake reader/decoder seams and a recording checkpoint.
+     */
+    val receiveSteps: MediaReceiveSteps = MediaReceiveSteps(
+        database = database,
+        sync = sync,
+        files = files,
+        readers = readers,
+        preparing = { preparing.snapshot() },
+        checkpoint = { checkpointLog += true; true },
+        contexts = contexts,
+        clock = clock,
+    )
+
+    /** The own media namespace `M_0`, registered `Consumer.MEDIA` at [activate]. */
+    val m0: ByteArray by lazy { crypto.ownCard(0)!!.mediaNamespace }
+
+    /**
+     * What Phase 7 would hand `MEDIA-INGEST`: a fetched blob in `M_0`. Returns the blob's hash
+     * (the identity every later row names).
+     */
+    fun depositMedia(bytes: ByteArray, relayExpirySeconds: Long = NOW + 7 * 86_400): ByteArray {
+        require(bytes.size == MediaLimits.FRAGMENT_BYTES) { "a relay blob is exactly 64 KiB" }
+        val hash = digest(bytes)
+        val retain = -Math.floorDiv(-MediaLimits.day(relayExpirySeconds), 7) * 7
+        // The trigger keeps relay_expiry_hour off INSERTs: listed first, then the recordFetched
+        // shape (state + ciphertext + seq + retention + expiry in one UPDATE).
+        database.transaction { tx ->
+            tx.sql.exec(
+                "INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'listed', ?)",
+                listOf(m0, hash, retain),
+            )
+            tx.sql.exec(
+                "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?, " +
+                    "fetch_seq = (SELECT COALESCE(MAX(fetch_seq), 0) + 1 FROM inbox_blob), " +
+                    "retain_until_day = ?, relay_expiry_hour = ? " +
+                    "WHERE namespace_id = ? AND blob_hash = ? AND state = 'listed'",
+                listOf(bytes, retain, relayExpirySeconds - relayExpirySeconds % 3_600, m0, hash),
+            )
+        }
+        return hash
+    }
+
+    /**
+     * What RECV's kind-5 branch commits for a descriptor from a contact (§7.2): the kind-5 message
+     * row (the caption) and the `awaiting` object, in one transaction. The D28 request rule —
+     * calling this not at all — is the caller's, exactly as in `ReceiveStep`, and is proved at the
+     * real RECV in `DmMediaReceiveTest`.
+     */
+    fun receiveDescriptor(
+        contactId: ByteArray,
+        descriptor: org.ghost.media.store.MediaDescriptor,
+        keyEnv: ByteArray,
+        relayExpiryHour: Long = NOW + 86_400,
+        caption: String = "media",
+    ): ByteArray {
+        val messageId = random.bytes(16)
+        // The S8 rule's order: the context resolves before the transaction.
+        val self = contexts.get()!!
+        val bodyEnv = self.content.seal(random.bytes(12), messageId, caption.toByteArray())
+        database.transaction { tx ->
+            var conversationId = ByteArray(0)
+            tx.sql.query(
+                "SELECT conversation_id FROM dm_conversation WHERE contact_id = ?",
+                listOf(contactId),
+            ) { conversationId = it.blob(0) }
+            check(conversationId.isNotEmpty()) { "addContact first" }
+            org.ghost.messaging.store.MessageStore().insertIncomingIfAbsent(
+                tx = tx,
+                messageId = messageId,
+                conversationId = conversationId,
+                kind = DmContent.Kind.MEDIA.wire,
+                authorMinute = DmTime.floorMinute(clock.now),
+                sortMinute = DmTime.floorMinute(clock.now),
+                minuteIndex = 0,
+                timerCode = 0, // off: the test never runs the recipient countdown
+                bodyEnv = bodyEnv,
+                unreadDeadlineMinute = null,
+            )
+            objects.onDescriptor(
+                tx = tx,
+                messageId = messageId,
+                contactId = contactId,
+                descriptor = descriptor,
+                keyEnv = keyEnv,
+                incompleteAfterHour = relayExpiryHour,
+            )
+        }
+        return messageId
+    }
 
     /** ACTIVATE (idempotent per fresh database; a rebooted world must not call it again). */
     fun activate() {
@@ -285,7 +396,7 @@ private typealias EsSlotsLike = org.ghost.messaging.port.EsSlots
 private typealias RelayEntryLike = org.ghost.sync.api.RelayEntry
 private typealias SourceLike = org.ghost.sync.api.RelayEntry.Source
 
-private fun digest(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
+internal fun digest(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
 /** The store's `hex` is module-internal; this world keeps its own. */
 internal fun hexOf(bytes: ByteArray): String {
@@ -312,6 +423,10 @@ internal class CrashableFileSystem(private val real: CiphertextFileSystem) : Cip
     @Volatile
     var crashAtCall = -1
     val trace = ArrayList<String>()
+
+    /** When set, [freeSpace] answers this instead of the disk's (the §7.5 floor's test seam). */
+    @Volatile
+    var freeSpaceBytes: Long? = null
 
     private fun maybeCrash() {
         if (crashBeforeNext) {
@@ -354,7 +469,7 @@ internal class CrashableFileSystem(private val real: CiphertextFileSystem) : Cip
         return real.delete(file)
     }
     override fun syncDirectory(directory: File) = real.syncDirectory(directory)
-    override fun freeSpace(directory: File): Long = real.freeSpace(directory)
+    override fun freeSpace(directory: File): Long = freeSpaceBytes ?: real.freeSpace(directory)
 }
 
 /** The sandbox seam: the committed golden canonical JPEG (object and preview alike). */
@@ -388,9 +503,14 @@ internal object FakeVideoExport : VideoExport {
     }
 }
 
-/** The sealer seam: deterministic bytes unique per object (a second object must not collide on
- * a blob hash), hashes over the bytes themselves (self-consistent with the file oracles). */
-private object FakeSealerFactory : MediaSealerFactory {
+/**
+ * The sealer seam: deterministic bytes unique per object (a second object must not collide on
+ * a blob hash), hashes over the bytes themselves (self-consistent with the file oracles), and —
+ * since S6 — the recording half of the reader seam: [finish] writes the manifest in
+ * [FakeReaders]' wire and registers the object, so [FakeReaders] can judge a later open, bind or
+ * verify the way the real reader judges AEAD (its own record, per object, never by arrival order).
+ */
+private class FakeSealerFactory(private val readers: FakeReaders) : MediaSealerFactory {
     private var n = 0
 
     override fun begin(
@@ -401,39 +521,87 @@ private object FakeSealerFactory : MediaSealerFactory {
     ): MediaSealerFactory.Begun {
         val v = n++
         val objectId = ByteArray(16) { if (it < 4) (v ushr (8 * it)).toByte() else it.toByte() }
-        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId), objectId)
+        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId, kind, viewOnce, readers), objectId)
     }
 }
 
 /**
  * Emits exactly the four chunks (16 fragments, class 0) every object of this world seals: the
- * content's chunks, then zero padding groups — what the real sealer's class rounding does.
+ * content's chunks, then zero padding groups — what the real sealer's class rounding does. The
+ * manifest carries the real fragment hashes in [FakeReaders]' wire, so a bind or verify against
+ * it exercises the same hash-and-authenticate order the native reader has.
  */
-private class FakeSealer(private val objectId: ByteArray) : StreamSealer {
+private class FakeSealer(
+    private val objectId: ByteArray,
+    private val kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+    private val viewOnce: Boolean,
+    private val readers: FakeReaders,
+) : StreamSealer {
     private var consumed = 0L
     private var next = 0
+    private val groups = ArrayList<SealedFragmentGroup>()
 
     override fun append(plaintext: ByteArray): List<SealedFragmentGroup> {
         consumed += plaintext.size
         val completed = (consumed / MediaLimits.CHUNK_PLAINTEXT).toInt()
         val out = ArrayList<SealedFragmentGroup>()
-        while (next < completed) out += group(next++)
+        while (next < completed) {
+            val group = group(next++)
+            groups += group
+            out += group
+        }
         return out
     }
 
     override fun finish(preview: ByteArray): SealedObject {
         val tail = consumed % MediaLimits.CHUNK_PLAINTEXT != 0L
         val finishGroups = ArrayList<SealedFragmentGroup>()
-        if (tail || next == 0) finishGroups += group(next++)
-        while (next < 4) finishGroups += group(next++)
-        val manifest = ByteArray(MediaLimits.FRAGMENT_BYTES) { (0x4D xor objectId[0].toInt()).toByte() }
+        if (tail || next == 0) {
+            val group = group(next++)
+            groups += group
+            finishGroups += group
+        }
+        while (next < 4) {
+            val group = group(next++)
+            groups += group
+            finishGroups += group
+        }
+        val hashes = groups.flatMap { it.hashes }
+        val keyEnv = FakeReaders.fakeKeyEnvOf(objectId)
+        val manifest = FakeReaders.manifestBytes(
+            objectId = objectId,
+            kindCode = if (kind == org.ghost.crypto.bridge.MediaCrypto.Kind.IMAGE) 1 else 2,
+            viewOnce = viewOnce,
+            classCode = 0,
+            contentLen = consumed,
+            width = 1_280,
+            height = 720,
+            durationMs = 0,
+            preview = preview,
+            hashes = hashes,
+        )
+        readers.register(
+            FakeReaders.Recorded(
+                objectId = objectId,
+                keyEnv = keyEnv,
+                chunks = groups.map { it.fragments },
+                kind = kind,
+                viewOnce = viewOnce,
+                classCode = 0,
+                contentLen = consumed,
+                width = 1_280,
+                height = 720,
+                durationMs = 0,
+                preview = preview,
+            ),
+        )
         return SealedObject(
             classCode = 0,
             contentLen = consumed,
             width = 1_280,
             height = 720,
             durationMs = 0,
-            keyEnv = ByteArray(60) { 0x4B },
+            keyEnv = keyEnv,
             manifestBlob = manifest,
             manifestHash = digest(manifest),
             preview = preview,
@@ -451,6 +619,210 @@ private class FakeSealer(private val objectId: ByteArray) : StreamSealer {
             }
         }
         return SealedFragmentGroup(index, fragments, fragments.map { digest(it) })
+    }
+}
+
+/**
+ * The reader seam (S6): a contract-faithful judge over [Recorded] objects. `open` checks the
+ * manifest's hash, wire and descriptor agreement, then the key envelope against the object's own
+ * record; `chunk` (validate) enforces the manifest's per-ordinal hashes first and the object's own
+ * sealed bytes second — the AEAD order — so a hash-squatting object (a manifest naming another
+ * sender's hashes, whose rows therefore bind the honest files) fails on the second check while the
+ * honest object verifies from the same files (§7.2's "ownership is decided by authentication").
+ */
+internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
+
+    class Recorded(
+        val objectId: ByteArray,
+        val keyEnv: ByteArray,
+        /** The sealed chunks: chunk → its four fragments, in order. */
+        val chunks: List<List<ByteArray>>,
+        val kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
+        val viewOnce: Boolean,
+        val classCode: Int,
+        val contentLen: Long,
+        val width: Int,
+        val height: Int,
+        val durationMs: Long,
+        val preview: ByteArray,
+    )
+
+    val registry = LinkedHashMap<String, Recorded>()
+
+    private var nextHandle = 1L
+
+    private class OpenState(
+        val record: Recorded,
+        val manifestHashes: List<ByteArray>,
+        val readable: Boolean,
+        var nextIndex: Int = 0,
+    )
+
+    private val open = HashMap<Long, OpenState>()
+
+    fun register(record: Recorded) {
+        registry[hexOf(record.objectId)] = record
+    }
+
+    override fun open(spec: org.ghost.messaging.port.MediaReaders.OpenSpec): Opened {
+        if (digest(spec.manifestBlob).zip(spec.manifestHash).any { (a, b) -> a != b } ||
+            spec.manifestBlob.size != MediaLimits.FRAGMENT_BYTES
+        ) {
+            return Opened.HashMismatch
+        }
+        val parsed = parseManifest(spec.manifestBlob) ?: return Opened.NonCanonical
+        if (!parsed.objectId.contentEquals(spec.objectId)) return Opened.NonCanonical
+        val specKind = if (spec.kind == org.ghost.crypto.bridge.MediaCrypto.Kind.IMAGE) 1 else 2
+        if (parsed.kindCode != specKind || parsed.viewOnce != spec.viewOnce || parsed.classCode != spec.classCode) {
+            return Opened.NonCanonical
+        }
+        val record = registry[hexOf(parsed.objectId)] ?: return Opened.CommitMismatch
+        if (!record.keyEnv.zip(spec.keyEnv).all { (a, b) -> a == b }) return Opened.StateCorrupt
+        val handle = nextHandle++
+        open[handle] = OpenState(record, parsed.hashes, spec.readable)
+        return Opened.Ok(
+            reader = handle,
+            kind = record.kind,
+            viewOnce = record.viewOnce,
+            classCode = record.classCode,
+            contentLen = record.contentLen,
+            width = record.width,
+            height = record.height,
+            durationMs = record.durationMs,
+            preview = parsed.preview,
+            hashes = parsed.hashes,
+        )
+    }
+
+    override fun chunk(
+        reader: Long,
+        index: Int,
+        fragments: ByteArray,
+        validate: Boolean,
+    ): Chunked {
+        val state = open[reader] ?: return Chunked.Unavailable
+        if (!validate && !state.readable) return Chunked.Sequence
+        if (index < 0 || index >= state.record.chunks.size) return Chunked.IndexRange
+        if (state.nextIndex != index) return Chunked.Sequence
+        if (fragments.size != 4 * MediaLimits.FRAGMENT_BYTES) return Chunked.NonCanonical
+        val sealed = state.record.chunks[index]
+        for (k in 0 until 4) {
+            val frag = fragments.copyOfRange(k * MediaLimits.FRAGMENT_BYTES, (k + 1) * MediaLimits.FRAGMENT_BYTES)
+            val named = state.manifestHashes[index * 4 + k]
+            if (!digest(frag).zip(named).all { (a, b) -> a == b }) return Chunked.HashMismatch
+            if (!frag.zip(sealed[k]).all { (a, b) -> a == b }) return Chunked.NotOpen
+        }
+        state.nextIndex += 1
+        return Chunked.Ok(if (validate) ByteArray(0) else fragments.copyOf())
+    }
+
+    override fun finish(reader: Long): Validated {
+        val state = open[reader] ?: return Validated.Unavailable
+        return if (state.nextIndex == state.record.chunks.size) Validated.Ok else Validated.NonCanonical
+    }
+
+    override fun close(reader: Long) {
+        open.remove(reader)
+    }
+
+    class ParsedManifest(
+        val objectId: ByteArray,
+        val kindCode: Int,
+        val viewOnce: Boolean,
+        val classCode: Int,
+        val preview: ByteArray,
+        val hashes: List<ByteArray>,
+    )
+
+    companion object {
+        private val MAGIC = byteArrayOf('G'.code.toByte(), 'F'.code.toByte(), 'M'.code.toByte(), 1)
+
+        /** The fake envelope: a deterministic 60-byte function of the object, distinguishable per object. */
+        fun fakeKeyEnvOf(objectId: ByteArray): ByteArray {
+            val d = digest("fake-key-env".toByteArray() + objectId)
+            return (d + d).copyOf(60)
+        }
+
+        /** The fake manifest wire (65536 bytes): the fields a bind needs, then the fragment hashes. */
+        fun manifestBytes(
+            objectId: ByteArray,
+            kindCode: Int,
+            viewOnce: Boolean,
+            classCode: Int,
+            contentLen: Long,
+            width: Int,
+            height: Int,
+            durationMs: Long,
+            preview: ByteArray,
+            hashes: List<ByteArray>,
+        ): ByteArray {
+            val out = ByteArray(MediaLimits.FRAGMENT_BYTES)
+            MAGIC.copyInto(out, 0)
+            objectId.copyInto(out, 4)
+            out[20] = kindCode.toByte()
+            out[21] = (if (viewOnce) 1 else 0).toByte()
+            out[22] = classCode.toByte()
+            var at = 24
+            for (shift in 56 downTo 0 step 8) out[at++] = (contentLen ushr shift).toByte()
+            out[32] = (width ushr 8).toByte(); out[33] = width.toByte()
+            out[34] = (height ushr 8).toByte(); out[35] = height.toByte()
+            out[36] = (durationMs ushr 24).toByte(); out[37] = (durationMs ushr 16).toByte()
+            out[38] = (durationMs ushr 8).toByte(); out[39] = durationMs.toByte()
+            out[40] = (preview.size ushr 8).toByte(); out[41] = preview.size.toByte()
+            preview.copyInto(out, 42)
+            at = 42 + preview.size
+            for (hash in hashes) {
+                hash.copyInto(out, at)
+                at += 32
+            }
+            return out
+        }
+
+        fun parseManifest(bytes: ByteArray): ParsedManifest? {
+            if (bytes.size != MediaLimits.FRAGMENT_BYTES) return null
+            if (!bytes.copyOfRange(0, 4).contentEquals(MAGIC)) return null
+            val previewLen = ((bytes[40].toInt() and 0xFF) shl 8) or (bytes[41].toInt() and 0xFF)
+            val hashesStart = 42 + previewLen
+            val hashes = ArrayList<ByteArray>()
+            var at = hashesStart
+            while (at + 32 <= bytes.size && !(bytes[at].toInt() == 0 && bytes.copyOfRange(at, at + 32).all { it.toInt() == 0 })) {
+                hashes += bytes.copyOfRange(at, at + 32)
+                at += 32
+            }
+            if (hashes.isEmpty()) return null
+            return ParsedManifest(
+                objectId = bytes.copyOfRange(4, 20),
+                kindCode = bytes[20].toInt(),
+                viewOnce = bytes[21].toInt() == 1,
+                classCode = bytes[22].toInt(),
+                preview = bytes.copyOfRange(42, hashesStart),
+                hashes = hashes,
+            )
+        }
+    }
+}
+
+/** The decode seam (S6): records every request — the zero-click oracle — and serves canned pixels. */
+internal class FakeDecoder : org.ghost.media.send.ImageDecoder {
+    /** (jpeg size, maxW, maxH) per request; the bytes themselves stay unnamed. */
+    val requests = ArrayList<Triple<Int, Int, Int>>()
+
+    /** Fail the next this many requests, then serve again (CS-M8's two-strikes). */
+    var failuresLeft: Int = 0
+
+    /** The canned answer's geometry. */
+    var cannedWidth: Int = 320
+    var cannedHeight: Int = 200
+
+    override fun decode(jpeg: ByteArray, maxW: Int, maxH: Int): org.ghost.media.send.ImageDecoder.Decoded? {
+        requests += Triple(jpeg.size, maxW, maxH)
+        if (failuresLeft > 0) {
+            failuresLeft -= 1
+            return null
+        }
+        return org.ghost.media.send.ImageDecoder.Decoded(
+            ByteArray(cannedWidth * cannedHeight * 4) { 0x5A }, cannedWidth, cannedHeight,
+        )
     }
 }
 

@@ -251,4 +251,56 @@ class MediaUploadScenarioTest {
         )
         box.world.close()
     }
+
+    @Test
+    fun aTimerChangeDuringUploadDoesNotSplitTheObjectsBucket() {
+        // R-MT4 (§7.3 S8, ADR-45 point 4): every blob of an object **and its descriptor** carry
+        // one TTL, fixed at commit — a timer change mid-upload must not re-bucket the object.
+        val box = Sandbox()
+        val world = box.open()
+        val contact = ByteArray(16) { 0x21 }
+        world.addContact(contact)
+        val objectId = commitOne(world, contact, tag = 0x34)
+        val bucketAtCommit = world.sql.queryLong(
+            "SELECT ttl_seconds FROM media_upload WHERE object_id = ?",
+            listOf(objectId),
+        )!!
+        assertEquals(604_800L, bucketAtCommit) // the world's conversation timer is the 7-day one
+
+        // Mid-upload: the conversation's timer goes 7 d → 1 h (TIMER_SET's shape at the row).
+        world.sql.exec(
+            "UPDATE dm_conversation SET timer_code = 0, timer_version = timer_version + 1 " +
+                "WHERE contact_id = ?",
+            listOf(contact),
+        )
+
+        // Every ordinal SENT: READY lowers the countdown; the object's bucket is untouched.
+        repeat(17) { i ->
+            world.relay.script(world.relay.opIdOf(objectId, i - 1), Outcome.SENT)
+        }
+        world.steps.outcomes()
+        assertEquals(
+            "uploaded",
+            world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(objectId)),
+        )
+        assertEquals(
+            "the upload row keeps the commit-time bucket (R-MT4)",
+            bucketAtCommit,
+            world.sql.queryLong("SELECT ttl_seconds FROM media_upload WHERE object_id = ?", listOf(objectId)),
+        )
+        assertEquals(
+            "the descriptor item carries the object's bucket, not the conversation's new timer",
+            bucketAtCommit,
+            world.sql.queryLong("SELECT ttl_seconds FROM dm_outbound_item WHERE kind = 5", emptyList()),
+        )
+        assertEquals(
+            "the conversation's timer did change (the test's premise)",
+            1L,
+            world.sql.queryLong(
+                "SELECT count(*) FROM dm_conversation WHERE contact_id = ? AND timer_code = 0",
+                listOf(contact),
+            ),
+        )
+        box.world.close()
+    }
 }

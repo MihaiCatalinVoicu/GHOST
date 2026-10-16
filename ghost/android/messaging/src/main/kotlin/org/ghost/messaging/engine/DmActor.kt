@@ -484,6 +484,10 @@ internal class DmActor(
         outcomeStep.run()
         // Phase 11 §13.5's `MEDIA-OUTCOME`/`MEDIA-FEED`: after F9's OUTCOME released the ops.
         media?.runOutcomesAndFeed()
+        // Phase 11 §13.5's recipient half (slice S6): `MEDIA-INGEST` claims what Phase 7 fetched
+        // into M_0, `MEDIA-BIND` meets manifests and descriptors, `MEDIA-VERIFY` validates
+        // complete objects — every pass, after the outbox steps they read nothing of.
+        media?.runIngestBindVerify()
         claimBundles()
         // §22.8.1 rule 3: HELD runs **before** the peek and the RECV claims. Rule 2 makes either
         // order correct — a session a RECV pass created first is matched by `session_id` and
@@ -508,6 +512,8 @@ internal class DmActor(
             scheduledSteps.runDue()
             // §6.4's deadline: time-triggered, like the steps above.
             media?.runDeadline()
+            // §7.5's `MEDIA-GC`: declared losses, pooled retention, unnamed sealed garbage.
+            media?.runGc()
         }
         consumeInbox(deadlineMonotonicMillis)
         // D16: the channel engine's pass, with this pass's trigger (its time-triggered steps run on a time-triggered pass

@@ -4,6 +4,7 @@ import android.content.Context
 import org.ghost.media.sandbox.MediaSandbox
 import org.ghost.media.send.GhostTranscoder
 import org.ghost.media.send.GhostVideoExport
+import org.ghost.media.send.SandboxDecoder
 import org.ghost.media.send.SandboxStripper
 import org.ghost.media.store.CiphertextFiles
 import org.ghost.media.send.MediaSendLimits
@@ -31,14 +32,16 @@ import java.security.SecureRandom
 object MediaWiring {
 
     /** The pipeline ports, or null when the store directory cannot be prepared. */
-    fun pipelinePorts(context: Context, noBackupDir: File): MediaPipelinePorts? {
+    fun pipelinePorts(context: Context, noBackupDir: File, readers: org.ghost.messaging.port.MediaReaders): MediaPipelinePorts? {
         val store = File(noBackupDir, "m")
         val files = try {
+            // The store's write floor is §7.5's MEDIA_FREE_FLOOR (256 MiB, the default): ingest
+            // below it consumes without writing. The send-side refusal uses the smaller
+            // 3 × F × 64 KiB pre-check over freeSpace() and is not this constant (F-S6-2).
             CiphertextFiles(
                 store,
                 NioCiphertextFileSystem(),
                 SecureNames,
-                MediaSendLimits.SEND_FREE_FLOOR,
             ).also { it.open() }
         } catch (e: RuntimeException) {
             return null
@@ -49,11 +52,14 @@ object MediaWiring {
             null
         }
         val transcoder = GhostTranscoder(context, calibration, NoBitmapsLoader)
+        val sandbox = MediaSandbox(context)
         return MediaPipelinePorts(
             files = files,
             preparing = PreparingFiles(),
-            stripper = SandboxStripper(MediaSandbox(context)),
+            stripper = SandboxStripper(sandbox),
             video = GhostVideoExport(context, transcoder),
+            readers = readers,
+            decoder = SandboxDecoder(sandbox),
         )
     }
 

@@ -147,9 +147,22 @@ class MessagingRuntime(
             contexts = contexts,
             mediaOrphans = mediaOrphans,
         )
+        // Slice S6's recipient pipeline: the same actor and stores, the reader surface and the
+        // reconcile over the pipeline's file store.
+        val receiveSteps = MediaReceiveSteps(
+            database = database,
+            sync = sync,
+            files = pipeline.files,
+            readers = pipeline.readers,
+            preparing = { pipeline.preparing.snapshot() },
+            checkpoint = checkpoint,
+            contexts = contexts,
+            clock = clock,
+        )
         MediaEngineSupport(
             database = database,
             steps = mediaSteps,
+            receiveSteps = receiveSteps,
             preparations = org.ghost.media.send.Preparations(),
             pipeline = pipeline,
             worker = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
@@ -161,8 +174,36 @@ class MessagingRuntime(
         )
     }
 
-    /** The actor-side media steps the pass runs (outcomes, feed, the deadline). */
-    internal class MediaPassSteps(private val steps: MediaSteps) {
+    /**
+     * §10.6's media half (slice S6): SWEEP deletes a message's media objects, their fragments and
+     * every blob no row names any more, in the same transaction as the message row. The rows go
+     * with the commit; the dereferenced files go with the reconcile the media pass runs when the
+     * port records a deletion (§13.5's "checkpoint and reconcile after SWEEP" — the checkpoint is
+     * SWEEP's own, which the cascade's key erasures stand inside).
+     */
+    class SweepMediaPort : org.ghost.messaging.api.MediaPort {
+        private val fragments = org.ghost.media.store.MediaFragments()
+        private val objects = org.ghost.media.store.MediaObjects(fragments)
+
+        /** Set when a pass deleted media rows; the media pass reconciles and clears it. */
+        @Volatile
+        var filesDereferenced: Boolean = false
+
+        override fun onMessagesDeleted(tx: org.ghost.sync.api.SyncTransaction, ids: List<org.ghost.messaging.api.MessageId>) {
+            if (ids.isEmpty()) return
+            objects.deleteObjectsOfMessages(tx, ids.map { it.toByteArray() })
+            filesDereferenced = true
+        }
+    }
+
+    private val mediaSweep: SweepMediaPort? = mediaPipeline?.let { SweepMediaPort() }
+
+    /** The actor-side media steps the pass runs (outcomes, feed, the deadline; ingest/bind/verify, gc). */
+    internal class MediaPassSteps(
+        private val steps: MediaSteps,
+        private val receiveSteps: MediaReceiveSteps,
+        private val sweepPort: SweepMediaPort?,
+    ) {
         /** After OUTCOME, on commit, on retry and on time passes (§13.5's `MEDIA-FEED` row). */
         fun runOutcomesAndFeed() {
             steps.outcomes()
@@ -171,8 +212,28 @@ class MessagingRuntime(
             steps.recoverDescriptors()
         }
 
+        /**
+         * The recipient pipeline (§13.5's `MEDIA-INGEST`/`MEDIA-BIND`/`MEDIA-VERIFY` rows): every
+         * pass, in that order — an ingested manifest binds its awaiting objects, a completed object
+         * verifies. `MEDIA-GC` is time-triggered ([runGc]), like the deadline.
+         */
+        fun runIngestBindVerify() {
+            // §13.5's "reconcile after SWEEP": the cascade dereferenced files in its transaction;
+            // the directory catches up here, on the next pass that runs anyway.
+            if (sweepPort?.filesDereferenced == true) {
+                sweepPort.filesDereferenced = false
+                receiveSteps.reconcile()
+            }
+            receiveSteps.ingest()
+            receiveSteps.bind()
+            receiveSteps.verify()
+        }
+
         /** Time-triggered only (§6.4's deadline; §21.9 rule 1's shape). */
         fun runDeadline() = steps.deadline()
+
+        /** Time-triggered only (§7.5's `MEDIA-GC`: declared losses and pooled retention). */
+        fun runGc() = receiveSteps.gc()
     }
     private val sweeper = Sweeper(
         database = database,
@@ -182,7 +243,7 @@ class MessagingRuntime(
         checkpoint = checkpoint,
         clock = clock,
         contexts = contexts,
-        media = media,
+        media = mediaSweep ?: org.ghost.messaging.api.MediaPort.NONE,
         mediaOrphans = mediaOrphans,
     )
     private val notices = UnreadNotices { sweeper.unreadCount() }
@@ -265,7 +326,7 @@ class MessagingRuntime(
         channels = channelEngine,
         media = mediaSupport?.let { support ->
             // Built after the support; the pass hooks below run on the actor.
-            MediaPassSteps(support.stepsForPass())
+            MediaPassSteps(support.stepsForPass(), support.receiveStepsForPass(), mediaSweep)
         },
     )
 
@@ -298,6 +359,16 @@ class MessagingRuntime(
     /** One hint, as the listener would deliver it; for a caller that holds a [SyncChange] alone. */
     fun onChange(change: SyncChange) {
         triggers.onChange(change)
+    }
+
+    /** §6.5's foreground half of the on-screen signal (GhostApp's ON_START/ON_STOP). */
+    fun onForeground(visible: Boolean) {
+        mediaSupport?.onForeground(visible)
+    }
+
+    /** §13.7's lock half: the preview cache and the on-screen signal go with the lock. */
+    fun onMediaLocked() {
+        mediaSupport?.onLocked()
     }
 
     /**
