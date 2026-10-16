@@ -184,19 +184,21 @@ internal class MediaEngineSupport(
                 it.role == org.ghost.media.store.MediaRole.OUT
             }?.objectId
         } ?: return SendResult.UNKNOWN
-        return database.transaction { tx ->
-            when (objects.retryUpload(tx, objectId, nowE)) {
-                RetryResult.RETRIED -> {
-                    steps.feed()
-                    SendResult.QUEUED
-                }
-                RetryResult.DEADLINE_PASSED -> SendResult.DEADLINE_PASSED
-                RetryResult.NOT_RETRYABLE -> SendResult.NOT_RETRYABLE
-                RetryResult.RETRIES_EXHAUSTED,
-                RetryResult.NOT_FAILED,
-                -> SendResult.UNKNOWN
-                RetryResult.NO_SUCH_OBJECT -> SendResult.UNKNOWN
+        // F-S5-15: the re-feed runs AFTER the retry transaction, in the READY shape (same pass,
+        // not the same transaction) — SyncDatabase is not reentrant, and the nested feed() threw
+        // out of the facade on every retry (the store-level suites bypass the facade, which is
+        // why it stayed green until the review).
+        return when (val result = database.transaction { tx -> objects.retryUpload(tx, objectId, nowE) }) {
+            RetryResult.RETRIED -> {
+                steps.feed()
+                SendResult.QUEUED
             }
+            RetryResult.DEADLINE_PASSED -> SendResult.DEADLINE_PASSED
+            RetryResult.NOT_RETRYABLE -> SendResult.NOT_RETRYABLE
+            RetryResult.RETRIES_EXHAUSTED,
+            RetryResult.NOT_FAILED,
+            -> SendResult.UNKNOWN
+            RetryResult.NO_SUCH_OBJECT -> SendResult.UNKNOWN
         }
     }
 

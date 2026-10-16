@@ -1277,6 +1277,31 @@ internal class SendStep(
      * envelope and that the TTL/deadline come from the object's upload row, not the L0's timer.
      */
     @Suppress("ReturnCount")
+    /**
+     * F-S5-17: the READY descriptor's SEND with recovery — when the flush cannot send (a
+     * transient refusal, a missing session, a closed context), the item is queued like a text
+     * ([queuePending]), so the pending machinery (`flushStranded`) drains it at a later pass
+     * instead of the descriptor stranding with `M_c` pinned by its pending blocker.
+     */
+    internal fun sendDescriptorWithRecovery(
+        self: SelfContext?,
+        contactId: ByteArray,
+        itemId: ByteArray,
+        ttlSeconds: Long,
+        deadlineHour: Long,
+        mediaKeyEnv: ByteArray,
+    ): Boolean {
+        val sent = try {
+            flushMediaDescriptor(self, contactId, itemId, ttlSeconds, deadlineHour, mediaKeyEnv)
+        } catch (e: InsufficientReplicasException) {
+            false
+        } catch (e: StorageFullException) {
+            false
+        }
+        if (!sent) queuePending(contactId, itemId)
+        return sent
+    }
+
     internal fun flushMediaDescriptor(
         self: SelfContext?,
         contactId: ByteArray,
@@ -1318,7 +1343,12 @@ internal class SendStep(
                 if (decoded !is DmContent.DecodeResult.Ok || decoded.content.kind != DmContent.Kind.MEDIA) {
                     return@transaction false
                 }
-                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
+                val session = sessions.current(tx.sql, contactId) ?: run {
+                    // No usable session: the descriptor waits like a text (§6.3's last paragraph),
+                    // exactly as the stale-session path queues it.
+                    queuePendingInTx(tx, itemId, contactId, now)
+                    return@transaction false
+                }
                 if (isStale(session, now)) {
                     demoteForReestablishment(tx, contactId, now)
                     queuePendingInTx(tx, itemId, contactId, now)
@@ -1555,7 +1585,12 @@ internal class SendStep(
                     messages.failPending(tx, itemId)
                     return@transaction false
                 }
-                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
+                val session = sessions.current(tx.sql, contactId) ?: run {
+                    // No usable session: the descriptor waits like a text (§6.3's last paragraph),
+                    // exactly as the stale-session path queues it.
+                    queuePendingInTx(tx, itemId, contactId, now)
+                    return@transaction false
+                }
                 if (isStale(session, now)) {
                     demoteForReestablishment(tx, contactId, now)
                     return@transaction false

@@ -194,19 +194,14 @@ class MediaUploadScenarioTest {
         val retried = world.database.transaction { tx -> world.objects.retryUpload(tx, objectId, MediaWorld.NOW) }
         assertEquals(org.ghost.media.store.RetryResult.RETRIED, retried)
         world.steps.feed()
-        // Oracle: the acknowledged 16 ordinals were never enqueued again; only ordinal 15 re-fed.
-        assertEquals(18L, oracleOps(world, objectId)) // 17 first feed + 1 retry
+        // Oracle: the acknowledged 16 ordinals were never enqueued again. The retried ordinal's
+        // identical bytes are refused by Phase 7's UNIQUE(namespace, blob_hash) (F-S5-19): it
+        // stays unsent, the 17 first-feed ops remain the object's whole op set.
+        assertEquals(17L, oracleOps(world, objectId))
         assertEquals(
-            1L,
-            world.sql.queryLong(
-                "SELECT count(*) FROM media_outbound_op WHERE object_id = ? AND ordinal = 15 AND retry_gen = 1",
-                listOf(objectId),
-            ),
-        )
-        assertEquals(
-            0L,
-            world.sql.queryLong(
-                "SELECT count(*) FROM media_outbound_op WHERE object_id = ? AND ordinal = 0 AND retry_gen = 1",
+            "unsent",
+            world.sql.queryString(
+                "SELECT upload_state FROM media_fragment WHERE object_id = ? AND ordinal = 15",
                 listOf(objectId),
             ),
         )
@@ -227,8 +222,22 @@ class MediaUploadScenarioTest {
             "failed",
             world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(objectId)),
         )
-        // The descriptor item is failed-past-deadline and no ops are in flight: the orphan rule
-        // completed in the same transaction — the upload row is gone, M_c recorded.
+        // The 17 ops the relay still holds (released = 0) block the orphan rule — the clause is
+        // live because the world's relay writes real outbox_op rows (F-S5-16).
+        assertEquals(
+            0L,
+            world.sql.queryLong("SELECT count(*) FROM dm_orphan_namespace", emptyList()),
+        )
+        assertEquals(
+            1L,
+            world.sql.queryLong("SELECT count(*) FROM media_upload WHERE object_id = ?", listOf(objectId)),
+        )
+        // The outbox decides them SENT (a device that came back late): the releases drain the
+        // clause and the orphan completes — the upload row goes, M_c is recorded.
+        repeat(17) { i ->
+            world.relay.script(world.relay.opIdOf(objectId, i - 1), Outcome.SENT)
+        }
+        world.steps.outcomes()
         assertEquals(
             0L,
             world.sql.queryLong("SELECT count(*) FROM media_upload WHERE object_id = ?", listOf(objectId)),

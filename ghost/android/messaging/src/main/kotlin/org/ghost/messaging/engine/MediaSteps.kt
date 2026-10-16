@@ -329,7 +329,10 @@ internal class MediaSteps(
             if (applyOne(outcome, self, ready)) released += 1
         }
         for (item in ready) {
-            sendStep.flushMediaDescriptor(
+            // F-S5-17: any flush failure (a transient, a closed context, a missing session) queues
+            // the pending send — the pending machinery drains it at a later pass; a crash between
+            // the READY commit and this flush is recovered by recoverDescriptors().
+            sendStep.sendDescriptorWithRecovery(
                 self = self,
                 contactId = item[0] as ByteArray,
                 itemId = item[1] as ByteArray,
@@ -339,6 +342,40 @@ internal class MediaSteps(
             )
         }
         return released
+    }
+
+    /**
+     * `MEDIA-READY`'s recovery (§6.4/§13.5): an `uploaded` object whose descriptor item is still
+     * `pending` — after a crash between the READY commit and the flush, or when the flush's
+     * transient failure queued it — gets its SEND again. Idempotent: the flush's guards (the item
+     * leaves `pending` only with the op) make a second pass a no-op, and the pending row (if any)
+     * is retired when the send commits.
+     */
+    fun recoverDescriptors() {
+        val self = contexts.get()
+        val due = database.transaction { tx ->
+            val out = ArrayList<List<Any>>()
+            tx.sql.query(
+                "SELECT o.dest_id, u.ttl_seconds, u.deadline_hour, o.key_env, o.message_id " +
+                    "FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
+                    "JOIN dm_outbound_item i ON i.message_ref = o.message_id " +
+                    "WHERE o.role = 'out' AND o.state = 'uploaded' " +
+                    "AND i.kind = 5 AND i.state = 'pending'",
+            ) { r ->
+                out += listOf(r.blob(0), r.long(1), r.long(2), r.blob(3), r.blob(4))
+            }
+            out
+        }
+        for (item in due) {
+            sendStep.sendDescriptorWithRecovery(
+                self = self,
+                contactId = item[0] as ByteArray,
+                itemId = item[4] as ByteArray,
+                ttlSeconds = item[1] as Long,
+                deadlineHour = item[2] as Long,
+                mediaKeyEnv = item[3] as ByteArray,
+            )
+        }
     }
 
     /** `MEDIA-DEADLINE` (§6.4): time-triggered; a process that was not running applies it at start. */
@@ -352,13 +389,11 @@ internal class MediaSteps(
                 objects.markFailed(tx, objectId)
                 failObject(tx, objectId, nowE)
                 val obj = objects.byId(tx.sql, objectId, nowE)
-                val messageId = obj?.messageId
                 val upload = objects.upload(tx.sql, objectId, nowE)
-                if (messageId != null && upload != null) {
-                    val message = messages.message(tx.sql, messageId, expiry.nowMinute(tx.sql)) ?: continue
+                if (obj?.messageId != null && upload != null) {
                     // The countdown anchors at the upload's end — the deadline hour (D26): a pass
                     // that runs late lowers to the same value the upper bound already carried.
-                    messages.lowerExpireAt(tx, messageId, countdownMinute(upload.deadlineHour, message.timerCode))
+                    lowerCountdown(tx, objectId, nowE, upload.deadlineHour)
                 }
                 val contact = obj?.destId ?: continue
                 mediaOrphans.recordIfOrphaned(tx, self, contact, now)
@@ -397,9 +432,20 @@ internal class MediaSteps(
                     }
                 }
                 Outcome.FAILED -> {
-                    mediaFragments.settle(tx, op.objectId, op.ordinal, UploadState.FAILED)
-                    objects.markFailed(tx, op.objectId)
+                    // F-S5-16: a deadline-failed object's op can be decided later; the ordinal is
+                    // settled only while open and the object move tolerates an already-failed row —
+                    // the unguarded move threw ILLEGAL_TRANSITION, rolled back the release with the
+                    // whole outcome transaction, and the same outcome re-threw every pass.
+                    if (mediaFragments.uploadStateOf(tx.sql, op.objectId, op.ordinal) == UploadState.OPEN) {
+                        mediaFragments.settle(tx, op.objectId, op.ordinal, UploadState.FAILED)
+                    }
+                    if (objects.byId(tx.sql, op.objectId, nowE)?.state == ObjectState.UPLOADING) {
+                        objects.markFailed(tx, op.objectId)
+                    }
                     failObject(tx, op.objectId, nowE)
+                    // F-S5-18 (ADR-45 point 4): the failure ends the upload — the sender's
+                    // countdown starts at it, not at the commit-time upper bound.
+                    lowerCountdown(tx, op.objectId, nowE, now)
                     mediaOrphans.recordIfOrphaned(tx, self, contactId, now)
                 }
             }
@@ -424,6 +470,10 @@ internal class MediaSteps(
         mediaFragments.settle(tx, op.objectId, op.ordinal, to)
         val now = clock.nowEpochSeconds()
         if (!mediaFragments.allAcknowledged(tx.sql, op.objectId)) return
+        // The object's uploads are over — by READY or by the deadline/failure that already failed
+        // it: the orphan rule is offered in both shapes (a deadline-failed object whose ops are
+        // decided late releases its clause here, not at the READY transition that never comes).
+        mediaOrphans.recordIfOrphaned(tx, self, contactId, now)
         val obj = objects.byId(tx.sql, op.objectId, nowE) ?: return
         if (obj.role != MediaRole.OUT || obj.state != ObjectState.UPLOADING) return
         objects.markUploaded(tx, op.objectId)
@@ -434,7 +484,17 @@ internal class MediaSteps(
         // for after this transaction (the SEND runs transactions of its own).
         val upload = objects.upload(tx.sql, op.objectId, nowE) ?: return
         ready += listOf(contactId, messageId, upload.ttlSeconds, upload.deadlineHour, obj.keyEnv ?: return)
-        mediaOrphans.recordIfOrphaned(tx, self, contactId, now)
+    }
+
+    /**
+     * The sender's countdown, lowered at an upload-ending event (§6.4, ADR-45 point 4): the only-
+     * earlier rule the trigger keeps. [anchorSeconds] is the event — the deadline hour at
+     * `MEDIA-DEADLINE`, the failure moment at a FAILED outcome.
+     */
+    private fun lowerCountdown(tx: org.ghost.sync.api.SyncTransaction, objectId: ByteArray, nowE: Long, anchorSeconds: Long) {
+        val messageId = objects.byId(tx.sql, objectId, nowE)?.messageId ?: return
+        val message = messages.message(tx.sql, messageId, expiry.nowMinute(tx.sql)) ?: return
+        messages.lowerExpireAt(tx, messageId, countdownMinute(anchorSeconds, message.timerCode))
     }
 
     /** An object ends `failed` and its message with it; the countdown still waits for READY/deadline. */

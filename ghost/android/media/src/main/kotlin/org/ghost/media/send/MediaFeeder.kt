@@ -86,16 +86,25 @@ class MediaFeeder(
                 return Fed.HashMismatch
             }
             val opId = opIds.of(objectId, next.ordinal, upload.retryGen, 0)
-            outbox.enqueue(
-                tx,
-                OutboundBlob(
-                    org.ghost.sync.api.OperationId(opId),
-                    namespace,
-                    bytes,
-                    bucket,
-                    deadlineEpochSeconds = upload.deadlineHour,
-                ),
-            )
+            // Phase 7 refuses identical bytes in one namespace (UNIQUE (namespace_id, blob_hash)):
+            // a retried ordinal's re-feed collides with its generation-0 op (F-S5-19). The
+            // store's answer stands; the op row is written only on the store's acceptance, so a
+            // refusal leaves the ordinal unsent for the next pass.
+            if (outbox.enqueue(
+                    tx,
+                    OutboundBlob(
+                        org.ghost.sync.api.OperationId(opId),
+                        namespace,
+                        bytes,
+                        bucket,
+                        deadlineEpochSeconds = upload.deadlineHour,
+                    ),
+                ) == org.ghost.sync.api.EnqueueResult.AlreadyEnqueued
+            ) {
+                // The store owns these bytes already (F-S5-19): this pass is done — breaking, not
+                // continuing, or the still-unsent ordinal would spin the loop for ever.
+                break
+            }
             fragments.enqueue(tx, MediaOp(opId, objectId, next.ordinal, upload.retryGen, 0))
             fed++
         }

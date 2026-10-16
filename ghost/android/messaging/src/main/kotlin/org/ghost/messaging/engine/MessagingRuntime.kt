@@ -167,6 +167,8 @@ class MessagingRuntime(
         fun runOutcomesAndFeed() {
             steps.outcomes()
             steps.feed()
+            // F-S5-17: a READY descriptor left pending by a crash or a transient gets its SEND again.
+            steps.recoverDescriptors()
         }
 
         /** Time-triggered only (§6.4's deadline; §21.9 rule 1's shape). */

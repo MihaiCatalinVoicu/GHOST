@@ -358,13 +358,13 @@ internal class CrashableFileSystem(private val real: CiphertextFileSystem) : Cip
 }
 
 /** The sandbox seam: the committed golden canonical JPEG (object and preview alike). */
-private object FakeStripper : ImageStripper {
+internal object FakeStripper : ImageStripper {
     override fun strip(source: ByteArray, preview: Boolean, maxBytes: Int): ImageStripper.StripResult =
         ImageStripper.StripResult.Ok(Goldens.jpeg, 512, 336)
 }
 
 /** The video seam: the committed golden canonical fMP4 through the caller's real channel. */
-private object FakeVideoExport : VideoExport {
+internal object FakeVideoExport : VideoExport {
     override fun calibrate(): PrepFailure? = null
 
     override fun export(
@@ -474,8 +474,15 @@ internal class ScriptedOutbox : Outbox {
     private val released = HashSet<String>()
     private val script = ArrayDeque<Scripted>()
 
+    /** The outcomes drained so far, by op id: release() decides the row before releasing it
+     * (outbox_op_release refuses a release while the outcome is 'pending'). */
+    private val decided = HashMap<String, Outcome>()
+
     /** What the relay holds, for the oracles: op id → namespace. */
     val held: Map<String, NamespaceId> get() = enqueued
+
+    /** The (namespace, ciphertext-hash) pairs the relay holds: Phase 7's uniqueness key. */
+    private val byBytes = HashSet<String>()
 
     fun script(operationId: org.ghost.sync.api.OperationId, outcome: Outcome, resendNotAfter: Long? = null) {
         script += Scripted(operationId, outcome, resendNotAfter)
@@ -487,8 +494,31 @@ internal class ScriptedOutbox : Outbox {
 
     override fun enqueue(tx: SyncTransaction, blob: OutboundBlob): EnqueueResult {
         val key = hexOf(blob.operationId.toByteArray())
-        return if (enqueued.put(key, blob.namespace) == null) EnqueueResult.Enqueued
-        else EnqueueResult.AlreadyEnqueued
+        // Phase 7's rule (outbox_op UNIQUE (namespace_id, blob_hash), D2's frozen bytes): the
+        // same ciphertext bytes are one operation in a namespace, whatever op id names them.
+        // F-S5-19: the design's per-retry-generation op ids collide with this for a retried
+        // ordinal's identical bytes — recorded for the owner; the world mirrors the store.
+        val bytesKey = hexOf(blob.namespace.toByteArray()) + ":" +
+            hexOf(java.security.MessageDigest.getInstance("SHA-256").digest(blob.ciphertext))
+        if (!byBytes.add(bytesKey)) return EnqueueResult.AlreadyEnqueued
+        if (enqueued.put(key, blob.namespace) != null) return EnqueueResult.AlreadyEnqueued
+        // F-S5-16: a real outbox_op row, so MEDIA_ORPHAN_OP_BLOCKERS is live in the world — an op
+        // the relay still holds (released = 0) must block the M_c orphan rule, as production's join
+        // does (the memory-only shape made the clause vacuous and the orphan fired early).
+        tx.sql.exec(
+            "INSERT INTO outbox_op(operation_id, namespace_id, blob_hash, ciphertext, ttl_seconds, " +
+                "not_before_minute, deadline_hour, required_operators, outcome, released) " +
+                "VALUES (?, ?, ?, ?, ?, 0, ?, 2, 'pending', 0)",
+            listOf(
+                blob.operationId.toByteArray(),
+                blob.namespace.toByteArray(),
+                java.security.MessageDigest.getInstance("SHA-256").digest(blob.ciphertext),
+                blob.ciphertext,
+                blob.ttl.seconds.toLong(),
+                blob.deadlineEpochSeconds ?: 0L,
+            ),
+        )
+        return EnqueueResult.Enqueued
     }
 
     override fun cancel(tx: SyncTransaction, operationId: org.ghost.sync.api.OperationId): Boolean = false
@@ -500,6 +530,7 @@ internal class ScriptedOutbox : Outbox {
         val out = ArrayList<OutboundOutcome>()
         repeat(minOf(limit, script.size)) {
             val s = script.removeFirst()
+            decided[hexOf(s.operationId.toByteArray())] = s.outcome
             out += OutboundOutcome(
                 s.operationId,
                 enqueued[hexOf(s.operationId.toByteArray())] ?: NamespaceId(ByteArray(32)),
@@ -511,6 +542,20 @@ internal class ScriptedOutbox : Outbox {
         return out
     }
 
-    override fun release(tx: SyncTransaction, operationId: org.ghost.sync.api.OperationId): Boolean =
-        released.add(hexOf(operationId.toByteArray()))
+    override fun release(tx: SyncTransaction, operationId: org.ghost.sync.api.OperationId): Boolean {
+        val key = hexOf(operationId.toByteArray())
+        // Exactly-once first: a re-delivered outcome's release is a no-op without touching the
+        // row (its outcome is already decided; the schema's trigger would abort the UPDATE).
+        if (key in released) return false
+        val op = operationId.toByteArray()
+        // The outcome is decided before the release, as the schema's trigger requires.
+        decided[key]?.let {
+            tx.sql.exec(
+                "UPDATE outbox_op SET outcome = ? WHERE operation_id = ?",
+                listOf(it.name.lowercase(), op),
+            )
+        }
+        tx.sql.exec("UPDATE outbox_op SET released = 1 WHERE operation_id = ?", listOf(op))
+        return released.add(key)
+    }
 }
