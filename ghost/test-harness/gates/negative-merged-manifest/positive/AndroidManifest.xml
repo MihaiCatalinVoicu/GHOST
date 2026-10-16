@@ -79,6 +79,11 @@
                 android:name="androidx.profileinstaller.ProfileInstallerInitializer"
                 android:value="androidx.startup" />
         </provider>
-    </application>
+            <service
+            android:name="org.ghost.media.sandbox.MediaDecodeService"
+            android:isolatedProcess="true"
+            android:process=":mdec"
+            android:exported="false" />
+</application>
 
 </manifest>

@@ -138,6 +138,82 @@ for mp_case in \
     echo "self-test ok: media-crate-purity rejects $mp_name for its own reason"
   fi
 done
+
+# G-M1 (Phase 11 design faza11-media.md §16.1 G-M1; slice S7): the no-plaintext-io gate, sink
+# and writer halves. The good fixture carries an empty writer allowlist (its tree is clean);
+# the negatives each break one rule.
+if GHOST_ROOT="$HARNESS/media-no-plaintext/good" GHOST_WRITER_ALLOWLIST=/dev/null bash "$DIR/media-no-plaintext-io.sh" >/dev/null 2>&1; then
+  echo "self-test ok: media-no-plaintext-io accepts the clean fixture"
+else
+  echo "SELF-TEST FAIL: media-no-plaintext-io rejects the clean fixture" >&2; rc=1
+fi
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-simple-cache"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-cache-dir"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-mediastore"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-writer"
+expect_fail media-no-plaintext-io "$HARNESS/media-no-plaintext/negative-transformer"
+# The PM-M10 fixture is the sink half's shape: the player wrapped over a caching data source.
+pm10_out="$(GHOST_WRITER_ALLOWLIST=/dev/null GHOST_ROOT="$HARNESS/media-no-plaintext/negative-simple-cache" bash "$DIR/media-no-plaintext-io.sh" 2>&1 || true)"
+if grep -qF "(G-M1 sink: simple-cache)" <<<"$pm10_out"; then
+  echo "self-test ok: media-no-plaintext-io names the simple-cache sink (PM-M10's fixture)"
+else
+  echo "SELF-TEST FAIL: media-no-plaintext-io does not report the simple-cache sink" >&2; rc=1
+fi
+
+# G-M2 (faza11-media.md §16.1 G-M2; slice S7): the Media3 artifact allowlist.
+if GHOST_ROOT="$HARNESS/media3-dependency/good" bash "$DIR/media3-dependency-allowlist.sh" >/dev/null 2>&1; then
+  echo "self-test ok: media3-dependency-allowlist accepts the clean fixture"
+else
+  echo "SELF-TEST FAIL: media3-dependency-allowlist rejects the clean fixture" >&2; rc=1
+fi
+expect_fail media3-dependency-allowlist "$HARNESS/media3-dependency/negative-session"
+expect_fail media3-dependency-allowlist "$HARNESS/media3-dependency/negative-ui"
+
+# G-M3 (faza11-media.md §16.1 G-M3; slice S7): decoder confinement's source and configuration
+# halves, plus the shape assertions (the no-mfra fixture is MC-M24's source shape).
+if GHOST_ROOT="$HARNESS/media-decoder-confinement/good" bash "$DIR/media-decoder-confinement.sh" >/dev/null 2>&1; then
+  echo "self-test ok: media-decoder-confinement accepts the clean fixture"
+else
+  echo "SELF-TEST FAIL: media-decoder-confinement rejects the clean fixture" >&2; rc=1
+fi
+expect_fail media-decoder-confinement "$HARNESS/media-decoder-confinement/negative-image-decoder"
+expect_fail media-decoder-confinement "$HARNESS/media-decoder-confinement/negative-default-renderers"
+expect_fail media-decoder-confinement "$HARNESS/media-decoder-confinement/negative-player-builder"
+mfra_out="$(GHOST_ROOT="$HARNESS/media-decoder-confinement/negative-no-mfra" bash "$DIR/media-decoder-confinement.sh" 2>&1 || true)"
+if grep -qF "FLAG_READ_MFRA_FOR_SEEK_MAP" <<<"$mfra_out"; then
+  echo "self-test ok: media-decoder-confinement catches MC-M24's shape (the seek-map flag gone)"
+else
+  echo "SELF-TEST FAIL: media-decoder-confinement does not catch the no-mfra fixture" >&2; rc=1
+fi
+
+# G-M4 (faza11-media.md §16.1 G-M4; slice S7): manifest-lint's isolated-service and binding
+# halves over source manifests and sources.
+if GHOST_ROOT="$HARNESS/media-manifest/good" bash "$DIR/manifest-lint.sh" >/dev/null 2>&1; then
+  echo "self-test ok: manifest-lint accepts the clean G-M4 fixture"
+else
+  echo "SELF-TEST FAIL: manifest-lint rejects the clean G-M4 fixture" >&2; rc=1
+fi
+expect_fail manifest-lint "$HARNESS/media-manifest/negative-no-isolated"
+expect_fail manifest-lint "$HARNESS/media-manifest/negative-binding"
+
+# G-M10 (faza11-media.md §16.1 G-M10, S0-10; slice S7): the release-dex absence check over
+# synthetic R8 outputs (a kept ImageRenderer is the design's negative fixture).
+MRD="$HARNESS/media-release-dex"
+if bash "$DIR/media-release-dex.sh" "$MRD/good/mapping.txt" "$MRD/good/usage.txt" >/dev/null 2>&1; then
+  echo "self-test ok: media-release-dex accepts the clean fixture"
+else
+  echo "SELF-TEST FAIL: media-release-dex rejects the clean fixture" >&2; rc=1
+fi
+if bash "$DIR/media-release-dex.sh" "$MRD/bad-kept/mapping.txt" "$MRD/bad-kept/usage.txt" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: media-release-dex passed the kept-ImageRenderer fixture" >&2; rc=1
+else
+  echo "self-test ok: media-release-dex rejects a kept ImageRenderer (G-M10's negative fixture)"
+fi
+if bash "$DIR/media-release-dex.sh" "$MRD/bad-usage/mapping.txt" "$MRD/bad-usage/usage.txt" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: media-release-dex passed the not-a-usage-report fixture" >&2; rc=1
+else
+  echo "self-test ok: media-release-dex refuses a usage.txt that reports no removable class"
+fi
 media_log_out="$(GHOST_ROOT="$HARNESS/negative-media-logging" bash "$DIR/no-logging.sh" 2>&1 || true)"
 if [ "$(grep -c '^GATE-FAIL' <<<"$media_log_out" || true)" = 2 ] \
   && grep -qF "client-core/media/src/lib.rs:3:    log::info!" <<<"$media_log_out" \
@@ -182,18 +258,22 @@ clearnet_hits="$(GHOST_ROOT="$HARNESS/negative-clearnet" bash "$DIR/kotlin-clear
 if [ "$clearnet_hits" = "12" ]; then echo "self-test ok: kotlin-clearnet reports all 12 fixture lines"; else echo "SELF-TEST FAIL: kotlin-clearnet reported $clearnet_hits of 12 fixture lines" >&2; rc=1; fi
 # Phase 7 T15m on fixture files: the negative merged manifest reports each of its 15 violations, and
 # the merged release manifest as built at Phase 7 passes (a gate failing on everything is caught).
+# Phase 7 T15m on fixture files: the negative merged manifest reports each of its 17 violations
+# (16 of Phase 7's fixture plus G-M4's missing MediaDecodeService, slice S7), and the merged
+# release manifest as built at Phase 7 passes (a gate failing on everything is caught).
 MERGED_FIXTURES="$HARNESS/negative-merged-manifest"
 merged_hits="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/AndroidManifest.xml" 2>&1 | grep -c '^GATE-FAIL' || true)"
-if [ "$merged_hits" = "16" ]; then echo "self-test ok: merged-manifest-lint reports all 16 violations of the negative fixture"; else echo "SELF-TEST FAIL: merged-manifest-lint reported $merged_hits of 16 violations" >&2; rc=1; fi
+if [ "$merged_hits" = "17" ]; then echo "self-test ok: merged-manifest-lint reports all 17 violations of the negative fixture"; else echo "SELF-TEST FAIL: merged-manifest-lint reported $merged_hits of 17 violations" >&2; rc=1; fi
 # G-DM7 (Phase 9 design §16.1; slice S12): the DM alarm receiver exported with an intent filter is
 # three lines (two G-DM7 clauses and T15m's unlisted export), and the missing receiver is V16 above.
+# The fixture predates Phase 11, so G-M4's missing MediaDecodeService adds a fourth line (slice S7).
 dmrecv_out="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/dm-receiver/AndroidManifest.xml" 2>&1 || true)"
 dmrecv_hits="$(grep -c '^GATE-FAIL' <<<"$dmrecv_out" || true)"
-if [ "$dmrecv_hits" = "3" ] && grep -qF 'must declare android:exported="false" (G-DM7)' <<<"$dmrecv_out" \
+if [ "$dmrecv_hits" = "4" ] && grep -qF 'must declare android:exported="false" (G-DM7)' <<<"$dmrecv_out" \
    && grep -qF 'must have no intent filter (G-DM7)' <<<"$dmrecv_out"; then
   echo "self-test ok: merged-manifest-lint reports the exported DM alarm receiver (G-DM7)"
 else
-  echo "SELF-TEST FAIL: merged-manifest-lint reported $dmrecv_hits of 3 G-DM7 violations" >&2; rc=1
+  echo "SELF-TEST FAIL: merged-manifest-lint reported $dmrecv_hits of 4 violations (3 G-DM7 + G-M4's missing service)" >&2; rc=1
 fi
 if grep -qF 'ExpiryAlarmReceiver: missing' <<<"$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/AndroidManifest.xml" 2>&1 || true)"; then
   echo "self-test ok: merged-manifest-lint reports a missing DM alarm receiver (G-DM7)"
@@ -201,13 +281,14 @@ else
   echo "SELF-TEST FAIL: merged-manifest-lint does not report a missing DM alarm receiver" >&2; rc=1
 fi
 # ADR-06, FR-7.11 (Phase 9 review A-3): an androidx.startup initializer that is not allowlisted is
-# one line — emoji2's, which called Google Play Services' font provider at every UI start.
+# one line — emoji2's, which called Google Play Services' font provider at every UI start. The
+# Phase 7 fixture has no MediaDecodeService, so G-M4 adds a second line (slice S7).
 startup_out="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/startup/AndroidManifest.xml" 2>&1 || true)"
 startup_hits="$(grep -c '^GATE-FAIL' <<<"$startup_out" || true)"
-if [ "$startup_hits" = "1" ] && grep -qF 'androidx.startup initializer not allowlisted: androidx.emoji2.text.EmojiCompatInitializer' <<<"$startup_out"; then
+if [ "$startup_hits" = "2" ] && grep -qF 'androidx.startup initializer not allowlisted: androidx.emoji2.text.EmojiCompatInitializer' <<<"$startup_out"; then
   echo "self-test ok: merged-manifest-lint reports a startup initializer that is not allowlisted (A-3)"
 else
-  echo "SELF-TEST FAIL: merged-manifest-lint reported $startup_hits of 1 startup-initializer violation" >&2; rc=1
+  echo "SELF-TEST FAIL: merged-manifest-lint reported $startup_hits of 2 violations (the startup initializer + G-M4's missing service)" >&2; rc=1
 fi
 if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifest.xml" >/dev/null 2>&1; then
   echo "self-test ok: merged-manifest-lint accepts the Phase 7 merged release manifest"

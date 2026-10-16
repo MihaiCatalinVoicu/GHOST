@@ -86,6 +86,8 @@ dependencies {
     androidTestImplementation(libs.junit)
     // The S5 device smoke's `VideoSource.mediaItem()` (media3's type crosses the test boundary).
     androidTestImplementation(libs.androidx.media3.common)
+    // Slice S7's playback device test drives the player (GhostPlayer returns ExoPlayer).
+    androidTestImplementation(libs.androidx.media3.exoplayer)
     androidTestImplementation(libs.sqlcipher.android)
     androidTestImplementation(libs.androidx.sqlite)
     // `DeviceWorld.onion` computes the v3 checksum with the SHA3 `:network`'s `OnionAddress` checks

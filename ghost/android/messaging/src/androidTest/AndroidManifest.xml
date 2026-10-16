@@ -16,6 +16,12 @@
             android:isolatedProcess="true"
             android:process=":mdec"
             android:exported="false" />
+
+        <!-- Slice S7's playback window (§10.3's FLAG_SECURE row; the snapshot scan's activity):
+             the device playback test renders into it. Test-APK-local, never exported. -->
+        <activity
+            android:name="org.ghost.messaging.media.MediaPlaybackDeviceTest$MediaPlaybackActivity"
+            android:exported="false" />
     </application>
 
 </manifest>

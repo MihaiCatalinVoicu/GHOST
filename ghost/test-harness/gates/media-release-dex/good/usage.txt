@@ -1,0 +1,3 @@
+Removed unused program classes and program class members (18):
+  androidx.media3.datasource.cache.SimpleCache
+  androidx.media3.exoplayer.image.ImageRenderer

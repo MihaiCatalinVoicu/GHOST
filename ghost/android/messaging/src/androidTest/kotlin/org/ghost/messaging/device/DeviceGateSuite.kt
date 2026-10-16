@@ -325,5 +325,14 @@ class DeviceGateSuite {
 // The S5 media smoke joins the device suite (Phase 11 design §17.1 row S5: one image and one
 // video on an emulator, one a matching source); the runner's list is fixed, so it is named here.
 class MessagingDeviceRunner : DeviceRunner(
-    listOf(DeviceGateSuite::class.java, org.ghost.messaging.media.MediaDeviceSmokeTest::class.java),
+    listOf(
+        DeviceGateSuite::class.java,
+        org.ghost.messaging.media.MediaDeviceSmokeTest::class.java,
+        // Slice S7's playback run (§15.8 item 3's device half): the real sealer/reader/player
+        // stack over the golden, in the FLAG_SECURE window.
+        org.ghost.messaging.media.MediaPlaybackDeviceTest::class.java,
+        // Slice S7's host-driven restart run: part one records, the host kills the process,
+        // part two resumes (scripts/device/media-playback-restart.sh drives it).
+        org.ghost.messaging.media.MediaPlaybackRestartTest::class.java,
+    ),
 )

@@ -51,6 +51,11 @@ function attr(tag, key,    re) {
   return "(absent)"
 }
 function bad(msg) { print msg }
+function attr_last(key,    re) {
+  re = " " key "=\"[^\"]*\""
+  if (match(ctag, re)) return substr(ctag, RSTART + length(key) + 3, RLENGTH - length(key) - 4)
+  return "(absent)"
+}
 function open_tag(name, tag,    pn) {
   if (name == "manifest") {
     seen = 1
@@ -70,6 +75,7 @@ function open_tag(name, tag,    pn) {
   } else if (name == "activity" || name == "activity-alias" || name == "service" || name == "receiver" || name == "provider") {
     incomp = 1
     ctype = name
+    ctag = tag
     cname = attr(tag, "android:name")
     cexported = attr(tag, "android:exported")
     cperm = attr(tag, "android:permission")
@@ -87,6 +93,8 @@ function open_tag(name, tag,    pn) {
     if (attr(tag, "android:value") == "androidx.startup" && !(attr(tag, "android:name") in allowedinit)) {
       bad("androidx.startup initializer not allowlisted: " attr(tag, "android:name") " (ADR-06, FR-7.11)")
     }
+  } else if (incomp && name == "meta-data" && attr(tag, "android:name") == "com.google.android.gms.metadata.ModuleDependencies") {
+    bad("the GMS picker backport marker is forbidden (ADR-06, G-M4)")
   }
 }
 function close_tag(name) {
@@ -108,6 +116,17 @@ function end_component() {
     if (ctype != "receiver") bad(cname ": must be declared as a receiver (G-DM7)")
     if (cexported != "false") bad(cname ": must declare android:exported=\"false\" (G-DM7)")
     if (cfilter) bad(cname ": must have no intent filter (G-DM7)")
+  }
+  if (ctype == "provider" && cname ~ /FileProvider$/) {
+    bad(cname ": FileProvider is forbidden (G-M4, §10.3)")
+  }
+  if (cname == "org.ghost.media.sandbox.MediaDecodeService") {
+    foundmdec = 1
+    if (ctype != "service") bad(cname ": must be declared as a service (G-M4)")
+    if (cexported != "false") bad(cname ": must declare android:exported=\"false\" (G-M4)")
+    if (attr_last("android:isolatedProcess") != "true") bad(cname ": must declare android:isolatedProcess=\"true\" (G-M4)")
+    if (attr_last("android:process") != ":mdec") bad(cname ": must run in the :mdec process (G-M4)")
+    if (cfilter) bad(cname ": must have no intent filter (G-M4)")
   }
   if (cexported == "(absent)" && cfilter) {
     bad(cname ": " ctype " with an intent filter must declare android:exported")
@@ -158,6 +177,7 @@ END {
   if (!seen) bad("not an Android manifest")
   if (!foundsync) bad(syncsvc ": missing (the background sync job, ADR-20)")
   if (!founddm) bad(dmrecv ": missing (the receiver of the DM expiry alarm, G-DM7)")
+  if (foundmdec != 1) bad("org.ghost.media.sandbox.MediaDecodeService: expected exactly one isolated decoding service, found " (foundmdec + 0) " (G-M4)")
   n = split(required, req, "|")
   for (i = 1; i <= n; i++) if (!(req[i] in have)) bad("uses-permission missing: " req[i] " (the sync job needs it, ADR-20)")
   if (launchers != 1) bad("expected exactly one exported LAUNCHER activity, found " (launchers + 0))

@@ -171,6 +171,7 @@ class MessagingRuntime(
             random = random,
             contexts = contexts,
             actorCall = { body -> actor.call(body) },
+            checkpoint = checkpoint,
         )
     }
 
@@ -369,6 +370,11 @@ class MessagingRuntime(
     /** §13.7's lock half: the preview cache and the on-screen signal go with the lock. */
     fun onMediaLocked() {
         mediaSupport?.onLocked()
+    }
+
+    /** §10.5's trim half: the preview cache goes when the UI hides (TRIM_MEMORY_UI_HIDDEN). */
+    fun onMediaTrim() {
+        mediaSupport?.onTrimMemory()
     }
 
     /**
