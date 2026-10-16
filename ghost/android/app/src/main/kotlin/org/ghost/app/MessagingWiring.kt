@@ -58,6 +58,9 @@ internal interface DmStack : AutoCloseable {
     /** §13.7's lock half for the media layer: the preview cache and the on-screen signal go. */
     fun onMediaLock() = Unit
 
+    /** §10.5's trim half for the media layer: the preview cache goes when the UI hides. */
+    fun onMediaTrim() = Unit
+
     /**
      * Stops the stack for good: no pass that has not started runs, the context closes and both
      * wakes are cancelled in the actor's last turn, then the actor and the timer stop. Blocks for as
@@ -85,6 +88,8 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
     override fun onForeground(visible: Boolean) = runtime.onForeground(visible)
 
     override fun onMediaLock() = runtime.onMediaLocked()
+
+    override fun onMediaTrim() = runtime.onMediaTrim()
 
     override fun close() = runtime.close()
 
@@ -389,6 +394,15 @@ internal class MessagingWiring(
     fun onUnlock() {
         locked = false
         stack?.open(identity, ::contextWanted)
+    }
+
+    /**
+     * The system asked for memory (the component callbacks' onTrimMemory): at TRIM_MEMORY_UI_HIDDEN
+     * the media layer's RAM cache goes (§10.5). Cheap and idempotent, so no level gate here — the
+     * stack decides.
+     */
+    fun onTrimMemory() {
+        stack?.onMediaTrim()
     }
 
     /**

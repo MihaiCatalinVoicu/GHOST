@@ -1,0 +1,13 @@
+# G-M1's writer half (Phase 11 design faza11-media.md §16.1 G-M1, §22.5 row 21; slice S7):
+# the only files of android/*/src/main (and src/release, src/gate) that may call a file-writing
+# API. media-no-plaintext-io.sh refuses a writer call in any file not listed here, and refuses
+# a listed file whose calls no longer match (the count column), so removing the last call flags
+# the line for review too. The last column is the review's documentation of why the write is
+# not a plaintext-media sink.
+#
+# file|<module-relative path>|<writer as it appears (extended regex)>|<times>|-|<why>
+file|media/src/main/kotlin/org/ghost/media/store/CiphertextFiles.kt|FileChannel\.open|3|-|The store's writeNew (CREATE_NEW + WRITE), force (WRITE) and the directory sync (READ — F-S7 finding: the count covers all three opens; the gate cannot grade the option list). The design names this file as the tree's only media writer (§22.5 row 21b); relay-identical ciphertext under noBackupFilesDir/m/ (§10.4)
+file|media/src/main/kotlin/org/ghost/media/store/CiphertextFiles.kt|Files\.move|1|-|The temp-to-final atomic rename of the same store (§10.4)
+file|identity/src/main/kotlin/org/ghost/identity/AndroidKeystoreWrapper.kt|writeBytes|2|-|Phase 7 code, predates G-M1; the identity envelope, not media. Listed so a second writer in the file fails the gate
+file|app/src/gate/kotlin/org/ghost/app/DmBranch.kt|writeBytes|1|-|The never-released gate variant's key-change debug hook (§21.13 point 7); not in the shipped APK
+file|media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|writeBytes|1|-|§8.3 point 5(d)'s encoder calibration materialises the bundled colour-grid clip, GHOST-generated test-pattern bytes deleted in a finally — never user media. F-S7 finding: the review may demand an in-memory calibration source instead of this exemption

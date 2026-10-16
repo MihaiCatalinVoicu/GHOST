@@ -77,6 +77,33 @@ class MediaPreview(
 }
 
 /**
+ * §6.5/§10.2's `openMedia` answer (slice S7): one open native reader over one object, the
+ * metadata the UI shows, and the [org.ghost.media.play.MediaPlayable] the player reads
+ * through. The UI builds its player with [org.ghost.media.play.GhostPlayer.create] and
+ * closes the handle when the screen closes: closing zeroises the native reader (§13.2 M8),
+ * a lock closes every open handle (§13.7), and reads after either end in a typed playback
+ * error, never a crash. Every value type's `toString()` is redacted (T3).
+ */
+class MediaHandle(
+    val kind: org.ghost.media.store.MediaKind,
+    val classCode: Int,
+    val width: Int,
+    val height: Int,
+    /** The manifest's duration (§10.2: the fMP4 carries none; the UI and the seek tests use this). */
+    val durationMs: Long,
+    /** The object's exact content length. */
+    val contentLength: Long,
+    /** The player's data path; consumed only by [org.ghost.media.play.GhostMediaDataSource]. */
+    val playable: org.ghost.media.play.MediaPlayable,
+) : AutoCloseable {
+
+    /** Close the native reader and zeroise what it holds; idempotent in effect. */
+    override fun close() = playable.close()
+
+    override fun toString(): String = "MediaHandle(kind=$kind, class=$classCode, ${width}x$height, ${durationMs}ms)"
+}
+
+/**
  * §6.5's `mediaState` answer: the object's kind, class, state and held/F progress — no times.
  * [NOT_KEPT] is the request rule's answer (D28): the message is there, the object is not, and
  * nothing on the device can open it.
@@ -304,6 +331,17 @@ interface Messaging {
      * towards the object's two-strikes rule (CS-M8) and answers null.
      */
     fun mediaPreview(message: MessageId): MediaPreview?
+
+    /**
+     * §6.5/§10.2's `openMedia`: a [MediaHandle] over a `verified` object — or the sender's own
+     * `out` object in `uploading`, `uploaded` or `failed` (§7.4) —, null otherwise (no object,
+     * a request's `NOT_KEPT`, a view-once object: those open through S8's `openViewOnce`, or
+     * the object is not readable). The UI builds its player with [org.ghost.media.play.GhostPlayer]
+     * over [MediaHandle.playable]; closing the handle zeroises the native reader (§13.2 M8),
+     * and a lock closes every open handle (§13.7). A byte found corrupted after `verified`
+     * makes the object `corrupt` and the player end with a typed error, never a crash (§7.3).
+     */
+    fun openMedia(message: MessageId): MediaHandle?
 
     // -------------------------------------------------------- trust and restore
 

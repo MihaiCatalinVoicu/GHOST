@@ -47,6 +47,12 @@
 # another module (the reason `:messaging` has no dependency on `:network` of its own, §13.1), and a
 # network class of a library this list does not name. Those are the reviewer's.
 #
+# Exact exemption (Phase 11 slice S7): `org/ghost/media/play/GhostMediaDataSource.kt` names
+# `android.net.Uri` — Media3's DataSource interface requires the type (`getUri()`, `DataSpec.uri`)
+# and it is never opened as a connection: §10.2's data source reads through the native reader,
+# and G-M1 bans every real data source. The exemption matches the Uri form only, so a second
+# android.net use in the file fails the gate.
+#
 # Vacuity: the three modules' `src/main` must exist and hold at least one source, or the gate fails
 # rather than pass over a moved module.
 #
@@ -119,7 +125,12 @@ while IFS= read -r line; do
   kind="${line%%$'\t'*}"
   rest="${line#*$'\t'}"
   case "$kind" in
-    PKG) fail "$rest (G-DM1: a DM module names a network package; the only way to a relay is the :sync API)" ;;
+    PKG)
+      case "$rest" in
+        android/media/src/main/kotlin/org/ghost/media/play/GhostMediaDataSource.kt:*"android.net.Uri"*)
+          : "the exact S7 exemption: Media3's DataSource interface requires the Uri type; it is never opened" ;;
+        *) fail "$rest (G-DM1: a DM module names a network package; the only way to a relay is the :sync API)" ;;
+      esac ;;
     CLS) fail "$rest (G-DM1: a DM module names a socket, address or HTTP class)" ;;
     SUS) fail "$rest (G-DM1: a suspend modifier is a coroutine; ADR-20, the DM actor is one thread, §13.7)" ;;
     SCANNED) scanned["${rest% *}"]="${rest##* }" ;;

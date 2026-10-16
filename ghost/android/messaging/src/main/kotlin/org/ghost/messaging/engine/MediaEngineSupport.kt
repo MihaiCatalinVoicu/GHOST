@@ -1,6 +1,7 @@
 package org.ghost.messaging.engine
 
 import org.ghost.media.send.PrepFailure
+import org.ghost.media.store.MediaObject
 import org.ghost.media.store.MediaObjects
 import org.ghost.media.store.RetryResult
 import org.ghost.messaging.api.MediaSendResult
@@ -31,9 +32,13 @@ internal class MediaEngineSupport(
     private val random: DmRandom,
     private val contexts: SelfContexts,
     private val actorCall: (() -> Unit) -> Unit,
+    /** `Checkpoint.truncate` over the database's executor (§10.7); the corrupt-after-verified path's. */
+    private val checkpoint: org.ghost.messaging.port.DmCheckpoint,
 ) {
     private val objects = MediaObjects(org.ghost.media.store.MediaFragments())
     private val contacts = ContactStore()
+    private val fragments = org.ghost.media.store.MediaFragments()
+    private val blobs = org.ghost.media.store.MediaBlobs(fragments)
 
     /**
      * §7.4/§9.3's zero-click gates, both default-deny: no conversation named, or the app in the
@@ -64,6 +69,17 @@ internal class MediaEngineSupport(
     fun onLocked() {
         foreground = false
         onScreenContact = null
+        previewCache.clear()
+        // §13.7's playback half: every open handle's reader goes (the native `ctxClose` would
+        // kill the context anyway; closing here also marks the handles, so a late read from a
+        // still-releasing player ends in the typed `Closed`, never a call on a stale context).
+        val open: List<ReaderPlayable>
+        synchronized(openHandles) { open = openHandles.toList() }
+        for (handle in open) handle.close()
+    }
+
+    /** §10.5's trim half: the preview cache goes when the UI hides (TRIM_MEMORY_UI_HIDDEN). */
+    fun onTrimMemory() {
         previewCache.clear()
     }
 
@@ -148,11 +164,19 @@ internal class MediaEngineSupport(
         try {
             val previewBytes = opened.preview
             if (previewBytes.isEmpty()) return null // view-once carries none (ADR-44 point 5)
-            val decoded = pipeline.decoder.decode(
-                previewBytes,
-                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
-                org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
-            ) ?: run {
+            var decodeReturned = false
+            val decoded = try {
+                pipeline.decoder.decode(
+                    previewBytes,
+                    org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+                    org.ghost.media.send.MediaSendLimits.PREVIEW_LONG_EDGE,
+                ).also { decodeReturned = it != null }
+            } finally {
+                // The manifest's preview bytes are plaintext media: whatever leaves this
+                // block — a null answer or a sandbox defect that throws (rather than
+                // answering null) — must not leave them live (F-S7 review, LOW).
+                if (!decodeReturned) previewBytes.fill(0)
+            } ?: run {
                 previewBytes.fill(0)
                 previewDecodeFailed(gate.objectId)
                 return null
@@ -190,6 +214,147 @@ internal class MediaEngineSupport(
         }
     }
 
+    /**
+     * §6.5/§10.2's `openMedia` (slice S7): a handle over a `verified` object, or the sender's
+     * own `out` object in `uploading`, `uploaded` or `failed` (§7.4's readable states). Null
+     * for anything else — no object, a request's `NOT_KEPT`, an unreadable state, a view-once
+     * object (S8's `openViewOnce` is that surface) or a key already erased. Deliberately not
+     * onActor: the gates run on the actor, the reader's native open and the chunk reads run
+     * on the caller's and Media3's threads, exactly as `preview` keeps the sandbox decode off
+     * the actor.
+     */
+    fun openMedia(messageId: ByteArray): org.ghost.messaging.api.MediaHandle? {
+        val nowE = steps.nowE()
+        val holder = arrayOfNulls<MediaObject>(1)
+        actorCall {
+            holder[0] = database.transaction { tx -> objects.byMessage(tx.sql, messageId, nowE) }
+        }
+        val obj = holder[0] ?: return null
+        val readable = obj.state == org.ghost.media.store.ObjectState.VERIFIED ||
+            (
+                obj.role == org.ghost.media.store.MediaRole.OUT && (
+                    obj.state == org.ghost.media.store.ObjectState.UPLOADING ||
+                        obj.state == org.ghost.media.store.ObjectState.UPLOADED ||
+                        obj.state == org.ghost.media.store.ObjectState.FAILED
+                    )
+                )
+        if (!readable || obj.viewOnce || obj.keyEnv == null) return null
+        val opened = openReader(obj, nowE) ?: return null
+        val playable = ReaderPlayable(obj, opened)
+        synchronized(openHandles) { openHandles += playable }
+        return org.ghost.messaging.api.MediaHandle(
+            kind = obj.kind,
+            classCode = opened.classCode,
+            width = opened.width,
+            height = opened.height,
+            durationMs = opened.durationMs,
+            contentLength = opened.contentLen,
+            playable = playable,
+        )
+    }
+
+    /** Every playback handle the process holds open; the lock walks and closes it (§13.7). */
+    private val openHandles = java.util.Collections.synchronizedSet(HashSet<ReaderPlayable>())
+
+    /**
+     * The [org.ghost.media.play.MediaPlayable] over one open reader (§10.2): chunk reads fetch
+     * the four fragment files from the ciphertext store, hand them to the reader's random-access
+     * `READ`, erase the assembled ciphertext after every call, and map the reader's refusals —
+     * a hash or tag failure (`HASH_MISMATCH`, `NOT_OPEN`, `NON_CANONICAL`) records the object
+     * `verified → corrupt` (§7.3) before the player sees the typed error; `SEQUENCE`/`INDEX_RANGE`
+     * are defects that surface; `Unavailable` is the lock's typed `Closed`.
+     */
+    private inner class ReaderPlayable(
+        private val obj: MediaObject,
+        private val opened: org.ghost.messaging.port.MediaReaders.Opened.Ok,
+    ) : org.ghost.media.play.MediaPlayable {
+
+        @Volatile
+        private var closed: Boolean = false
+
+        override val contentLength: Long get() = opened.contentLen
+
+        override fun readChunk(index: Int): ByteArray {
+            if (closed) throw org.ghost.media.play.MediaPlayException.Closed()
+            val fragmentCount = opened.hashes.size
+            if (index < 0 || index * FRAGMENTS_PER_CHUNK >= fragmentCount) {
+                throw org.ghost.media.play.MediaPlayException.Defect("chunk $index outside $fragmentCount fragments")
+            }
+            val assembled = ByteArray(FRAGMENTS_PER_CHUNK * FRAGMENT_BYTES)
+            try {
+                val nowE = steps.nowE()
+                for (k in 0 until FRAGMENTS_PER_CHUNK) {
+                    val ordinal = index * FRAGMENTS_PER_CHUNK + k
+                    if (ordinal >= fragmentCount) {
+                        throw org.ghost.media.play.MediaPlayException.Defect("fragment $ordinal missing of $fragmentCount")
+                    }
+                    val blob = database.transaction { tx -> fragments.fragment(tx.sql, obj.objectId, ordinal, nowE) }
+                        ?: throw org.ghost.media.play.MediaPlayException.Defect("fragment $ordinal has no row")
+                    val file = database.transaction { tx -> blobs.byHash(tx.sql, blob.blobHash) }
+                        ?: throw org.ghost.media.play.MediaPlayException.Defect("fragment $ordinal names no blob")
+                    val bytes = try {
+                        pipeline.files.read(file.fileName)
+                    } catch (e: org.ghost.media.store.CiphertextFilesException) {
+                        // A file of the store that cannot be read whole (missing, wrong length):
+                        // the object cannot survive a read — record it, like a hash failure.
+                        corrupt(obj.objectId)
+                        throw org.ghost.media.play.MediaPlayException.Corrupt(e)
+                    }
+                    System.arraycopy(bytes, 0, assembled, k * FRAGMENT_BYTES, FRAGMENT_BYTES)
+                }
+                return when (
+                    val chunked = pipeline.readers.chunk(
+                        opened.reader, index, assembled, validate = false,
+                    )
+                ) {
+                    is org.ghost.messaging.port.MediaReaders.Chunked.Ok -> chunked.content
+                    org.ghost.messaging.port.MediaReaders.Chunked.HashMismatch,
+                    org.ghost.messaging.port.MediaReaders.Chunked.NotOpen,
+                    org.ghost.messaging.port.MediaReaders.Chunked.NonCanonical,
+                    -> {
+                        corrupt(obj.objectId)
+                        throw org.ghost.media.play.MediaPlayException.Corrupt()
+                    }
+                    org.ghost.messaging.port.MediaReaders.Chunked.Sequence,
+                    org.ghost.messaging.port.MediaReaders.Chunked.IndexRange,
+                    -> throw org.ghost.media.play.MediaPlayException.Defect("reader refused chunk $index: $chunked")
+                    org.ghost.messaging.port.MediaReaders.Chunked.Unavailable -> {
+                        closed = true
+                        throw org.ghost.media.play.MediaPlayException.Closed()
+                    }
+                }
+            } finally {
+                assembled.fill(0)
+            }
+        }
+
+        override fun close() {
+            if (closed) return
+            closed = true
+            synchronized(openHandles) { openHandles.remove(this) }
+            pipeline.readers.close(opened.reader)
+        }
+    }
+
+    /**
+     * §7.3's `verified → corrupt` from a read (the corrupt-after-verified half §15.8 item 3
+     * names): the object releases its references and erases its key in one transaction, the
+     * count and the checkpoint follow — on the actor, so the checkpoint cannot interleave a
+     * pass's transaction (the same shape `MediaReceiveSteps` keeps).
+     */
+    private fun corrupt(objectId: ByteArray) {
+        actorCall {
+            try {
+                database.transaction { tx -> objects.markCorrupt(tx, objectId) }
+            } catch (e: org.ghost.media.store.MediaStoreException) {
+                // Already corrupt, incomplete or gone — a racing record won; nothing to add.
+                return@actorCall
+            }
+            receiveSteps.stats.addCorrupt()
+            checkpoint.truncate()
+        }
+    }
+
     /** What the gate read yields: the object id alone; nothing else crosses the actor boundary. */
     private class PreviewGate(val objectId: ByteArray)
 
@@ -213,11 +378,18 @@ internal class MediaEngineSupport(
     private fun openPreviewReader(objectId: ByteArray, nowE: Long): org.ghost.messaging.port.MediaReaders.Opened.Ok? {
         // The object's row again (off-actor reads stay transactional and short; this is the worker).
         val obj = database.transaction { tx -> objects.byId(tx.sql, objectId, nowE) } ?: return null
+        return openReader(obj, nowE)
+    }
+
+    /**
+     * Opens the native reader over [obj]'s manifest, attested readable (§13.2 M5): the manifest
+     * blob from the ciphertext store, `key_env` unwrapped inside Rust. The preview path (S6) and
+     * the playback path (S7) share this; a refusal answers null and the caller surfaces nothing.
+     */
+    private fun openReader(obj: MediaObject, nowE: Long): org.ghost.messaging.port.MediaReaders.Opened.Ok? {
         val keyEnv = obj.keyEnv ?: return null
-        val manifestRow = database.transaction { tx ->
-            org.ghost.media.store.MediaBlobs(org.ghost.media.store.MediaFragments())
-                .byHash(tx.sql, obj.manifestHash)
-        } ?: return null
+        val manifestRow = database.transaction { tx -> blobs.byHash(tx.sql, obj.manifestHash) }
+            ?: return null
         val manifest = try {
             pipeline.files.read(manifestRow.fileName)
         } catch (e: java.io.IOException) {
@@ -228,7 +400,11 @@ internal class MediaEngineSupport(
             val opened = pipeline.readers.open(
                 org.ghost.messaging.port.MediaReaders.OpenSpec(
                     keyEnv = keyEnv,
-                    role = org.ghost.crypto.bridge.MediaCrypto.Role.IN,
+                    role = if (obj.role == org.ghost.media.store.MediaRole.OUT) {
+                        org.ghost.crypto.bridge.MediaCrypto.Role.OUT
+                    } else {
+                        org.ghost.crypto.bridge.MediaCrypto.Role.IN
+                    },
                     destId = obj.destId,
                     objectId = obj.objectId,
                     manifestHash = obj.manifestHash,
@@ -307,6 +483,12 @@ internal class MediaEngineSupport(
     /** §13.7's worker thread name. */
     companion object {
         const val WORKER_THREAD: String = "ghost-media-prep"
+
+        /** [org.ghost.media.store.MediaLimits.FRAGMENT_BYTES]: one fragment file's bytes. */
+        const val FRAGMENT_BYTES: Int = 65_536
+
+        /** Four fragments per chunk (§13.2 M2). */
+        const val FRAGMENTS_PER_CHUNK: Int = 4
     }
 
     /** The engine's pre-checks ran and the registry has the id: run the preparation off-actor. */
@@ -454,7 +636,13 @@ internal class MediaEngineSupport(
             val key = hexOf(objectId)
             val size = preview.pixels.size
             if (size > budgetBytes) return@synchronized // never fits: don't cache
-            byObject.remove(key)?.let { bytes -= it.pixels.size }
+            byObject.remove(key)?.let {
+                // The replaced entry is erased, not just uncounted — the same hygiene as the
+                // eviction loop below (F-S7 review, LOW; latent: the same object id is re-put
+                // only after a trim or a state change, but the erase is the rule itself).
+                it.pixels.fill(0)
+                bytes -= it.pixels.size
+            }
             while (bytes + size > budgetBytes && byObject.isNotEmpty()) {
                 val oldest = byObject.entries.iterator().next()
                 oldest.value.pixels.fill(0)

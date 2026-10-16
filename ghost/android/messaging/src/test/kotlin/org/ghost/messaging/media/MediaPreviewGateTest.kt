@@ -85,6 +85,7 @@ class MediaPreviewGateTest {
         random = world.random,
         contexts = world.contexts,
         actorCall = { it() },
+        checkpoint = { world.checkpointLog += true; true },
     )
 
     @Test

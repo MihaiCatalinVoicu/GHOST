@@ -41,7 +41,14 @@ rc=0
 # (G-R5) with the client-net graph of licenses/graphs.txt.
 # ch-enqueue-callers is G-M5 (Phase 10 design §13.1, §7.7; slice S4), the channel engine's G-DM2: each
 # channel step makes only the relay-visible calls of its row, CH-RECV and CH-JOIN none. It reads sources only.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity; do
+# Phase 11 slice S7's source gates (faza11-media.md §16.1): media-no-plaintext-io is G-M1 (no plaintext
+# media at rest: the sink list and the writer allowlist), media3-dependency-allowlist is G-M2 (the
+# Media3 artifact allowlist), media-decoder-confinement is G-M3's source and configuration halves (the
+# decoder APIs only in org.ghost.media.sandbox; every Media3 instance built with GHOST's factories).
+# G-M3's bytecode half (javap over the release variant's classes) runs in the CI android job, as do
+# G-M4's merged-manifest half (merged-manifest-lint.sh) and G-M10 (media-release-dex.sh) — both need
+# the release build, like T15m. G-M4's source-manifest and binding halves live in manifest-lint.sh.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

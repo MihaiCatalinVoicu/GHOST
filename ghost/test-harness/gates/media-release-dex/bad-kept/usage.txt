@@ -1,0 +1,2 @@
+Removed unused program classes and program class members (1):
+  androidx.media3.exoplayer.text.TextRenderer

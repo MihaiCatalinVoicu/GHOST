@@ -15,8 +15,11 @@ import org.ghost.media.send.VideoSource
  * place the content handle is named, here in `:app` — G-DM1 bans `android.net` from the DM
  * modules, so `:media` sees this only through the [VideoSource] port. The metadata reads
  * (§6.1's duration bounds, the display rotation of §8.3) parse the container here, before any
- * byte is re-encoded; `MediaMetadataRetriever` is allowed for this (the G-M3 ban names it for
- * previews).
+ * byte is re-encoded. **F-S7 finding**: G-M3's source rule names the platform metadata
+ * retriever for the sandbox alone; this file is the one counted exemption (the gate counts it),
+ * because container probing of a content URI needs a platform parser and the alternative
+ * (Media3's extractor over a content data source) has different rotation semantics across API
+ * levels. The review may demand the rewrite.
  */
 class PickedVideo(private val context: Context, private val uri: Uri) : VideoSource {
     override fun mediaItem(): MediaItem = MediaItem.fromUri(uri)

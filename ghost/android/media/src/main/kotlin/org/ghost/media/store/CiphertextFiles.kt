@@ -312,8 +312,8 @@ interface CiphertextFileSystem {
 }
 
 /**
- * The real port over `java.nio`. **This class holds the only calls that write a media byte** (`FileChannel` with `CREATE_NEW`,
- * `Files.move`): gate G-M1's writer allowlist names this file. A directory cannot be opened for `force` on Windows, so the
+ * The real port over `java.nio`. **This class holds the only calls that write a media byte** (a file
+ * channel opened with `CREATE_NEW`, the atomic rename): gate G-M1's writer allowlist names this file. A directory cannot be opened for `force` on Windows, so the
  * directory sync is skipped there ([directorySyncSupported]); Android is Linux and syncs.
  */
 class NioCiphertextFileSystem(

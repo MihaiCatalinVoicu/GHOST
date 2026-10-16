@@ -154,8 +154,7 @@ class GhostApp : Application(), SyncHost {
     }
 
     override fun onCreate() {
-        super.onCreate()
-        // Phase 11 design §9.2 (V-M19): Android instantiates the Application in every process,
+        super.onCreate()        // Phase 11 design §9.2 (V-M19): Android instantiates the Application in every process,
         // including the isolated `:mdec` decoding service's. `wiring.onProcessStart()` and
         // `messagingWiring.onProcessStart` open no-backup files, the Keystore and system
         // services an isolated process may not touch, so a bind would die before connecting
@@ -179,6 +178,17 @@ class GhostApp : Application(), SyncHost {
     fun onDatabaseKeyCreated() {
         wiring.onKeyCreated()
         messagingWiring.onKeyCreated()
+    }
+
+    /**
+     * The system's memory trim (ComponentCallbacks2): at TRIM_MEMORY_UI_HIDDEN the media layer's
+     * RAM preview cache goes (Phase 11 design §10.5, slice S7) — pixels nobody is looking at.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            messagingWiring.onTrimMemory()
+        }
     }
 
     /**

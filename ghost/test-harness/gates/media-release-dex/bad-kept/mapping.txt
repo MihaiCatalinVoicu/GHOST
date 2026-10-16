@@ -1,0 +1,2 @@
+androidx.media3.exoplayer.image.ImageRenderer -> androidx.media3.exoplayer.image.a:
+androidx.media3.datasource.cache.SimpleCache -> androidx.media3.datasource.cache.b:

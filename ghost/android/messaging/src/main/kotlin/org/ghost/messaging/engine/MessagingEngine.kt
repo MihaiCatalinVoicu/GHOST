@@ -16,6 +16,7 @@ import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.MessageView
 import org.ghost.messaging.api.MediaPreview
+import org.ghost.messaging.api.MediaHandle
 import org.ghost.messaging.api.MediaSendResult
 import org.ghost.messaging.api.MediaStateView
 import org.ghost.messaging.api.MediaSource
@@ -386,6 +387,11 @@ internal class MessagingEngine(
         // Deliberately not onActor: the gates run on the actor, the sandbox decode blocks this
         // caller (the UI's thread), never the DM actor.
         media?.preview(message.toByteArray())
+
+    override fun openMedia(message: MessageId): MediaHandle? =
+        // The same shape as mediaPreview: the gates run on the actor; the reader's native open
+        // and the chunk reads run on this caller's and Media3's threads, never the DM actor.
+        media?.openMedia(message.toByteArray())
 
     override fun retry(message: MessageId): SendResult = onActor {
         val itemId = message.toByteArray()

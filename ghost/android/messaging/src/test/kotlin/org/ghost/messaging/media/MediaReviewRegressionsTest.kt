@@ -90,6 +90,7 @@ class MediaReviewRegressionsTest {
         random = world.random,
         contexts = world.contexts,
         actorCall = { it() },
+        checkpoint = { world.checkpointLog += true; true },
     )
 
     private fun expireOf(world: MediaWorld): Long {
