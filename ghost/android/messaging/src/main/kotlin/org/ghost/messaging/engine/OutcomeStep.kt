@@ -46,6 +46,12 @@ internal class OutcomeStep(
     private val checkpoint: org.ghost.messaging.port.DmCheckpoint = org.ghost.messaging.port.DmCheckpoint { true },
     /** The reconcile half of §13.5's "after the cleanup", run after [checkpoint]. */
     private val onSenderCopyErased: () -> Unit = {},
+    /**
+     * §11.1's debt for the cleanup's checkpoint (the S8 review's R1): a busy or failed pragma
+     * is recorded here and SWEEP re-asks it. Defaulted; `MessagingRuntime` wires the shared
+     * instance the sweep reads (a default there would leave the debt unread).
+     */
+    private val mediaCheckpoint: MediaCheckpointState = MediaCheckpointState(),
 ) {
     private val messages = MessageStore()
     private val owner = OwnerStore()
@@ -68,7 +74,9 @@ internal class OutcomeStep(
         // §13.5's "checkpoint and reconcile after the cleanup": the erasure stood inside an
         // outcome transaction above; both run here, after the commits, outside any transaction.
         if (viewOnceCleaned) {
-            checkpoint.truncate()
+            // A busy answer keeps the debt: SWEEP re-asks the pragma at its next pass
+            // (§10.7's shape, the S8 review's R1).
+            mediaCheckpoint.record(checkpoint.truncate())
             onSenderCopyErased()
         }
         return released

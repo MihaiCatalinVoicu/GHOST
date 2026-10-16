@@ -125,6 +125,7 @@ class MessagingRuntime(
 
     // Phase 11 §13.7's sender pipeline (slice S5): the stores, the feeder over the real outbox,
     // the steps on the DM actor, the registry, and the one media worker. Null without ports.
+    private val mediaCheckpoint = MediaCheckpointState()
     private val mediaSupport: MediaEngineSupport? = mediaPipeline?.let { pipeline ->
         val mediaFragments = org.ghost.media.store.MediaFragments()
         val mediaObjects = org.ghost.media.store.MediaObjects(mediaFragments)
@@ -151,6 +152,8 @@ class MessagingRuntime(
             // just below — it runs at deadline time, long after construction.
             checkpoint = checkpoint,
             onSenderCopyErased = { mediaSupport?.reconcileAfterSenderCopyErased() },
+            // §11.1's shared debt (the S8 review's R1): the sweep re-asks a busy pragma.
+            mediaCheckpoint = mediaCheckpoint,
         )
         // Slice S6's recipient pipeline: the same actor and stores, the reader surface and the
         // reconcile over the pipeline's file store.
@@ -177,6 +180,7 @@ class MessagingRuntime(
             contexts = contexts,
             actorCall = { body -> actor.call(body) },
             checkpoint = checkpoint,
+            mediaCheckpoint = mediaCheckpoint,
         )
     }
 
@@ -280,6 +284,8 @@ class MessagingRuntime(
         contexts = contexts,
         media = mediaSweep ?: org.ghost.messaging.api.MediaPort.NONE,
         mediaOrphans = mediaOrphans,
+        // §11.1's media half (the S8 review's R1): the sweep re-asks a busy media pragma.
+        mediaCheckpoint = mediaCheckpoint,
     )
     private val notices = UnreadNotices { sweeper.unreadCount() }
 
@@ -342,6 +348,7 @@ class MessagingRuntime(
             database, sync, sendStep, clock, contexts, mediaOrphans,
             checkpoint = checkpoint,
             onSenderCopyErased = { mediaSupport?.reconcileAfterSenderCopyErased() },
+            mediaCheckpoint = mediaCheckpoint,
         ),
         heldReplay = heldReplay,
         scheduledSteps = scheduledSteps,

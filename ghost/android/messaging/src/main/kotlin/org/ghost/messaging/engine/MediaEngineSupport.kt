@@ -34,6 +34,12 @@ internal class MediaEngineSupport(
     private val actorCall: (() -> Unit) -> Unit,
     /** `Checkpoint.truncate` over the database's executor (§10.7); the corrupt-after-verified path's. */
     private val checkpoint: org.ghost.messaging.port.DmCheckpoint,
+    /**
+     * §11.1's debt for `openViewOnce`'s checkpoint (the S8 review's R1): a busy or failed
+     * pragma is recorded here and SWEEP re-asks it, exactly like `Sweeper.checkpointDue`.
+     * Defaulted per instance where no sweep shares the state; `MessagingRuntime` wires one.
+     */
+    private val mediaCheckpoint: MediaCheckpointState = MediaCheckpointState(),
 ) {
     private val objects = MediaObjects(org.ghost.media.store.MediaFragments())
     private val contacts = ContactStore()
@@ -260,9 +266,11 @@ internal class MediaEngineSupport(
      * §6.5/§11.2's `openViewOnce` (slice S8): the one display of a verified view-once object.
      * The key moves into the native reader first (§11.2's order — the row loses the key only
      * after the reader holds it); the row half (`viewing`, `key_env = NULL`) commits on the
-     * actor; the §11.1 checkpoint runs after the commit and **before the handle returns** (a
-     * checkpoint that stays busy keeps `checkpoint_due` at the port and the handle returns
-     * anyway — L9-M10's declared lag, measured by SCN-MD); and the handle's close is
+     * actor; the §11.1 checkpoint runs after the commit and **before the handle returns** —
+     * a checkpoint that stays busy (or fails on a full disk) records the debt in the shared
+     * [MediaCheckpointState] and the handle returns anyway, L9-M10's declared lag, re-asked
+     * by SWEEP at its next pass (§10.7's `checkpoint_due` shape, the S8 review's R1); and the
+     * handle's close is
      * `VIEW-ONCE-CLOSE`. Null for anything but a verified, never-opened view-once object —
      * a second open while `viewing` or after `viewed` refuses, which is CS-M5's "at most one
      * display per device" together with the crash semantics (a crash after the commit loses
@@ -279,19 +287,27 @@ internal class MediaEngineSupport(
         // The reader holds K_f before the row gives it up; on any refusal here nothing was
         // shown and the object stays `verified` with its key — the open can be tried again.
         val opened = openReader(obj, nowE) ?: return null
-        val moved = try {
+        var moved = false
+        try {
             actorCall { database.transaction { tx -> objects.openViewOnce(tx, obj.objectId) } }
-            true
+            moved = true
         } catch (e: org.ghost.media.store.MediaStoreException) {
             // A racing transition (the object went viewing, viewed or was swept): no display.
-            false
+        } catch (e: org.ghost.storage.StorageFullException) {
+            // §21.12 point 1's shape: the commit was refused and rolled back — the row still
+            // names the key, nothing was shown, and the open can be tried again later.
+        } finally {
+            // The reader now holds the only copy of K_f: when the row move did not commit —
+            // a typed refusal above or a defect on the way out — the freshly opened native
+            // reader must die here, never leak (the S8 review's R4). No catch-all: a defect
+            // still surfaces, with the reader closed.
+            if (!moved) readersCloseQuietly(opened.reader)
         }
-        if (!moved) {
-            readersCloseQuietly(opened.reader)
-            return null
-        }
+        if (!moved) return null
         // §11.2/T45: the checkpoint follows the key erasure and precedes the handle (MC-M19).
-        checkpoint.truncate()
+        // A busy answer (or a full disk) does not lose the erasure: the debt is recorded and
+        // SWEEP re-asks the pragma at its next pass (§10.7's shape, the S8 review's R1).
+        mediaCheckpoint.record(checkpoint.truncate())
         val playable = ReaderPlayable(obj, opened, viewOnceClose = true)
         synchronized(openHandles) { openHandles += playable }
         return org.ghost.messaging.api.MediaHandle(
@@ -311,16 +327,29 @@ internal class MediaEngineSupport(
      * and lose their fragment rows and unshared blobs; the files go with the reconcile. Runs once,
      * on the actor's first media pass, before any handle can exist in this process — a row that is
      * legitimately `viewing` here means a crash (or this engine never opened it), never a live view.
+     * More crashed rows than one batch ([VIEW_ONCE_START_BATCH]) all clear in this one pass, in
+     * bounded rounds (the S8 review's R2) — the cap never left the rest waiting for a next start.
      */
     fun closeInterruptedViews() {
         val nowE = steps.nowE()
         var closedAny = false
-        database.transaction { tx ->
-            for (objectId in objects.viewing(tx.sql, nowE, VIEW_ONCE_START_BATCH)) {
-                objects.closeViewOnce(tx, objectId)
-                closedAny = true
+        // The batch bounds one transaction, not the pass: a device that died with more than
+        // [VIEW_ONCE_START_BATCH] views open drains them all in this one start, in bounded
+        // rounds — none of these rows can be a live view (a live process's own opens are its,
+        // and a row this process opened is not `viewing` here), so running the batch again
+        // until it comes back short is §11.2's rule, not a race. The reconcile runs once, after.
+        var rounds = 0
+        do {
+            var closedThisRound = false
+            database.transaction { tx ->
+                for (objectId in objects.viewing(tx.sql, nowE, VIEW_ONCE_START_BATCH)) {
+                    objects.closeViewOnce(tx, objectId)
+                    closedThisRound = true
+                }
             }
-        }
+            closedAny = closedAny || closedThisRound
+            rounds++
+        } while (closedThisRound && rounds < VIEW_ONCE_START_MAX_ROUNDS)
         if (closedAny) receiveSteps.reconcile()
     }
 
@@ -602,6 +631,9 @@ internal class MediaEngineSupport(
 
         /** §11.2's start pass closes every `viewing` row a dead process left behind, in batches. */
         const val VIEW_ONCE_START_BATCH: Int = 32
+
+        /** How many such batches the one start pass runs: 1 024 crashed views, bounded work. */
+        const val VIEW_ONCE_START_MAX_ROUNDS: Int = 32
     }
 
     /** The engine's pre-checks ran and the registry has the id: run the preparation off-actor. */

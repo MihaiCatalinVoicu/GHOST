@@ -47,7 +47,11 @@ class MediaViewOnceScenarioTest {
         }
     }
 
-    private fun support(world: MediaWorld, checkpoint: () -> Boolean = { world.checkpointLog += true; true }): MediaEngineSupport =
+    private fun support(
+        world: MediaWorld,
+        checkpoint: () -> Boolean = { world.checkpointLog += true; true },
+        mediaCheckpoint: org.ghost.messaging.engine.MediaCheckpointState = org.ghost.messaging.engine.MediaCheckpointState(),
+    ): MediaEngineSupport =
         MediaEngineSupport(
             database = world.database,
             steps = world.steps,
@@ -61,7 +65,28 @@ class MediaViewOnceScenarioTest {
             contexts = world.contexts,
             actorCall = { it() },
             checkpoint = checkpoint,
+            mediaCheckpoint = mediaCheckpoint,
         )
+
+    /**
+     * The production SWEEP over this world, wired to [debt] exactly as `MessagingRuntime`
+     * wires the shared state — the re-ask under test is the real pass, not a stubbed one.
+     */
+    private fun sweeperOf(
+        world: MediaWorld,
+        debt: org.ghost.messaging.engine.MediaCheckpointState,
+    ): org.ghost.messaging.engine.Sweeper = org.ghost.messaging.engine.Sweeper(
+        database = world.database,
+        namespaces = world.stores.namespaces,
+        envelopes = world.envelopes,
+        pairKeys = org.ghost.messaging.engine.PairKeySteps(world.envelopes),
+        checkpoint = { world.realCheckpoint() },
+        clock = world.clock,
+        contexts = world.contexts,
+        media = org.ghost.messaging.api.MediaPort.NONE,
+        mediaOrphans = org.ghost.messaging.engine.MediaOrphanSteps(world.crypto, world.clock),
+        mediaCheckpoint = debt,
+    )
 
     private class Fx(val world: MediaWorld, val messageId: ByteArray, val objectId: ByteArray) :
         AutoCloseable {
@@ -141,23 +166,37 @@ class MediaViewOnceScenarioTest {
     /**
      * The busy-checkpoint branch of §11.2: the pragma stays busy through its retries, the handle
      * returns anyway (the key is already gone from the logical database, and refusing would lose
-     * the object), the lag is recorded, and the next checkpoint clears the bytes (L9-M10).
+     * the object), the lag is recorded, and the **production** retry — SWEEP's re-ask of the
+     * pragma at its next pass, although that sweep deletes nothing — clears the bytes (L9-M10,
+     * the S8 review's R1; the gloss used to call a manual `realCheckpoint` "the sweep's").
      */
     @Test
-    fun aBusyCheckpointStillReturnsTheHandleAndTheNextOneClearsTheLag() {
+    fun aBusyCheckpointStillReturnsTheHandleAndTheSweepReAskClearsTheLag() {
         val box = Sandbox()
         verifiedViewOnce(box).use { fx ->
             val keyNeedle = FakeReaders.fakeKeyEnvOf(fx.objectId)
             // The checkpoint answers false (busy) without truncating: §10.7's checkpoint_due shape.
-            val facade = support(fx.world, checkpoint = { fx.world.checkpointLog += true; false })
+            val debt = org.ghost.messaging.engine.MediaCheckpointState()
+            val facade = support(
+                fx.world,
+                checkpoint = { fx.world.checkpointLog += true; false },
+                mediaCheckpoint = debt,
+            )
             val handle = facade.openViewOnce(fx.messageId)
             assertNotNull("a busy checkpoint must not lose the object (§11.2)", handle)
             assertEquals("the key is logically gone", "viewing", stateOf(fx.world, fx.objectId))
             handle!!.close()
+            assertTrue("the busy pragma left the pre-image in the -wal", bytesHold(fx.world, keyNeedle))
 
-            // The next successful checkpoint (the sweep's, in production) clears the lag.
-            fx.world.realCheckpoint()
-            assertFalse("the lag survived only until the next checkpoint (L9-M10)", bytesHold(fx.world, keyNeedle))
+            // The production retry, no manual checkpoint anywhere: the media debt stands, so an
+            // otherwise idle sweep still runs the pragma — and the pre-image goes.
+            val report = sweeperOf(fx.world, debt).sweep()
+            assertEquals("an idle sweep: the media debt is the only reason for the pragma", 0, report.rows)
+            assertTrue("the sweep ran the pragma", report.checkpointed)
+            assertFalse(
+                "the sweep's re-ask truncated the pre-image (L9-M10)",
+                bytesHold(fx.world, keyNeedle),
+            )
         }
     }
 

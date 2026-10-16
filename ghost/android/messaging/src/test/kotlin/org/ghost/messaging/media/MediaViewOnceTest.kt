@@ -43,8 +43,12 @@ class MediaViewOnceTest {
         }
     }
 
-    private fun support(world: MediaWorld, realCheckpoint: Boolean = false): MediaEngineSupport = MediaEngineSupport(
-        database = world.database,
+    private fun support(
+        world: MediaWorld,
+        realCheckpoint: Boolean = false,
+        database: org.ghost.sync.api.SyncDatabase = world.database,
+    ): MediaEngineSupport = MediaEngineSupport(
+        database = database,
         steps = world.steps,
         receiveSteps = world.receiveSteps,
         preparations = org.ghost.media.send.Preparations(),
@@ -318,6 +322,92 @@ class MediaViewOnceTest {
                 "the pre-death checkpoint left no key byte (the start pass checkpoints too)",
                 bytesHold(world, keyNeedle),
             )
+        }
+    }
+
+    /**
+     * §11.2's start rule with more crashed views than one batch (the S8 review's R2): the
+     * 32-row cap never re-ran in-process — the other start's flag never reset — so the rows
+     * past the first batch waited for a next start that never came. Forty rows a dead
+     * process left `viewing` all become `viewed` in the one start pass.
+     */
+    @Test
+    fun fortyCrashedViewingRowsAllCloseAtTheOneStart() {
+        val box = Box()
+        box.open().use { world ->
+            val contact = ByteArray(16) { 0x21 }
+            // Direct rows: a crash is a row-level fact, and forty real opens would exercise the
+            // preparer, not the batch loop. A `viewing` row is keyless by the schema's own CHECK.
+            world.database.transaction { tx ->
+                repeat(40) { i ->
+                    tx.sql.exec(
+                        "INSERT INTO media_object(object_id, role, dest_id, kind, view_once, class_code, " +
+                            "manifest_hash, key_env, state, message_id, incomplete_after_hour) " +
+                            "VALUES (?, 'in', ?, 1, 1, 0, ?, NULL, 'viewing', NULL, ?)",
+                        listOf(
+                            ByteArray(16) { b -> if (b < 4) (i ushr (8 * b)).toByte() else 0 },
+                            contact,
+                            ByteArray(32) { b -> if (b == 0) i.toByte() else 7 },
+                            86_400L,
+                        ),
+                    )
+                }
+            }
+            support(world).closeInterruptedViews()
+            assertEquals(
+                "every crashed view closed in the one start pass",
+                0L,
+                world.sql.queryLong("SELECT count(*) FROM media_object WHERE state = 'viewing'", emptyList()),
+            )
+            assertEquals(
+                40L,
+                world.sql.queryLong("SELECT count(*) FROM media_object WHERE state = 'viewed'", emptyList()),
+            )
+        }
+    }
+
+    /**
+     * The S8 review's R4: `openViewOnce`'s row move commits under the typed full-database
+     * failure (§21.12 point 1) — the open must answer null, the freshly opened native reader
+     * (the only holder of `K_f` at that instant) must die with the refusal, and the object
+     * stays `verified` with its key, the one display still ahead.
+     */
+    @Test
+    fun aFullDiskAtTheRowMoveClosesTheReaderAndLeavesTheObjectOpenable() {
+        val box = Box()
+        verifiedViewOnce(box).use { fx ->
+            // The armed executor refuses every write with the typed full-database answer; reads
+            // pass, so the object lookup and the reader's manifest read succeed and only the
+            // row move's transaction dies.
+            val armed = object : org.ghost.storage.SqlExecutor by fx.world.sql {
+                override fun exec(sql: String, args: List<Any?>) {
+                    throw org.ghost.storage.StorageFullException(IllegalStateException("armed disk-full"))
+                }
+
+                override fun execUpdate(sql: String, args: List<Any?>): Int {
+                    throw org.ghost.storage.StorageFullException(IllegalStateException("armed disk-full"))
+                }
+            }
+            val facade = support(fx.world, database = org.ghost.sync.api.SyncDatabase(armed))
+            assertEquals(0, fx.world.readers.openCount())
+            assertNull("the refused move shows nothing", facade.openViewOnce(fx.messageId))
+            assertEquals(
+                "the freshly opened reader died with the refusal, no native leak",
+                0,
+                fx.world.readers.openCount(),
+            )
+            assertEquals(
+                "the rolled-back move left the key and the verified state",
+                "1",
+                fx.world.sql.queryString(
+                    "SELECT count(*) FROM media_object WHERE object_id = ? AND state = 'verified' AND key_env IS NOT NULL",
+                    listOf(fx.objectId),
+                ),
+            )
+            // The disk recovered: the one display still stands.
+            val handle = support(fx.world).openViewOnce(fx.messageId)
+            assertNotNull("the object is openable after the refused move", handle)
+            handle!!.close()
         }
     }
 

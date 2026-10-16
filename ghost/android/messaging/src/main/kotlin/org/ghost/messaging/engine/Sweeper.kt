@@ -147,6 +147,13 @@ internal class Sweeper(
     private val contexts: SelfContexts,
     private val media: MediaPort,
     private val mediaOrphans: MediaOrphanSteps,
+    /**
+     * §11.1's media half (the S8 review's R1): key erasures that ran outside SWEEP —
+     * `VIEW-ONCE-OPEN`, the outcome/deadline sender cleanups — record a busy or failed
+     * checkpoint here, and this sweep re-asks the pragma for them. Defaulted where no
+     * media layer shares the state; `MessagingRuntime` wires the one shared instance.
+     */
+    private val mediaCheckpoint: MediaCheckpointState = MediaCheckpointState(),
 ) {
     private val messages = MessageStore()
     private val contacts = ContactStore()
@@ -197,7 +204,13 @@ internal class Sweeper(
         // was lost: the next sweep saw `rows = 0`, ran no pragma, and the freed plaintext pages
         // stayed in the `-wal` for the life of the process. A failed checkpoint is the same kind
         // of answer as a busy one and is kept the same way (§10.7, mutant ME-10).
-        val owed = report.rows > 0 || report.prunedKeys > 0 || checkpointDue
+        //
+        // The media debt (§11.1, [MediaCheckpointState]) stands in the same `owed`: a sweep
+        // that deleted nothing still re-asks the pragma when a media key erasure's checkpoint
+        // stayed busy — the erased key's pre-image sits in the `-wal` until some pass runs
+        // the pragma, and without this the next pass after a busy `VIEW-ONCE-OPEN` was an
+        // idle sweep that owed nothing and truncated nothing (the S8 review's R1).
+        val owed = report.rows > 0 || report.prunedKeys > 0 || checkpointDue || mediaCheckpoint.due
         val truncated = if (owed) {
             try {
                 checkpoint.truncate()
@@ -211,6 +224,9 @@ internal class Sweeper(
             true
         }
         checkpointDue = !truncated
+        // A successful pragma truncates the whole log: it pays the media components' debt
+        // together with this sweep's. A failed one leaves both flags standing.
+        if (truncated) mediaCheckpoint.clearedBySweep()
         return report.withCheckpoint(truncated)
     }
 

@@ -90,6 +90,12 @@ internal class MediaSteps(
      */
     private val checkpoint: org.ghost.messaging.port.DmCheckpoint = org.ghost.messaging.port.DmCheckpoint { true },
     private val onSenderCopyErased: () -> Unit = {},
+    /**
+     * §11.1's debt for the deadline cleanup's checkpoint (the S8 review's R1): a busy or
+     * failed pragma is recorded here and SWEEP re-asks it. Defaulted; `MessagingRuntime`
+     * wires the one shared instance (a default would leave the debt unread there).
+     */
+    private val mediaCheckpoint: MediaCheckpointState = MediaCheckpointState(),
 ) {
     private val contacts = ContactStore()
     private val messages = MessageStore()
@@ -419,7 +425,9 @@ internal class MediaSteps(
             }
         }
         if (senderCopyErased) {
-            checkpoint.truncate()
+            // A busy answer keeps the debt: SWEEP re-asks the pragma at its next pass
+            // (§10.7's shape, the S8 review's R1).
+            mediaCheckpoint.record(checkpoint.truncate())
             onSenderCopyErased()
         }
     }

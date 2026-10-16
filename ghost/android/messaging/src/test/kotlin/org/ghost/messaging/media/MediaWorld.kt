@@ -133,8 +133,9 @@ internal class MediaWorld(
     /** The sync ports the recipient steps claim the scripted inbox through (tests that build their own steps). */
     val syncPorts: DmSyncPorts get() = sync
 
-    /** The envelope seam: the owner world's closed-context shape, with a canned kind-5 encode. */
-    private val envelopes: DmEnvelopes =
+    /** The envelope seam: the owner world's closed-context shape, with a canned kind-5 encode.
+     * Internal (not private) so a test can build the production `Sweeper` over this world. */
+    internal val envelopes: DmEnvelopes =
         object : DmEnvelopes by NativeDmEnvelopes(object : DmContext {
             override fun handleOrNull(): Long? = null
             override fun stateKeyWrapped(): ByteArray? = null
@@ -763,6 +764,9 @@ internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
     override fun close(reader: Long) {
         open.remove(reader)
     }
+
+    /** How many native readers are open right now: the R4 leak oracle. */
+    fun openCount(): Int = open.size
 
     class ParsedManifest(
         val objectId: ByteArray,
