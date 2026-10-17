@@ -42,6 +42,8 @@ Thumbs.db
 *.p12
 *.env
 .env*
+# exception: the Phase 12 lyrebird pin file is data, not secrets (BUILD.sh sources it)
+!ghost/third_party/lyrebird/pins.env
 secrets/
 **/local.secrets.*
 # Entitlement operator material (Phase 8 runbooks K1/K3): Tor onion service secret keys
@@ -63,3 +65,7 @@ build-repro/
 **/jniLibs/
 ghost/native-libs.sha256
 .claude/worktrees/
+
+# Phase 12 lyrebird build area (fetched at build time; see ghost/third_party/lyrebird/BUILD.sh)
+ghost/third_party/lyrebird/toolchain/
+ghost/third_party/lyrebird/.cache/
