@@ -269,7 +269,8 @@ else
   echo "SELF-TEST FAIL: media-report-check rejects the good emulator report" >&2; rc=1
 fi
 for f in exit-missing-scn exit-zero-points exit-mutants-short exit-mutants-overclaim \
-         exit-jm-nonzero exit-nim5-bare exit-seizure-vacuous exit-gate-wrong-scale exit-fail; do
+         exit-jm-nonzero exit-jm-zero-denominator exit-nim5-bare exit-nim7-bare \
+         exit-mutants-multiline exit-seizure-vacuous exit-gate-wrong-scale exit-fail; do
   if bash "$DIR/media-report-check.sh" "$MRPT/$f.txt" gate >/dev/null 2>&1; then
     echo "SELF-TEST FAIL: media-report-check passed $f.txt" >&2; rc=1
   else

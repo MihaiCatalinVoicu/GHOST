@@ -10,9 +10,9 @@ seeded worlds: 100 run, 0 failures
 media privacy world: N = 60, 14 days, 1 seed pair, STANDARD
 JM1: PASS 0 short stores over 312 objects (exemptions: 2 counted: 1 FAILED, 1 deadline)
 JM2: PASS 0 class violations over 312 objects
-JM3: PASS 0 shared hashes, 0 shared key pairs, 2048 sampled windows collide only by chance
+JM3: PASS 0 shared hashes, 0 K_f values on 2+ object ids, 0 wrapped keyEnvs across object ids, 0 sampled window collisions over 312 objects (318 blobs, 64 windows each, 0 padding windows skipped)
 JM4: PASS 0 TTL violations over 318 stores
-JM5: PASS 0 scope violations over 122 register/redeem calls
+JM5: PASS 0 scope/namespace/schedule violations over 122 register/redeem calls (schedule: the modeled activation moment; restore and the EXPIRING PRF time are not modeled here — the owner's week is JD8's world, declared)
 JM6: PASS 0 foreign reads over 2604 list/get calls
 JM7: PASS 0 unscheduled gets over 911 gets
 NI-M1: equal (descriptor delivered vs withheld)
@@ -21,7 +21,7 @@ NI-M3: equal up to the sender pair (session co-occurrence, L7-D2/L7-D5; LM decla
 NI-M4: equal (view-once vs normal, both sides)
 NI-M5: equal first-page list schedule (full traces differ by received volume, declared L2.1 #3)
 NI-M6: equal at the pool cap (flood twin, descriptors withheld vs delivered)
-NI-M7: equal (5-minute vs 1-hour timer, class-7 video in background sessions only)
+NI-M7: equal up to the TTL scalar (5-minute vs 1-hour timer, class-7 video in background sessions only; the two timers' buckets, declared)
 T25 media (EP-M): PASS (every timer x path, the physical byte oracles)
 seizure: 0 opened (330 key_env values tried on 6104 archived blobs); control: 21 live objects open
 media mutants: 43 run, 43 detected

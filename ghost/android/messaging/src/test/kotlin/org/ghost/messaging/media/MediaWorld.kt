@@ -595,7 +595,16 @@ internal class FakeSealerFactory(
     ): MediaSealerFactory.Begun {
         val v = (clientIndex shl 16) or n++
         val objectId = ByteArray(16) { if (it < 4) (v ushr (8 * it)).toByte() else it.toByte() }
-        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId, kind, viewOnce, readers, forceClass), objectId)
+        // The stand-in's K_f (ADR-44 point 1's per-object key): digest-seeded from the factory's
+        // unique (client, ordinal), carried per object so JM3's (K_f, object_id) clause runs over
+        // the truth (the S9 review's finding 3 — the old clause keyed the wrapped keyEnv and never
+        // fired; a deterministic-K_f sealer puts one K_f on many object ids and fires the clause).
+        // The real K_f's relay-side fidelity is the gate follow-up (F-S9-1's declared layer).
+        val kf = digest(
+            "ghost-media-world kf".toByteArray() +
+                byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte()),
+        )
+        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId, kind, viewOnce, readers, forceClass, kf), objectId)
     }
 }
 
@@ -612,6 +621,8 @@ private class FakeSealer(
     private val viewOnce: Boolean,
     private val readers: FakeReaders,
     private val forceClass: Int? = null,
+    /** The stand-in's per-object K_f (see [FakeSealerFactory.begin]); carried to the truth for JM3. */
+    private val kf: ByteArray = ByteArray(0),
 ) : StreamSealer {
     private var consumed = 0L
     private var next = 0
@@ -666,6 +677,7 @@ private class FakeSealer(
             FakeReaders.Recorded(
                 objectId = objectId,
                 keyEnv = keyEnv,
+                kf = kf.copyOf(),
                 chunks = groups.map { it.fragments },
                 kind = kind,
                 viewOnce = viewOnce,
@@ -730,6 +742,11 @@ internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
     class Recorded(
         val objectId: ByteArray,
         val keyEnv: ByteArray,
+        /**
+         * The stand-in's raw K_f for the object (the sealer's own; null where a test builds a
+         * record by hand — JM3's K_f clause skips those, they never enter the privacy truth).
+         */
+        val kf: ByteArray? = null,
         /** The sealed chunks: chunk → its four fragments, in order. */
         val chunks: List<List<ByteArray>>,
         val kind: org.ghost.crypto.bridge.MediaCrypto.Kind,

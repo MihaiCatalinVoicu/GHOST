@@ -535,6 +535,13 @@ internal class MediaSteps(
     private fun lowerCountdown(tx: org.ghost.sync.api.SyncTransaction, objectId: ByteArray, nowE: Long, anchorSeconds: Long) {
         val messageId = objects.byId(tx.sql, objectId, nowE)?.messageId ?: return
         val message = messages.message(tx.sql, messageId, expiry.nowMinute(tx.sql)) ?: return
+        // The timer-off message has no countdown (the commit-time rule, F-S9-2's pair, the same
+        // guard READY's lowering carries): timerSeconds(TIMER_OFF) is 0, so an unguarded write
+        // lands a non-NULL expire_at_minute on a timer_code 0 row and dm_message's CHECK aborts
+        // the whole transaction — from the FAILED-outcome arm and MEDIA-DEADLINE alike, and
+        // Outbox.release rolls back with it, so the same outcome re-threw every pass (the
+        // F-S5-16 wedge; the S9 review's finding 1).
+        if (message.timerCode == DmTimers.TIMER_OFF) return
         messages.lowerExpireAt(tx, messageId, countdownMinute(anchorSeconds, message.timerCode))
     }
 

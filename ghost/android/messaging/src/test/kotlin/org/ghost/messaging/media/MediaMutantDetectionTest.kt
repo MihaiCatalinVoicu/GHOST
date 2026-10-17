@@ -9,8 +9,10 @@ import org.junit.Test
  * this harness holds (the `MediaWorldVariant` knobs), in the DmMutantDetectionTest discipline:
  * each case runs the **same** small scripted world clean — which must pass, so a mutant cannot
  * be "detected" by a world that was broken anyway — and once with the mutation, which the named
- * join (JM) or the world's own register oracle must catch. The kill is the check the design
- * names, not "something broke".
+ * join (JM) must catch. The kill is the check the design names, not "something broke"; where
+ * this harness's mechanism differs from the design's named killer, the test name says its actual
+ * mechanism (the S9 review's finding 7 — PM-M20 is the store-stream comparison, not NI-M7's
+ * equality, and PM-M16 is JM5's schedule clause).
  *
  * What is not here (each recorded in §22.12): the Rust-crate mutants (the sealer/walker shapes,
  * `scripts/ci/media-mutants.sh`, the S1 set), the key-slot and binding mutants (PM-M13/17/22/24,
@@ -145,25 +147,18 @@ class MediaMutantDetectionTest {
     }
 
     @Test
-    fun pmM16M0RegisteredAtFirstMediaUseIsCaughtByTheRegisterOracle() {
-        // NI-M5's kill: the register trace must fall at activation (minute 0), not the first use.
-        fun registerMinutes(variant: MediaWorldVariant): List<Long> {
-            MediaPrivacyWorld(MediaPrivacyScale.SMALL, seed, variant.copy(scriptedSends = script())).use { w ->
-                w.run()
-                return w.relay.events.filter { it.op == MediaViewOp.REGISTER }.map { it.minute }
-            }
-        }
-        val control = registerMinutes(MediaWorldVariant())
-        assertTrue("the control's registers all fall at activation: $control", control.isNotEmpty() && control.all { it == 0L })
-        val mutated = registerMinutes(MediaWorldVariant(name = "PM-M16", registerAtFirstMediaUse = true))
-        assertTrue("PM-M16 survived: registers at $mutated", mutated.any { it != 0L })
-    }
+    fun pmM16M0RegisteredAtFirstMediaUseIsCaughtByJm5sScheduleClause() = detect(
+        "PM-M16", "JM5's schedule clause",
+        MediaWorldVariant(name = "PM-M16", registerAtFirstMediaUse = true),
+    ) { byName(it, "JM5").violations }
 
     @Test
-    fun pmM20TheCountdownStartingAtCommitIsCaughtByNiM7sEquality() {
-        // The design names NI-M7 and JM1's exemption list: a class-7 video under a 5-minute timer
-        // reaches the upload deadline in both worlds (R-T4 bounds the burst), but PM-M20's
-        // commit-based countdown cuts the burst earlier — the store streams differ.
+    fun pmM20TheCountdownStartingAtCommitCutsTheBurstShorter() {
+        // The design names NI-M7 and JM1's exemption list; this harness's mechanism is the
+        // store-stream comparison (the S9 review's finding 7 — the name says what the test does):
+        // a class-7 video under a 5-minute timer reaches the upload deadline in both worlds
+        // (R-T4 bounds the burst), but PM-M20's commit-based countdown cuts the burst earlier —
+        // the mutant's store count is below the control's.
         val background = listOf(
             ScriptedSend(
                 day = 0, minuteOfDay = 100, sender = 0, recipient = 1,
@@ -181,7 +176,7 @@ class MediaMutantDetectionTest {
         val mutated = storeCount(MediaWorldVariant(name = "PM-M20", countdownAtCommit = true))
         assertTrue(
             "PM-M20 survived: control stored $control media events, mutant $mutated (identical bursts)",
-            control != mutated,
+            mutated < control,
         )
     }
 

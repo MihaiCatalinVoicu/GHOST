@@ -74,6 +74,12 @@ internal class TruthObject(
     /** The plan's view act: [viewed] is what the world actually did (recorded at endOfWorld). */
     var viewPlanned: Boolean = false,
     var recipientMessageId: ByteArray? = null,
+    /**
+     * The stand-in sealer's raw K_f for this object (from the readers' registry; the S9 review's
+     * finding 3 — JM3's (K_f, object_id) clause runs over the truth, not the vacuous wrapped-keyEnv
+     * comparison). Null where the truth records an object whose sealer left no registry record.
+     */
+    var kf: ByteArray? = null,
 ) {
     fun allHashes(): List<ByteArray> = listOf(manifestHash) + fragmentHashes
 }
@@ -458,6 +464,24 @@ internal class MediaPrivacyWorld(
             kindIsImage = true, classCode = 0, viewOnce = false, withCaption = true,
             timerCode = 0, viewed = false,
         )
+        // The S9 review's finding 2: the stochastic plan never fails or deadlines an off-timer
+        // object, so no green run ever executed the FAILED/DEADLINE exemptions — and with them the
+        // countdown-lowering paths the review's finding 1 fixed (a timer-off message is exactly
+        // where the unguarded write aborted dm_message's CHECK; the deadline hour is
+        // min(bucket, 7 d) for the off timer's 30-day bucket too). Two scripted anchors, both
+        // timer-off: one fails at its first fragment, one reaches its upload deadline. Their
+        // exemptions are asserted in the world test, and both drive the production paths — the
+        // FAILED-outcome arm and MEDIA-DEADLINE itself (below, not only the relay-side model).
+        sends += ScriptedSend(
+            day = 0, minuteOfDay = 3, sender = 0, recipient = 1,
+            kindIsImage = true, classCode = 0, viewOnce = false, withCaption = true,
+            timerCode = 0, viewed = false, failAtOrdinal = 0,
+        )
+        sends += ScriptedSend(
+            day = 0, minuteOfDay = 5, sender = 1, recipient = 0,
+            kindIsImage = true, classCode = 0, viewOnce = false, withCaption = true,
+            timerCode = 0, viewed = false, reachDeadline = true,
+        )
         return sends.sortedWith(compareBy({ it.day }, { it.minuteOfDay }))
     }
 
@@ -539,6 +563,9 @@ internal class MediaPrivacyWorld(
         )
         truthObject.inRequest = send.inRequest
         truthObject.viewPlanned = send.viewed
+        // The stand-in sealer's K_f, carried for JM3's (K_f, object_id) clause (finding 3): the
+        // sealer registered its record at finish, keyed by the object id the request names.
+        truthObject.kf = sharedReaders.registry[hexOf(truthObject.objectId)]?.kf
 
         val request = MediaSteps.CommitRequest(
             contactId = contact,
@@ -699,6 +726,17 @@ internal class MediaPrivacyWorld(
             }
             send.reachDeadline || (send.backgroundOnly && !uploadComplete) -> {
                 // The upload reaches its deadline before READY: the object fails, no descriptor.
+                if (send.reachDeadline) {
+                    // Run the production MEDIA-DEADLINE pass itself (not only the relay-side
+                    // model): the clock past the upload deadline, the pass fails the object and
+                    // lowers the sender's countdown — at TIMER_OFF the review's finding-1 guard
+                    // is what keeps the write inside dm_message's CHECK. The clock is restored:
+                    // the plan's later sends own their minutes.
+                    val saved = sender.world.clock.now
+                    sender.world.clock.now = deadlineSecond + 60
+                    sender.world.steps.deadline()
+                    sender.world.clock.now = saved
+                }
                 truthObject.exemption = MediaExemption.DEADLINE
                 truth.record(truthObject)
                 prepared.releaseNames()

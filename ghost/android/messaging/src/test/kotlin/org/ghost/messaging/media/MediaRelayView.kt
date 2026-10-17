@@ -140,25 +140,49 @@ internal class MediaJoins(
     }
 
     /**
-     * JM3: no blob hash shared by two objects of honest senders; no two objects share
-     * `(K_f, object_id)`; sampled: 16-byte windows at 64 fixed offsets of every stored blob, in
-     * one hash set over the world, collide across objects only by chance (at this scale chance is
-     * ~0, so a collision is a violation).
+     * JM3: no blob hash shared by two objects of honest senders; in the truth, no two objects
+     * share `(K_f, object_id)` — the design's clause (ADR-44's per-object key: a deterministic-K_f
+     * sealer puts one K_f on many object ids and fires here; the S9 review's finding 3 rewrote
+     * this — the old clause keyed the wrapped keyEnv, which the stand-in derives per object, and
+     * so never fired). K_f is the stand-in sealer's per-object key carried in the truth; the
+     * wrapped-keyEnv shadow of the same clause is named, not silent. Sampled: 16-byte windows at
+     * 64 fixed offsets of every stored blob, in one hash set over the world, collide across
+     * objects only by chance (at this scale chance is ~0, so a collision is a violation).
      */
     fun jm3(): Result {
         var bad = 0
+        var sharedHashes = 0
         val ownerByHash = HashMap<String, Int>()
         for (o in truth.objects) {
             for (h in o.allHashes()) {
                 val prev = ownerByHash.put(hexOf(h), o.sender)
-                if (prev != null && prev != o.sender) bad++
+                if (prev != null && prev != o.sender) sharedHashes++
             }
         }
-        val objectByKeyEnv = HashMap<String, String>()
+        bad += sharedHashes
+        // The (K_f, object_id) clause over the truth: one K_f per object id. Grouped by K_f: a
+        // group naming two or more object ids is a shared keystream (the PM-M6/K_f-determinism
+        // shape), however the bytes came out.
+        var kfClashes = 0
+        val objectIdsByKf = HashMap<String, MutableSet<String>>()
         for (o in truth.objects) {
-            val prev = objectByKeyEnv.put(hexOf(o.keyEnv), hexOf(o.objectId))
-            if (prev != null && prev != hexOf(o.objectId)) bad++
+            val kf = o.kf ?: continue
+            val ids = objectIdsByKf.getOrPut(hexOf(kf)) { HashSet() }
+            ids += hexOf(o.objectId)
         }
+        for (ids in objectIdsByKf.values) {
+            if (ids.size > 1) kfClashes++
+        }
+        bad += kfClashes
+        // The wrapped-keyEnv shadow, named (finding 3's honest narrowing): the same wrapped
+        // keyEnv presented for two different object ids.
+        var keyEnvClashes = 0
+        val objectIdByKeyEnv = HashMap<String, String>()
+        for (o in truth.objects) {
+            val prev = objectIdByKeyEnv.put(hexOf(o.keyEnv), hexOf(o.objectId))
+            if (prev != null && prev != hexOf(o.objectId)) keyEnvClashes++
+        }
+        bad += keyEnvClashes
         var collisions = 0
         var paddingWindows = 0
         val windowOwner = HashMap<String, String>()
@@ -191,7 +215,9 @@ internal class MediaJoins(
         val v = bad + collisions
         return Result(
             "JM3", v,
-            "$bad shared hashes, $bad shared key pairs, $collisions sampled window collisions " +
+            "$sharedHashes shared hashes, $kfClashes K_f values on 2+ object ids, " +
+                "$keyEnvClashes wrapped keyEnvs across object ids, $collisions sampled window " +
+                "collisions over ${truth.objects.size} objects " +
                 "(${relay.allStored().size} blobs, 64 windows each, $paddingWindows padding windows skipped)",
         )
     }
@@ -211,7 +237,15 @@ internal class MediaJoins(
         return Result("JM4", bad, "$bad TTL/deadline violations over $checked stores")
     }
 
-    /** JM5: one credential scope per (relay, namespace) across stores; registers/redeems on own `M` only. */
+    /**
+     * JM5: one credential scope per (relay, namespace) across stores; registers/redeems on own
+     * `M` only; and the schedule half of §15.6's JM5 — every register/redeem falls at a modeled
+     * schedule moment. The world models the activation moment (all of the scale's devices activate
+     * at the world's start, minute 0); restore and the EXPIRING PRF time are not modeled here (the
+     * owner's week mechanics are the entitlement world's JD8, F-S11-1's discipline) — the named
+     * narrowing rides the report line. PM-M16 (registers at the first media use) and PM-M28's
+     * shape (a register at any other moment) fire here.
+     */
     fun jm5(): Result {
         var bad = 0
         var calls = 0
@@ -226,9 +260,17 @@ internal class MediaJoins(
             if (e.op == MediaViewOp.REGISTER || e.op == MediaViewOp.REDEEM) {
                 calls++
                 if (!e.namespace.contentEquals(truth.ownMedia(e.client))) bad++
+                // The schedule half: the modeled activation moment is minute 0 (the world's
+                // start); a register/redeem at any other minute is outside the schedule.
+                if (e.minute != 0L) bad++
             }
         }
-        return Result("JM5", bad, "$bad scope/namespace violations over $calls register/redeem calls")
+        return Result(
+            "JM5", bad,
+            "$bad scope/namespace/schedule violations over $calls register/redeem calls " +
+                "(schedule: the modeled activation moment; restore and the EXPIRING PRF time are " +
+                "not modeled here — the owner's week is JD8's world, declared)",
+        )
     }
 
     /** JM6: every list and get of an `M` is made by its owner. */
@@ -243,24 +285,40 @@ internal class MediaJoins(
         return Result("JM6", bad, "$bad foreign reads over $calls list/get calls")
     }
 
-    /** JM7: every get is for a hash a listing of that namespace returned, at or before the get. */
+    /**
+     * JM7: every get is for a hash a listing of that namespace returned, at or before the get,
+     * and rides a work bundle of one of that namespace's pair events — §15.6's full clause. The
+     * work bundle is the world's fetch pass (F-S11-1's named narrowing: the per-client `:sync`
+     * engine underneath is not run): a get recorded outside a pass that listed that namespace
+     * (e.g. at descriptor arrival, PM-M5's shape) names no bundle and fires.
+     */
     fun jm7(): Result {
         var bad = 0
         var gets = 0
         val listedByNsClient = HashMap<String, MutableSet<String>>()
+        val listPassesByNsClient = HashMap<String, MutableSet<Int>>()
         for (e in events) {
             if (e.op == MediaViewOp.LIST) {
                 val key = "${e.client}:${hexOf(e.namespace)}"
                 listedByNsClient.computeIfAbsent(key) { HashSet() } +=
                     e.listed.orEmpty().map { hexOf(it) }
+                listPassesByNsClient.computeIfAbsent(key) { HashSet() } += e.pass
             }
             if (e.op == MediaViewOp.GET) {
                 gets++
-                val allowed = listedByNsClient["${e.client}:${hexOf(e.namespace)}"]
+                val key = "${e.client}:${hexOf(e.namespace)}"
+                val allowed = listedByNsClient[key]
                 if (allowed == null || !allowed.contains(hexOf(e.hash ?: ByteArray(0)))) bad++
+                // The work-bundle half: the get's pass listed this namespace (a listing of the
+                // same pass precedes it in the recorded order).
+                if (listPassesByNsClient[key]?.contains(e.pass) != true) bad++
             }
         }
-        return Result("JM7", bad, "$bad unscheduled gets over $gets gets")
+        return Result(
+            "JM7", bad,
+            "$bad unscheduled/out-of-bundle gets over $gets gets " +
+                "(the work bundle is the fetch pass; the pair events underneath are not modeled, declared)",
+        )
     }
 
     fun all(): List<Result> = listOf(jm1(), jm2(), jm3(), jm4(), jm5(), jm6(), jm7())

@@ -33,6 +33,15 @@ class MediaPrivacyWorldTest {
             assertTrue("objects: $objectCount", objectCount >= scale.clients * scale.days / 4)
             assertTrue("stores: $storeCount", storeCount >= objectCount)
             assertTrue("gets: $getCount", getCount > 0)
+            // The S9 review's finding 2: the two scripted off-timer anchors (one FAILED, one
+            // deadline) are the only exemptions a green stochastic run executes — they must
+            // appear in JM1's breakdown, and both drove the production paths finding 1 fixed
+            // (the FAILED-outcome arm and MEDIA-DEADLINE at TIMER_OFF).
+            val breakdown = world.truth.exemptionBreakdown()
+            assertTrue(
+                "the scripted off-timer exemptions ran: $breakdown",
+                breakdown.contains("1 FAILED") && breakdown.contains("1 deadline"),
+            )
             results = joins.all()
             for (r in results) {
                 assertEquals("${r.name} over the privacy world: ${r.detail}", 0, r.violations)
