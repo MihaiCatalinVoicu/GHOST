@@ -1,0 +1,4 @@
+# fixture sums (tiny fakes; only the shape is pinned)
+06e41e1ba2b23b2fc0cee4c12c16feaa8673aa7dab5b43b703c00438609acd36  lyrebird-android-arm64
+13e1e50b1d2b32f485f37b7a2cb9b578f5609e3c65641d864fad45f4c9792bcb  lyrebird-android-amd64
+# Source: lyrebird 0.9.0 @ 89d54872b176f936232ff39f7a8189b77d83d65e

@@ -64,7 +64,11 @@ echo "[BUILD] applied $PRUNE_PATCH ($(git -C "$SRC" diff --shortstat | tail -1))
 # --- 3. build flags (S0-T2 of the evidence doc) ---
 export GOFLAGS='-trimpath -mod=readonly -buildvcs=false'
 export LDFLAGS="-s -w $GO_EXTRA_LDFLAGS -X main.lyrebirdVersion=$LYREBIRD_VERSION_STAMP"
-NDK_CC="$ANDROID_NDK_ROOT/$NDK_VERSION/$NDK_CLANG_ABI29_X86_64"
+# The NDK path is touched only by the android/amd64 build; SKIP_ANDROID hosts may not have it.
+NDK_CC=""
+if [ "${SKIP_ANDROID:-0}" != 1 ]; then
+  NDK_CC="$ANDROID_NDK_ROOT/$NDK_VERSION/$NDK_CLANG_ABI29_X86_64"
+fi
 
 # --- 3b. pruned-graph assertion: the module graph must not contain the
 # transports the patch removed (they are the size blow-up OA-3 fired on).
@@ -100,14 +104,46 @@ double_build() { # same path built twice, hashes must match (the G-T2/G-T1 rule)
 
 : > "$OUT/SHA256SUMS.new"
 # S0-T2(b): android/amd64 hard-requires external (cgo) linking in cmd/go.
-double_build android arm64 0 lyrebird-android-arm64
-double_build android amd64 1 lyrebird-android-amd64 "$NDK_CC"
+# SKIP_ANDROID=1 builds only the harness targets (G-T2's re-run on hosts without the NDK);
+# HARNESS=1 additionally double-builds the loopback harness's host binaries (§12.3: they are
+# not shipped in the APK, live beside the android outputs, and their hashes are recorded in
+# SHA256SUMS.har, which G-T4 never reads — the APK owns only the android pair).
+if [ "${SKIP_ANDROID:-0}" != 1 ]; then
+  double_build android arm64 0 lyrebird-android-arm64
+  double_build android amd64 1 lyrebird-android-amd64 "$NDK_CC"
+fi
+if [ "${HARNESS:-0}" = 1 ]; then
+  : > "$OUT/SHA256SUMS.har.new"
+  har_build() { # same-path double build, hash recorded in SHA256SUMS.har
+    local goos=$1 goarch=$2 name=$3
+    (cd "$SRC" && build_one "$goos" "$goarch" 0 "$name")
+    local h1; h1=$(sha256sum "$OUT/$name" | cut -d' ' -f1)
+    rm -f "$OUT/$name"
+    (cd "$SRC" && build_one "$goos" "$goarch" 0 "$name")
+    local h2; h2=$(sha256sum "$OUT/$name" | cut -d' ' -f1)
+    if [ "$h1" != "$h2" ]; then
+      echo "[BUILD] FAIL: $name not reproducible ($h1 != $h2)" >&2; exit 1
+    fi
+    echo "$h2  $name" >> "$OUT/SHA256SUMS.har.new"
+  }
+  # The harness always includes the host it runs on; LINUX=1 adds linux/amd64 from any host
+  # (the CI loopback job). CGO stays off: the harness needs no os/user net hooks.
+  case "$(uname -s)" in
+    *_NT | MINGW* | MSYS* | CYGWIN*) har_build windows amd64 lyrebird-windows-amd64 ;;
+    *) har_build linux amd64 lyrebird-linux-amd64 ;;
+  esac
+  [ "${LINUX:-0}" = 1 ] && har_build linux amd64 lyrebird-linux-amd64
+  mv "$OUT/SHA256SUMS.har.new" "$OUT/SHA256SUMS.har"
+fi
 mv "$OUT/SHA256SUMS.new" "$OUT/SHA256SUMS"
 
 # --- 4. leak check (build-native.sh's spellings idea) ---
 echo "[BUILD] leak check"
-if grep -aoE "${USER:-nobody}|$(pwd -P | sed 's/[].[^$*\/]/\\&/g')|$HOME" "$OUT"/lyrebird-android-* | head -5; then
-  echo "[BUILD] FAIL: builder path leaked into a binary" >&2; exit 1
-fi
+for bin in "$OUT"/lyrebird-android-* "$OUT"/lyrebird-windows-amd64 "$OUT"/lyrebird-linux-amd64; do
+  [ -f "$bin" ] || continue
+  if grep -aoE "${USER:-nobody}|$(pwd -P | sed 's/[].[^$*\/]/\\&/g')|$HOME" "$bin" | head -5; then
+    echo "[BUILD] FAIL: builder path leaked into a binary" >&2; exit 1
+  fi
+done
 
 echo "[BUILD] done. Compare $OUT/SHA256SUMS against the recorded SHA256SUMS (G-T4's twin)."

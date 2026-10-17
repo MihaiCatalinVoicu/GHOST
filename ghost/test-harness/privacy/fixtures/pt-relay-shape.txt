@@ -1,0 +1,5 @@
+# ghost pt-loopback relay-shape record (measured, one run; the privacy harness fixture)
+# pt path:      c2s=1871980 bytes
+# direct path:  c2s=997378 bytes
+pt      handshake=[(22, 1), (20, 3)] alphabet=[(20, 3), (22, 1), (23, 3)]
+direct  handshake=[(22, 1), (20, 3)] alphabet=[(20, 3), (22, 1), (23, 3)]

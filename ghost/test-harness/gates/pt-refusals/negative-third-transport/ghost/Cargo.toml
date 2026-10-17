@@ -1,0 +1,205 @@
+[workspace]
+resolver = "2"
+members = [
+    "relay/crates/api",
+    "relay/crates/storage",
+    "relay/crates/transport",
+    "relay/crates/gossip",
+    "relay/crates/prune",
+    "relay/crates/capability",
+    "relay/crates/node",
+    # Issuer crates (Phase 8 design §5.1): inside rust_src_files, so every gate scans them.
+    "issuer/crates/*",
+    "client-core/net",
+    # DM cryptography (Phase 9 design §2.3): a workspace member so cargo-deny, the licence gates
+    # and the Rust gates cover it. (The S0' spike, client-core/dm-spike, outside the workspace, was
+    # deleted by the S0' gate slice, design §22.33, once its three tools had replacements.)
+    "client-core/dm",
+    # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
+    # gates cover it, never built for Android and never in the shipped graph.
+    "client-core/dm-host",
+    # The media object, its sealer and reader, the codecs and the canonical-format walkers (Phase 11
+    # design faza11-media.md §3, §4.1, §8.2, §8.3, §13.1; slice S1): a workspace member so cargo-deny,
+    # the licence gates and the Rust gates (G-M7) cover it. Pure: no JNI, I/O, clock, logging or
+    # randomness; ghost-client-dm links it with the MediaNative surface in slice S2.
+    "client-core/media",
+    # Channel cryptography on OpenMLS (Phase 10 design faza10-forum.md §10.1, slice S2a): a workspace
+    # member so cargo-deny, the licence gates and the Rust gates (G-M1 … G-M4, G-M8) cover it. Linked
+    # into ghost-client-net with its JNI export `MlsNative` since slice S2b (§19.32).
+    "client-core/mls",
+    # The MLS WG passive-client replay through GhostKv and the independent replay of the channel
+    # vectors (§10.1, §12.2, S0-13): test-only, outside every shipped and host graph; the only crate
+    # that enables openmls/test-utils (G-M2).
+    "client-core/mls-kat",
+    # EM-3, the exhaustive commit-arbitration model (Phase 10 design §12.3, §19.34): test-only, no
+    # dependency, outside every shipped and host graph (the EM-1/EM-2 placement: a model and its search
+    # run as an integration test).
+    "client-core/mls-models",
+    # The process-global seeded randomness of host and test builds (§12.1, §19.10, S0-7): the
+    # getrandom custom backend behind --cfg getrandom_backend="custom". Host-only; refuses to compile
+    # for Android and is kept out of every shipped graph by rust-feature-policy.sh (G-R2).
+    "client-core/host-rng",
+    "test-harness/privacy/capture-check",
+    # The T2 analyzer (Phase 8 design §13.4): test tooling, linked only by the issuer's T2 tests.
+    "test-harness/privacy/t2-join",
+    # Gate G-R8's scanner (Phase 9 design §16.1, §22.33): test tooling, run by
+    # scripts/gates/dm-vendored-clock-log.sh, never linked into a shipped library.
+    "test-harness/vendored-scan",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-GHOST-Proprietary"
+rust-version = "1.98"
+repository = "https://github.com/MihaiCatalinVoicu/GHOST"
+
+[workspace.dependencies]
+# Pinned baseline (spec Appendix A). Bumps go through cargo-deny/cargo-audit in CI.
+# Client graph gets codegen only: no tonic Channel/Endpoint (clearnet dialer, system DNS,
+# user-agent) can be compiled into the Android library. The relay node adds the server features.
+tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
+prost = "0.14.4"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+redb = "4.2.0"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+rand = "0.10.2"
+hex = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tempfile = "3.27.0"
+# Pluggable transports (Phase 12, design faza12-transports.md §5.1, ADR-61): `pt-client` pulls
+# tor-ptmgr (managed PT spawning, `managed-pts`) into the shipped graph. It names only the
+# client feature: no `pt-server` exists on arti-client and tor-ptmgr's `experimental` features
+# stay off (rust-feature-policy.sh pins both sides).
+arti-client = { version = "0.46.0", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client", "bridge-client", "vanguards", "pt-client"] }
+tor-guardmgr = { version = "0.46.0", default-features = false, features = ["vanguards"] }
+tor-config = { version = "0.46.0", default-features = false }
+tor-hscrypto = { version = "0.46.0", default-features = false }
+tor-proto = { version = "0.46.0", default-features = false }
+tor-rtcompat = { version = "0.46.0", default-features = false, features = ["tokio", "rustls"] }
+hyper = "1.11.1"
+hyper-util = { version = "0.1.20", features = ["tokio", "client-legacy", "http2"] }
+http-body-util = "0.1.5"
+tower = "0.5.3"
+http = "1.5.0"
+jni = "0.21.1"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# Entitlement crypto (Phase 8 design §2.7, §14.3). Public-key work stays on crates the Android
+# library already links, with no feature beyond those it already enables (no `std`/`rand` on
+# num-bigint-dig: they would pull rand 0.8 with getrandom into the client graph).
+num-bigint-dig = { version = "0.8.6", default-features = false, features = ["u64_digit"] }
+ring = "0.17.14"
+sha3 = "0.10.9"
+curve25519-dalek = "4.1.3"
+ed25519-dalek = "2.2.0"
+# Issuer signer only (ADR-22): confined to the issuer graphs by rust-feature-policy.sh and pinned
+# by rust-crypto-pins.sh. No `serde` (its default feature).
+blind-rsa-signatures = { version = "=0.17.2", default-features = false }
+# Issuer only (ADR-26, design §7.1, §14.3): MD5 for the RFC 2617 digest authentication of
+# monero-wallet-rpc and monerod (the only algorithm their epee server offers). Kept out of the
+# client and relay graphs by rust-feature-policy.sh.
+md-5 = "0.10.6"
+# The issuer's configuration file (design §6.6); the version already in the lock file.
+toml = { version = "0.8.23", default-features = false, features = ["parse"] }
+# Channels on OpenMLS (Phase 10 design §3.2, ADR-40; slice S2a). Exact pins; no default feature and
+# none of the forbidden ones (crypto-debug, content-debug, test-utils, the drafts, sqlite-provider,
+# js, backtrace, …; gate G-M2 in rust-feature-policy.sh). The libcrux provider is a direct
+# dependency, not the `libcrux-provider` feature of openmls; its memory storage is never named (G-M2).
+openmls = { version = "=0.9.0", default-features = false }
+openmls_traits = { version = "=0.6.0", default-features = false }
+openmls_libcrux_crypto = { version = "=0.4.0", default-features = false }
+# A normal dependency of openmls; pinned to one worker at every context open (design §3.6).
+rayon = "=1.12.0"
+# The channel password (design §19.28.5, Q47 (a)): Argon2id (RFC 9106) in Rust, pinned exactly.
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "zeroize"] }
+
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.blind-rsa-signatures]
+opt-level = 3
+[profile.dev.package.ghost-blind-rsa]
+opt-level = 3
+[profile.dev.package.ghost-entitlement]
+opt-level = 3
+
+# OpenMLS and the libcrux provider in debug builds (the rust job's `cargo test`): tree operations,
+# HPKE and Ed25519 unoptimised make a 32-member channel test take minutes; Argon2id at kdf_code 1
+# fills 64 MiB. Optimised like the issuer's bignum crates above; release builds are unaffected.
+[profile.dev.package.openmls]
+opt-level = 3
+[profile.dev.package.openmls_libcrux_crypto]
+opt-level = 3
+[profile.dev.package.hpke-rs]
+opt-level = 3
+[profile.dev.package.hpke-rs-libcrux]
+opt-level = 3
+[profile.dev.package.libcrux-curve25519]
+opt-level = 3
+[profile.dev.package.libcrux-ed25519]
+opt-level = 3
+[profile.dev.package.libcrux-sha2]
+opt-level = 3
+[profile.dev.package.libcrux-hacl-rs]
+opt-level = 3
+[profile.dev.package.libcrux-chacha20poly1305]
+opt-level = 3
+[profile.dev.package.libcrux-poly1305]
+opt-level = 3
+[profile.dev.package.libcrux-hmac]
+opt-level = 3
+[profile.dev.package.libcrux-hkdf]
+opt-level = 3
+[profile.dev.package.tls_codec]
+opt-level = 3
+# The X25519 validity check of every HPKE key of a channel's tree (review H1, §19.31): one scalar
+# multiplication per node and commit, slow unoptimised; release builds are unaffected.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.serde_json]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+# EM-3 (§12.3) runs in the rust job's debug `cargo test` at its PR bound: optimised like the OpenMLS
+# crates above so that the exhaustive search fits the job; release builds are unaffected.
+[profile.dev.package.ghost-client-mls-models]
+opt-level = 3
+
+# The media crate's tests (Phase 11 design §15.1, §15.2; slice S1) seal and open every class
+# boundary up to 50 MiB, every golden, the corruption matrix and the property runs, and sweep the
+# walkers over every prefix and single-byte mutation: unoptimised ChaCha20, Poly1305 and SHA-256
+# make that hours. Optimised like the crates above (overflow checks stay on in the dev profile);
+# release builds are unaffected.
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.ghost-client-media]
+opt-level = 3
+
+# Phase 10 design §3.2 "Lock resolution" (S0-1, Q40 (a)): the optional, forbidden SQLite provider of
+# openmls 0.9.0 needs libsqlite3-sys ^0.35 (`links = "sqlite3"`) against the 0.37.0 of
+# ghost-client-net. Cargo resolves an optional dependency that an enabled feature names, even weakly
+# (`openmls_sqlite_storage?/…`, which OpenMLS's PQ and draft-extension features do), and then the
+# lock does not resolve; this manifest-only stand-in of the same name and version (no dependency, an
+# empty lib.rs) makes it resolve. With the features G-M2 allows, the lock resolves without it and
+# records the patch as unused (faza10-forum.md §19.30 F-6). It is never compiled (G-M2).
+[patch.crates-io]
+openmls_sqlite_storage = { path = "third_party/openmls-sqlite-storage-stub" }
+
+[profile.release]
+# Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.
+strip = "symbols"

@@ -131,6 +131,12 @@ tasks.withType<Test>().configureEach {
             .withPropertyName("netHostLibrary")
             .withPathSensitivity(PathSensitivity.NAME_ONLY)
     }
+    // PtInstallerReleaseTwinTest reads the production source it pins (the G-DM5 twin rule for
+    // the PT extractor: no debug-only bypass around the hash verification).
+    systemProperty("ghost.network.sourcedir", file("src/main/kotlin").absolutePath)
+    inputs.dir("src/main/kotlin")
+        .withPropertyName("networkMainSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 // OnionAddressTest reads the vector file shared with the Rust parser: declare it as a test input

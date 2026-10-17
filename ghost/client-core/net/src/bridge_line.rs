@@ -243,18 +243,30 @@ fn check_fingerprint(token: &str) -> Result<(), BridgeLineError> {
     }
 }
 
-/// Structural base64 check: the standard alphabet, length a multiple of 4, padding only as a
-/// trailing run of at most two '='. The contents stay semantically opaque to GHOST (§6.2
+/// Structural base64 check for the obfs4 `cert`: the standard alphabet, padding optional
+/// (S3-T3 — the design's "length ≡ 0 (mod 4)" pin is refuted by the pinned upstream: lyrebird
+/// prints `TrimSuffix(base64.StdEncoding(nodeID || publicKey), "==")`, 52 bytes → 70 chars,
+/// and every real bridge line carries that unpadded shape). The rule stays structural:
+/// standard alphabet, at most two trailing '=', and the value must actually base64-decode
+/// (padding restored when absent). The contents stay semantically opaque to GHOST (§6.2
 /// point 2).
 fn check_base64(value: &str) -> Result<(), BridgeLineError> {
     let bytes = value.as_bytes();
     let data_chars = bytes.iter().take_while(|&&b| b != b'=').count();
     let ok = !bytes.is_empty()
-        && bytes.len().is_multiple_of(4)
         && bytes
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
-        && data_chars >= bytes.len().saturating_sub(2);
+        && data_chars + 2 >= bytes.len() // '=' only as a trailing run of at most two
+        && {
+            let pad = (4 - bytes.len() % 4) % 4;
+            let mut padded = String::with_capacity(bytes.len() + pad);
+            padded.push_str(value);
+            padded.push_str(&"=".repeat(pad));
+            // Standard decoding rejects a wrong alphabet, non-trailing padding and lengths
+            // that no padding can fix; that is the whole structural claim.
+            base64_decode(&padded)
+        };
     if ok {
         Ok(())
     } else {
@@ -262,12 +274,61 @@ fn check_base64(value: &str) -> Result<(), BridgeLineError> {
     }
 }
 
+/// Decode with the standard base64 alphabet (no new dependency: 6-bit table by hand).
+/// Returns whether `s` (already padded to a multiple of 4) is well-formed base64.
+fn base64_decode(s: &str) -> bool {
+    fn val(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some(u32::from(b - b'A')),
+            b'a'..=b'z' => Some(u32::from(b - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(b - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return false;
+    }
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return false;
+    }
+    let chunks: &[[u8; 4]] = chunks;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let last = i == chunks.len() - 1;
+        let mut pad = 0usize;
+        for (j, &b) in chunk.iter().enumerate() {
+            if b == b'=' {
+                // Padding is allowed only in the last chunk's last two positions.
+                if !last || j < 2 {
+                    return false;
+                }
+                pad += 1;
+            } else {
+                if pad > 0 {
+                    return false; // data after padding
+                }
+                if val(b).is_none() {
+                    return false;
+                }
+            }
+        }
+        if pad > 2 {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const FP: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
-    /// A structurally valid 64-byte base64 blob (obfs4 cert shape), contents opaque.
+    /// A structurally valid padded base64 blob; contents opaque (see
+    /// `obfs4_cert_accepts_the_unpadded_upstream_shape` for the real cert shape).
     const CERT: &str =
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==";
 
@@ -407,6 +468,44 @@ mod tests {
         assert_eq!(
             bad(&format!("cert={CERT} iat-mode=0 utls=foo")).unwrap_err(),
             BridgeLineError::Malformed("parameter")
+        );
+    }
+
+    #[test]
+    fn obfs4_cert_accepts_the_unpadded_upstream_shape() {
+        // S3-T3: the design's "length ≡ 0 (mod 4)" cert pin is refuted by the pinned lyrebird —
+        // it prints TrimSuffix(base64.StdEncoding(nodeID || publicKey), "=="): 52 bytes → 70
+        // chars, 70 % 4 == 2, and every real bridge line carries this shape. The structural
+        // rule is "standard alphabet, decodable, ≤2 trailing '='" — never the mod-4 pin.
+        // (Recorded from a real managed-mode SMETHOD line of the pinned 0.9.0 build.)
+        const REAL_70_CHAR_CERT: &str =
+            "kfRDYZLo7Ib7U4uW6pl7vZ244LitHFPJtADzjnULG9+IIGoLyT6Nyj3fnBAe4hcqyCA7Mg";
+        assert_eq!(REAL_70_CHAR_CERT.len(), 70);
+        assert_eq!(
+            classify(&s(&format!(
+                "obfs4 192.0.2.10:443 {FP} cert={REAL_70_CHAR_CERT} iat-mode=0"
+            )))
+            .unwrap(),
+            BridgeLineKind::Obfs4,
+            "the real unpadded upstream cert shape must be accepted"
+        );
+        // …and the same cert with its "==" restored (a hand-written variant) too.
+        let padded = format!("{REAL_70_CHAR_CERT}==");
+        assert_eq!(
+            classify(&s(&format!(
+                "obfs4 192.0.2.10:443 {FP} cert={padded} iat-mode=1"
+            )))
+            .unwrap(),
+            BridgeLineKind::Obfs4
+        );
+        // Lengths no padding can fix are still malformed (≡ 1 mod 4: would need three '=').
+        let bad_len = "A".repeat(69);
+        assert_eq!(
+            classify(&s(&format!(
+                "obfs4 192.0.2.10:443 {FP} cert={bad_len} iat-mode=0"
+            )))
+            .unwrap_err(),
+            BridgeLineError::Malformed("cert")
         );
     }
 

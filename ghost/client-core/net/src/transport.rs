@@ -165,12 +165,14 @@ impl TorTransport {
                             })
                             .collect(),
                     )
-                    // Rev 3 (§5.4.5, OA-4 resolution): the exec target is the *system linker*
-                    // and the verified binary's absolute path is its first argument. A direct
-                    // execve of a filesDir binary is SELinux-denied for targetSdk ≥ 29
-                    // (execute_no_trans on app_data_file), while mmap-exec is granted — running
-                    // the binary through the linker needs exactly the granted permissions and
-                    // no arti patch (ptmgr's config is `path` + `arguments`).
+                    // Rev 3 (§5.4.5, OA-4 resolution): on Android the exec target is the
+                    // *system linker* and the verified binary's absolute path is its first
+                    // argument — a direct execve of a filesDir binary is SELinux-denied for
+                    // targetSdk ≥ 29 (execute_no_trans on app_data_file), while mmap-exec is
+                    // granted — running the binary through the linker needs exactly the
+                    // granted permissions and no arti patch (ptmgr's config is `path` +
+                    // `arguments`). Off-device (host builds, the §12.3 loopback harness)
+                    // `pt_exec` returns the binary itself for a direct exec (S3-T1).
                     .path(CfgPath::new_literal(linker))
                     .arguments(binary)
                     // ptmgr 0.46 launches managed PTs lazily on first channel use (the flag is
@@ -308,15 +310,26 @@ fn keystore_files(state_dir: &std::path::Path) -> Vec<PathBuf> {
 /// Resolves the PT launch shape for a config that contains PT bridge lines (rev 3, §5.4.5,
 /// OA-4 resolved): `pt_dir` must be set and `lyrebird` must exist inside it (design §5.2 — the
 /// up-front check so a missing binary is a create-time config error, not a bootstrap-time
-/// hang; the binary's hash was verified at extraction time by the Android side, PT-1/S2), and
-/// the returned launch is `(system linker, [binary path])` — the linker is exec'ed and the
-/// binary is its first argument, never a direct execve of the filesDir file (SELinux
-/// `execute_no_trans` denies that for targetSdk ≥ 29; mmap-exec is granted, which is all the
-/// linker needs).
+/// hang; the binary's hash was verified at extraction time by the Android side, PT-1/S2).
+///
+/// The launch shape is platform-split (S3-T1):
+/// - **Android**: `(system linker, [binary path])` — the linker is exec'ed and the binary is
+///   its first argument, never a direct execve of the filesDir file (SELinux
+///   `execute_no_trans` denies that for targetSdk ≥ 29; mmap-exec is granted, which is all the
+///   linker needs).
+/// - **Every other host** (the §8.4 host build and S3's loopback harness): `(binary, [])` —
+///   the verified binary is exec'ed directly; the SELinux rule has no counterpart off-device.
 fn pt_exec(cfg: &TransportConfig) -> Result<(PathBuf, Vec<String>), TransportError> {
     let binary = pt_binary(cfg)?;
-    let linker = pt_linker()?;
-    Ok((linker, vec![binary.to_string_lossy().into_owned()]))
+    #[cfg(target_os = "android")]
+    {
+        let linker = pt_linker()?;
+        Ok((linker, vec![binary.to_string_lossy().into_owned()]))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok((binary, Vec::new()))
+    }
 }
 
 /// The system dynamic linker for this process's ABI (rev 3, §5.4.5). Resolved at runtime from
@@ -325,6 +338,9 @@ fn pt_exec(cfg: &TransportConfig) -> Result<(PathBuf, Vec<String>), TransportErr
 /// interpret through `/system/bin/linker64`, 32-bit ABIs through `/system/bin/linker`. The
 /// linker's own existence is verified here; a device without it cannot launch any PT child
 /// and gets the typed [`TransportError::PtLinkerMissing`] (config class) at create time.
+/// Android-only: off-device `pt_exec` execs the binary directly (S3-T1), so the host build
+/// never resolves a linker (and stays unit-testable without a `/system/bin`).
+#[cfg(target_os = "android")]
 fn pt_linker() -> Result<PathBuf, TransportError> {
     let name = match std::env::consts::ARCH {
         "aarch64" | "x86_64" => "linker64",
@@ -335,7 +351,7 @@ fn pt_linker() -> Result<PathBuf, TransportError> {
     };
     let path = PathBuf::from("/system/bin").join(name);
     // The host build (§8.4) has no /system/bin: config-build must stay unit-testable there, and
-    // PT never spawns off-device (ptmgr launches lazily; the suites run placeholder binaries).
+    // PT never spawns off-device (ptmgr launches lazily; the suites run stand-in binaries).
     // The existence gate is therefore Android-only; on Android it is the product path.
     #[cfg(target_os = "android")]
     if !path.is_file() {
@@ -425,12 +441,12 @@ mod tests {
         }
     }
 
-    /// A `pt_dir` containing a placeholder lyrebird file: config-build checks existence only
+    /// A `pt_dir` containing a stand-in lyrebird file: config-build checks existence only
     /// (arti's ptmgr launches lazily), so no real binary is needed for the unit suites.
     fn fake_pt_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ghost-net-pt-test-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(LYREBIRD_BINARY), b"placeholder").unwrap();
+        std::fs::write(dir.join(LYREBIRD_BINARY), b"not-a-real-binary").unwrap();
         dir
     }
 
@@ -471,7 +487,7 @@ mod tests {
             TorTransport::build_config(&missing),
             Err(TransportError::PtBinaryMissing)
         ));
-        // …and build once the (placeholder) binary exists. No PT process spawns at build or
+        // …and build once the (stand-in) binary exists. No PT process spawns at build or
         // create time: ptmgr launches lazily on first channel use, so the unit suites need no
         // real binary. (The ptmgr wiring itself is proven end to end by S3's loopback harness.)
         let mut ok = cfg("obfs4-ok", vec![OBFS4_LINE, WEBTUNNEL_LINE]);
@@ -480,28 +496,48 @@ mod tests {
     }
 
     #[test]
-    fn pt_launch_shape_is_the_system_linker_plus_the_binary_argument() {
-        // Rev 3 (§5.4.5, OA-4 resolution): ptmgr's exec is `path = <system linker>`,
-        // `arguments = [<absolute binary path>]` — never a direct execve of the filesDir
-        // binary (SELinux execute_no_trans denies that for targetSdk ≥ 29; the linker needs
-        // only the granted mmap-exec). The existence gate lives behind cfg(android), so the
-        // host build resolves the path without checking it.
+    fn pt_launch_shape_is_platform_split() {
+        // Rev 3 (§5.4.5, OA-4 resolution): on Android the ptmgr exec is
+        // `path = <system linker>`, `arguments = [<absolute binary path>]` — never a direct
+        // execve of the filesDir binary (SELinux execute_no_trans denies that for
+        // targetSdk ≥ 29; the linker needs only the granted mmap-exec). On every other host
+        // the verified binary is exec'ed directly (S3-T1: the loopback harness of §12.3 runs
+        // arti on the host, where the SELinux rule has no counterpart). The existence gate
+        // lives behind cfg(android), so the host build resolves paths without checking them.
         let mut c = cfg("pt-exec-shape", vec![OBFS4_LINE]);
         c.pt_dir = Some(fake_pt_dir("pt-exec-shape"));
-        let (linker, args) = pt_exec(&c).expect("exec shape resolves with the binary");
-        let expected = match std::env::consts::ARCH {
-            "aarch64" | "x86_64" => "linker64",
-            _ => "linker",
-        };
+        let (exec_target, args) = pt_exec(&c).expect("exec shape resolves with the binary");
         assert!(
-            linker.to_string_lossy().ends_with(expected),
-            "the exec target is the {expected} linker: {linker:?}"
+            exec_target.is_absolute() && exec_target.ends_with(LYREBIRD_BINARY),
+            "the verified binary is always resolved: {exec_target:?}"
         );
-        assert_eq!(args.len(), 1, "exactly one argument (the binary): {args:?}");
-        assert!(
-            args[0].ends_with(LYREBIRD_BINARY) && std::path::Path::new(&args[0]).is_absolute(),
-            "the argument is the binary's absolute path: {args:?}"
-        );
+        #[cfg(target_os = "android")]
+        {
+            let expected = match std::env::consts::ARCH {
+                "aarch64" | "x86_64" => "linker64",
+                _ => "linker",
+            };
+            assert!(
+                exec_target.to_string_lossy().ends_with(expected),
+                "the exec target is the {expected} linker: {exec_target:?}"
+            );
+            assert_eq!(args.len(), 1, "exactly one argument (the binary): {args:?}");
+            assert!(
+                args[0].ends_with(LYREBIRD_BINARY) && std::path::Path::new(&args[0]).is_absolute(),
+                "the argument is the binary's absolute path: {args:?}"
+            );
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            assert!(
+                exec_target.ends_with(LYREBIRD_BINARY),
+                "off-device the exec target is the binary itself: {exec_target:?}"
+            );
+            assert!(
+                args.is_empty(),
+                "direct exec takes no wrapper argument: {args:?}"
+            );
+        }
         // Binary-first ordering: no pt_dir refuses with PtBinaryMissing before any linker
         // resolution (a missing binary and a missing linker are both config class, but the
         // binary check is the one a misconfigured install meets).

@@ -2,7 +2,7 @@ package org.ghost.network
 
 /**
  * Loads the native network core once per process, on first use rather than at class load, so
- * pure-JVM code paths (decoders, argument checks, [PtInstaller]'s mocked-asset tests) stay
+ * pure-JVM code paths (decoders, argument checks, [PtInstaller]'s asset-injected tests) stay
  * testable without it. A missing or unloadable library surfaces as category `native_missing`,
  * not as an Error.
  *

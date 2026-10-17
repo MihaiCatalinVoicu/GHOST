@@ -199,6 +199,7 @@ opt-level = 3
 # records the patch as unused (faza10-forum.md §19.30 F-6). It is never compiled (G-M2).
 [patch.crates-io]
 openmls_sqlite_storage = { path = "third_party/openmls-sqlite-storage-stub" }
+saturating-time = { path = "third_party/saturating-time" }
 
 [profile.release]
 # Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.
