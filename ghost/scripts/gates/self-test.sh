@@ -216,6 +216,72 @@ if bash "$DIR/media-release-dex.sh" "$MRD/bad-usage/mapping.txt" "$MRD/bad-usage
 else
   echo "self-test ok: media-release-dex refuses a usage.txt that reports no removable class"
 fi
+
+# G-M8 (faza11-media.md §16.1 G-M8; slice S9): the Media3 golden lock. The fixtures are mini
+# GHOST_ROOT trees (a catalog + a golden dir); the bump cases drive the catalog pair through the
+# file hooks, with the cargo drill skipped (the fixture machine has no cargo).
+MGL="$HARNESS/media-golden"
+if GHOST_ROOT="$MGL/good" GHOST_MEDIA_GOLDEN_NO_TESTS=1 bash "$DIR/media-golden-lock.sh" --base none >/dev/null 2>&1; then
+  echo "self-test ok: media-golden-lock accepts the clean fixture"
+else
+  echo "SELF-TEST FAIL: media-golden-lock rejects the clean fixture" >&2; rc=1
+fi
+expect_fail media-golden-lock "$MGL/negative-two-versions"
+expect_fail media-golden-lock "$MGL/negative-no-dir"
+expect_fail media-golden-lock "$MGL/negative-empty-sums"
+expect_fail media-golden-lock "$MGL/negative-bad-hash"
+printf 'media3 = "1.11.0"\n' > "$MGL/base-catalog.toml"
+mgl_first="$(GHOST_ROOT="$MGL/good" GHOST_MEDIA_GOLDEN_NO_TESTS=1 bash "$DIR/media-golden-lock.sh" --base none 2>&1 || true)"
+if grep -qF "first pin, exempt" <<<"$mgl_first"; then
+  echo "self-test ok: media-golden-lock exempts the first pin"
+else
+  echo "SELF-TEST FAIL: media-golden-lock does not exempt the first pin" >&2; rc=1
+fi
+mgl_bump="$(GHOST_ROOT="$MGL/negative-bump-no-dir" GHOST_MEDIA_GOLDEN_NO_TESTS=1 GHOST_MEDIA_GOLDEN_BASE_CATALOG="$MGL/base-catalog.toml" bash "$DIR/media-golden-lock.sh" 2>&1 || true)"
+if grep -qF "the golden directory" <<<"$mgl_bump"; then
+  echo "self-test ok: media-golden-lock refuses a bump whose new version has no golden directory"
+else
+  echo "SELF-TEST FAIL: media-golden-lock accepted a bump without the new version's goldens" >&2; rc=1
+fi
+mgl_drill="$(GHOST_ROOT="$MGL/good" GHOST_MEDIA_GOLDEN_NO_TESTS=1 GHOST_MEDIA_GOLDEN_BASE_CATALOG="$MGL/base-catalog.toml" bash "$DIR/media-golden-lock.sh" 2>&1 || true)"
+if grep -qF "media3 1.11.0 -> 1.11.1 (bump)" <<<"$mgl_drill"; then
+  echo "self-test ok: media-golden-lock sees the bump through the base-catalog hook"
+else
+  echo "SELF-TEST FAIL: media-golden-lock does not report the bump" >&2; rc=1
+fi
+
+# G-M9 (faza11-media.md §16.1 G-M9; slice S9): the exit-gate and emulator report checks. The good
+# fixtures are hand-written reports of the exact contract; each negative breaks one clause.
+MRPT="$HARNESS/media-report"
+if bash "$DIR/media-report-check.sh" "$MRPT/exit-gate-good.txt" gate >/dev/null 2>&1; then
+  echo "self-test ok: media-report-check accepts exit-gate-good.txt (gate)"
+else
+  echo "SELF-TEST FAIL: media-report-check rejects the good fixture exit-gate-good.txt" >&2; rc=1
+fi
+if bash "$DIR/media-report-check.sh" "$MRPT/exit-pr-good.txt" pr >/dev/null 2>&1; then
+  echo "self-test ok: media-report-check accepts exit-pr-good.txt (pr)"
+else
+  echo "SELF-TEST FAIL: media-report-check rejects the good fixture exit-pr-good.txt" >&2; rc=1
+fi
+if bash "$DIR/media-report-check.sh" --emulator "$MRPT/emulator-good.txt" >/dev/null 2>&1; then
+  echo "self-test ok: media-report-check accepts the good emulator report"
+else
+  echo "SELF-TEST FAIL: media-report-check rejects the good emulator report" >&2; rc=1
+fi
+for f in exit-missing-scn exit-zero-points exit-mutants-short exit-mutants-overclaim \
+         exit-jm-nonzero exit-nim5-bare exit-seizure-vacuous exit-gate-wrong-scale exit-fail; do
+  if bash "$DIR/media-report-check.sh" "$MRPT/$f.txt" gate >/dev/null 2>&1; then
+    echo "SELF-TEST FAIL: media-report-check passed $f.txt" >&2; rc=1
+  else
+    echo "self-test ok: media-report-check rejects $f"
+  fi
+done
+if bash "$DIR/media-report-check.sh" --emulator "$MRPT/emulator-mutants-short.txt" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: media-report-check passed emulator-mutants-short.txt" >&2; rc=1
+else
+  echo "self-test ok: media-report-check rejects the short emulator mutant close-out"
+fi
+rm -f "$MGL/base-catalog.toml"
 media_log_out="$(GHOST_ROOT="$HARNESS/negative-media-logging" bash "$DIR/no-logging.sh" 2>&1 || true)"
 if [ "$(grep -c '^GATE-FAIL' <<<"$media_log_out" || true)" = 2 ] \
   && grep -qF "client-core/media/src/lib.rs:3:    log::info!" <<<"$media_log_out" \

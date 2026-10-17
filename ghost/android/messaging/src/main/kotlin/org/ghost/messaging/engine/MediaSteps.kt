@@ -238,7 +238,13 @@ internal class MediaSteps(
                         req.caption,
                     ),
                     state = MessageStore.STATE_QUEUED,
-                    expireAtMinute = ceilMinute(deadlineHour + timerSeconds),
+                    // D26's upper bound (author + min(bucket, 7 d) + timer); a conversation with the
+                    // timer off has no countdown at all — the text path's rule (SendStep's
+                    // `senderExpireMinute`, null at TIMER_OFF) and dm_message's CHECK (timer_code 0
+                    // requires expire_at_minute NULL). The S9 privacy world caught the
+                    // unconditional value violating the CHECK on the first off-timer commit
+                    // (F-S9-2): a media send to an off-timer conversation aborted at MEDIA-COMMIT.
+                    expireAtMinute = if (timerSeconds == 0L) null else ceilMinute(deadlineHour + timerSeconds),
                     unreadDeadlineMinute = null,
                 )
                 val descriptorBody = descriptorBody(req)
@@ -510,7 +516,11 @@ internal class MediaSteps(
         objects.markUploaded(tx, op.objectId)
         val messageId = obj.messageId ?: return
         val message = messages.message(tx.sql, messageId, expiry.nowMinute(tx.sql)) ?: return
-        messages.lowerExpireAt(tx, messageId, countdownMinute(now, message.timerCode))
+        // The timer-off conversation has no countdown (the commit-time rule, F-S9-2's pair): the
+        // message stays expire-NULL, which dm_message's CHECK requires of a timer_code 0 row.
+        if (message.timerCode != DmTimers.TIMER_OFF) {
+            messages.lowerExpireAt(tx, messageId, countdownMinute(now, message.timerCode))
+        }
         // The descriptor SEND in the same pass, with the object's TTL and deadline (R-MT4): queued
         // for after this transaction (the SEND runs transactions of its own).
         val upload = objects.upload(tx.sql, op.objectId, nowE) ?: return
