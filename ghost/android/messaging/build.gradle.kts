@@ -86,6 +86,8 @@ dependencies {
     androidTestImplementation(libs.junit)
     // The S5 device smoke's `VideoSource.mediaItem()` (media3's type crosses the test boundary).
     androidTestImplementation(libs.androidx.media3.common)
+    // S9's media privacy world drives `prepareVideo` on the JVM (the same crossing as the S5 smoke).
+    testImplementation(libs.androidx.media3.common)
     // Slice S7's playback device test drives the player (GhostPlayer returns ExoPlayer).
     androidTestImplementation(libs.androidx.media3.exoplayer)
     androidTestImplementation(libs.sqlcipher.android)
@@ -180,6 +182,13 @@ val harnessProperties = listOf(
     "ghost.channel.privacy.seed",
     "ghost.channel.privacy.seeds",
     "ghost.channel.privacy.days",
+    // S9's media harness knobs (Phase 11 design §15.1): the media privacy world's scale
+    // (`ghost.media.privacy=gate` for N = 300 over 28 days), the crash-enumeration shard
+    // selection of `media-exit-gate.sh`, and the media report `media-report-check.sh` reads.
+    "ghost.media.privacy",
+    "ghost.media.shard",
+    "ghost.media.shards",
+    "ghost.media.report",
 )
 
 tasks.withType<Test>().configureEach {

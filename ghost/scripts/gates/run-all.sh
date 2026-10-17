@@ -48,7 +48,11 @@ rc=0
 # G-M3's bytecode half (javap over the release variant's classes) runs in the CI android job, as do
 # G-M4's merged-manifest half (merged-manifest-lint.sh) and G-M10 (media-release-dex.sh) — both need
 # the release build, like T15m. G-M4's source-manifest and binding halves live in manifest-lint.sh.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement; do
+# Phase 11 slice S9's G-M8 (media-golden-lock.sh): the Media3 pin's golden directory and sums; its
+# bump drill (the walker's golden tests over the new pin) runs in the CI rust job at a pin change,
+# as for G-R7. G-M9 (media-report-check.sh) checks the gate jobs' reports and is invoked by
+# scripts/ci/media-exit-gate.sh and media-emulator.sh, not here.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

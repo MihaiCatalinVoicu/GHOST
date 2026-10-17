@@ -31,6 +31,11 @@ import java.util.concurrent.Executors
  *    descriptor after a reboot — exactly-once (guards + no duplicate pending rows).
  *  - **F4 / F-S5-18**: a FAILED outcome now starts the sender's countdown at the failure (the
  *    commit-time bound ran deletion late by up to the deadline window).
+ *  - **S9 review finding 1**: the off-timer fix's third site — [MediaSteps]'s `lowerCountdown`
+ *    wrote `expire_at_minute` unconditionally, and at TIMER_OFF (`timerSeconds(0) = 0`) the value
+ *    is non-NULL, aborting `dm_message`'s CHECK from the FAILED-outcome arm and MEDIA-DEADLINE
+ *    alike (the release rolling back with the transaction, the same outcome re-threw every pass —
+ *    the F-S5-16 wedge). Two probes below, each red-on-unfixed with the CHECK abort.
  */
 class MediaReviewRegressionsTest {
 
@@ -254,6 +259,76 @@ class MediaReviewRegressionsTest {
         val expect = -Math.floorDiv(-(MediaWorld.NOW + timerSeconds), 60L) * 60L
         val lowered = expireOf(world)
         assertTrue("lowered=$lowered expect=$expect upper=$upper", lowered in expect..expect + 60 && lowered < upper)
+        box.world.close()
+    }
+
+    /** The S9 review's finding-1 probes share the off-timer conversation shape. */
+    private fun switchTimerOff(world: MediaWorld) {
+        world.sql.exec("UPDATE dm_conversation SET timer_code = 0", emptyList())
+    }
+
+    @Test
+    fun aFailedOutcomeOnAnOffTimerObjectKeepsTheCountdownNull() {
+        val box = Sandbox()
+        val world = box.open()
+        val contact = ByteArray(16) { 0x21 }
+        world.addContact(contact)
+        switchTimerOff(world)
+        val objectId = commitOne(world, contact, tag = 0x45)
+
+        // Red-on-unfixed: lowerCountdown wrote ceil_minute(failure + 0) — a non-NULL
+        // expire_at_minute on a timer_code 0 row — and dm_message's CHECK aborted the outcome
+        // transaction, the release rolling back with it (the F-S5-16 wedge: the same outcome
+        // re-threw every pass).
+        world.relay.script(world.relay.opIdOf(objectId, 0), Outcome.FAILED)
+        world.steps.outcomes()
+        assertEquals(
+            "failed",
+            world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(objectId)),
+        )
+        assertEquals(
+            1L,
+            world.sql.queryLong(
+                "SELECT count(*) FROM media_fragment WHERE object_id = ? AND ordinal = 0 AND upload_state = 'failed'",
+                listOf(objectId),
+            ),
+        )
+        // The timer-off row keeps the NULL countdown dm_message's CHECK requires.
+        assertEquals(
+            1L,
+            world.sql.queryLong(
+                "SELECT count(*) FROM dm_message WHERE kind = 5 AND timer_code = 0 AND expire_at_minute IS NULL",
+                emptyList(),
+            ),
+        )
+        box.world.close()
+    }
+
+    @Test
+    fun theDeadlinePassOnAnOffTimerObjectKeepsTheCountdownNull() {
+        val box = Sandbox()
+        val world = box.open()
+        val contact = ByteArray(16) { 0x21 }
+        world.addContact(contact)
+        switchTimerOff(world)
+        val objectId = commitOne(world, contact, tag = 0x46)
+
+        // Red-on-unfixed: MEDIA-DEADLINE's lowerCountdown hits the same CHECK abort on the
+        // deadline-failed object's message (the deadline hour is min(bucket, 7 d) either way —
+        // TIMER_OFF's bucket is 30 days, clamped like the 7-day timer's).
+        world.clock.now = MediaWorld.NOW + 7 * 86_400L + 3_600L
+        world.steps.deadline()
+        assertEquals(
+            "failed",
+            world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(objectId)),
+        )
+        assertEquals(
+            1L,
+            world.sql.queryLong(
+                "SELECT count(*) FROM dm_message WHERE kind = 5 AND timer_code = 0 AND expire_at_minute IS NULL",
+                emptyList(),
+            ),
+        )
         box.world.close()
     }
 }

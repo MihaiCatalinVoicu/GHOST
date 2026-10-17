@@ -1,0 +1,7 @@
+GHOST media emulator report (Phase 11 design faza11-media.md §15.7, §15.8; slice S9)
+api 29: EXIF-zero PASS (23 corpus files, structural tags only, 0 canaries, orientation goldens hold)
+api 35: EXIF-zero PASS (23 corpus files, structural tags only, 0 canaries, orientation goldens hold)
+api 37: EXIF-zero PASS (23 corpus files, structural tags only, 0 canaries, orientation goldens hold)
+no-plaintext-cache: PASS (sandbox scan, system directories, MediaStore, logs, backup, 64-byte windows at 97 offsets)
+decoder isolation: PASS (every request a distinct PID, the early return, container refusals)
+media emulator mutants: 7 run, 6 detected

@@ -90,6 +90,19 @@ internal class MediaWorld(
     val dbPath: String,
     val dir: File,
     val relay: ScriptedOutbox = ScriptedOutbox(),
+    /**
+     * S9: the privacy world gives every client its own salted identity ([SaltedCrypto]); every
+     * other world keeps the shared default.
+     */
+    cryptoFactory: () -> org.ghost.messaging.port.DmCrypto = { FakeDmCrypto() },
+    /** S9: the privacy world namespaces each client's sealer object ids (JM3's no-shared-key rule). */
+    sealerClientIndex: Int = 0,
+    /**
+     * S9: the privacy world's devices share one readers registry — the stand-in judges a wire by
+     * the object's own record (production: the native reader derives from `key_env`), so sharing
+     * mirrors production across devices. Single-device worlds keep their own.
+     */
+    sharedReaders: FakeReaders? = null,
 ) : AutoCloseable {
 
     val sql: JdbcSqlExecutor = JdbcSqlExecutor(dbPath).also {
@@ -101,7 +114,7 @@ internal class MediaWorld(
     val database: SyncDatabase = SyncDatabase(sql)
     val clock = MovableClock()
     val stores: SyncStores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
-    val crypto = FakeDmCrypto()
+    val crypto = cryptoFactory()
     val random = SequentialRandom()
     val wrapper = FakeKeyWrapper()
     val contexts: SelfContexts by lazy { SelfContexts(database, crypto, wrapper) }
@@ -118,7 +131,7 @@ internal class MediaWorld(
     private val reconcile = MediaReconcile(files, blobs, fragments)
 
     /** S6's reader seam: the registry the [FakeSealerFactory] records into and [FakeReaders] judges by. */
-    val readers = FakeReaders()
+    val readers: FakeReaders = sharedReaders ?: FakeReaders()
 
     /** S6's decode seam: records every request (the zero-click oracle); can be told to fail. */
     val decoder = FakeDecoder()
@@ -210,9 +223,15 @@ internal class MediaWorld(
         onSenderCopyErased = { receiveSteps.reconcile() },
     )
 
+    /**
+     * The sealer factory the world's [preparer] uses, exposed so the privacy world can script
+     * classes 1…10 on its next object ([FakeSealerFactory.forceClass], S9).
+     */
+    val sealerFactory: FakeSealerFactory = FakeSealerFactory(readers, sealerClientIndex)
+
     /** The preparation pipeline over the fake ports. */
     val preparer: MediaPreparer = MediaPreparer(
-        FakeStripper, FakeVideoExport, FakeSealerFactory(readers), JpegCanonicalizer { it.copyOf() },
+        FakeStripper, FakeVideoExport, sealerFactory, JpegCanonicalizer { it.copyOf() },
         files, preparing,
     )
 
@@ -301,6 +320,10 @@ internal class MediaWorld(
         keyEnv: ByteArray,
         relayExpiryHour: Long = NOW + 86_400,
         caption: String = "media",
+        // S9: the privacy world runs the recipient countdown (EP-M's sweep erases the keys at
+        // expiry — the seizure check). Default keeps every pre-S9 test's off-timer shape.
+        timerCode: Int = 0,
+        unreadDeadlineMinute: Long? = null,
     ): ByteArray {
         val messageId = random.bytes(16)
         // The S8 rule's order: the context resolves before the transaction.
@@ -321,9 +344,9 @@ internal class MediaWorld(
                 authorMinute = DmTime.floorMinute(clock.now),
                 sortMinute = DmTime.floorMinute(clock.now),
                 minuteIndex = 0,
-                timerCode = 0, // off: the test never runs the recipient countdown
+                timerCode = timerCode,
                 bodyEnv = bodyEnv,
-                unreadDeadlineMinute = null,
+                unreadDeadlineMinute = unreadDeadlineMinute,
             )
             objects.onDescriptor(
                 tx = tx,
@@ -549,9 +572,20 @@ internal object FakeVideoExport : VideoExport {
  * since S6 — the recording half of the reader seam: [finish] writes the manifest in
  * [FakeReaders]' wire and registers the object, so [FakeReaders] can judge a later open, bind or
  * verify the way the real reader judges AEAD (its own record, per object, never by arrival order).
+ *
+ * [forceClass] (S9): the media privacy world's scripted objects of classes 1…10 — the sealer pads
+ * with zero-content chunk groups to the class's fragment count. Null keeps every existing world's
+ * class-0 shape.
  */
-private class FakeSealerFactory(private val readers: FakeReaders) : MediaSealerFactory {
+internal class FakeSealerFactory(
+    private val readers: FakeReaders,
+    /** The privacy world gives every client a distinct id space so objects never collide across devices. */
+    private val clientIndex: Int = 0,
+) : MediaSealerFactory {
     private var n = 0
+
+    /** The next begin seals to exactly this class (the world's scripted classes, §15.4). */
+    var forceClass: Int? = null
 
     override fun begin(
         destId: ByteArray,
@@ -559,9 +593,18 @@ private class FakeSealerFactory(private val readers: FakeReaders) : MediaSealerF
         viewOnce: Boolean,
         maxClass: Int,
     ): MediaSealerFactory.Begun {
-        val v = n++
+        val v = (clientIndex shl 16) or n++
         val objectId = ByteArray(16) { if (it < 4) (v ushr (8 * it)).toByte() else it.toByte() }
-        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId, kind, viewOnce, readers), objectId)
+        // The stand-in's K_f (ADR-44 point 1's per-object key): digest-seeded from the factory's
+        // unique (client, ordinal), carried per object so JM3's (K_f, object_id) clause runs over
+        // the truth (the S9 review's finding 3 — the old clause keyed the wrapped keyEnv and never
+        // fired; a deterministic-K_f sealer puts one K_f on many object ids and fires the clause).
+        // The real K_f's relay-side fidelity is the gate follow-up (F-S9-1's declared layer).
+        val kf = digest(
+            "ghost-media-world kf".toByteArray() +
+                byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte()),
+        )
+        return MediaSealerFactory.Begun.Ok(FakeSealer(objectId, kind, viewOnce, readers, forceClass, kf), objectId)
     }
 }
 
@@ -569,17 +612,27 @@ private class FakeSealerFactory(private val readers: FakeReaders) : MediaSealerF
  * Emits exactly the four chunks (16 fragments, class 0) every object of this world seals: the
  * content's chunks, then zero padding groups — what the real sealer's class rounding does. The
  * manifest carries the real fragment hashes in [FakeReaders]' wire, so a bind or verify against
- * it exercises the same hash-and-authenticate order the native reader has.
+ * it exercises the same hash-and-authenticate order the native reader has. With [forceClass] the
+ * padding targets that class's fragment count instead (S9's scripted objects).
  */
 private class FakeSealer(
     private val objectId: ByteArray,
     private val kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
     private val viewOnce: Boolean,
     private val readers: FakeReaders,
+    private val forceClass: Int? = null,
+    /** The stand-in's per-object K_f (see [FakeSealerFactory.begin]); carried to the truth for JM3. */
+    private val kf: ByteArray = ByteArray(0),
 ) : StreamSealer {
     private var consumed = 0L
     private var next = 0
     private val groups = ArrayList<SealedFragmentGroup>()
+
+    /** The class this sealer targets: [forceClass] or 0. */
+    private val targetClass: Int get() = forceClass ?: 0
+
+    /** The chunk groups the target class needs: ceil(fragments / 4); class 0 = 16 fragments = 4. */
+    private val targetGroups: Int get() = (MediaLimits.CLASSES[targetClass] + 3) / 4
 
     override fun append(plaintext: ByteArray): List<SealedFragmentGroup> {
         consumed += plaintext.size
@@ -601,7 +654,7 @@ private class FakeSealer(
             groups += group
             finishGroups += group
         }
-        while (next < 4) {
+        while (next < targetGroups) {
             val group = group(next++)
             groups += group
             finishGroups += group
@@ -612,7 +665,7 @@ private class FakeSealer(
             objectId = objectId,
             kindCode = if (kind == org.ghost.crypto.bridge.MediaCrypto.Kind.IMAGE) 1 else 2,
             viewOnce = viewOnce,
-            classCode = 0,
+            classCode = targetClass,
             contentLen = consumed,
             width = 1_280,
             height = 720,
@@ -624,10 +677,11 @@ private class FakeSealer(
             FakeReaders.Recorded(
                 objectId = objectId,
                 keyEnv = keyEnv,
+                kf = kf.copyOf(),
                 chunks = groups.map { it.fragments },
                 kind = kind,
                 viewOnce = viewOnce,
-                classCode = 0,
+                classCode = targetClass,
                 contentLen = consumed,
                 width = 1_280,
                 height = 720,
@@ -636,7 +690,7 @@ private class FakeSealer(
             ),
         )
         return SealedObject(
-            classCode = 0,
+            classCode = targetClass,
             contentLen = consumed,
             width = 1_280,
             height = 720,
@@ -653,13 +707,26 @@ private class FakeSealer(
 
     private fun group(index: Int): SealedFragmentGroup {
         val seed = objectId[0].toInt() and 0xFF
-        val fragments = List(4) { k ->
-            ByteArray(MediaLimits.FRAGMENT_BYTES) { i ->
-                ((seed + index * 7 + k * 13 + (i % 251)) and 0xFF).toByte()
-            }
-        }
+        val fragments = List(4) { k -> syntheticFragment(objectId, index, k) }
         return SealedFragmentGroup(index, fragments, fragments.map { digest(it) })
     }
+}
+
+/**
+ * The deterministic per-(object, chunk, fragment) 64 KiB blob the sealer emits and the model
+ * relay re-derives a stored blob from (§15.1's recipe rule: the relay holds (object, ordinal)
+ * and re-derives bytes on get). Every blob's bytes are seeded by a digest of (object, chunk,
+ * fragment) — an arithmetic pattern (`objectId[i]*31 + chunk*7 + fragment*13 + i%251`) collided
+ * for in-range (chunk, fragment) pairs at class ≥ 8 (7·31 + 13·3 = 256 ≡ 0, duplicate blob
+ * hashes, ROW_EXISTS at commit — the privacy world's first class-7 send caught it, F-S9-1).
+ * Test-only: the gate fidelity of re-sealing through the host build's `testSealBeginWithKey`
+ * (real K_f, real AEAD) is the gate's follow-up.
+ */
+internal fun syntheticFragment(objectId: ByteArray, chunk: Int, fragment: Int): ByteArray {
+    val seed = digest(
+        objectId + byteArrayOf((chunk ushr 8).toByte(), chunk.toByte(), fragment.toByte()),
+    )
+    return ByteArray(MediaLimits.FRAGMENT_BYTES) { i -> (seed[i % seed.size].toInt() + (i % 251)).toByte() }
 }
 
 /**
@@ -675,6 +742,11 @@ internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
     class Recorded(
         val objectId: ByteArray,
         val keyEnv: ByteArray,
+        /**
+         * The stand-in's raw K_f for the object (the sealer's own; null where a test builds a
+         * record by hand — JM3's K_f clause skips those, they never enter the privacy truth).
+         */
+        val kf: ByteArray? = null,
         /** The sealed chunks: chunk → its four fragments, in order. */
         val chunks: List<List<ByteArray>>,
         val kind: org.ghost.crypto.bridge.MediaCrypto.Kind,
@@ -786,7 +858,13 @@ internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
             return (d + d).copyOf(60)
         }
 
-        /** The fake manifest wire (65536 bytes): the fields a bind needs, then the fragment hashes. */
+        /**
+         * The fake manifest wire (65536 bytes): the fields a bind needs, then the fragment
+         * hashes. Everything past the object id is masked with a per-object keystream (S9): the
+         * blob stands in for the sealed manifest, and production's blob is AEAD ciphertext —
+         * two objects with the same canned preview must not present identical bytes (the
+         * privacy world's JM3 window check caught the plaintext wire leaking them, F-S9-3).
+         */
         fun manifestBytes(
             objectId: ByteArray,
             kindCode: Int,
@@ -818,27 +896,47 @@ internal class FakeReaders : org.ghost.messaging.port.MediaReaders {
                 hash.copyInto(out, at)
                 at += 32
             }
+            val mask = manifestMask(objectId)
+            for (i in 20 until out.size) out[i] = (out[i].toInt() xor mask[i].toInt()).toByte()
+            return out
+        }
+
+        /** The per-object keystream: digest-chained, so every object's mask is its own. */
+        private fun manifestMask(objectId: ByteArray): ByteArray {
+            val out = ByteArray(MediaLimits.FRAGMENT_BYTES)
+            var at = 0
+            var ctr = 0
+            while (at < out.size) {
+                val block = digest("fake-manifest-mask".toByteArray() + objectId + byteArrayOf(ctr++.toByte()))
+                block.copyInto(out, at)
+                at += block.size
+            }
             return out
         }
 
         fun parseManifest(bytes: ByteArray): ParsedManifest? {
             if (bytes.size != MediaLimits.FRAGMENT_BYTES) return null
             if (!bytes.copyOfRange(0, 4).contentEquals(MAGIC)) return null
-            val previewLen = ((bytes[40].toInt() and 0xFF) shl 8) or (bytes[41].toInt() and 0xFF)
+            val objectId = bytes.copyOfRange(4, 20)
+            val mask = manifestMask(objectId)
+            val plain = ByteArray(bytes.size) { i ->
+                if (i < 20) bytes[i] else (bytes[i].toInt() xor mask[i].toInt()).toByte()
+            }
+            val previewLen = ((plain[40].toInt() and 0xFF) shl 8) or (plain[41].toInt() and 0xFF)
             val hashesStart = 42 + previewLen
             val hashes = ArrayList<ByteArray>()
             var at = hashesStart
-            while (at + 32 <= bytes.size && !(bytes[at].toInt() == 0 && bytes.copyOfRange(at, at + 32).all { it.toInt() == 0 })) {
-                hashes += bytes.copyOfRange(at, at + 32)
+            while (at + 32 <= plain.size && !(plain[at].toInt() == 0 && plain.copyOfRange(at, at + 32).all { it.toInt() == 0 })) {
+                hashes += plain.copyOfRange(at, at + 32)
                 at += 32
             }
             if (hashes.isEmpty()) return null
             return ParsedManifest(
-                objectId = bytes.copyOfRange(4, 20),
-                kindCode = bytes[20].toInt(),
-                viewOnce = bytes[21].toInt() == 1,
-                classCode = bytes[22].toInt(),
-                preview = bytes.copyOfRange(42, hashesStart),
+                objectId = objectId,
+                kindCode = plain[20].toInt(),
+                viewOnce = plain[21].toInt() == 1,
+                classCode = plain[22].toInt(),
+                preview = plain.copyOfRange(42, hashesStart),
                 hashes = hashes,
             )
         }

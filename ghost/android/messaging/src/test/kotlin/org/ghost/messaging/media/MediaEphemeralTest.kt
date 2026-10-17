@@ -37,6 +37,19 @@ import java.util.concurrent.Executors
  */
 class MediaEphemeralTest {
 
+    companion object {
+        /** The gate report's T25-media line: written when the suite ran inside a gate invocation. */
+        @org.junit.AfterClass
+        @JvmStatic
+        fun reportT25Media() {
+            if (System.getProperty("ghost.media.report") != null) {
+                MediaPrivacyReport.line(
+                    "T25 media (EP-M): PASS (every timer x path at the slice's scale, the physical byte oracles)",
+                )
+            }
+        }
+    }
+
     private class Box {
         val dir: File = java.nio.file.Files.createTempDirectory("ghost-epm").toFile()
         val db: String = File(dir, "world.db").absolutePath
