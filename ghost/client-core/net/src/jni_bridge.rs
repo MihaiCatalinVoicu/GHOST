@@ -354,7 +354,11 @@ where
 }
 
 /// Creates the Tor client without network access and returns an opaque id (never 0).
-/// `bridgeLines` is newline-separated plain bridge lines; empty means direct Tor.
+/// `bridgeLines` is newline-separated bridge lines: plain `IP:PORT FINGERPRINT`, or — when
+/// `ptDir` is non-empty — `obfs4 …`/`webtunnel …` lines (validated; `snowflake …` and every
+/// other shape fail with `bridge_config`). `ptDir` names the directory holding the extracted,
+/// hash-verified lyrebird binary; empty = PT unavailable (PT lines then fail with the
+/// `bridge_config` category, `PtBinaryMissing` class).
 #[no_mangle]
 pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCreate(
     mut env: JNIEnv,
@@ -362,8 +366,10 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCreate(
     state_dir: JString,
     cache_dir: JString,
     bridge_lines: JString,
+    pt_dir: JString,
 ) -> jlong {
     guarded(&mut env, 0, |env| {
+        let pt_dir = string(env, &pt_dir)?;
         let cfg = TransportConfig {
             state_dir: PathBuf::from(string(env, &state_dir)?),
             cache_dir: PathBuf::from(string(env, &cache_dir)?),
@@ -373,6 +379,11 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCreate(
                 .filter(|l| !l.is_empty())
                 .map(str::to_owned)
                 .collect(),
+            pt_dir: if pt_dir.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(pt_dir))
+            },
         };
         let rt = new_runtime()?;
         let transport = {
@@ -961,6 +972,7 @@ mod tests {
                 state_dir: dir.join("state"),
                 cache_dir: dir.join("cache"),
                 bridge_lines: vec![],
+                pt_dir: None,
             })
             .unwrap()
         };

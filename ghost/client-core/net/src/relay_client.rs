@@ -1182,6 +1182,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             cache_dir: dir.path().join("cache"),
             bridge_lines: vec![],
+            pt_dir: None,
         })
         .unwrap();
         let relay = OnionAddress::parse(

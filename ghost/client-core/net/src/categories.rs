@@ -53,7 +53,9 @@ pub const ALL: &[&str] = &[
 
 pub fn for_transport(e: &TransportError) -> &'static str {
     match e {
-        TransportError::Config(_) => BRIDGE_CONFIG,
+        // Config-class: a malformed/unsupported line and a PT line without the extracted binary
+        // are the same category at the JNI boundary (design §8.3: PtBinaryMissing is config class).
+        TransportError::Config(_) | TransportError::PtBinaryMissing => BRIDGE_CONFIG,
         TransportError::Setup(_) => TOR_SETUP,
         TransportError::Bootstrap(_) => TOR_BOOTSTRAP,
         TransportError::BootstrapTimeout => TOR_BOOTSTRAP_TIMEOUT,
@@ -171,6 +173,10 @@ mod tests {
         );
         assert_eq!(
             for_transport(&TransportError::Config("x".into())),
+            BRIDGE_CONFIG
+        );
+        assert_eq!(
+            for_transport(&TransportError::PtBinaryMissing),
             BRIDGE_CONFIG
         );
         assert_eq!(

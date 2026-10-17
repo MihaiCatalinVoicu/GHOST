@@ -236,14 +236,17 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
 
         /**
          * Creates the Tor client without network access. State lives under `stateDir` (must be
-         * app-private, no-backup). `bridgeLines` empty = direct Tor; otherwise plain
-         * `IP:PORT FINGERPRINT` bridges only (pluggable transports arrive in Faza 12; other lines
-         * fail with category `bridge_config`). Call [bootstrap] next, or use [start].
+         * app-private, no-backup). `bridgeLines` empty = direct Tor; plain `IP:PORT FINGERPRINT`
+         * lines always work; `obfs4 …`/`webtunnel …` lines (Phase 12, ADR-61) work only when
+         * [ptDir] names the directory of the extracted, hash-verified lyrebird binary — without
+         * it they fail with category `bridge_config` (the `PtBinaryMissing` class). `snowflake …`
+         * and every other line stay refused with `bridge_config`. Call [bootstrap] next, or use
+         * [start].
          */
-        fun create(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList()): TorRelayTransport {
+        fun create(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList(), ptDir: File? = null): TorRelayTransport {
             NativeLibrary.ensureLoaded()
             stateDir.mkdirs(); cacheDir.mkdirs()
-            val id = nativeCreate(stateDir.absolutePath, cacheDir.absolutePath, bridgeLines.joinToString("\n"))
+            val id = nativeCreate(stateDir.absolutePath, cacheDir.absolutePath, bridgeLines.joinToString("\n"), ptDir?.absolutePath ?: "")
             if (id == 0L) throw NetworkException("internal")
             return TorRelayTransport(id)
         }
@@ -253,8 +256,8 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
          * cannot be interrupted from outside: callers that need to abort use [create], keep the
          * reference, and [close] it from another thread.
          */
-        fun start(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList()): TorRelayTransport {
-            val t = create(stateDir, cacheDir, bridgeLines)
+        fun start(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList(), ptDir: File? = null): TorRelayTransport {
+            val t = create(stateDir, cacheDir, bridgeLines, ptDir)
             try {
                 t.bootstrap()
             } catch (e: Throwable) {
@@ -386,7 +389,7 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
             return RegisterAnswer(result, period, minute, validUntil)
         }
 
-        @JvmStatic private external fun nativeCreate(stateDir: String, cacheDir: String, bridgeLines: String): Long
+        @JvmStatic private external fun nativeCreate(stateDir: String, cacheDir: String, bridgeLines: String, ptDir: String): Long
         @JvmStatic private external fun nativeBootstrap(id: Long)
         @JvmStatic private external fun nativeStop(id: Long)
         @JvmStatic private external fun nativeRotateCircuits(id: Long)

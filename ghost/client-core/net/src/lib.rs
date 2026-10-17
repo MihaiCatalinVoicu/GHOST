@@ -95,6 +95,8 @@ pub mod onion;
 pub mod relay_client;
 pub mod transport;
 
+pub(crate) mod bridge_line;
+
 #[cfg(feature = "jni-bridge")]
 pub mod jni_bridge;
 

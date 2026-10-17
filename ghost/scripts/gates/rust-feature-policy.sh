@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Gate (ADR-01, ADR-16, ADR-19; review 2026-09-11): Arti and tonic feature policy for the client
-# library, checked on the shipped (non-dev) graph for every target.
-#  required: onion-service-client + vanguards (arti-client), vanguards (tor-circmgr);
+# Gate (ADR-01, ADR-16, ADR-19, ADR-61; review 2026-09-11): Arti and tonic feature policy for the
+# client library, checked on the shipped (non-dev) graph for every target.
+#  required: onion-service-client + vanguards + pt-client (arti-client; Phase 12, ADR-61:
+#   managed pluggable transports, tor-ptmgr — the deliberate change that moves pt-client off the
+#   forbidden list), vanguards (tor-circmgr);
 #  forbidden until an ADR enables them:
 #   - relay (tor-proto, tor-chanmgr, tor-llcrypto: the Arti 0.46 crates whose `relay` feature adds
 #     relay code), onion-service-service (arti-client) and the packages tor-hsservice / arti-relay /
@@ -9,10 +11,13 @@
 #     RSA private keys (RSA key-pair code itself is compiled in tor-llcrypto regardless).
 #     tor-cell/relay is NOT checked: tor-proto 0.46 enables it unconditionally, and it only adds
 #     one certificate-encoding helper (CertsCell::push_cert; reviewed 2026-09-11);
+#   - pt-server (arti-client, tor-ptmgr): GHOST is a PT *client* only; a server-side PT feature
+#     must never enter the client (design faza12-transports.md §13). Neither crate defines the
+#     feature today, so the pair fails the moment either enables it;
 #   - keymgr / ctor-keystore / ephemeral-keystore on arti-client and keymgr on tor-hsclient
 #     (experimental; the native keystore Arti opens through tor-chanmgr must stay empty, which
 #     the client tests check);
-#   - pt-client (Phase 12), hs-pow-full, experimental-api, experimental, full (arti-client);
+#   - hs-pow-full, experimental-api, experimental, full (arti-client);
 #   - any tonic feature beyond `codegen` (Channel/Endpoint = clearnet dialer with system DNS);
 #   - ghost-client-net's own `clippy-fixture` feature (negative fixture, never shipped);
 #  and, for the whole workspace on every target, rsa per version (ADR-22, Phase 8 design §14.1):
@@ -88,17 +93,20 @@ has() { grep -qx "$2" <<< "$1"; }
 
 arti="$(features arti-client)"
 [ -n "$arti" ] || { fail "no arti-client features resolved"; finish rust-feature-policy; }
-for f in onion-service-client vanguards ${GHOST_POLICY_REQUIRE_EXTRA:-}; do
+for f in onion-service-client vanguards pt-client ${GHOST_POLICY_REQUIRE_EXTRA:-}; do
   has "$arti" "$f" || fail "arti-client feature '$f' must be enabled"
 done
 circ="$(features tor-circmgr)"
 has "$circ" vanguards || fail "tor-circmgr feature 'vanguards' must be enabled"
-for f in onion-service-service keymgr ctor-keystore ephemeral-keystore pt-client hs-pow-full \
+for f in onion-service-service keymgr ctor-keystore ephemeral-keystore hs-pow-full \
   experimental-api experimental full ${GHOST_POLICY_FORBID_EXTRA:-}; do
   if has "$arti" "$f"; then fail "arti-client feature '$f' is enabled without an ADR"; fi
 done
 
 forbid_on=("tor-proto:relay" "tor-chanmgr:relay" "tor-llcrypto:relay" "tor-hsclient:keymgr")
+# Phase 12 (design §13): the client is a PT client only; a pt-server feature on either crate
+# (neither defines it today) fails here the moment it appears.
+forbid_on+=("arti-client:pt-server" "tor-ptmgr:pt-server")
 # G-R2 (Phase 9 design §16.1, ADR-35): the DM stack's Olm library ships without `libolm-compat`,
 # `low-level-api`, `experimental-session-config` and `insecure-pk-encryption`. `low-level-api` is a
 # **dev** feature of the key-schedule oracle, which this query cannot see (`no-dev`); a normal

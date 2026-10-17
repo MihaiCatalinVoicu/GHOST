@@ -45,6 +45,7 @@ async fn bootstraps_and_isolates_onion_streams() {
         state_dir: dir.join("state"),
         cache_dir: dir.join("cache"),
         bridge_lines: vec![],
+        pt_dir: None,
     };
     let transport = TorTransport::create(&cfg).expect("create tor client");
     transport.bootstrap().await.expect("tor bootstrap");

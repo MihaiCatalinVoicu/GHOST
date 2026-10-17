@@ -83,7 +83,7 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Rezultatele sunt șirur
 | `not_onion` | destinația nu este o adresă onion v3 validă (inclusiv checksum) |
 | `closed` | transportul a fost închis înainte sau în timpul apelului |
 | `runtime` | runtime-ul nativ nu a putut porni |
-| `bridge_config` | linie de bridge invalidă sau nesuportată (inclusiv transporturi încă neactivate) |
+| `bridge_config` | linie de bridge invalidă sau nesuportată (inclusiv `snowflake`, refuzat distinct până în faza 12b), sau linie PT (`obfs4`/`webtunnel`) fără binarul PT extras (`PtBinaryMissing`, faza 12) |
 | `tor_setup` | clientul Tor nu a putut fi creat local: director de stare/cache inutilizabil, cache sau keystore care nu se deschide. Un director de stare folosit deja de alt transport viu NU produce eroare (Arti trece pe stare read-only): două transporturi nu trebuie să împartă directorul |
 | `tor_bootstrap` | bootstrap Tor eșuat, sau o reîncercare pe un transport al cărui bootstrap a eșuat deja: după orice eșec de bootstrap transportul trebuie închis și creat altul |
 | `tor_bootstrap_timeout` | bootstrap Tor peste termenul limită (180 s): transportul trebuie închis și creat altul |
