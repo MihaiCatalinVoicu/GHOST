@@ -1,0 +1,34 @@
+# ADR-61 — Transporturi pluggable: obfs4 și WebTunnel prin lyrebird, proveniență din sursă fixată, build reproductibil, execuție prin tor-ptmgr
+
+| Câmp | Valoare |
+|---|---|
+| Status | **Propus** 2026-10-17 (design Faza 12, `docs/design/faza12-transports.md`), în așteptarea deciziei proprietarului (Q11) |
+| Sursă | design Faza 12 §3–§5, §7, §9, §12.3; ADR-16 (planul pentru Faza 12); `ghost/scripts/build-native.sh` (disciplina de build) |
+| Faze | 12; P1 |
+| Modifică | ADR-16 (nota „binarele lyrebird … livrate ca `lib*.so` în `jniLibs`" — X-T1; modul auto cu listă livrată devine modul redus până la Faza 14 — X-T2); `ghost/Cargo.toml` (feature `pt-client` la `arti-client`); `ghost/third_party/lyrebird/` (nou); poarta T12 se completează cu G-T1 … G-T5 |
+
+## Context
+
+Până în Faza 12 clientul acceptă doar bridges simple, recognoscibile ca Tor (refuzul explicit din `ghost/client-core/net/src/transport.rs`); AD-4 din threat model cere ca, pe o cale cu transport pluggable, observatorul local să nu vadă nici măncar că e Tor. Arti 0.46 are suport de client PT (feature `pt-client`, crate `tor-ptmgr`), necompilat în GHOST azi; `tor-ptmgr` nu e în `Cargo.lock`.
+
+## Decizie
+
+1. Setul P0 de transporturi pluggable: **obfs4 și WebTunnel**, ambele din **lyrebird** — pachetul Go întreținut de Tor Project; un singur binar implementează ambele transporturi, client și server. Transportul se alege din linia de bridge prin protocolul de management PT (stdio).
+2. **Snowflake e amânat explicit la o fază 12b** (binar WebRTC separat și mare, cu propria distribuție și propriul review); liniile `snowflake` rămân refuzate cu o eroare distinctă până atunci.
+3. Binarul lyrebird se construiește dintr-un **tag git fixat** (pinul real e hash-ul commit-ului; tag-ul e documentație), cu un **toolchain Go fixat** (versiune + hash-urile tarball-ului înregistrate în repo, descărcat de la go.dev la build — aceeași disciplină ca cargo-ndk 4.1.2 la biblioteca nativă), cu `GOFLAGS=-trimpath -mod=readonly -buildvcs=false`, `CGO_ENABLED=0`, strip cu llvm-strip din NDK-ul fixat, pentru ABI-urile `arm64-v8a` și `x86_64`. Rețeta, pinurile și hash-urile de ieșire stau în `ghost/third_party/lyrebird/` (`BUILD.sh` oglindind `build-native.sh`: cale de build fixă, remapări, verificare de scurgeri de căi, **dublă construcție cu comparație de hash-uri** la aceeași cale).
+4. Licența lyrebird se citește la pin și se consemnează în notificările terților (așteptare: BSD-3-Clause prin descendența obfs4 — **verificat în S0, nu presupus**; dacă licența de la pin nu e OSI-approved, S0 se oprește pentru decizia proprietarului).
+5. **Modelul de proces: `tor-ptmgr` din Arti** (feature `pt-client` la `arti-client`; `tor-ptmgr` intră în graful livrat cu allowlist, licențe și re-măsurare de dimensiune proprii). GHOST îi dă calea binarului, un director de stare per încercare de bootstrap (șters la finalul încercării) și un mediu curățat pentru copil. Pe Android, binarul se livrează în **assets** (`assets/pt/<abi>/lyrebird`), se extrage în `filesDir/pt/<abi>/lyrebird`, se verifică pe SHA-256 înainte de execuție și primește drepturi 700. **Abatere de la nota ADR-16 (X-T1):** livrarea ca `lib*.so` în `jniLibs` nu funcționează — Android nu execută din arhiva APK și nici din directorul de biblioteci native (W^X, noexec pe mount-ul aplicației); serviciile Tor pe Android (Orbot, Tor Browser for Android) fac exact extragerea în spațiul privat al aplicației. Singurul punct din depozit care pornește un proces este cablarea ptmgr din `client-core/net` (poartă textuală G-T6 peste toate modulele).
+6. Bugetele de dimensiune sunt **provizorii** (≤ 8 MiB extras per ABI, ≤ +4 MiB comprimat per ABI) și se fixează din măsurători în S0 (dacă măsurătoria depășește bugetul provizoriu, proprietarul re-bugetează înainte de S1).
+7. Testarea de poartă e pe **loopback**: același binar lyrebird rulează și server (obfs4/WebTunnel peste ORPort-ul unui daemon Tor local din infrastructura de staging), iar clientul face bootstrap prin el — modelul din `ghost/client-core/net/tests/live_tor.rs`. Rularea live pe bridge-uri publice e manuală și consemnată (acțiune a proprietarului).
+
+## Consecințe
+
+(+) Observatorul local nu mai vede Tor-ness pe calea cu PT (obfs4: octeți aleatorii, fără handshake cu structură fixă; WebTunnel: TLS + HTTP peste un cover web); un singur binar, o singură pistă de proveniență; serverul din același binar face testarea de poartă independentă de bridge-uri publice; forma față de relee, onion service-uri și issuer nu se schimbă deloc (hop-ul PT e doar client→bridge, T60); termenii, deadline-urile și semantica de bootstrap din Faza 6 rămân neschimbate. (−) un binar Go suplimentar de câțiva MiB per ABI în APK; un al doilea lanț de supply-chain (toolchain Go, module Go), ținut de aceleași mijloace ca biblioteca nativă (pin, dublă construcție, hash în repo și la runtime); snowflake lipsește până la 12b; PT-ul nu ascunde volumul, timingul sau IP-ul bridge-ului (LIMITE L12).
+
+## Alternative respinse
+
+Binare preconstruite din surse oarecare (proveniență neverificabilă, contra direcției ADR-07/ADR-38); construirea în Gradle (nereproductibilă, drift de toolchain); lyrebird ca `.so` încărcat dinamic (e un program `main()`, nu o bibliotecă, iar mount-ul APK nu e executabil); un launcher PT propriu în Rust (reimplementează prost protocolul de management PT și izolarea); un client obfs4/webtunnel în Rust (nu există una întreținută la data pinului — reverificat în S0); snowflake acum (dublează suprafața binară pentru un transport a cărui întrebare de distribuție e nedecisă până în Faza 14); padding de fond în PT (e treaba clauzei de tuning a rândului 12, nu a transportului).
+
+## Teste
+
+PT-U1 … PT-U9 (unitare și de proprietate: gramatici, forme de config, refuzuri, canarul de stocare); PT-L1/PT-L2 (loopback: captura de octeți fără formă TLS Tor la hop-ul client↔bridge, bootstrap în termenul de 180 s, keystore gol după bootstrap, două scope-uri cu două circuite); PT-P1 … PT-P3 (canarul T58, fixture-urile de captură T1, canarul „zero linii în APK"); porțile G-T1 … G-T8 cu fixture-uri negative și self-test; verificările S0 V-T1 … V-T8.
