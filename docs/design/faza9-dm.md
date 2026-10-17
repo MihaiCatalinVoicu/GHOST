@@ -892,6 +892,8 @@ Canonical binary, big-endian, fixed order, one encoding per value (RE §4).
 |---|---|---|
 | `version` | 1 | 0x01 |
 | `kind` | 1 | 0x01 TEXT; 0x02 TIMER_SET; 0x03 REACTION (rows in Phase 9, UI in Phase 13); 0x04 CONTROL (no body; TLVs only); 0x05 MEDIA (reserved for Phase 11, refused in Phase 9). **No DELIVERY or RECEIPT kind** (D10) |
+
+**Forward note (Phase 11, S10, 2026-10-15).** Kind 0x05 is defined by faza11-media.md §4 (the 86-byte descriptor and its `key_env` custody, §4.2): the functions of §2.6 (2, 3, 4, 8, 13, 14, 18; the facade's `mediaKeyEnv`), §7.4's RECV R7 and the held replay (a kind-5 L0 from `sessionInbound` carries a `key_env`), §7.3 S8 (a kind-5 item's TTL and deadline come from its object, R-MT4), §10.3 (a media message's sender countdown starts at its upload's end), §10.6 (the `MediaPort` row), §12.3 (a kind-5 L0 in a request keeps no media key, D28), §13.6 (the two rebuilt tables and the Phase 9 columns folded into migration 8) and §21.12 (`dm_orphan_namespace` also receives the sender's `M_c` once its uploads are over) are won over by faza11-media.md §4, §5.1, §5.4, §6.3, §7.2, §11.1 and §13.6 respectively, as this design's §22 notes do.
 | `message_id` | 16 | CSPRNG; the end-to-end idempotency key; never relay-visible |
 | `author_minute` | 4 | u32 minutes since the Unix epoch at compose: seconds are zero by type (T13) |
 | `minute_index` | 2 | order of the sender's own messages within `author_minute` (§7.7) |

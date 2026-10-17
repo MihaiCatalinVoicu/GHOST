@@ -1129,6 +1129,8 @@ The engine, schema and proofs do not change.
 
 Tuning T, jitter and caps from measurements; fixed-duration background jobs (so OS battery statistics stop following the work drained, LIMITE L1.1); T17 network capture with a KS test; cover stores and filler gets (P2); read bucketing / PIR-lite (P2); per-scope rotation and pooled clients with a rotation epoch; shared cursor anchors; bridges and pluggable transports.
 
+**Forward note (Phase 11, S10, 2026-10-15).** The media lane rides this work lane: media fetches run in slices of 8 behind non-media work and take at most half of each relay's background budget, with consumer-priority store ordering (faza11-media.md §5.5; F-M8). Nothing here changes; the note records where the media share is specified.
+
 ---
 
 ## 7. Privacy invariants
@@ -1417,6 +1419,8 @@ for (b in inbox.claim(Consumer.DM, 32)) syncDb.transaction { tx ->
 - Keep protocol-layer replay protection (§0.2 boundary).
 - Consumers write only through `tx.sql` and do no network I/O inside the transaction.
 - Media (Phase 11) will add `Inbox.want(tx, ns, hashes)`: `listed` rows with the namespace's relays as candidates, no schema change.
+
+**Forward note (Phase 11, S10, 2026-10-15).** *Not added;* the media namespace is listened and fetched on its schedule (faza11-media.md §7.1, X-M6). The media lane is consumer-priority store ordering and media fetch and store budgets (§5.5).
 
 ---
 
