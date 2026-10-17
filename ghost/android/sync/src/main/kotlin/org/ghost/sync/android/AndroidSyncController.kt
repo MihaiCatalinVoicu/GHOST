@@ -2,6 +2,7 @@ package org.ghost.sync.android
 
 import android.content.Context
 import android.os.SystemClock
+import org.ghost.storage.TransportBridgeRepository
 import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
@@ -115,7 +116,20 @@ class AndroidSyncController internal constructor(
          */
         fun create(context: Context, opener: DatabaseOpener): AndroidSyncController {
             val threads = SyncThreads()
-            val holder = TorTransportHolder.forApp(context, AndroidSyncClock, threads)
+            // Phase 12 §6.5: the auto mode's bridge lines, read lazily at attempt-claim time from
+            // the wrapped table (via :network's repository in production; here the DAO directly —
+            // the lines were validated when stored). The FOREGROUND purpose mirrors the session
+            // rule: an auth-bound key outside its unlock window yields null (no lines, and the
+            // session itself ends before any network I/O).
+            val bridgeLines: () -> List<String> = {
+                val db = opener.open(DatabaseOpener.Purpose.FOREGROUND)
+                if (db == null) {
+                    emptyList()
+                } else {
+                    TransportBridgeRepository(db) { AndroidSyncClock.epochSeconds() / 86_400 }.list()
+                }
+            }
+            val holder = TorTransportHolder.forApp(context, AndroidSyncClock, threads, bridgeLines = bridgeLines)
             val runtime = SyncRuntime(opener, holder, AndroidSyncClock, KeyedRandomSources(), TrafficPolicy.DEFAULT, threads, leases = holder)
             return AndroidSyncController(runtime, JobSchedulerWake(context), opener)
         }

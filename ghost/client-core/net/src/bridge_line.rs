@@ -478,6 +478,28 @@ mod tests {
         assert_eq!(classify(&line).unwrap(), BridgeLineKind::Obfs4);
     }
 
+    /// PT-U7's native half (§8.2 PT-3): the `nativeValidateBridgeLines` status contract. A
+    /// validated line never begins with `bridge_line_` (so Kotlin can distinguish the error
+    /// prefix unambiguously), and a refusal names the index, never the line text.
+    #[test]
+    fn pt3_status_contract() {
+        // The prefix itself must not be classifiable as a valid line in any grammar.
+        assert!(classify(&s("bridge_line_invalid:3")).is_err());
+        assert!(classify(&s("bridge_line_unsupported_transport:1")).is_err());
+
+        let valid = vec![obfs4("0"), s(&format!("192.0.2.10:443 {FP}")), webtunnel()];
+        for (index, _) in validate_set(&valid).expect("valid set") {
+            assert!(!valid[index].starts_with("bridge_line_"));
+        }
+
+        // Snowflake maps to the unsupported-transport category with its own index; the generic
+        // malformed line to bridge_line_invalid — both without line text in the reason.
+        let mixed = vec![webtunnel(), s("snowflake 192.0.2.10:443")];
+        let err = validate_set(&mixed).unwrap_err();
+        assert_eq!(err.index, 1);
+        assert_eq!(err.error, BridgeLineError::SnowflakeDeferred);
+    }
+
     /// PT-U5 (§6.2 point 5): the validator is total — seeded random inputs of every shape never
     /// panic and never over-read. Deterministic seed: the assertion set is the *absence* of a
     /// panic; the design pins 10⁶ inputs per CI run.

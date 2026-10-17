@@ -13,9 +13,11 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Constant-category failure from the native layer; carries no relay or network detail (§11.1).
  * The category strings are listed in `client-core/README.md` (source: `categories.rs`).
+ * [detail] is optional non-secret context: today only the failing bridge-line *index* of the
+ * Phase 12 storage validation (PT-3) — never a line's text (§6.6, T58).
  * Kept by R8 (`consumer-rules.pro`): native code throws it by class name.
  */
-class NetworkException(val category: String) : RuntimeException(category)
+class NetworkException(val category: String, val detail: String? = null) : RuntimeException(category)
 
 /**
  * Android face of the Rust network core (`libghost_client_net.so`, ADR-19). All traffic goes
@@ -239,9 +241,12 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
          * app-private, no-backup). `bridgeLines` empty = direct Tor; plain `IP:PORT FINGERPRINT`
          * lines always work; `obfs4 …`/`webtunnel …` lines (Phase 12, ADR-61) work only when
          * [ptDir] names the directory of the extracted, hash-verified lyrebird binary — without
-         * it they fail with category `bridge_config` (the `PtBinaryMissing` class). `snowflake …`
-         * and every other line stay refused with `bridge_config`. Call [bootstrap] next, or use
-         * [start].
+         * it they fail with category `bridge_config` (the `PtBinaryMissing` class). PT lines are
+         * launched through the ABI's system dynamic linker with the binary as its first argument
+         * (rev 3, §5.4.5/OA-4: a direct filesDir execve is SELinux-denied on targetSdk ≥ 29); a
+         * device without the linker fails closed with the same `bridge_config` category (the
+         * `PtLinkerMissing` class). `snowflake …` and every other line stay refused with
+         * `bridge_config`. Call [bootstrap] next, or use [start].
          */
         fun create(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList(), ptDir: File? = null): TorRelayTransport {
             NativeLibrary.ensureLoaded()
@@ -271,6 +276,22 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         internal fun requireDeadline(deadlineMillis: Int) {
             require(deadlineMillis in 1..MAX_DEADLINE_MILLIS) { "deadline must be 1..60000 ms" }
         }
+
+        /**
+         * The single Rust bridge-line validator behind `BridgeLines.set` (PT-3, Phase 12 design
+         * §6.2): returns the validated, deduplicated set (one line per row, first-occurrence
+         * order, joined by `\n`; the empty set validates to ""), or
+         * `bridge_line_invalid:<index>` / `bridge_line_unsupported_transport:<index>`. The error
+         * prefix can never be a validated line (a line starting with `bridge_line_` is refused by
+         * the grammar), so the shape is unambiguous (pinned in `bridge_line.rs`'s tests).
+         */
+        internal fun validateBridgeLines(lines: List<String>): String {
+            NativeLibrary.ensureLoaded()
+            return nativeValidateBridgeLines(lines.joinToString("\n"))
+        }
+
+        @JvmStatic
+        private external fun nativeValidateBridgeLines(lines: String): String
 
         /** Check request wire format: 1..256 distinct hashes of 32 bytes, concatenated. */
         internal fun packHashes(hashes: List<ByteArray>): ByteArray {

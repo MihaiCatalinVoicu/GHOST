@@ -5,7 +5,10 @@
 //! censored network and switch to bridges (ADR-16 auto mode). Bridges are optional plain
 //! `IP:PORT FINGERPRINT` lines or pluggable-transport lines (`obfs4 …`, `webtunnel …`, validated
 //! by [`bridge_line`]); PT lines run through arti's managed `pt-client` support (tor-ptmgr)
-//! spawning the extracted, hash-verified lyrebird binary from `pt_dir` (Phase 12, ADR-61).
+//! launching the extracted, hash-verified lyrebird binary from `pt_dir` **through the system
+//! dynamic linker** — the exec target is `/system/bin/linker(64)` and the binary is its first
+//! argument (rev 3, §5.4.5/OA-4: a direct execve of a filesDir binary is SELinux-denied for
+//! targetSdk ≥ 29).
 //! `snowflake` and every other name stay refused (Phase 12b). There is no non-Tor mode.
 
 use crate::bridge_line;
@@ -52,6 +55,11 @@ pub enum TransportError {
     /// `pt_dir` is `None` or the hash-verified lyrebird does not exist there. A config error at
     /// create time, never a bootstrap-time hang (design §5.2).
     PtBinaryMissing,
+    /// The PT child cannot be launched because the system dynamic linker for this ABI is
+    /// absent (rev 3, §5.4.5/OA-4: the exec target is the linker itself, not the filesDir
+    /// binary — direct execve of `app_data_file` is SELinux-denied for targetSdk ≥ 29, while
+    /// mmap-exec is granted). Config class, like [`Self::PtBinaryMissing`].
+    PtLinkerMissing,
     /// The Tor client could not be set up locally: state or cache directory unusable
     /// (permissions, disk full, read-only), directory cache or keystore failed to open. Nothing
     /// to do with bridges. (A state directory locked by another live client is NOT reported: Arti
@@ -78,6 +86,9 @@ impl std::fmt::Display for TransportError {
             TransportError::PtBinaryMissing => f.write_str(
                 "tor config: pluggable-transport bridge lines need the extracted PT binary",
             ),
+            TransportError::PtLinkerMissing => {
+                f.write_str("tor config: the system dynamic linker for the PT child is absent")
+            }
             TransportError::Setup(m) => write!(f, "tor setup: {m}"),
             TransportError::Bootstrap(m) => write!(f, "tor bootstrap: {m}"),
             TransportError::BootstrapTimeout => f.write_str("tor bootstrap timed out"),
@@ -138,7 +149,7 @@ impl TorTransport {
                 TransportError::Config(format!("bridge line {}: {}", e.index, e.error))
             })?;
             if set.iter().any(|(_, kind)| kind.needs_pt_binary()) {
-                let binary = pt_binary(cfg)?;
+                let (linker, binary) = pt_exec(cfg)?;
                 // The child inherits arti's process environment (S0-T4: ptmgr overlays TOR_PT_*
                 // on the inherited environment, no env_clear), so GHOST scrubs its own process
                 // environment before any PT-spawning client exists (design §5.3).
@@ -154,7 +165,14 @@ impl TorTransport {
                             })
                             .collect(),
                     )
-                    .path(CfgPath::new_literal(binary))
+                    // Rev 3 (§5.4.5, OA-4 resolution): the exec target is the *system linker*
+                    // and the verified binary's absolute path is its first argument. A direct
+                    // execve of a filesDir binary is SELinux-denied for targetSdk ≥ 29
+                    // (execute_no_trans on app_data_file), while mmap-exec is granted — running
+                    // the binary through the linker needs exactly the granted permissions and
+                    // no arti patch (ptmgr's config is `path` + `arguments`).
+                    .path(CfgPath::new_literal(linker))
+                    .arguments(binary)
                     // ptmgr 0.46 launches managed PTs lazily on first channel use (the flag is
                     // stored but unread there); pinning the lazy policy keeps client creation
                     // spawn-free, so a PT process appears only when a bootstrap actually uses one.
@@ -287,10 +305,48 @@ fn keystore_files(state_dir: &std::path::Path) -> Vec<PathBuf> {
     out
 }
 
-/// Resolves the PT binary for a config that contains PT bridge lines: `pt_dir` must be set and
-/// `lyrebird` must exist inside it (design §5.2 — the up-front check so a missing binary is a
-/// create-time config error, not a bootstrap-time hang). The binary's hash was verified at
-/// extraction time by the Android side (PT-1, slice S2); here only existence is checked.
+/// Resolves the PT launch shape for a config that contains PT bridge lines (rev 3, §5.4.5,
+/// OA-4 resolved): `pt_dir` must be set and `lyrebird` must exist inside it (design §5.2 — the
+/// up-front check so a missing binary is a create-time config error, not a bootstrap-time
+/// hang; the binary's hash was verified at extraction time by the Android side, PT-1/S2), and
+/// the returned launch is `(system linker, [binary path])` — the linker is exec'ed and the
+/// binary is its first argument, never a direct execve of the filesDir file (SELinux
+/// `execute_no_trans` denies that for targetSdk ≥ 29; mmap-exec is granted, which is all the
+/// linker needs).
+fn pt_exec(cfg: &TransportConfig) -> Result<(PathBuf, Vec<String>), TransportError> {
+    let binary = pt_binary(cfg)?;
+    let linker = pt_linker()?;
+    Ok((linker, vec![binary.to_string_lossy().into_owned()]))
+}
+
+/// The system dynamic linker for this process's ABI (rev 3, §5.4.5). Resolved at runtime from
+/// the compiled target (`std::env::consts::ARCH` — the same selection that picked the ABI's
+/// `libghost_client_net.so` and the extracted binary): 64-bit ABIs (both shipped ones)
+/// interpret through `/system/bin/linker64`, 32-bit ABIs through `/system/bin/linker`. The
+/// linker's own existence is verified here; a device without it cannot launch any PT child
+/// and gets the typed [`TransportError::PtLinkerMissing`] (config class) at create time.
+fn pt_linker() -> Result<PathBuf, TransportError> {
+    let name = match std::env::consts::ARCH {
+        "aarch64" | "x86_64" => "linker64",
+        // 32-bit ABIs are not shipped today (SHIPPED_ABIS is 64-bit only); the arm|x86 names
+        // keep the resolution total for a future ABI addition.
+        "arm" | "x86" | "x86_32" => "linker",
+        _ => return Err(TransportError::PtLinkerMissing),
+    };
+    let path = PathBuf::from("/system/bin").join(name);
+    // The host build (§8.4) has no /system/bin: config-build must stay unit-testable there, and
+    // PT never spawns off-device (ptmgr launches lazily; the suites run placeholder binaries).
+    // The existence gate is therefore Android-only; on Android it is the product path.
+    #[cfg(target_os = "android")]
+    if !path.is_file() {
+        return Err(TransportError::PtLinkerMissing);
+    }
+    Ok(path)
+}
+
+/// Resolves the extracted lyrebird binary: `pt_dir` must be set and `lyrebird` must exist
+/// inside it (design §5.2). The binary's hash was verified at extraction time by the Android
+/// side (PT-1, slice S2); here only existence is checked.
 fn pt_binary(cfg: &TransportConfig) -> Result<PathBuf, TransportError> {
     let dir = cfg.pt_dir.as_ref().ok_or(TransportError::PtBinaryMissing)?;
     let binary = dir.join(LYREBIRD_BINARY);
@@ -421,6 +477,39 @@ mod tests {
         let mut ok = cfg("obfs4-ok", vec![OBFS4_LINE, WEBTUNNEL_LINE]);
         ok.pt_dir = Some(fake_pt_dir("obfs4-ok"));
         TorTransport::build_config(&ok).expect("PT config builds with the binary");
+    }
+
+    #[test]
+    fn pt_launch_shape_is_the_system_linker_plus_the_binary_argument() {
+        // Rev 3 (§5.4.5, OA-4 resolution): ptmgr's exec is `path = <system linker>`,
+        // `arguments = [<absolute binary path>]` — never a direct execve of the filesDir
+        // binary (SELinux execute_no_trans denies that for targetSdk ≥ 29; the linker needs
+        // only the granted mmap-exec). The existence gate lives behind cfg(android), so the
+        // host build resolves the path without checking it.
+        let mut c = cfg("pt-exec-shape", vec![OBFS4_LINE]);
+        c.pt_dir = Some(fake_pt_dir("pt-exec-shape"));
+        let (linker, args) = pt_exec(&c).expect("exec shape resolves with the binary");
+        let expected = match std::env::consts::ARCH {
+            "aarch64" | "x86_64" => "linker64",
+            _ => "linker",
+        };
+        assert!(
+            linker.to_string_lossy().ends_with(expected),
+            "the exec target is the {expected} linker: {linker:?}"
+        );
+        assert_eq!(args.len(), 1, "exactly one argument (the binary): {args:?}");
+        assert!(
+            args[0].ends_with(LYREBIRD_BINARY) && std::path::Path::new(&args[0]).is_absolute(),
+            "the argument is the binary's absolute path: {args:?}"
+        );
+        // Binary-first ordering: no pt_dir refuses with PtBinaryMissing before any linker
+        // resolution (a missing binary and a missing linker are both config class, but the
+        // binary check is the one a misconfigured install meets).
+        let none = cfg("pt-exec-none", vec![OBFS4_LINE]);
+        assert!(matches!(
+            pt_exec(&none),
+            Err(TransportError::PtBinaryMissing)
+        ));
     }
 
     #[test]

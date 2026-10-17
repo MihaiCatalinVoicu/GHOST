@@ -37,7 +37,8 @@ class ErrorPolicyTest {
     fun everyReadmeCategoryHasAnExplicitMapping() {
         val documented = readmeCategories()
         assertEquals("the README lists each category once", documented.size, documented.toSet().size)
-        assertEquals("categories.rs ALL (20) plus native_missing", 21, documented.size)
+        // categories.rs ALL (24, the four Phase 12 PT categories included) plus native_missing.
+        assertEquals("categories.rs ALL (24) plus native_missing", 25, documented.size)
         val unmapped = documented.filter { it !in ErrorPolicy.CATEGORIES }
         assertEquals("categories without an explicit mapping", emptyList<String>(), unmapped)
         val undocumented = ErrorPolicy.CATEGORIES.keys.filter { it !in documented }
@@ -69,6 +70,10 @@ class ErrorPolicyTest {
             "invalid_argument" to ErrorClass.LOCAL_BUG,
             "not_bucket_sized" to ErrorClass.LOCAL_BUG,
             "not_onion" to ErrorClass.LOCAL_BUG,
+            "bridge_line_invalid" to ErrorClass.CONFIG,
+            "bridge_line_unsupported_transport" to ErrorClass.CONFIG,
+            "pt_hash_mismatch" to ErrorClass.LOCAL_FATAL,
+            "pt_unsupported_abi" to ErrorClass.LOCAL_FATAL,
         )
         assertEquals(expected, ErrorPolicy.CATEGORIES)
         assertEquals(ErrorClass.UNKNOWN, ErrorPolicy.classify("a_category_from_the_future"))

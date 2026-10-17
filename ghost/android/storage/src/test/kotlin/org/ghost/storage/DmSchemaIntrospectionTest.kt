@@ -60,6 +60,14 @@ class DmSchemaIntrospectionTest {
     private val timeColumnsOfMigration6 = setOf("relay_register_capability.expires_hour")
 
     /**
+     * Phase 12 design §6.3's one time-like column (slice S2): `transport_bridge.added_day`, the
+     * day index (T33: a day index, not an epoch-aligned column, so the CHECK pins `typeof` and the
+     * range, not a `% 86400` grid — the same shape as `dm_seen.until_day` and `ch_seen.until_day`,
+     * which are day indices of their own families).
+     */
+    private val timeColumnsOfMigration9 = setOf("transport_bridge.added_day")
+
+    /**
      * The integer counter of migration 6 that is no time and no period index: the capability's
      * generation, the rejection race guard of Phase 7 §3.8. Its name matches none of the rule's words,
      * so only the executed test below finds it; it is declared so that a REAL cannot be stored in it.
@@ -212,7 +220,7 @@ class DmSchemaIntrospectionTest {
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
         val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
-            timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
+            timeColumnsOfMigration9 + timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
         val indices = periodIndices + ChannelSchema.epochColumns
         val exempt = notTimes + ChannelSchema.notTimes + MediaSchema.notTimes
         val foundTimes = HashSet<String>()

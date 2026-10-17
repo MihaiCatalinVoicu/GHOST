@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -158,9 +160,82 @@ val thirdPartyNoticesAsset = tasks.register<ThirdPartyNoticesAsset>("thirdPartyN
     parts.add(licensesDir.file("THIRD_PARTY_NOTICES-client-net.txt"))
     outputDirectory.set(layout.buildDirectory.dir("generated/thirdPartyNotices"))
 }
+
+// Phase 12 PT assets (design faza12-transports.md §4.1, §5.4.3; ADR-61 point 5): the built
+// lyrebird binaries ship in the APK as `assets/pt/<abi>/lyrebird` plus a `pt/SHA256SUMS` asset
+// generated from the in-repo sums — the app extracts its ABI's binary at first PT use and
+// verifies it against exactly these sums (PtInstaller, the G-T5 runtime check; G-T4 checks the
+// APK asset bytes against the in-repo SHA256SUMS). Copied only when present: a build without
+// the binaries (the host/JVM test build) compiles and runs with PT config rejected (§8.4).
+// A binary whose bytes drift from the sums fails the build here, loudly, instead of shipping.
+// The ABI-keyed layout (`pt/arm64-v8a`, `pt/x86_64`) mirrors the jniLibs abiFilters; aapt's
+// default deflate keeps the compressed budget of §9.1 (measured gzip-9 2.76/2.96 MiB against
+// the pinned ≤ 2 899 241 / ≤ 3 107 257 B).
+abstract class PtAssets : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sources: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun write() {
+        val directory = outputDirectory.get().asFile
+        directory.deleteRecursively()
+        directory.mkdirs()
+        val pt = directory.resolve("pt")
+        val byName = sources.files.filter { it.isFile }.associateBy { it.name }
+        val sumsFile = byName["SHA256SUMS"] ?: return
+        // The in-repo sums: "<sha256>  lyrebird-android-<arch>" lines (comments ignored).
+        val sums = HashMap<String, String>()
+        for (line in sumsFile.readLines()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+            val parts = trimmed.split(Regex("\\s+"))
+            if (parts.size == 2 && parts[0].matches(Regex("[0-9a-fA-F]{64}"))) sums[parts[1]] = parts[0].lowercase()
+        }
+        val out = StringBuilder("# GHOST Phase 12 lyrebird APK-asset sums (generated; G-T4's twin)\n")
+        for ((fileName, abi) in listOf("lyrebird-android-arm64" to "arm64-v8a", "lyrebird-android-amd64" to "x86_64")) {
+            val expected = sums[fileName] ?: continue
+            val binary = byName[fileName] ?: continue
+            val actual = binary.inputStream().use { stream ->
+                val digest = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = stream.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            }
+            check(actual == expected) {
+                "$fileName drifts from SHA256SUMS ($actual != $expected); re-run third_party/lyrebird/BUILD.sh"
+            }
+            val target = pt.resolve(abi)
+            target.mkdirs()
+            binary.copyTo(target.resolve("lyrebird"), overwrite = true)
+            out.append("$expected  $abi/lyrebird\n")
+        }
+        pt.mkdirs()
+        pt.resolve("SHA256SUMS").writeText(out.toString())
+    }
+}
+
+val lyrebirdOut = rootProject.layout.projectDirectory.dir("../third_party/lyrebird/out")
+val ptAssets = tasks.register<PtAssets>("ptAssets") {
+    sources.from(
+        lyrebirdOut.file("SHA256SUMS"),
+        lyrebirdOut.file("lyrebird-android-arm64"),
+        lyrebirdOut.file("lyrebird-android-amd64"),
+    )
+    outputDirectory.set(layout.buildDirectory.dir("generated/ptAssets"))
+}
+
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(thirdPartyNoticesAsset, ThirdPartyNoticesAsset::outputDirectory)
+        variant.sources.assets?.addGeneratedSourceDirectory(ptAssets, PtAssets::outputDirectory)
     }
 }
 

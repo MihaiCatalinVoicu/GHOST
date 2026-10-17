@@ -358,7 +358,10 @@ where
 /// `ptDir` is non-empty — `obfs4 …`/`webtunnel …` lines (validated; `snowflake …` and every
 /// other shape fail with `bridge_config`). `ptDir` names the directory holding the extracted,
 /// hash-verified lyrebird binary; empty = PT unavailable (PT lines then fail with the
-/// `bridge_config` category, `PtBinaryMissing` class).
+/// `bridge_config` category, `PtBinaryMissing` class). The PT child is launched through the
+/// ABI's system dynamic linker with the binary as its first argument (rev 3, §5.4.5/OA-4:
+/// a direct filesDir execve is SELinux-denied on targetSdk ≥ 29); a missing linker is the
+/// same `bridge_config` category (`PtLinkerMissing` class).
 #[no_mangle]
 pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCreate(
     mut env: JNIEnv,
@@ -397,6 +400,54 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCreate(
             cancel,
         });
         Ok(register(handle))
+    })
+}
+
+/// Bridge-line set validation for the storage write (Phase 12 design §6.2, §8.2 PT-3; ADR-62
+/// point 3): the single Rust validator runs at write time, before a line reaches the database.
+/// `lines` is newline-separated. On success returns the validated set — the unique lines in
+/// first-occurrence order, joined by `\n` — ready to store; the empty set validates to "".
+/// On refusal returns `bridge_line_invalid:<index>` (structural failure, the length cap, the
+/// 8-line cap) or `bridge_line_unsupported_transport:<index>` (an unknown transport name,
+/// including `snowflake` and its distinct 12b deferral) — Kotlin throws the category with the
+/// index as the exception detail. A validated line can never begin with `bridge_line_` (a line
+/// whose first token contains `_` is refused as a malformed address, and unknown transport
+/// *names* match `[A-Za-z0-9-]+`), so the error prefix is unambiguous. No line text ever leaves
+/// this function except the validated lines themselves, which cross only into storage (§6.6).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeValidateBridgeLines(
+    mut env: JNIEnv,
+    _class: JClass,
+    lines: JString,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let text = string(env, &lines)?;
+        let lines: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let result = match crate::bridge_line::validate_set(&lines) {
+            Ok(validated) => validated
+                .iter()
+                .map(|(index, _)| lines[*index].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(invalid) => {
+                let category = match invalid.error {
+                    crate::bridge_line::BridgeLineError::SnowflakeDeferred
+                    | crate::bridge_line::BridgeLineError::UnsupportedTransport => {
+                        cat::BRIDGE_LINE_UNSUPPORTED_TRANSPORT
+                    }
+                    _ => cat::BRIDGE_LINE_INVALID,
+                };
+                format!("{category}:{}", invalid.index)
+            }
+        };
+        env.new_string(result)
+            .map(|s| s.into_raw())
+            .map_err(|_| cat::INTERNAL)
     })
 }
 
