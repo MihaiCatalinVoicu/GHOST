@@ -101,6 +101,16 @@ class Invite(
         class Replayed : Rejection("invite already used")
     }
 
+        sealed class Preview {
+            /** The invite parses, is well-formed, signed and unexpired. */
+            data class Ok(val version: Int, val expiryDay: Long) : Preview()
+
+            /** The refusal with a constant reason id for the confirmation screen's copy. */
+            data class Refused(val reason: Reason) : Preview() {
+                enum class Reason { MALFORMED, UNSUPPORTED_VERSION, EXPIRED, BAD_SIGNATURE }
+            }
+        }
+
     companion object {
         const val VERSION = 2
         const val SCHEME = "ghost://invite/"
@@ -199,6 +209,65 @@ class Invite(
             if (epoch > inviteEpochOfDay(today)) throw Rejection.TokenRefused("invite token not yet valid")
             if (!nonceStore.recordIfFresh(nonce)) throw Rejection.Replayed()
             return Invite(token, nonce, expiry, namespace, slots, dropPublic, signingPublic, sig)
+        }
+
+        /**
+         * Phase 13 §3.6's `inspectInvite`: the LOCAL preview before `activate` commits a trial.
+         * The invite is self-signed, so everything shown on the confirmation screen — the
+         * version, the expiry day, and the refusal of a damaged/expired/foreign invite — is
+         * checkable offline with NO state: the token schedule and the nonce replay stay for
+         * `parseAndVerify` (a preview never consumes a nonce and never asks the schedule).
+         */
+        fun preview(text: String, nowUnixSeconds: Long): Preview {
+            return try {
+                val parsed = parseStructure(text.trim())
+                val today = Math.floorDiv(nowUnixSeconds, DAY_SECONDS)
+                if (parsed.expiry <= today) {
+                    return Preview.Refused(Preview.Refused.Reason.EXPIRED)
+                }
+                Preview.Ok(VERSION, parsed.expiry)
+            } catch (e: Rejection.Malformed) {
+                Preview.Refused(Preview.Refused.Reason.MALFORMED)
+            } catch (e: Rejection.UnsupportedVersion) {
+                Preview.Refused(Preview.Refused.Reason.UNSUPPORTED_VERSION)
+            } catch (e: Rejection.BadSignature) {
+                Preview.Refused(Preview.Refused.Reason.BAD_SIGNATURE)
+            } catch (e: Rejection.Expired) {
+                Preview.Refused(Preview.Refused.Reason.EXPIRED)
+            }
+        }
+
+        /** The structural parse both [preview] and the full verify build on (no token, no nonce). */
+        private data class Structure(val expiry: Long, val signed: ByteArray, val sig: ByteArray, val signingPublic: ByteArray)
+
+        private fun parseStructure(t: String): Structure {
+            if (!t.startsWith(SCHEME)) throw Rejection.Malformed("invite scheme invalid")
+            val encoded = t.substring(SCHEME.length)
+            if (encoded.contains('/') || encoded.contains('?') || encoded.contains('#') || encoded.contains('.')) {
+                throw Rejection.Malformed("invite payload contains URL structure")
+            }
+            val payload = try {
+                ZBase32.decode(encoded, PAYLOAD_BYTES)
+            } catch (e: IllegalArgumentException) {
+                if (peekVersion(encoded).let { it != null && it != VERSION }) throw Rejection.UnsupportedVersion()
+                throw Rejection.Malformed("invite payload undecodable")
+            }
+            val buf = ByteBuffer.wrap(payload)
+            if ((buf.get().toInt() and 0xff) != VERSION) throw Rejection.UnsupportedVersion()
+            val token = ByteArray(TOKEN_BYTES).also(buf::get)
+            val nonce = ByteArray(NONCE_BYTES).also(buf::get)
+            val expiry = buf.getInt().toLong() and MAX_U32
+            val namespace = ByteArray(NAMESPACE_BYTES).also(buf::get)
+            val slots = List(DROP_SLOTS) { buf.get().toInt() and 0xff }
+            val dropPublic = ByteArray(KEY_BYTES).also(buf::get)
+            val signingPublic = ByteArray(KEY_BYTES).also(buf::get)
+            val sig = ByteArray(SIGNATURE_BYTES).also(buf::get)
+            if (tokenType(token) != TOKEN_TYPE) throw Rejection.Malformed("invite token structure invalid")
+            if (!slotsWellFormed(slots)) throw Rejection.Malformed("invite drop slots invalid")
+            if (!X25519KeyPair.isUsablePublicKey(dropPublic)) throw Rejection.Malformed("invite drop key invalid")
+            val signed = signedPortion(VERSION, token, nonce, expiry, namespace, slots, dropPublic, signingPublic)
+            if (!Ed25519KeyPair.verify(signingPublic, signed, sig)) throw Rejection.BadSignature()
+            return Structure(expiry, signed, sig, signingPublic)
         }
 
         /** The version byte of a canonically encoded payload of another length (a v1 invite), or null. */

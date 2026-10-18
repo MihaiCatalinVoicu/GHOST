@@ -68,3 +68,14 @@ enum class RestoreResult {
     /** No accepted schedule or no database yet. */
     UNAVAILABLE,
 }
+
+/**
+ * Phase 13 §3.6: the local invite inspection result — what the confirmation screen shows
+ * before `activate` commits a trial. `refusedReason` is a constant id (malformed,
+ * unsupported_version, expired, bad_signature), never the invite text.
+ */
+data class InvitePreview(
+    val version: Int,
+    val expiryDay: Long?,
+    val refusedReason: String?,
+)

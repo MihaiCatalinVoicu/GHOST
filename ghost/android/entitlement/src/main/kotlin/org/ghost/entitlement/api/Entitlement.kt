@@ -35,6 +35,13 @@ interface Entitlement {
      */
     fun cancel(id: PurchaseId): Boolean
 
+    /**
+     * Phase 13 §3.6: the LOCAL invite preview before [activate] commits a trial — version, expiry
+     * day and the refusal reason, never state (a preview never consumes a nonce or asks the
+     * schedule). [nowUnixSeconds] is the caller's day boundary input.
+     */
+    fun inspectInvite(text: String, nowUnixSeconds: Long): InvitePreview
+
     /** Onboarding (§8.3): verifies the invite, records the trial, creates the identity and starts `RedeemInvite`. */
     fun activate(inviteText: String): ActivationResult
 

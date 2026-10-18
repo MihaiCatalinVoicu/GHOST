@@ -275,6 +275,21 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         return c.purchaseSteps.cancel(id.toByteArray(), c.now())
     }
 
+    override fun inspectInvite(text: String, nowUnixSeconds: Long): org.ghost.entitlement.api.InvitePreview {
+        // Local by construction: Invite.preview verifies the self-contained signature and the
+        // day boundary, never the token schedule and never the nonce store (§3.6, no state).
+        return when (val p = org.ghost.identity.Invite.preview(text, nowUnixSeconds)) {
+            is org.ghost.identity.Invite.Preview.Ok ->
+                org.ghost.entitlement.api.InvitePreview(version = p.version, expiryDay = p.expiryDay, refusedReason = null)
+            is org.ghost.identity.Invite.Preview.Refused ->
+                org.ghost.entitlement.api.InvitePreview(
+                    version = org.ghost.identity.Invite.VERSION,
+                    expiryDay = null,
+                    refusedReason = p.reason.name.lowercase(),
+                )
+        }
+    }
+
     override fun activate(inviteText: String): ActivationResult {
         val c = ready() ?: return ActivationResult.UNAVAILABLE
         return c.trialSteps.activate(inviteText, c.now())
