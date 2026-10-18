@@ -35,5 +35,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     // §3.1: androidx.window 1.5.0 for the size-class two-pane layout (slice S1).
+    // WindowSizeClass lives in window-core, which :window does not expose as an API
+    // dependency (checked against the 1.5.0 artifacts in S1, not assumed) — declared directly.
     implementation("androidx.window:window:1.5.0")
+    implementation("androidx.window:window-core:1.5.0")
 }

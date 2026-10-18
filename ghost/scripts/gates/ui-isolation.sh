@@ -90,13 +90,16 @@ if [ -f "$ALLOW" ]; then
 fi
 
 # --- gateway half: @UserAction calls only from on… handlers in *Model.kt of :ui ---
+# The annotation's definition (UserAction.kt) and its uses on the gateway interfaces
+# (Gateways.kt, same package — no import) are declarations, not call sites; a file that IMPORTS
+# the gateway package and names @UserAction is the call-site shape PV-14 restricts.
 while IFS= read -r f; do
   rel="${f#"$GHOST_ROOT"/}"
   case "$rel" in
     *Model.kt) ;;
     *)
-      if grep -q '@UserAction\|\.userAction' "$f"; then
-        fail "$rel: names a @UserAction gateway call outside a *Model.kt intent handler"
+      if grep -q 'import org\.ghost\.ui\.gateway\.' "$f" && grep -q '@UserAction' "$f"; then
+        fail "$rel: names @UserAction with a gateway import outside a *Model.kt intent handler (PV-14)"
       fi
       ;;
   esac

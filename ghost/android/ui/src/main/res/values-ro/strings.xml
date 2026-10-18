@@ -4,4 +4,6 @@
     <string name="keypad_confirm">Confirmă</string>
     <string name="demo_title">GHOST</string>
     <string name="demo_body">Build de previzualizare pentru dezvoltatori. Interfața de producție a Fazei 13 vine peste acest schelet.</string>
+    <string name="shell_master_pane">Navigare</string>
+    <string name="curtain_label">GHOST</string>
 </resources>

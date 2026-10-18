@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalClipboardManager
+import org.ghost.ui.protect.ImeIncognito
 
 /**
  * Phase 13 design §3.1, §4.2, §4.5: the window root every GHOST window composes. One [GhostRoot]
@@ -29,13 +30,17 @@ fun GhostRoot(
 ) {
     if (clipboardOwner == null) {
         // The skeleton runs without the clipboard override; :app's wiring always passes one.
-        GhostTheme(content = content)
+        ImeIncognito {
+            GhostTheme(content = content)
+        }
     } else {
         CompositionLocalProvider(
             LocalClipboard provides clipboardOwner.clipboard,
             LocalClipboardManager provides clipboardOwner.clipboardManager,
         ) {
-            GhostTheme(content = content)
+            ImeIncognito {
+                GhostTheme(content = content)
+            }
         }
     }
 }

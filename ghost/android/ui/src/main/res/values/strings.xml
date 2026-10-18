@@ -6,4 +6,6 @@
     <string name="keypad_confirm">Confirm</string>
     <string name="demo_title">GHOST</string>
     <string name="demo_body">Developer preview build. The production UX of Phase 13 lands on this shell.</string>
+    <string name="shell_master_pane">Navigation</string>
+    <string name="curtain_label">GHOST</string>
 </resources>
