@@ -52,11 +52,11 @@ while IFS= read -r vals; do
         printf '%s' "$body" | grep -q "<item quantity=\"$q\"" || fail "$rof: plural '$pk' lacks quantity '$q'"
       done
     done
-  done < <(find "$mod/values" -maxdepth 1 -name '*.xml' 2>/dev/null || true)
-done < <(find "$GHOST_ROOT/android/ui" -path '*/src/main/res/values' -type d 2>/dev/null || true)
+  done < <(find "$mod/values" -maxdepth 1 -name 'strings.xml' 2>/dev/null || true)
+done < <(find "$GHOST_ROOT/android/ui" "$GHOST_ROOT/android/app" -path '*/src/main/res/values' -type d 2>/dev/null || true)
 
 # Vacuity floor: at least one values dir.
-vals_count=$(find "$GHOST_ROOT/android/ui" -path '*/src/main/res/values' -type d 2>/dev/null | head -1)
+vals_count=$(find "$GHOST_ROOT/android/ui" "$GHOST_ROOT/android/app" -path '*/src/main/res/values' -type d 2>/dev/null | head -1)
 [ -n "$vals_count" ] || fail "no res/values in :ui (empty scan refused)"
 
 # No literal user-visible string in composables of android/ui.

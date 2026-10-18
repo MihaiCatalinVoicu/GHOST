@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GHOST</string>
+    <string name="devpreview_title">GHOST (previzualizare pentru dezvoltatori)</string>
+    <string name="devpreview_body">Acest build nu face nicio afirmație de confidențialitate. Nu conține încă funcționalitate de mesagerie, releu, plăți sau identitate. Stare și plan: docs/STATUS.md.</string>
+    <string name="devpreview_stage">Stadiu: previzualizare pentru dezvoltatori (spec v2.0, secțiunea 3.1)</string>
+    <string name="notif_title">GHOST</string>
+    <string name="notif_new">Ai mesaje noi</string>
+    <plurals name="notif_new_count">
+        <item quantity="one">%d mesaj nou</item>
+        <item quantity="few">%d mesaje noi</item>
+        <item quantity="other">%d mesaje noi</item>
+    </plurals>
+</resources>

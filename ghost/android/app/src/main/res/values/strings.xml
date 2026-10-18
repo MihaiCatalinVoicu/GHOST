@@ -4,4 +4,10 @@
     <string name="devpreview_title">GHOST (developer preview)</string>
     <string name="devpreview_body">This build makes no privacy claim. It contains no messaging, relay, payment or identity functionality yet. Status and roadmap: docs/STATUS.md.</string>
     <string name="devpreview_stage">Stage: developer preview (spec v2.0, section 3.1)</string>
+<string name="notif_title">GHOST</string>
+    <string name="notif_new">You have new messages</string>
+    <plurals name="notif_new_count">
+        <item quantity="one">%d new message</item>
+        <item quantity="other">%d new messages</item>
+    </plurals>
 </resources>
