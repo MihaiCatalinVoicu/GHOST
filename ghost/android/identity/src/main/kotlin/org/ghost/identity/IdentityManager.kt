@@ -85,9 +85,30 @@ class IdentityManager(
         return chosen.sorted()
     }
 
+    /**
+     * Phase 13 §5.6 (§3.6): the next challenge KEEPS every position answered wrongly so far
+     * (carried), completed to [count] with fresh random positions. A wrong answer shows the 24
+     * words again, then a challenge that contains every missed position — there is no skip.
+     */
+    fun backupChallenge(count: Int, carried: List<Int>): List<Int> {
+        require(count in 1..Bip39.WORD_COUNT)
+        val kept = carried.distinct().filter { it in 0 until Bip39.WORD_COUNT }
+        require(kept.size <= count) { "more carried positions than the challenge holds" }
+        val positions = ((0 until Bip39.WORD_COUNT).toSet() - kept.toSet()).toMutableList()
+        val chosen = kept.toMutableList()
+        repeat(count - kept.size) { chosen += positions.removeAt(random.nextInt(positions.size)) }
+        return chosen.sorted()
+    }
+
     fun verifyBackupAnswers(mnemonic: List<String>, positions: List<Int>, answers: List<String>): Boolean {
         if (positions.size != answers.size) return false
         return positions.indices.all { i -> mnemonic[positions[i]] == answers[i].trim().lowercase() }
+    }
+
+    /** The index form of [verifyBackupAnswers] (§3.3: the check runs over indices, not strings). */
+    fun verifyBackupIndices(mnemonicIndices: IntArray, positions: List<Int>, answerIndices: IntArray): Boolean {
+        if (positions.size != answerIndices.size) return false
+        return positions.indices.all { i -> mnemonicIndices[positions[i]] == answerIndices[i] }
     }
 
     private fun persist(root: RootEntropy) {

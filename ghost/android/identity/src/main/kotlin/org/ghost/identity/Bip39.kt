@@ -25,40 +25,91 @@ object Bip39 {
 
     private val wordIndex: Map<String, Int> by lazy { wordlist.withIndex().associate { it.value to it.index } }
 
-    /** Encodes entropy (16..32 bytes, multiple of 4) as a mnemonic. GHOST always uses 32 bytes. */
-    fun encode(entropy: ByteArray): List<String> {
+    /**
+     * Phase 13 §3.3 (F-U4): the mnemonic as 24 word indices, computed over a bit array the
+     * caller zeroes — the encoder never builds a `String` of bits (`Bip39.kt`'s old builder
+     * would have held the entire root in one immutable string). [indicesOfMnemonic] maps words
+     * back for the round trip; the UI renders indices through [wordlist] and never joins them.
+     */
+    fun encodeIndices(entropy: ByteArray): IntArray {
         require(entropy.size in 16..32 && entropy.size % 4 == 0) { "entropy must be 16..32 bytes, multiple of 4" }
         val checksumBits = entropy.size * 8 / 32
-        val hash = sha256(entropy)
-        val bits = StringBuilder()
-        for (b in entropy) bits.append(toBits(b))
-        bits.append(toBits(hash[0]).substring(0, checksumBits))
-        return bits.chunked(11).map { wordlist[it.toInt(2)] }
+        val totalBits = entropy.size * 8 + checksumBits
+        val bits = IntArray(totalBits)
+        try {
+            var at = 0
+            for (b in entropy) {
+                for (shift in 7 downTo 0) bits[at++] = (b.toInt() ushr shift) and 1
+            }
+            val hash = sha256(entropy)
+            for (shift in 7 downTo 8 - checksumBits) bits[at++] = (hash[0].toInt() ushr shift) and 1
+            check(at == totalBits)
+            val out = IntArray(totalBits / 11)
+            for (w in out.indices) {
+                var v = 0
+                for (j in 0 until 11) v = (v shl 1) or bits[w * 11 + j]
+                out[w] = v
+            }
+            return out
+        } finally {
+            bits.fill(0)
+        }
+    }
+
+    /** The inverse of [encodeIndices] with the same validations as [decode]. */
+    fun decodeIndices(indices: IntArray): ByteArray {
+        require(indices.size in setOf(12, 15, 18, 21, 24)) { "invalid mnemonic length: ${indices.size} words" }
+        require(indices.all { it in 0..2047 }) { "word index out of range" }
+        val checksumBits = indices.size * 11 / 33
+        val entropyBits = indices.size * 11 - checksumBits
+        val bits = IntArray(indices.size * 11)
+        try {
+            var at = 0
+            for (idx in indices) {
+                for (shift in 10 downTo 0) bits[at++] = (idx ushr shift) and 1
+            }
+            val entropy = ByteArray(entropyBits / 8)
+            for (i in entropy.indices) {
+                var v = 0
+                for (j in 0 until 8) v = (v shl 1) or bits[i * 8 + j]
+                entropy[i] = v.toByte()
+            }
+            for (shift in 7 downTo 8 - checksumBits) {
+                if (bits[entropyBits + (7 - shift)] != (sha256(entropy)[0].toInt() ushr shift) and 1) {
+                    throw IllegalArgumentException("mnemonic checksum mismatch")
+                }
+            }
+            return entropy
+        } finally {
+            bits.fill(0)
+        }
+    }
+
+    /** Maps a rendered mnemonic to its indices (the backup check's reverse direction). */
+    fun indicesOfMnemonic(words: List<String>): IntArray {
+        val normalized = words.map { Normalizer.normalize(it.trim().lowercase(), Normalizer.Form.NFKD) }
+        return IntArray(normalized.size) { i ->
+            wordIndex[normalized[i]] ?: throw IllegalArgumentException("unknown mnemonic word")
+        }
+    }
+
+    /** Encodes entropy (16..32 bytes, multiple of 4) as a mnemonic. GHOST always uses 32 bytes. */
+    fun encode(entropy: ByteArray): List<String> {
+        val indices = encodeIndices(entropy)
+        try {
+            return indices.map { wordlist[it] }
+        } finally {
+            indices.fill(0)
+        }
     }
 
     /**
      * Decodes and validates a mnemonic. Rejects wrong word count, unknown words and checksum
      * mismatch (FR-1.4 acceptance: parser rejects checksum, version and length errors).
      */
-    fun decode(words: List<String>): ByteArray {
-        val normalized = words.map { Normalizer.normalize(it.trim().lowercase(), Normalizer.Form.NFKD) }
-        require(normalized.size in setOf(12, 15, 18, 21, 24)) { "invalid mnemonic length: ${normalized.size} words" }
-        val bits = StringBuilder()
-        for (w in normalized) {
-            val idx = wordIndex[w] ?: throw IllegalArgumentException("unknown mnemonic word")
-            bits.append(idx.toString(2).padStart(11, '0'))
-        }
-        val checksumBits = normalized.size * 11 / 33
-        val entropyBits = bits.length - checksumBits
-        val entropy = ByteArray(entropyBits / 8) { i -> bits.substring(i * 8, i * 8 + 8).toInt(2).toByte() }
-        val expected = toBits(sha256(entropy)[0]).substring(0, checksumBits)
-        if (bits.substring(entropyBits) != expected) throw IllegalArgumentException("mnemonic checksum mismatch")
-        return entropy
-    }
+    fun decode(words: List<String>): ByteArray = decodeIndices(indicesOfMnemonic(words))
 
     fun decode(phrase: String): ByteArray = decode(phrase.trim().split(Regex("\\s+")))
-
-    private fun toBits(b: Byte): String = (b.toInt() and 0xff).toString(2).padStart(8, '0')
 
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 }

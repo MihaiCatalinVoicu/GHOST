@@ -13,6 +13,12 @@ class RootEntropy private constructor(private val bytes: ByteArray) {
 
     fun toMnemonic(): List<String> = Bip39.encode(bytes)
 
+    /**
+     * Phase 13 §3.3, §3.6: the 24 word indices for the backup screen — the UI renders them
+     * through the word list and never builds a joined string of the root.
+     */
+    fun toMnemonicIndices(): IntArray = Bip39.encodeIndices(bytes)
+
     /** Raw entropy for the Keystore-wrapped envelope only (TB-1). Never logged, never exported in clear. */
     fun rawForWrapping(): ByteArray = bytes.copyOf()
 
