@@ -22,4 +22,28 @@
     </plurals>
     <string name="lock_backoff">Prea multe încercări. Așteaptă %d secunde.</string>
     <string name="lock_dot">•</string>
+    <string name="onboarding_welcome_title">Bun venit la GHOST</string>
+    <string name="onboarding_welcome_invite">Am o invitație</string>
+    <string name="onboarding_welcome_restore">Restaurez din 24 de cuvinte</string>
+    <string name="onboarding_welcome_stage">Previzualizare pentru dezvoltatori. Nicio proprietate de confidențialitate nu e verificată la acest stadiu.</string>
+    <string name="onboarding_dc1">Un telefon compromis învinge GHOST. Ce reduce paguba: un dispozitiv dedicat pentru profiluri cu risc ridicat și un sistem la zi.</string>
+    <string name="onboarding_dc2">Pentru profiluri cu risc ridicat folosește un dispozitiv dedicat, de exemplu unul cu GrapheneOS.</string>
+    <string name="onboarding_dc3">Furnizorul tău de internet vede că folosești Tor. Rezistență, nu imunitate.</string>
+    <string name="onboarding_prepare_title">Pregătirea GHOST</string>
+    <string name="onboarding_prepare_body">Se creează cheile locale. Nu pleacă nimic de pe acest dispozitiv.</string>
+    <string name="onboarding_lock_title">Protejează GHOST cu un PIN</string>
+    <string name="onboarding_lock_body">PIN-ul blochează aplicația când pleci. Amprenta sau fața pot fi folosite împotriva voinței tale; un PIN din cap nu. Cine ține telefonul deblocat în mână e ceea ce această blocare nu oprește.</string>
+    <string name="onboarding_privacy_title">Mod de confidențialitate</string>
+    <string name="onboarding_privacy_standard">Standard</string>
+    <string name="onboarding_privacy_high">Ridicat</string>
+    <string name="onboarding_privacy_body">Modul ridicat schimbă ritmul traficului și amână unele verificări. Alegerea contează de acum: accesul primit la pasul următor urmează acest mod.</string>
+    <string name="onboarding_words_title">Cele 24 de cuvinte</string>
+    <string name="onboarding_words_body">Scrie-le pe hârtie, ține-le offline. Nu le fotografia niciodată, nu le tasta în altă aplicație sau site. GHOST le cere doar la restaurare.</string>
+    <string name="onboarding_backup_title">Verificarea copiei</string>
+    <string name="onboarding_backup_body">Tastează cuvintele de pe pozițiile cerute de GHOST. O greșeală arată din nou cuvintele și cere o verificare nouă — fără posibilitatea de sărire.</string>
+    <string name="onboarding_notifications_title">Notificări</string>
+    <string name="onboarding_notifications_body">GHOST arată un singur mesaj constant, niciodată textul lui, fără număr, ascuns pe ecranul de blocare. Aplicațiile care ascultă notificări, ceasurile și istoricul de utilizare al sistemului văd când apare.</string>
+    <string name="onboarding_notifications_allow">Permite notificările</string>
+    <string name="onboarding_notifications_skip">Nu acum</string>
+    <string name="onboarding_disclosures_title">Înainte să continui</string>
 </resources>

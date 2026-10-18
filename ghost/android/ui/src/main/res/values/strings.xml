@@ -23,4 +23,28 @@
     </plurals>
     <string name="lock_backoff">Too many attempts. Wait %d seconds.</string>
     <string name="lock_dot">•</string>
+    <string name="onboarding_welcome_title">Welcome to GHOST</string>
+    <string name="onboarding_welcome_invite">I have an invite</string>
+    <string name="onboarding_welcome_restore">Restore from 24 words</string>
+    <string name="onboarding_welcome_stage">Developer preview. No privacy property is verified at this stage.</string>
+    <string name="onboarding_dc1">A phone that is compromised defeats GHOST. What reduces the damage: a dedicated device for high-risk work, and keeping the system updated.</string>
+    <string name="onboarding_dc2">For high-risk profiles use a dedicated device, for example one running GrapheneOS.</string>
+    <string name="onboarding_dc3">Your provider sees that you use Tor. Resistance, not immunity.</string>
+    <string name="onboarding_prepare_title">Preparing GHOST</string>
+    <string name="onboarding_prepare_body">Creating the local keys. Nothing leaves this device.</string>
+    <string name="onboarding_lock_title">Protect GHOST with a PIN</string>
+    <string name="onboarding_lock_body">The PIN locks the app when you are away. A fingerprint or face can be used against your will; a PIN in your head cannot. Anyone holding your unlocked phone is what this lock does not stop.</string>
+    <string name="onboarding_privacy_title">Privacy mode</string>
+    <string name="onboarding_privacy_standard">Standard</string>
+    <string name="onboarding_privacy_high">High</string>
+    <string name="onboarding_privacy_body">High changes the pacing of traffic and delays some checks. The choice applies from now on: the access you receive next follows this mode.</string>
+    <string name="onboarding_words_title">Your 24 words</string>
+    <string name="onboarding_words_body">Write them on paper, keep them offline. Never photograph them, never type them into another app or site. GHOST asks for them only at restore.</string>
+    <string name="onboarding_backup_title">Check the backup</string>
+    <string name="onboarding_backup_body">Type the words at the positions GHOST asks for. A mistake shows the words again and asks a new check — there is no skip.</string>
+    <string name="onboarding_notifications_title">Notifications</string>
+    <string name="onboarding_notifications_body">GHOST shows one constant message, never its text, never a count, hidden on the lock screen. Listener apps, watches and the system usage records see when it appears.</string>
+    <string name="onboarding_notifications_allow">Allow notifications</string>
+    <string name="onboarding_notifications_skip">Not now</string>
+    <string name="onboarding_disclosures_title">Before you continue</string>
 </resources>
