@@ -79,3 +79,20 @@ data class InvitePreview(
     val expiryDay: Long?,
     val refusedReason: String?,
 )
+
+/**
+ * Phase 13 §3.6: the purchase read model for the J2 screens — id, pay-with and state ONLY:
+ * never an amount, an address or a time. READY is exactly the `paymentReady` predicate (or
+ * shown before and the deadline not passed); an invoiced purchase inside its U[1 h, 6 h] delay
+ * is INVOICE_PENDING, never READY; UNDERPAID is a shown purchase with an outstanding amount
+ * before its deadline.
+ */
+enum class PurchaseUiState {
+    PREPARED, INVOICE_PENDING, READY, UNDERPAID, CONFIRMING, FINALIZED,
+    EXPIRED_UNPAID, EXPIRED_SEEN, LOST, CANCELLED,
+}
+
+data class OpenPurchase(val id: PurchaseId, val payWith: PayWith, val state: PurchaseUiState)
+
+/** Phase 13 §3.6: the invite index list — index, expiry day and state only. */
+data class InviteIndex(val index: Int, val expiryDay: Long?, val state: String)

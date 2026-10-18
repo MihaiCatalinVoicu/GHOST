@@ -270,6 +270,18 @@ class Invite(
             return Structure(expiry, signed, sig, signingPublic)
         }
 
+        /**
+         * Phase 13 §3.6 (`invites()`): the expiry day of an issued invite's stored wire bytes,
+         * read without validation — the list UI never re-parses, it shows what was issued.
+         * Offset 1 (version) + 354 (token) + 16 (nonce).
+         */
+        fun peekExpiryDay(bytes: ByteArray): Long {
+            require(bytes.size == PAYLOAD_BYTES) { "an invite wire payload is $PAYLOAD_BYTES bytes" }
+            val buf = ByteBuffer.wrap(bytes)
+            buf.position(1 + TOKEN_BYTES + NONCE_BYTES)
+            return buf.getInt().toLong() and MAX_U32
+        }
+
         /** The version byte of a canonically encoded payload of another length (a v1 invite), or null. */
         private fun peekVersion(encoded: String): Int? {
             val bytes = encoded.length * 5 / 8

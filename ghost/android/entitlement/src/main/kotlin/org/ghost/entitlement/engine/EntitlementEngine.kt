@@ -275,6 +275,50 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         return c.purchaseSteps.cancel(id.toByteArray(), c.now())
     }
 
+    override fun openPurchases(): List<org.ghost.entitlement.api.OpenPurchase> {
+        // §3.6: pure reads over stored rows; READY is recomputed through paymentReady, never the
+        // stored `invoiced` alone (PM-U31's predicate test drives this mapping).
+        val c = ready() ?: return emptyList()
+        val now = c.now()
+        return c.tx { tx -> c.purchases.all(tx).map { p ->
+            org.ghost.entitlement.api.OpenPurchase(
+                id = org.ghost.entitlement.api.PurchaseId(p.id()),
+                payWith = if (p.payWith == PurchaseStore.XMR) org.ghost.entitlement.api.PayWith.XMR else org.ghost.entitlement.api.PayWith.CREDITS,
+                state = uiState(p, now),
+            )
+        } }
+    }
+
+    override fun invites(): List<org.ghost.entitlement.api.InviteIndex> {
+        val c = ready() ?: return emptyList()
+        return c.tx { tx -> c.invites.all(tx).map { inv ->
+            val payload = inv.payload()
+            org.ghost.entitlement.api.InviteIndex(
+                index = inv.index,
+                expiryDay = payload?.let { org.ghost.identity.Invite.peekExpiryDay(it) },
+                state = inv.state,
+            )
+        } }
+    }
+
+    /** §3.6's state set over a stored row; CONFIRMING has no stored counterpart yet (documented). */
+    private fun uiState(p: PurchaseRow, now: Long): org.ghost.entitlement.api.PurchaseUiState = when (p.state) {
+        PurchaseStore.PREPARED -> org.ghost.entitlement.api.PurchaseUiState.PREPARED
+        PurchaseStore.INVOICED -> when {
+            paymentReady(p, now) -> org.ghost.entitlement.api.PurchaseUiState.READY
+            p.shown && (p.outstandingAtomic ?: 0L) > 0L && now < (p.receiptMinute ?: 0L) + PAYMENT_WINDOW ->
+                org.ghost.entitlement.api.PurchaseUiState.UNDERPAID
+            else -> org.ghost.entitlement.api.PurchaseUiState.INVOICE_PENDING
+        }
+        PurchaseStore.FINALIZED -> org.ghost.entitlement.api.PurchaseUiState.FINALIZED
+        PurchaseStore.EXPIRED ->
+            if (p.shown) org.ghost.entitlement.api.PurchaseUiState.EXPIRED_SEEN
+            else org.ghost.entitlement.api.PurchaseUiState.EXPIRED_UNPAID
+        PurchaseStore.FAILED -> org.ghost.entitlement.api.PurchaseUiState.CANCELLED
+        PurchaseStore.LOST -> org.ghost.entitlement.api.PurchaseUiState.LOST
+        else -> org.ghost.entitlement.api.PurchaseUiState.PREPARED
+    }
+
     override fun inspectInvite(text: String, nowUnixSeconds: Long): org.ghost.entitlement.api.InvitePreview {
         // Local by construction: Invite.preview verifies the self-contained signature and the
         // day boundary, never the token schedule and never the nonce store (§3.6, no state).
