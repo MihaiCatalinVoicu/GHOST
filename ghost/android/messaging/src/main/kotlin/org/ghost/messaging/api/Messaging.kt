@@ -288,6 +288,14 @@ interface Messaging {
      * Phase 9 posts no notification of its own (§21.10 point 9); what it ships is this port and the
      * guarantee that nothing else ever crosses it.
      */
+    /**
+     * Phase 13 §3.6 (`setListener`): the UI's live-update hook — content-free kinds, emitted on
+     * the actor thread AFTER the committing pass. The listener must not block the actor (the UI
+     * hands it to a conflated hub; §13.7's rule for the hand-off). Enums only, so the UI-side
+     * surface is testable without engine types.
+     */
+    fun setListener(listener: MessagingListener?)
+
     fun setNotificationPort(port: NotificationPort?)
 
     /**
@@ -762,4 +770,12 @@ class MaintenanceReport(
             regrows == OwnerSteps.Result.DONE
 
     override fun toString(): String = "MaintenanceReport($ownerWeek, $keeper, $regrows)"
+}
+
+/** What changed, content-free (Phase 13 §3.6); the UI conflates and re-queries. */
+enum class ChangeKind { CONTACTS, MESSAGES, REQUESTS, TRUST, OUTCOMES, STATUS }
+
+/** The listener of [Messaging.setListener]; called on the actor thread after commits. */
+fun interface MessagingListener {
+    fun onChanged(kinds: Set<ChangeKind>)
 }

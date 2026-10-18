@@ -9,7 +9,10 @@ import org.ghost.messaging.api.ContactId
 import org.ghost.messaging.api.ContactView
 import org.ghost.messaging.api.Establishment
 import org.ghost.messaging.api.MaintenanceReport
+import org.ghost.messaging.api.ChangeKind
 import org.ghost.messaging.api.Messaging
+import org.ghost.messaging.api.MessagingListener
+import org.ghost.messaging.api.MessagingStatus
 import org.ghost.messaging.api.MessageCursor
 import org.ghost.messaging.api.MessageId
 import org.ghost.messaging.api.MessageKind
@@ -20,7 +23,6 @@ import org.ghost.messaging.api.MediaHandle
 import org.ghost.messaging.api.MediaSendResult
 import org.ghost.messaging.api.MediaStateView
 import org.ghost.messaging.api.MediaSource
-import org.ghost.messaging.api.MessagingStatus
 import org.ghost.messaging.api.NotificationPort
 import org.ghost.messaging.api.PreparationId
 import org.ghost.messaging.api.PreparationView
@@ -114,12 +116,14 @@ internal class MessagingEngine(
     override fun onActivated(): ActivationOutcome = onActor {
         val result = ActivationOutcome.of(steps.activate(restored = false))
         forgetCachedKeys()
+        hint(ChangeKind.STATUS, ChangeKind.CONTACTS)
         result
     }
 
     override fun onRestored(): ActivationOutcome = onActor {
         val result = ActivationOutcome.of(steps.activate(restored = true))
         forgetCachedKeys()
+        hint(ChangeKind.STATUS, ChangeKind.CONTACTS)
         result
     }
 
@@ -211,7 +215,10 @@ internal class MessagingEngine(
      */
     override fun markDisplayed(ids: List<MessageId>): Int = onActor {
         val displayed = displayStep.markDisplayed(ids.map { it.toByteArray() })
-        if (displayed > 0) schedule.afterCommit()
+        if (displayed > 0) {
+            schedule.afterCommit()
+            hint(ChangeKind.MESSAGES)
+        }
         displayed
     }
 
@@ -219,20 +226,44 @@ internal class MessagingEngine(
         onActor { schedule.setNotificationPort(port) }
     }
 
+    /** Phase 13 §3.6: the UI's listener; content-free kinds after commits, on the actor thread. */
+    private val uiListener = java.util.concurrent.atomic.AtomicReference<MessagingListener?>()
+
+    override fun setListener(listener: MessagingListener?) {
+        uiListener.set(listener)
+    }
+
+    /**
+     * Emits [kinds] to the listener, if any. Called at the END of the committing pass, still on
+     * the actor thread, so a UI that acted on a call sees the hint before the call returns. The
+     * listener must hand off and return (the UI's hub tryEmits; §13.7's hand-off rule).
+     */
+    private fun hint(vararg kinds: ChangeKind) {
+        uiListener.get()?.onChanged(kinds.toSet())
+    }
+
     override fun acceptRequest(contact: ContactId): Boolean = onActor {
-        contactSteps.acceptRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        val done = contactSteps.acceptRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        if (done) hint(ChangeKind.REQUESTS, ChangeKind.CONTACTS)
+        done
     }
 
     override fun rejectRequest(contact: ContactId): Boolean = onActor {
-        contactSteps.rejectRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        val done = contactSteps.rejectRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        if (done) hint(ChangeKind.REQUESTS)
+        done
     }
 
     override fun blockRequest(contact: ContactId): Boolean = onActor {
-        contactSteps.blockRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        val done = contactSteps.blockRequest(contact.toByteArray()) == ContactSteps.RequestResult.DONE
+        if (done) hint(ChangeKind.REQUESTS)
+        done
     }
 
     override fun block(contact: ContactId): Boolean = onActor {
-        contactSteps.block(contact.toByteArray())
+        val blocked = contactSteps.block(contact.toByteArray())
+        if (blocked) hint(ChangeKind.CONTACTS, ChangeKind.TRUST)
+        blocked
     }
 
     override fun unblock(contact: ContactId): Boolean = onActor {
@@ -252,7 +283,7 @@ internal class MessagingEngine(
             body = text.toByteArray(Charsets.UTF_8),
             quote = quote?.toByteArray(),
             timerCode = null,
-        )
+        ).also { hint(ChangeKind.MESSAGES, ChangeKind.OUTCOMES) }
     }
 
     override fun react(contact: ContactId, target: MessageId, grapheme: String?): SendResult =
