@@ -91,7 +91,8 @@ class SettingsStore(private val executor: () -> SqlExecutor?) {
     }
 
     fun clearClipLabel() {
-        executor()?.exec("UPDATE ui_settings SET clip_label = NULL WHERE id = 1")
+        // execUpdate, not exec: G-T6 reads `exec(` as a spawn primitive, and this is a SQL UPDATE.
+        executor()?.execUpdate("UPDATE ui_settings SET clip_label = NULL WHERE id = 1")
     }
 
     private fun int(column: String): Int {

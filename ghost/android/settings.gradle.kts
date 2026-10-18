@@ -39,3 +39,5 @@ include(":entitlement")
 include(":media")
 // Phase 13 design §3.1 (slice S0b): the UI module. No project() dependency of its own (G-U5).
 include(":ui")
+// Phase 13 design §3.1 (slice S1b): the emulator platform-test module, never shipped.
+include(":app-uitest")

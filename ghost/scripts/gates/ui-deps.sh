@@ -32,6 +32,11 @@ while IFS= read -r f; do
   while IFS= read -r h; do
     line=$(printf '%s' "$h" | cut -d: -f1)
     conf=$(printf '%s' "$h" | cut -d: -f2- | sed -E 's/^[[:space:]]*([A-Za-z0-9]+).*/\1/')
+    case "$rel" in
+      # §3.1's :app-uitest is a com.android.test module — the WHOLE module is the emulator test,
+      # it ships nothing, and its implementation configuration is its test classpath (Q25).
+      android/app-uitest/*) continue ;;
+    esac
     case "$conf" in
       testImplementation|androidTestImplementation|testRuntimeOnly|androidTestRuntimeOnly|testCompileOnly|debugImplementation) ;;
       *) fail "$rel:$line: test-only dependency in a shipped configuration ($conf): $h" ;;
