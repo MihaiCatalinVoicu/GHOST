@@ -227,6 +227,10 @@ interface Messaging {
      * Every read carries the expiry filter of §10.7 point 4, so a message whose timer has passed
      * is never shown even before SWEEP has physically deleted it (mutant ME-16).
      */
+    /** Phase 13 §3.6: the conversation list's rows - contact id, live unread count, newest live
+     * message minute; no text, ever (T33). */
+    fun conversationSummaries(): List<ConversationSummary>
+
     fun conversation(contact: ContactId, limit: Int, before: MessageCursor?): List<MessageView>
 
     /** §12.3: an unknown card holder's request becomes a contact the user may write to. */
@@ -786,4 +790,13 @@ enum class ChangeKind { CONTACTS, MESSAGES, REQUESTS, TRUST, OUTCOMES, STATUS }
 /** The listener of [Messaging.setListener]; called on the actor thread after commits. */
 fun interface MessagingListener {
     fun onChanged(kinds: Set<ChangeKind>)
+}
+
+/** A conversation-list row of Phase 13 §3.6: id, live unread count, newest live minute - no text. */
+class ConversationSummary(
+    val contactId: ByteArray,
+    val unread: Int,
+    val newestAuthorMinute: Long,
+) {
+    override fun toString(): String = "ConversationSummary(unread=$unread)"
 }

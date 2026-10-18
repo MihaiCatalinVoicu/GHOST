@@ -10,6 +10,7 @@ import org.ghost.messaging.api.ContactView
 import org.ghost.messaging.api.Establishment
 import org.ghost.messaging.api.MaintenanceReport
 import org.ghost.messaging.api.ChangeKind
+import org.ghost.messaging.api.ConversationSummary
 import org.ghost.messaging.api.Messaging
 import org.ghost.messaging.api.MessagingListener
 import org.ghost.messaging.api.MessagingStatus
@@ -183,6 +184,12 @@ internal class MessagingEngine(
                 name = view.name,
             )
         }
+    }
+
+    override fun conversationSummaries(): List<ConversationSummary> = onActor {
+        // R-T7's read filter, not the wall clock: bound inside a read transaction.
+        val nowMinute = database.transaction { expiry.nowMinute(it.sql) }
+        contactSteps.conversationSummaries(nowMinute)
     }
 
     override fun conversation(

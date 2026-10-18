@@ -199,6 +199,23 @@ internal class ContactSteps(
         }
     }
 
+    /** Phase 13 §3.6 (`conversationSummaries`): contact id, live unread count, newest live message
+     * minute - never a text, never a key (T33). */
+    fun conversationSummaries(nowMinute: Long): List<org.ghost.messaging.api.ConversationSummary> =
+        database.transaction { tx ->
+            val contacts = store.contacts(tx.sql)
+            val summaries = org.ghost.messaging.store.MessageStore().conversationSummaries(
+                tx.sql,
+                contacts.map { it.contactId },
+                { id -> store.conversation(tx.sql, id)?.conversationId },
+                nowMinute,
+            )
+            contacts.mapNotNull { row ->
+                val (unread, newest) = summaries[row.contactId] ?: return@mapNotNull null
+                org.ghost.messaging.api.ConversationSummary(row.contactId, unread, newest ?: 0L)
+            }
+        }
+
     /** Phase 13 §3.6 (`rename`): seals the alias under the content key with the contact id as the
      * associated data (the card's own pattern), or clears it. False when there is no such contact. */
     fun rename(contactId: ByteArray, name: String?): Boolean {

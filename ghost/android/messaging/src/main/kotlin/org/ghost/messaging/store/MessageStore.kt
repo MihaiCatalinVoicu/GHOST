@@ -606,6 +606,28 @@ internal class MessageStore {
         tx.sql.exec("DELETE FROM dm_pending_send WHERE item_id = ?", listOf(itemId))
     }
 
+    /** Phase 13 §3.6 (`conversationSummaries`): per-contact unread count and newest live minute.
+     * Pure reads over stored rows - the expiry filter rides every query like any other. */
+    fun conversationSummaries(sql: SqlExecutor, contacts: List<ByteArray>, conversationOf: (ByteArray) -> ByteArray?, nowMinute: Long): Map<ByteArray, Pair<Int, Long?>> {
+        val out = HashMap<ByteArray, Pair<Int, Long?>>()
+        for (contactId in contacts) {
+            val conv = conversationOf(contactId) ?: continue
+            var unread = 0
+            var newest: Long? = null
+            sql.query(
+                "SELECT sum(CASE WHEN state = 'unread' THEN 1 ELSE 0 END), max(author_minute) " +
+                    "FROM dm_message WHERE conversation_id = ? AND direction = 'in' " +
+                    "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+                listOf(conv, nowMinute),
+            ) { r ->
+                unread = if (r.isNull(0)) 0 else r.long(0).toInt()
+                newest = if (r.isNull(1)) null else r.long(1)
+            }
+            out[contactId] = unread to newest
+        }
+        return out
+    }
+
     companion object {
         /**
          * The **seven** reads of `dm_message`, spelled out as constants so the expired-row lint's
