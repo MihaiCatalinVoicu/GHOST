@@ -19,6 +19,7 @@ import org.ghost.app.media.MediaWiring
 import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.messaging.port.DmCheckpoint
+import org.ghost.app.ui.AppPresence
 import org.ghost.storage.Checkpoint
 import org.ghost.storage.DatabaseKeyProvider
 import org.ghost.sync.android.AndroidSyncController
@@ -142,15 +143,30 @@ class GhostApp : Application(), SyncHost {
             // opened there is the one the runtime keeps using for the process.
             paymentShownAt = { database.open(DatabaseOpener.Purpose.FOREGROUND)?.let(EntitlementWiring::paymentShownEpochSeconds) },
             restorePaymentHold = syncController::restorePaymentHoldFrom,
-            visible = {
-                entitlementWiring.onVisible()
-                messagingWiring.onVisible()
-            },
+            // Phase 13 §3.5 (X-U14): ON_START runs only the local step (the DM stack's build);
+            // the entitlement engine's foreground hook joins the session start at INTERACTIVE.
+            visible = messagingWiring::onVisible,
+            foregroundHook = entitlementWiring::onVisible,
             hidden = {
                 entitlementWiring.onHidden()
                 messagingWiring.onHidden()
             },
         )
+    }
+
+    /**
+     * Phase 13 §3.5 (D33, X-U14): sessions follow INTERACTIVE. The process observer keeps only the
+     * local step at ON_START; `SyncController.onAppForeground()` and the entitlement engine's
+     * foreground hook run when presence becomes INTERACTIVE — after the unlock and the resume, so
+     * nothing syncs while only the lock screen shows. A link-opened app waits a further U[0, 2 min]
+     * at the first session (the LinkIntake half, S2's wiring).
+     */
+    val presence: AppPresence by lazy {
+        AppPresence(object : AppPresence.Listener {
+            override fun onInteractive() = wiring.onInteractive()
+
+            override fun onNotInteractive() = wiring.onHidden()
+        })
     }
 
     override fun onCreate() {
@@ -168,10 +184,23 @@ class GhostApp : Application(), SyncHost {
         // ON_START when the first activity starts, ON_STOP shortly after the last one stops. A
         // process started for the background job has no activity and never sees ON_START.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) = wiring.onVisible()
+            // X-U14: ON_START keeps only the local step; the foreground session waits for
+            // INTERACTIVE (the unlock + resume), which the activity reports through [presence].
+            override fun onStart(owner: LifecycleOwner) = wiring.onWindowVisible()
 
             override fun onStop(owner: LifecycleOwner) = wiring.onHidden()
         })
+    }
+
+    /**
+     * Phase 13 §3.6: the missing creator of the database key envelope (§3.2's IdentityGateway
+     * calls this at onboarding's step 2). The returned array belongs to the caller: the gateway
+     * zeroes it and then runs [onDatabaseKeyCreated] (D18's order).
+     */
+    fun createDatabaseKey(): ByteArray {
+        val key = keys.getOrCreate()
+        onDatabaseKeyCreated()
+        return key
     }
 
     /** Onboarding calls this right after the database key is first created (design §11.2 #17). */
@@ -192,13 +221,19 @@ class GhostApp : Application(), SyncHost {
     }
 
     /**
-     * The app locked (Phase 13's lock screen, FR-1.7): the DM context closes and its keys are
-     * zeroised (Phase 9 design §2.5, §13.7).
+     * The app locked (Phase 13's lock screen, FR-1.7): presence leaves INTERACTIVE (X-U14), the
+     * DM context closes and its keys are zeroised (Phase 9 design §2.5, §13.7).
      */
-    fun onLock() = messagingWiring.onLock()
+    fun onLock() {
+        presence.onLocked()
+        messagingWiring.onLock()
+    }
 
-    /** The app unlocked: the DM context is reopened from the stored identity. */
-    fun onUnlock() = messagingWiring.onUnlock()
+    /** The app unlocked: presence becomes INTERACTIVE when the activity also resumes (X-U14). */
+    fun onUnlock() {
+        presence.onUnlocked()
+        messagingWiring.onUnlock()
+    }
 
     /**
      * Local data is being wiped (design §11.2 #17; Phase 13's wipe flow): the DM layer first —

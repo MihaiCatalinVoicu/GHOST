@@ -101,7 +101,10 @@ class SyncWiringTest {
             events.log += "hold-posted"
             posted += read
         },
-        visible = { events.log += "entitlement-visible" },
+        // X-U14: ON_START runs only the local step; the engine's foreground hook joins the
+        // INTERACTIVE transition.
+        visible = { events.log += "messaging-visible" },
+        foregroundHook = { events.log += "entitlement-visible" },
         hidden = { events.log += "entitlement-hidden" },
     )
 
@@ -144,15 +147,25 @@ class SyncWiringTest {
     }
 
     @Test
-    fun visibilityDrivesTheForegroundSessionAndThePendingTrialAndNeverSchedules() {
+    fun visibilityDrivesTheLocalStepTheForegroundSessionFollowsInteractiveAndNeverSchedules() {
         val events = Events()
         val w = wiring(events, key = true)
-        w.onVisible()
+        w.onWindowVisible()
+        assertEquals(listOf("messaging-visible"), events.log)
+        // The lock screen shows: nothing of the session starts (PM-U29).
         w.onHidden()
-        w.onVisible()
-        // Hiding the app also tells the engine, which keeps the moment an open payment screen was last visible (§19.11).
+        w.onWindowVisible()
         assertEquals(
-            listOf("foreground", "entitlement-visible", "background", "entitlement-hidden", "foreground", "entitlement-visible"),
+            listOf("messaging-visible", "background", "entitlement-hidden", "messaging-visible"),
+            events.log,
+        )
+        // The unlock + resume: the foreground session and the engine's hook start here (X-U14).
+        w.onInteractive()
+        assertEquals(
+            listOf(
+                "messaging-visible", "background", "entitlement-hidden", "messaging-visible",
+                "foreground", "entitlement-visible",
+            ),
             events.log,
         )
     }

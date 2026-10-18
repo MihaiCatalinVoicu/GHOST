@@ -13,8 +13,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
-/** A bare application: the production [org.ghost.app.GhostApp] wires the Tor transport, which
- * the JVM tier neither builds nor wants — the window tests exercise the activity, not the app. */
+/**
+ * A bare application: the production [org.ghost.app.GhostApp] wires the Tor transport, which
+ * the JVM tier neither builds nor wants — the window tests exercise the activity's own
+ * window behaviour, not the app. MainActivity's hooks are null-safe under it.
+ */
 class BareTestApp : Application()
 
 /**
