@@ -22,4 +22,5 @@
         <item quantity="other">%d wrong attempts</item>
     </plurals>
     <string name="lock_backoff">Too many attempts. Wait %d seconds.</string>
+    <string name="lock_dot">•</string>
 </resources>

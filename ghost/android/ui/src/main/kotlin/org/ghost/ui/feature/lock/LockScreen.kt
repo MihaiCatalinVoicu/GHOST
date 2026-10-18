@@ -66,7 +66,7 @@ fun LockScreen(
         }
         Text(
             // The dot row: only a count, never the digits.
-            text = "•".repeat(dots),
+            text = stringResource(R.string.lock_dot).repeat(dots),
             style = MaterialTheme.typography.titleLarge,
         )
         Spacer(modifier = Modifier.height(24.dp))

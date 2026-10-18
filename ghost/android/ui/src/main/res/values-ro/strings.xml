@@ -21,4 +21,5 @@
         <item quantity="other">%d încercări greșite</item>
     </plurals>
     <string name="lock_backoff">Prea multe încercări. Așteaptă %d secunde.</string>
+    <string name="lock_dot">•</string>
 </resources>
