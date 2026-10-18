@@ -102,6 +102,7 @@ async fn main() {
         state_dir: state.join("state"),
         cache_dir: state.join("cache"),
         bridge_lines: vec![],
+        pt_dir: None,
     })
     .unwrap_or_else(|e| {
         eprintln!("dm_restore: {e}");

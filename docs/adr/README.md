@@ -90,6 +90,15 @@ Propuse 2026-09-25 (design `docs/design/faza10-forum.md`, Anexa A; rundele 10d �
 | [ADR-42](ADR-42-ordinea-commiturilor-fara-server.md) | Ordinea commit-urilor fără server și guvernanța minimă |
 | [ADR-43](ADR-43-invitatii-dezvaluire-istoric-pseudonim.md) | Invitații în canal, dezvăluire opt-in, istoric „none", pseudonim stabil |
 
+## Propuse (Faza 12)
+
+Propuse 2026-10-17 (design `docs/design/faza12-transports.md`, revizia 4, aprobat prin directiva proprietarului de a implementa integral Faza 12; valorile implicite Q1–Q11 se aplică până la o contrazicere scrisă a proprietarului — Q11 e exact aprobarea acestor ADR-uri) și **aplicate** în Faza 12 (feliele S0–S4 de pe `p12-s4`: binarul lyrebird prune-at construit reproductibil cu hash-uri fixate și verificare la runtime, cablarea ptmgr cu execuție prin linker-ul sistemului, extragerea și stocarea liniilor, modul auto redus, porțile G-T1 … G-T8, invarianții T58–T60), în așteptarea deciziei proprietarului. Nota de revizuire a rundei adversariale de închidere (corectura rețetei din ADR-61, amendamentul T58, constatările înregistrate) e în `docs/design/faza12-s4-notes.md`.
+
+| ADR | Titlu |
+|---|---|
+| [ADR-61](ADR-61-transporturi-pluggable-lyrebird.md) | Transporturi pluggable: obfs4 și WebTunnel prin lyrebird, proveniență din sursă fixată, build reproductibil, execuție prin tor-ptmgr |
+| [ADR-62](ADR-62-liniile-de-bridge.md) | Liniile de bridge: doar de la utilizator, stocare învelită, fără listă încorporată, mod auto redus |
+
 ## Retrase
 
 | ADR | Titlu | Stare |

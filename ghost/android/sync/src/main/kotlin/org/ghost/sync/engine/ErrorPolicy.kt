@@ -154,6 +154,13 @@ internal object ErrorPolicy {
         "malformed_response" to ErrorClass.RELAY_HOSTILE,
         "internal" to ErrorClass.RELAY_TRANSIENT_AMBIGUOUS,
         "native_missing" to ErrorClass.LOCAL_FATAL,
+        // Phase 12 PT categories (design faza12-transports.md §8.3): a storage-write refusal is
+        // config (like bridge_config: no retry until the lines change); a PT extraction failure
+        // is local-fatal (a broken or ABI-less APK: no retry changes it until the app updates).
+        "bridge_line_invalid" to ErrorClass.CONFIG,
+        "bridge_line_unsupported_transport" to ErrorClass.CONFIG,
+        "pt_hash_mismatch" to ErrorClass.LOCAL_FATAL,
+        "pt_unsupported_abi" to ErrorClass.LOCAL_FATAL,
     )
 
     /** `not_onion` also pauses the relay's work lane for 24 h (design §3.6). */

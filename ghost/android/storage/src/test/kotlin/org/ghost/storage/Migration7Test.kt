@@ -37,7 +37,9 @@ class Migration7Test {
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { tables += it.string(0) }
         val triggers = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'") { triggers += it.string(0) }
-        val expectedTables = Schema.expectedTables - MediaSchema.tables + MediaSchema.v1Tables
+        // v8 (Phase 11 §13.6) and v9 (Phase 12 transports §6.3) have not run at v7: the current
+        // schema's tables from both are subtracted, exactly like v8 subtracts the media family.
+        val expectedTables = Schema.expectedTables - MediaSchema.tables - setOf("transport_bridge") + MediaSchema.v1Tables
         val expectedTriggers = Schema.expectedTriggers - MediaSchema.rules - MediaSchema.guards
         check((expectedTables - tables).isEmpty()) { "schema integrity: missing tables ${expectedTables - tables}" }
         check((expectedTriggers - triggers).isEmpty()) { "schema integrity: missing triggers ${expectedTriggers - triggers}" }

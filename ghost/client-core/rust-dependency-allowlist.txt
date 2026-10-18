@@ -343,6 +343,7 @@ tor-netdoc
 tor-persist
 tor-proto
 tor-protover
+tor-ptmgr
 tor-relay-selection
 tor-rtcompat
 tor-rtmock

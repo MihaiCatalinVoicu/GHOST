@@ -2,16 +2,21 @@
 //! an explicit isolation token; the Arti client itself is not exposed outside this crate.
 //!
 //! Creation and bootstrap are separate so the caller can abort a bootstrap that stalls on a
-//! censored network and switch to bridges (ADR-16 auto mode). Bridges are optional *plain*
-//! bridge lines (`IP:PORT FINGERPRINT`); pluggable transports (obfs4, webtunnel, snowflake) are
-//! not compiled in yet and are rejected as a configuration error (Phase 12). There is no non-Tor
-//! mode.
+//! censored network and switch to bridges (ADR-16 auto mode). Bridges are optional plain
+//! `IP:PORT FINGERPRINT` lines or pluggable-transport lines (`obfs4 …`, `webtunnel …`, validated
+//! by [`bridge_line`]); PT lines run through arti's managed `pt-client` support (tor-ptmgr)
+//! launching the extracted, hash-verified lyrebird binary from `pt_dir` **through the system
+//! dynamic linker** — the exec target is `/system/bin/linker(64)` and the binary is its first
+//! argument (rev 3, §5.4.5/OA-4: a direct execve of a filesDir binary is SELinux-denied for
+//! targetSdk ≥ 29).
+//! `snowflake` and every other name stay refused (Phase 12b). There is no non-Tor mode.
 
+use crate::bridge_line;
 use crate::isolation::{IsolationScope, Isolations};
 use crate::onion::OnionAddress;
 use arti_client::config::{BridgeConfigBuilder, CfgPath, TorClientConfigBuilder};
 use arti_client::{BootstrapBehavior, DataStream, ErrorKind, HasKind, StreamPrefs, TorClient};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,21 +28,38 @@ use tor_rtcompat::PreferredRuntime;
 /// network; the caller gets a `tor_bootstrap_timeout` instead of an indefinite block.
 pub const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(180);
 
+/// The lyrebird executable inside [`TransportConfig::pt_dir`], extracted from the APK assets and
+/// hash-verified by the Android side (design §5.4; ADR-61 point 5).
+pub const LYREBIRD_BINARY: &str = "lyrebird";
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// Directory for Tor state and directory cache (must be app-private, no-backup).
     pub state_dir: PathBuf,
     pub cache_dir: PathBuf,
-    /// Plain bridge lines (`IP:PORT FINGERPRINT`); empty = direct Tor. Pluggable-transport lines
-    /// (`obfs4 ...`, `webtunnel ...`, `snowflake ...`) are rejected with [`TransportError::Config`]
-    /// until pluggable transports are enabled (Phase 12).
+    /// Bridge lines: plain `IP:PORT FINGERPRINT` or, with `pt_dir` set, `obfs4 …`/`webtunnel …`
+    /// lines (validated by [`bridge_line`]); empty = direct Tor. `snowflake …` and every other
+    /// shape is refused as a configuration error (Phase 12b).
     pub bridge_lines: Vec<String>,
+    /// Directory holding the extracted, hash-verified PT binaries (`<abi>/lyrebird` under the
+    /// app's filesDir/pt; design §5.2). `None` = PT unavailable: PT bridge lines are then rejected
+    /// with [`TransportError::PtBinaryMissing`].
+    pub pt_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TransportError {
     /// Invalid configuration: an unsupported or malformed bridge line.
     Config(String),
+    /// A pluggable-transport bridge line was configured but the PT binary is unavailable:
+    /// `pt_dir` is `None` or the hash-verified lyrebird does not exist there. A config error at
+    /// create time, never a bootstrap-time hang (design §5.2).
+    PtBinaryMissing,
+    /// The PT child cannot be launched because the system dynamic linker for this ABI is
+    /// absent (rev 3, §5.4.5/OA-4: the exec target is the linker itself, not the filesDir
+    /// binary — direct execve of `app_data_file` is SELinux-denied for targetSdk ≥ 29, while
+    /// mmap-exec is granted). Config class, like [`Self::PtBinaryMissing`].
+    PtLinkerMissing,
     /// The Tor client could not be set up locally: state or cache directory unusable
     /// (permissions, disk full, read-only), directory cache or keystore failed to open. Nothing
     /// to do with bridges. (A state directory locked by another live client is NOT reported: Arti
@@ -61,6 +83,12 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransportError::Config(m) => write!(f, "tor config: {m}"),
+            TransportError::PtBinaryMissing => f.write_str(
+                "tor config: pluggable-transport bridge lines need the extracted PT binary",
+            ),
+            TransportError::PtLinkerMissing => {
+                f.write_str("tor config: the system dynamic linker for the PT child is absent")
+            }
             TransportError::Setup(m) => write!(f, "tor setup: {m}"),
             TransportError::Bootstrap(m) => write!(f, "tor bootstrap: {m}"),
             TransportError::BootstrapTimeout => f.write_str("tor bootstrap timed out"),
@@ -100,7 +128,10 @@ impl Drop for AbandonGuard<'_> {
 
 impl TorTransport {
     /// Builds the Arti configuration: onion addresses allowed, vanguards-lite, bridges as
-    /// configured.
+    /// configured. Every bridge line is validated against the grammar table before arti sees it
+    /// (design §3.3: the snowflake branch of arti's parser never runs); PT lines additionally
+    /// require the extracted lyrebird binary, checked here so a missing binary is a config error,
+    /// not a bootstrap-time hang.
     pub fn build_config(
         cfg: &TransportConfig,
     ) -> Result<arti_client::TorClientConfig, TransportError> {
@@ -114,10 +145,47 @@ impl TorTransport {
         b.vanguards()
             .mode(ExplicitOrAuto::Explicit(VanguardMode::Lite));
         if !cfg.bridge_lines.is_empty() {
-            for line in &cfg.bridge_lines {
+            let set = bridge_line::validate_set(&cfg.bridge_lines).map_err(|e| {
+                TransportError::Config(format!("bridge line {}: {}", e.index, e.error))
+            })?;
+            if set.iter().any(|(_, kind)| kind.needs_pt_binary()) {
+                let (linker, binary) = pt_exec(cfg)?;
+                // The child inherits arti's process environment (S0-T4: ptmgr overlays TOR_PT_*
+                // on the inherited environment, no env_clear), so GHOST scrubs its own process
+                // environment before any PT-spawning client exists (design §5.3).
+                scrub_pt_child_env(&cfg.state_dir);
+                let mut transport = arti_client::config::pt::TransportConfigBuilder::default();
+                transport
+                    .protocols(
+                        ["obfs4", "webtunnel"]
+                            .iter()
+                            .map(|name| {
+                                name.parse::<arti_client::config::PtTransportName>()
+                                    .expect("static transport names parse")
+                            })
+                            .collect(),
+                    )
+                    // Rev 3 (§5.4.5, OA-4 resolution): on Android the exec target is the
+                    // *system linker* and the verified binary's absolute path is its first
+                    // argument — a direct execve of a filesDir binary is SELinux-denied for
+                    // targetSdk ≥ 29 (execute_no_trans on app_data_file), while mmap-exec is
+                    // granted — running the binary through the linker needs exactly the
+                    // granted permissions and no arti patch (ptmgr's config is `path` +
+                    // `arguments`). Off-device (host builds, the §12.3 loopback harness)
+                    // `pt_exec` returns the binary itself for a direct exec (S3-T1).
+                    .path(CfgPath::new_literal(linker))
+                    .arguments(binary)
+                    // ptmgr 0.46 launches managed PTs lazily on first channel use (the flag is
+                    // stored but unread there); pinning the lazy policy keeps client creation
+                    // spawn-free, so a PT process appears only when a bootstrap actually uses one.
+                    .run_on_startup(false);
+                b.bridges().transports().push(transport);
+            }
+            for (index, _) in &set {
+                let line = &cfg.bridge_lines[*index];
                 let bridge: BridgeConfigBuilder = line
                     .parse()
-                    .map_err(|e| TransportError::Config(format!("{e}")))?;
+                    .map_err(|e| TransportError::Config(format!("bridge line {index}: {e}")))?;
                 b.bridges().bridges().push(bridge);
             }
             b.bridges()
@@ -239,6 +307,120 @@ fn keystore_files(state_dir: &std::path::Path) -> Vec<PathBuf> {
     out
 }
 
+/// Resolves the PT launch shape for a config that contains PT bridge lines (rev 3, §5.4.5,
+/// OA-4 resolved): `pt_dir` must be set and `lyrebird` must exist inside it (design §5.2 — the
+/// up-front check so a missing binary is a create-time config error, not a bootstrap-time
+/// hang; the binary's hash was verified at extraction time by the Android side, PT-1/S2).
+///
+/// The launch shape is platform-split (S3-T1):
+/// - **Android**: `(system linker, [binary path])` — the linker is exec'ed and the binary is
+///   its first argument, never a direct execve of the filesDir file (SELinux
+///   `execute_no_trans` denies that for targetSdk ≥ 29; mmap-exec is granted, which is all the
+///   linker needs).
+/// - **Every other host** (the §8.4 host build and S3's loopback harness): `(binary, [])` —
+///   the verified binary is exec'ed directly; the SELinux rule has no counterpart off-device.
+fn pt_exec(cfg: &TransportConfig) -> Result<(PathBuf, Vec<String>), TransportError> {
+    let binary = pt_binary(cfg)?;
+    #[cfg(target_os = "android")]
+    {
+        let linker = pt_linker()?;
+        Ok((linker, vec![binary.to_string_lossy().into_owned()]))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok((binary, Vec::new()))
+    }
+}
+
+/// The system dynamic linker for this process's ABI (rev 3, §5.4.5). Resolved at runtime from
+/// the compiled target (`std::env::consts::ARCH` — the same selection that picked the ABI's
+/// `libghost_client_net.so` and the extracted binary): 64-bit ABIs (both shipped ones)
+/// interpret through `/system/bin/linker64`, 32-bit ABIs through `/system/bin/linker`. The
+/// linker's own existence is verified here; a device without it cannot launch any PT child
+/// and gets the typed [`TransportError::PtLinkerMissing`] (config class) at create time.
+/// Android-only: off-device `pt_exec` execs the binary directly (S3-T1), so the host build
+/// never resolves a linker (and stays unit-testable without a `/system/bin`).
+#[cfg(target_os = "android")]
+fn pt_linker() -> Result<PathBuf, TransportError> {
+    let name = match std::env::consts::ARCH {
+        "aarch64" | "x86_64" => "linker64",
+        // 32-bit ABIs are not shipped today (SHIPPED_ABIS is 64-bit only); the arm|x86 names
+        // keep the resolution total for a future ABI addition.
+        "arm" | "x86" | "x86_32" => "linker",
+        _ => return Err(TransportError::PtLinkerMissing),
+    };
+    let path = PathBuf::from("/system/bin").join(name);
+    // The host build (§8.4) has no /system/bin: config-build must stay unit-testable there, and
+    // PT never spawns off-device (ptmgr launches lazily; the suites run stand-in binaries).
+    // The existence gate is therefore Android-only; on Android it is the product path.
+    #[cfg(target_os = "android")]
+    if !path.is_file() {
+        return Err(TransportError::PtLinkerMissing);
+    }
+    Ok(path)
+}
+
+/// Resolves the extracted lyrebird binary: `pt_dir` must be set and `lyrebird` must exist
+/// inside it (design §5.2). The binary's hash was verified at extraction time by the Android
+/// side (PT-1, slice S2); here only existence is checked.
+fn pt_binary(cfg: &TransportConfig) -> Result<PathBuf, TransportError> {
+    let dir = cfg.pt_dir.as_ref().ok_or(TransportError::PtBinaryMissing)?;
+    let binary = dir.join(LYREBIRD_BINARY);
+    if binary.is_file() {
+        Ok(binary)
+    } else {
+        Err(TransportError::PtBinaryMissing)
+    }
+}
+
+/// Environment variables a PT child must not see (design §5.3): every proxy variable (a PT makes
+/// its own connections; an inherited proxy would reroute and de-anonymise them) and `HOME`
+/// (must not point at readable storage). The list is deliberately minimal (the S4 review's E-2):
+/// the temp variables are *redirected*, not removed — `TMPDIR` on every platform, and on
+/// Windows also `TEMP`/`TMP` (Go's `os.TempDir` and the MSVC runtime read `%TEMP%`, so a
+/// `TMPDIR`-only redirect is a no-op there) — all into the attempt's own app-private state dir.
+const PT_ENV_STRIP: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HOME",
+];
+
+/// Sanitises the process environment before the first PT-spawning client is created.
+///
+/// S0-T4 (evidence §5): ptmgr spawns with `Command::new(path).args(arguments).envs(TOR_PT_*)` —
+/// the child **inherits arti's full process environment**; there is no env_clear or scrub on the
+/// arti side. The scrub is therefore GHOST's own job and can only be process-wide (ptmgr exposes
+/// no per-spawn environment hook). The variables in [`PT_ENV_STRIP`] are removed, not edited;
+/// removal is idempotent, and a PT child inherits nothing of them. On Android the rest of the
+/// inherited environment is already minimal (zygote construction) and names no user; on hosts it
+/// is the full shell/session environment and the residual (e.g. `PATH`, `USERNAME`,
+/// `USERPROFILE`) names the machine or account — recorded, accepted, and probed in the S4 notes
+/// (E-2). Idempotent and cheap: runs on every PT config build.
+fn scrub_pt_child_env(state_dir: &Path) {
+    for var in PT_ENV_STRIP {
+        std::env::remove_var(var);
+    }
+    // The attempt's state dir already exists at this point (arti's storage layer created it by
+    // the time a PT could spawn); redirecting TMPDIR there keeps any child temp file inside the
+    // per-attempt dir that the caller deletes with the attempt (design §5.3). On Windows,
+    // TMPDIR alone is a no-op (E-2: Go reads %TEMP%): redirect TEMP and TMP to the same dir.
+    // The redirect target must exist: TEMP/TMP are read process-wide (every tempfile caller in
+    // the process), and a nonexistent value breaks parallel users mid-window — create it if
+    // the storage layer has not yet (a no-op on the normal path).
+    let _ = std::fs::create_dir_all(state_dir);
+    std::env::set_var("TMPDIR", state_dir);
+    if cfg!(windows) {
+        std::env::set_var("TEMP", state_dir);
+        std::env::set_var("TMP", state_dir);
+    }
+}
+
 /// The only place in the crate that opens a Tor stream (clippy `disallowed-methods` bans the Arti
 /// dial methods everywhere else): one onion address, one explicit isolation token.
 #[allow(clippy::disallowed_methods)]
@@ -269,8 +451,25 @@ mod tests {
             state_dir: dir.join("state"),
             cache_dir: dir.join("cache"),
             bridge_lines: bridges.into_iter().map(str::to_owned).collect(),
+            pt_dir: None,
         }
     }
+
+    /// A `pt_dir` containing a stand-in lyrebird file: config-build checks existence only
+    /// (arti's ptmgr launches lazily), so no real binary is needed for the unit suites.
+    fn fake_pt_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ghost-net-pt-test-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LYREBIRD_BINARY), b"not-a-real-binary").unwrap();
+        dir
+    }
+
+    const OBFS4_LINE: &str = "obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 \
+        cert=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw== \
+        iat-mode=0";
+    const WEBTUNNEL_LINE: &str =
+        "webtunnel 192.0.2.11:443 0123456789ABCDEF0123456789ABCDEF01234567 \
+        url=https://192.0.2.11/abcdefghijklmnop ver=abcdef0123";
 
     #[test]
     fn config_builds_with_and_without_plain_bridges() {
@@ -287,14 +486,149 @@ mod tests {
     }
 
     #[test]
-    fn pluggable_transport_lines_are_rejected_until_enabled() {
-        // Enabling pluggable transports must be a deliberate change (Phase 12, ADR-16).
-        let obfs4 =
-            "obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=AAAA iat-mode=0";
+    fn pluggable_transport_lines_need_the_pt_binary() {
+        // Enabling pluggable transports is this deliberate change (Phase 12, ADR-16 → ADR-61):
+        // obfs4/webtunnel lines now parse, but only with pt_dir pointing at the extracted binary.
+        let no_pt = cfg("obfs4-nopt", vec![OBFS4_LINE]);
         assert!(matches!(
-            TorTransport::build_config(&cfg("obfs4", vec![obfs4])),
-            Err(TransportError::Config(_))
+            TorTransport::build_config(&no_pt),
+            Err(TransportError::PtBinaryMissing)
         ));
+        // PT lines are rejected before arti's parser sees them when no binary is installed…
+        let mut missing = cfg("obfs4-missing", vec![OBFS4_LINE]);
+        missing.pt_dir = Some(std::env::temp_dir().join("ghost-net-pt-test-does-not-exist"));
+        assert!(matches!(
+            TorTransport::build_config(&missing),
+            Err(TransportError::PtBinaryMissing)
+        ));
+        // …and build once the (stand-in) binary exists. No PT process spawns at build or
+        // create time: ptmgr launches lazily on first channel use, so the unit suites need no
+        // real binary. (The ptmgr wiring itself is proven end to end by S3's loopback harness.)
+        let mut ok = cfg("obfs4-ok", vec![OBFS4_LINE, WEBTUNNEL_LINE]);
+        ok.pt_dir = Some(fake_pt_dir("obfs4-ok"));
+        TorTransport::build_config(&ok).expect("PT config builds with the binary");
+    }
+
+    #[test]
+    fn pt_launch_shape_is_platform_split() {
+        // Rev 3 (§5.4.5, OA-4 resolution): on Android the ptmgr exec is
+        // `path = <system linker>`, `arguments = [<absolute binary path>]` — never a direct
+        // execve of the filesDir binary (SELinux execute_no_trans denies that for
+        // targetSdk ≥ 29; the linker needs only the granted mmap-exec). On every other host
+        // the verified binary is exec'ed directly (S3-T1: the loopback harness of §12.3 runs
+        // arti on the host, where the SELinux rule has no counterpart). The existence gate
+        // lives behind cfg(android), so the host build resolves paths without checking them.
+        let mut c = cfg("pt-exec-shape", vec![OBFS4_LINE]);
+        c.pt_dir = Some(fake_pt_dir("pt-exec-shape"));
+        let (exec_target, args) = pt_exec(&c).expect("exec shape resolves with the binary");
+        assert!(
+            exec_target.is_absolute() && exec_target.ends_with(LYREBIRD_BINARY),
+            "the verified binary is always resolved: {exec_target:?}"
+        );
+        #[cfg(target_os = "android")]
+        {
+            let expected = match std::env::consts::ARCH {
+                "aarch64" | "x86_64" => "linker64",
+                _ => "linker",
+            };
+            assert!(
+                exec_target.to_string_lossy().ends_with(expected),
+                "the exec target is the {expected} linker: {exec_target:?}"
+            );
+            assert_eq!(args.len(), 1, "exactly one argument (the binary): {args:?}");
+            assert!(
+                args[0].ends_with(LYREBIRD_BINARY) && std::path::Path::new(&args[0]).is_absolute(),
+                "the argument is the binary's absolute path: {args:?}"
+            );
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            assert!(
+                exec_target.ends_with(LYREBIRD_BINARY),
+                "off-device the exec target is the binary itself: {exec_target:?}"
+            );
+            assert!(
+                args.is_empty(),
+                "direct exec takes no wrapper argument: {args:?}"
+            );
+        }
+        // Binary-first ordering: no pt_dir refuses with PtBinaryMissing before any linker
+        // resolution (a missing binary and a missing linker are both config class, but the
+        // binary check is the one a misconfigured install meets).
+        let none = cfg("pt-exec-none", vec![OBFS4_LINE]);
+        assert!(matches!(
+            pt_exec(&none),
+            Err(TransportError::PtBinaryMissing)
+        ));
+    }
+
+    #[test]
+    fn snowflake_lines_stay_refused() {
+        // The 12b deferral is pinned: a distinct config refusal, not a parse through arti.
+        let line = "snowflake 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567";
+        let mut c = cfg("snowflake", vec![line]);
+        c.pt_dir = Some(fake_pt_dir("snowflake"));
+        match TorTransport::build_config(&c) {
+            Err(TransportError::Config(m)) => {
+                assert!(m.contains("bridge line 0"), "error names the index: {m}");
+                assert!(m.contains("snowflake"), "error names the deferral: {m}");
+                assert!(!m.contains("192.0.2.10"), "the line text never leaks: {m}");
+            }
+            other => panic!("snowflake must stay refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_scrub_strips_proxies_home_and_redirects_temp_dirs() {
+        // E-2 regression (the S4 review): the scrub must remove every proxy variable and
+        // HOME, and must redirect the temp variables into the attempt's state dir — on
+        // Windows TEMP and TMP too (Go reads %TEMP%, so a TMPDIR-only redirect leaves child
+        // temp files in the user-profile temp). Values are saved and restored: the scrub is
+        // process-wide, and the parallel config-build tests below legitimately re-run it.
+        let dir = std::env::temp_dir().join("ghost-net-env-scrub-test");
+        // The dir must exist and every value this test puts in TEMP/TMP must be an existing
+        // absolute path: on Windows they are live process-wide (every tempfile::tempdir and
+        // std::env::temp_dir caller in this process reads them), and the parallel config-
+        // build tests legitimately re-run the scrub — a nonexistent or relative value would
+        // break or relocate them mid-window (observed: a relative sentinel landed their
+        // scratch dirs in the crate root).
+        std::fs::create_dir_all(&dir).unwrap();
+        let sentinel = std::env::temp_dir().join("ghost-scrub-sentinel");
+        std::fs::create_dir_all(&sentinel).unwrap();
+        let saved: Vec<(&str, Option<String>)> = PT_ENV_STRIP
+            .iter()
+            .chain(["TMPDIR", "TEMP", "TMP"].iter())
+            .map(|v| (*v, std::env::var(v).ok()))
+            .collect();
+        for var in PT_ENV_STRIP {
+            std::env::set_var(var, &sentinel);
+        }
+        #[cfg(windows)]
+        for var in ["TEMP", "TMP"] {
+            std::env::set_var(var, &sentinel);
+        }
+        scrub_pt_child_env(&dir);
+        for var in PT_ENV_STRIP {
+            assert!(std::env::var(var).is_err(), "{var} must be removed");
+        }
+        let expected = dir.to_string_lossy().into_owned();
+        assert_eq!(std::env::var("TMPDIR").as_deref(), Ok(expected.as_str()));
+        #[cfg(windows)]
+        for var in ["TEMP", "TMP"] {
+            assert_eq!(
+                std::env::var(var).as_deref(),
+                Ok(expected.as_str()),
+                "{var} must be redirected alongside TMPDIR (E-2)"
+            );
+        }
+        for (var, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+        // Hygiene only: remove the sentinel dir if no parallel window user left scratch in it.
+        let _ = std::fs::remove_dir(&sentinel);
     }
 
     #[test]
@@ -314,6 +648,7 @@ mod tests {
             state_dir: file.clone(),
             cache_dir: file,
             bridge_lines: vec![],
+            pt_dir: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -333,6 +668,7 @@ mod tests {
             state_dir: dir.path().join(n).join("state"),
             cache_dir: dir.path().join(n).join("cache"),
             bridge_lines: vec![],
+            pt_dir: None,
         };
         let t = TorTransport::create(&c("a")).unwrap();
         // A zero deadline elapses before any directory fetch can finish.
@@ -380,6 +716,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             cache_dir: dir.path().join("cache"),
             bridge_lines: vec![],
+            pt_dir: None,
         })
         .unwrap();
         let addr = OnionAddress::parse(
@@ -412,6 +749,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             cache_dir: dir.path().join("cache"),
             bridge_lines: vec![],
+            pt_dir: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -419,6 +757,57 @@ mod tests {
         // The keystore directory exists (so the check below is not vacuous) and holds no key.
         assert!(c.state_dir.join("keystore").is_dir());
         assert_eq!(keystore_files(&c.state_dir), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_pt_configured_client_leaves_no_line_or_key_on_disk() {
+        // PT-U6's in-process half (T58's storage half): a client configured with PT bridge lines
+        // must persist nothing outside the SQLCipher database once slice S2 owns the lines —
+        // today the lines live only in TransportConfig, so the assertion set is: arti's state and
+        // cache dirs contain no bridge line and no key material (the keystore invariant of
+        // Phase 6, unchanged), and no PT process spawned during create (lazy ptmgr launch).
+        let dir = tempfile::tempdir().unwrap();
+        let pt_dir = fake_pt_dir("pt-no-line-on-disk");
+        let c = TransportConfig {
+            state_dir: dir.path().join("state"),
+            cache_dir: dir.path().join("cache"),
+            bridge_lines: vec![OBFS4_LINE.to_owned()],
+            pt_dir: Some(pt_dir),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let t = TorTransport::create(&c).expect("PT client creates without spawning");
+        drop(t);
+        assert_eq!(keystore_files(&c.state_dir), Vec::<PathBuf>::new());
+        // No file under state or cache may contain the bridge line (the canary discipline of
+        // §6.4, run in-process; PT-P1 completes it with a real bootstrap and a filesDir scan).
+        for needle in ["0123456789ABCDEF01234567", "cert=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="] {
+            for root in [&c.state_dir, &c.cache_dir] {
+                let hits = files_containing(root, needle);
+                assert!(hits.is_empty(), "bridge-line material in {root:?}: {hits:?}");
+            }
+        }
+    }
+
+    /// Files under `root` whose contents contain `needle` (small test walk).
+    fn files_containing(root: &Path, needle: &str) -> Vec<PathBuf> {
+        fn walk(d: &Path, needle: &str, out: &mut Vec<PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(d) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        walk(&p, needle, out);
+                    } else if let Ok(text) = std::fs::read_to_string(&p) {
+                        if text.contains(needle) {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, needle, &mut out);
+        out
     }
 
     #[test]

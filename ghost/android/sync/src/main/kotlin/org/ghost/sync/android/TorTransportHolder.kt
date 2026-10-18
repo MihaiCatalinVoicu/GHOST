@@ -2,6 +2,7 @@ package org.ghost.sync.android
 
 import android.content.Context
 import org.ghost.network.NetworkException
+import org.ghost.network.PtInstaller
 import org.ghost.network.RelayTransport
 import org.ghost.network.TorIssuerTransport
 import org.ghost.network.TorRelayTransport
@@ -42,7 +43,18 @@ internal fun interface RelayTransportFactory {
  *  - A new transport is created only after every closed one has no native call left (bootstrap or
  *    relay call). If that takes past the deadline, the answer is UNAVAILABLE and nothing is created.
  *  - [abort] (any thread: onStopJob, a session's end, a transport fault) closes the current
- *    transport; in-flight calls end with `closed`, and the next session gets new circuits.
+ *    transport; in-flight calls end with `closed`, and the next session gets new circuits. It
+ *    also starts a new [BootstrapPlan] epoch (Phase 12 §6.5): the next session re-runs the
+ *    reduced auto mode from its first attempt.
+ *  - The reduced auto mode (Q6, design `faza12-transports.md` §6.5): when a [BootstrapPlan] is
+ *    present, each `create` claims the epoch's next attempt — direct first (when allowed), then
+ *    the configured bridge lines in order, one fresh client per attempt, each with its own
+ *    native 180 s deadline. An exhausted plan fails fast with the spent category (`tor_bootstrap`)
+ *    without creating a client, until the caller gives up; never clearnet, never a non-Tor
+ *    fallback (R12-6). PT attempts resolve `pt_dir` through [PtInstaller]: already-extracted is
+ *    a cheap check, the first PT need installs (verify + chmod 700 + atomic replace), and a
+ *    refused extraction fails closed — no `pt_dir`, so PT lines meet `bridge_config`
+ *    (`PtBinaryMissing`), never a half-trusted exec (§5.4.4).
  *  - [LeasePort] (Phase 8 design §11.6): the session participant's redemption and issuer calls run
  *    on the same transport under a lease. A lease reaches only the current transport once it has
  *    answered READY, never one closed or not yet bootstrapped; the lease check and the transport's
@@ -55,6 +67,7 @@ internal class TorTransportHolder(
     private val clock: SyncClock,
     private val threads: ThreadFactory,
     private val entitlement: EntitlementCallsFactory = EntitlementCallsFactory.TOR,
+    private val bootstrapPlan: BootstrapPlan? = null,
 ) : TransportPort, LeasePort {
 
     /** One native transport and the native calls running on it (bootstrap, relay and participant calls). */
@@ -115,6 +128,7 @@ internal class TorTransportHolder(
     }
 
     override fun abort() {
+        bootstrapPlan?.reset()
         val slot = lock.withLock {
             generation++
             current
@@ -275,20 +289,83 @@ internal class TorTransportHolder(
 
     companion object {
         private const val CLOSED = "closed"
+
+        /** The exhausted plan's category: `BootstrapSpent`'s mapping (design §6.5 point 4). */
+        private const val PLAN_SPENT = "tor_bootstrap"
         private val created = AtomicBoolean()
 
         /**
          * The process's holder. Arti's state and directory cache live under the app's no-backup
          * directory (app-private, excluded from backup and device transfer); the directories are
          * resolved when the first transport is created, on a sync thread.
+         *
+         * [bridgeLines] and [allowDirect] feed the reduced auto mode (§6.5): the providers are
+         * read when an attempt is claimed, so a line change takes effect next epoch. The defaults
+         * are today's shape — direct only — and every existing caller is unchanged.
          */
-        fun forApp(context: Context, clock: SyncClock, threads: ThreadFactory): TorTransportHolder {
+        fun forApp(
+            context: Context,
+            clock: SyncClock,
+            threads: ThreadFactory,
+            bridgeLines: () -> List<String> = { emptyList() },
+            allowDirect: () -> Boolean = { true },
+        ): TorTransportHolder {
             check(created.compareAndSet(false, true)) { "one Tor transport holder per process" }
             val app = context.applicationContext
-            return TorTransportHolder({
-                val base = File(app.noBackupFilesDir, "tor")
-                TorRelayTransport.create(File(base, "state"), File(base, "cache"))
-            }, clock, threads)
+            val plan = BootstrapPlan(bridgeLines, allowDirect)
+            val installer = try {
+                PtInstaller.forApp(app)
+            } catch (e: NetworkException) {
+                null
+            }
+            val ptLock = Any()
+            var ptResolved = false
+            var ptDir: File? = null
+
+            /**
+             * `pt_dir` for the next attempt: the extracted, hash-verified binary's directory, or
+             * null (PT unavailable). A direct attempt never installs (§5.4.4: extraction at first
+             * PT use); the first PT attempt does. A refused extraction is remembered only when PT
+             * was actually needed — a "no" on the direct path is not final.
+             */
+            fun resolvePtDir(need: Boolean): File? {
+                if (installer == null) return null
+                synchronized(ptLock) {
+                    if (!ptResolved) {
+                        ptDir = try {
+                            when {
+                                installer.installed() -> installer.ptDir()
+                                need -> installer.install()
+                                else -> null
+                            }
+                        } catch (e: NetworkException) {
+                            // Fail closed (§5.4.4): no pt_dir, so PT lines meet PtBinaryMissing
+                            // (bridge_config) — never a half-trusted exec. The explicit PT-1
+                            // entry ([PtInstaller.install] called directly) surfaces the category.
+                            null
+                        }
+                        if (ptDir != null || need) ptResolved = true
+                    }
+                }
+                return ptDir
+            }
+
+            val base = File(app.noBackupFilesDir, "tor")
+            return TorTransportHolder(
+                {
+                    val attempt = plan.claim() ?: throw NetworkException(PLAN_SPENT)
+                    val needsPt = attempt.bridgeLines.any { it.startsWith("obfs4 ") || it.startsWith("webtunnel ") }
+                    TorRelayTransport.create(
+                        File(base, "state"),
+                        File(base, "cache"),
+                        attempt.bridgeLines,
+                        resolvePtDir(needsPt),
+                    )
+                },
+                clock,
+                threads,
+                bootstrapPlan = plan,
+            )
         }
     }
 }

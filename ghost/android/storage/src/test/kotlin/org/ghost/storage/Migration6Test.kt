@@ -36,7 +36,10 @@ class Migration6Test {
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { tables += it.string(0) }
         val triggers = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'") { triggers += it.string(0) }
-        val expectedTables = Schema.expectedTables - ChannelSchema.tables - MediaSchema.tables + ChannelSchema.v1Tables + MediaSchema.v1Tables
+        // v9 (Phase 12 transports §6.3) has not run at v6: its table is part of the current schema,
+        // so the v6 expectation subtracts it exactly like the v7/v8 families.
+        val expectedTables = Schema.expectedTables - ChannelSchema.tables - MediaSchema.tables - setOf("transport_bridge") +
+            ChannelSchema.v1Tables + MediaSchema.v1Tables
         val expectedTriggers = Schema.expectedTriggers - ChannelSchema.rules - ChannelSchema.guards - ChannelSchema.rowidChecks -
             MediaSchema.rules - MediaSchema.guards
         assertEquals(emptySet<String>(), expectedTables - tables)

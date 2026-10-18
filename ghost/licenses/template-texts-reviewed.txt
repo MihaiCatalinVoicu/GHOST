@@ -57,6 +57,7 @@ tor-netdoc 0.46.0  # ships no licence file; carried with the SPDX template since
 tor-persist 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)
 tor-proto 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)
 tor-protover 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)
+tor-ptmgr 0.46.0  # new with arti's pt-client (Phase 12 S1, ADR-61): the crate ships no licence file, same as the rest of the arti family above
 tor-relay-selection 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)
 tor-rtcompat 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)
 tor-rtmock 0.46.0  # ships no licence file; carried with the SPDX template since before Phase 10, listed 2026-09-29 (§19.31)

@@ -42,6 +42,10 @@ Thumbs.db
 *.p12
 *.env
 .env*
+# exception: the Phase 12 lyrebird pin file is data, not secrets (BUILD.sh sources it)
+!ghost/third_party/lyrebird/pins.env
+!ghost/test-harness/gates/**/pins.env
+!ghost/test-harness/gates/pt-assets/*.apk
 secrets/
 **/local.secrets.*
 # Entitlement operator material (Phase 8 runbooks K1/K3): Tor onion service secret keys
@@ -63,3 +67,15 @@ build-repro/
 **/jniLibs/
 ghost/native-libs.sha256
 .claude/worktrees/
+
+# The PT fixtures' committed run log (a *.log above; G-T7's fixture, written by the
+# pt_loopback harness under GHOST_PT_RECORD_DIR — recorded, not temporary).
+!ghost/test-harness/privacy/fixtures/pt-logs/harness-run.log
+
+# Phase 12 lyrebird build area (fetched at build time; see ghost/third_party/lyrebird/BUILD.sh)
+ghost/third_party/lyrebird/toolchain/
+ghost/third_party/lyrebird/.cache/
+
+# Phase 12 S3: the loopback harness's Tor expert bundle (fetched at test time, hash-verified;
+# see ghost/third_party/tor-expert/FETCH.sh)
+ghost/third_party/tor-expert/.cache/

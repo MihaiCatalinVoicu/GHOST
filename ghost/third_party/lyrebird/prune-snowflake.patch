@@ -1,0 +1,3580 @@
+diff --git a/cmd/lyrebird/lyrebird.go b/cmd/lyrebird/lyrebird.go
+index ca05cc5..c568c42 100644
+--- a/cmd/lyrebird/lyrebird.go
++++ b/cmd/lyrebird/lyrebird.go
+@@ -39,7 +39,6 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path"
+-	"slices"
+ 	"syscall"
+ 
+ 	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+@@ -47,7 +46,6 @@ import (
+ 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/socks5"
+ 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports"
+ 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-	sf "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/client/lib"
+ 	"golang.org/x/net/proxy"
+ )
+ 
+@@ -67,7 +65,7 @@ func clientSetup() (launched bool, listeners []net.Listener) {
+ 	}
+ 	pt.ReportVersion("lyrebird", lyrebirdVersion)
+ 
+-	ptClientProxy, err := ptGetProxy(slices.Contains(ptClientInfo.MethodNames, "snowflake"))
++	ptClientProxy, err := ptGetProxy()
+ 	if err != nil {
+ 		golog.Fatal(err)
+ 	} else if ptClientProxy != nil {
+@@ -162,18 +160,6 @@ func clientHandler(f base.ClientFactory, conn net.Conn, proxyURI *url.URL) {
+ 			return
+ 		}
+ 		dialFn = dialer.Dial
+-
+-		// The snowflake library takes care of configuring the proxy, so rather than
+-		// relying on dialfn, we need to add the proxy URL to the Snowflake args
+-		if name == "snowflake" {
+-			config, ok := args.(sf.ClientConfig)
+-			if !ok {
+-				log.Errorf("Error adding snowflake proxy URL to args")
+-				return
+-			}
+-			config.CommunicationProxy = proxyURI
+-			args = config
+-		}
+ 	}
+ 	remote, err := f.Dial("tcp", socksReq.Target, dialFn, args)
+ 	if err != nil {
+diff --git a/cmd/lyrebird/lyrebird_test.go b/cmd/lyrebird/lyrebird_test.go
+deleted file mode 100644
+index dd32768..0000000
+--- a/cmd/lyrebird/lyrebird_test.go
++++ /dev/null
+@@ -1,102 +0,0 @@
+-package main
+-
+-import (
+-	"fmt"
+-	"net"
+-	"net/url"
+-	"strings"
+-	"sync"
+-	"testing"
+-
+-	"github.com/txthinking/socks5"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-	sf "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/client/lib"
+-)
+-
+-type Transport struct {
+-	name     string
+-	thandler *testing.T
+-}
+-
+-func (t *Transport) Name() string {
+-	return t.name
+-}
+-
+-type argsCallback func(interface{})
+-
+-type simpleClientFactory struct {
+-	transport base.Transport
+-	testArgs  argsCallback
+-}
+-
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	cf := &simpleClientFactory{transport: t}
+-	return cf, nil
+-}
+-
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	return nil, nil
+-}
+-
+-func (cf *simpleClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *simpleClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	config := sf.ClientConfig{}
+-	return config, nil
+-}
+-
+-func (cf *simpleClientFactory) OnEvent(f func(e base.TransportEvent)) {}
+-
+-func (cf *simpleClientFactory) Dial(network, address string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	cf.testArgs(args)
+-	return nil, fmt.Errorf("not implemented")
+-}
+-
+-func encodeArgs(args []string) string {
+-	return strings.Join(args[:], ";")
+-}
+-
+-func TestClientProxy(t *testing.T) {
+-
+-	var wg sync.WaitGroup
+-	wg.Add(1)
+-	termMon = newTermMonitor()
+-	go termMon.wait(true)
+-	args := []string{"url=https://1098762253.rsc.cdn77.org/", "fronts=app.datapacket.com,www.datapacket.com"}
+-	proxyURI, _ := url.Parse("http://example.com")
+-
+-	transport := &Transport{name: "snowflake", thandler: t}
+-	f, _ := transport.ClientFactory("")
+-	cf, ok := f.(*simpleClientFactory)
+-	if !ok {
+-		t.Error("failed to cast to simpleClientFactory")
+-	}
+-	cf.testArgs = func(args interface{}) {
+-		config, ok := args.(sf.ClientConfig)
+-		if !ok {
+-			t.Error("invalid type for args")
+-		}
+-		if config.CommunicationProxy == nil ||
+-			config.CommunicationProxy.String() != "http://example.com" {
+-			t.Error("Failed to preserve proxy URI")
+-		}
+-		wg.Done()
+-	}
+-
+-	ln, err := net.Listen("tcp", "127.0.0.1:8080")
+-	if err != nil {
+-		t.Error(err.Error())
+-	}
+-	go func() {
+-		_ = clientAcceptLoop(cf, ln, proxyURI)
+-	}()
+-
+-	client, _ := socks5.NewClient("127.0.0.1:8080", encodeArgs(args), "\x00", 0, 0)
+-	client.Dial("tcp", "127.0.0.1:9090")
+-
+-	wg.Wait()
+-}
+diff --git a/cmd/lyrebird/pt_extras.go b/cmd/lyrebird/pt_extras.go
+index 986d294..207e48d 100644
+--- a/cmd/lyrebird/pt_extras.go
++++ b/cmd/lyrebird/pt_extras.go
+@@ -36,7 +36,6 @@ import (
+ 	"strconv"
+ 
+ 	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/proxy"
+ )
+ 
+ // This file contains things that probably should be in goptlib but are not
+@@ -72,7 +71,7 @@ func ptIsClient() (bool, error) {
+ 	return false, errors.New("not launched as a managed transport")
+ }
+ 
+-func ptGetProxy(isSnowflake bool) (*url.URL, error) {
++func ptGetProxy() (*url.URL, error) {
+ 	specString := os.Getenv("TOR_PT_PROXY")
+ 	if specString == "" {
+ 		return nil, nil
+@@ -96,22 +95,6 @@ func ptGetProxy(isSnowflake bool) (*url.URL, error) {
+ 		return nil, ptProxyError("proxy URI has a fragment defined")
+ 	}
+ 
+-	// Snowflake has extra restrictions on which proxy types are supported.
+-	// Perform the necessary checks if snowflake is one of the configured
+-	// transports.
+-	if isSnowflake {
+-		if err := proxy.CheckProxyProtocolSupport(spec); err != nil {
+-			return nil, pt.ProxyError("proxy is not supported:" + err.Error())
+-		} else {
+-			client := proxy.NewSocks5UDPClient(spec)
+-			conn, err := client.ListenPacket("udp", nil)
+-			if err != nil {
+-				return nil, pt.ProxyError("proxy test failure:" + err.Error())
+-			}
+-			conn.Close()
+-		}
+-	}
+-
+ 	switch spec.Scheme {
+ 	case "http":
+ 		// The most forgiving of proxies.
+diff --git a/go.mod b/go.mod
+index 097a123..da0e438 100644
+--- a/go.mod
++++ b/go.mod
+@@ -4,10 +4,8 @@ require (
+ 	filippo.io/edwards25519 v1.2.0
+ 	github.com/dchest/siphash v1.2.3
+ 	github.com/refraction-networking/utls v1.8.2
+-	github.com/txthinking/socks5 v0.0.0-20251011041537-5c31f201a10e
+ 	gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266
+ 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
+-	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.14.1
+ 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.7
+ 	golang.org/x/crypto v0.57.0
+ 	golang.org/x/net v0.59.0
+@@ -15,59 +13,8 @@ require (
+ 
+ require (
+ 	github.com/andybalholm/brotli v1.0.6 // indirect
+-	github.com/aws/aws-sdk-go-v2 v1.40.0 // indirect
+-	github.com/aws/aws-sdk-go-v2/config v1.32.1 // indirect
+-	github.com/aws/aws-sdk-go-v2/credentials v1.19.1 // indirect
+-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.14 // indirect
+-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.14 // indirect
+-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.14 // indirect
+-	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.3 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.14 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/signin v1.0.1 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.16 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/sso v1.30.4 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.9 // indirect
+-	github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 // indirect
+-	github.com/aws/smithy-go v1.23.2 // indirect
+-	github.com/golang/mock v1.6.0 // indirect
+-	github.com/google/uuid v1.6.0 // indirect
+ 	github.com/klauspost/compress v1.18.0 // indirect
+-	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
+-	github.com/klauspost/reedsolomon v1.12.0 // indirect
+-	github.com/miekg/dns v1.1.65 // indirect
+-	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
+-	github.com/pion/datachannel v1.6.0 // indirect
+-	github.com/pion/dtls/v3 v3.1.2 // indirect
+-	github.com/pion/ice/v4 v4.2.0 // indirect
+-	github.com/pion/interceptor v0.1.43 // indirect
+-	github.com/pion/logging v0.2.4 // indirect
+-	github.com/pion/mdns/v2 v2.1.0 // indirect
+-	github.com/pion/randutil v0.1.0 // indirect
+-	github.com/pion/rtcp v1.2.16 // indirect
+-	github.com/pion/rtp v1.10.1 // indirect
+-	github.com/pion/sctp v1.9.2 // indirect
+-	github.com/pion/sdp/v3 v3.0.17 // indirect
+-	github.com/pion/srtp/v3 v3.0.10 // indirect
+-	github.com/pion/stun/v3 v3.1.1 // indirect
+-	github.com/pion/transport/v4 v4.0.1 // indirect
+-	github.com/pion/turn/v4 v4.1.4 // indirect
+-	github.com/pion/webrtc/v4 v4.2.3-securityfix // indirect
+-	github.com/pkg/errors v0.9.1 // indirect
+-	github.com/realclientip/realclientip-go v1.0.0 // indirect
+-	github.com/theodorsm/covert-dtls v1.5.0 // indirect
+-	github.com/tjfoc/gmsm v1.4.1 // indirect
+-	github.com/txthinking/runnergroup v0.0.0-20210608031112-152c7c4432bf // indirect
+-	github.com/wlynxg/anet v0.0.5 // indirect
+-	github.com/xtaci/kcp-go/v5 v5.6.24 // indirect
+-	github.com/xtaci/smux v1.5.56 // indirect
+-	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315 // indirect
+-	golang.org/x/mod v0.41.0 // indirect
+-	golang.org/x/sync v0.23.0 // indirect
+ 	golang.org/x/sys v0.48.0 // indirect
+-	golang.org/x/text v0.42.0 // indirect
+-	golang.org/x/time v0.10.0 // indirect
+-	golang.org/x/tools v0.49.0 // indirect
+ )
+ 
+ go 1.26.0
+diff --git a/go.sum b/go.sum
+index ce9aeb2..136bd90 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,216 +1,43 @@
+-cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
+ filippo.io/edwards25519 v1.0.0/go.mod h1:N1IkdkCkiLB6tki+MYJoSx2JTY9NUlxZE7eHn5EwJns=
+ filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
+ filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+-github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
+ github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
+ github.com/andybalholm/brotli v1.0.6/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
+-github.com/aws/aws-sdk-go-v2 v1.40.0 h1:/WMUA0kjhZExjOQN2z3oLALDREea1A7TobfuiBrKlwc=
+-github.com/aws/aws-sdk-go-v2 v1.40.0/go.mod h1:c9pm7VwuW0UPxAEYGyTmyurVcNrbF6Rt/wixFqDhcjE=
+-github.com/aws/aws-sdk-go-v2/config v1.32.1 h1:iODUDLgk3q8/flEC7ymhmxjfoAnBDwEEYEVyKZ9mzjU=
+-github.com/aws/aws-sdk-go-v2/config v1.32.1/go.mod h1:xoAgo17AGrPpJBSLg81W+ikM0cpOZG8ad04T2r+d5P0=
+-github.com/aws/aws-sdk-go-v2/credentials v1.19.1 h1:JeW+EwmtTE0yXFK8SmklrFh/cGTTXsQJumgMZNlbxfM=
+-github.com/aws/aws-sdk-go-v2/credentials v1.19.1/go.mod h1:BOoXiStwTF+fT2XufhO0Efssbi1CNIO/ZXpZu87N0pw=
+-github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.14 h1:WZVR5DbDgxzA0BJeudId89Kmgy6DIU4ORpxwsVHz0qA=
+-github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.14/go.mod h1:Dadl9QO0kHgbrH1GRqGiZdYtW5w+IXXaBNCHTIaheM4=
+-github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.14 h1:PZHqQACxYb8mYgms4RZbhZG0a7dPW06xOjmaH0EJC/I=
+-github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.14/go.mod h1:VymhrMJUWs69D8u0/lZ7jSB6WgaG/NqHi3gX0aYf6U0=
+-github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.14 h1:bOS19y6zlJwagBfHxs0ESzr1XCOU2KXJCWcq3E2vfjY=
+-github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.14/go.mod h1:1ipeGBMAxZ0xcTm6y6paC2C/J6f6OO7LBODV9afuAyM=
+-github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4 h1:WKuaxf++XKWlHWu9ECbMlha8WOEGm0OUEZqm4K/Gcfk=
+-github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4/go.mod h1:ZWy7j6v1vWGmPReu0iSGvRiise4YI5SkR3OHKTZ6Wuc=
+-github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.3 h1:x2Ibm/Af8Fi+BH+Hsn9TXGdT+hKbDd5XOTZxTMxDk7o=
+-github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.3/go.mod h1:IW1jwyrQgMdhisceG8fQLmQIydcT/jWY21rFhzgaKwo=
+-github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.14 h1:FIouAnCE46kyYqyhs0XEBDFFSREtdnr8HQuLPQPLCrY=
+-github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.14/go.mod h1:UTwDc5COa5+guonQU8qBikJo1ZJ4ln2r1MkF7Dqag1E=
+-github.com/aws/aws-sdk-go-v2/service/signin v1.0.1 h1:BDgIUYGEo5TkayOWv/oBLPphWwNm/A91AebUjAu5L5g=
+-github.com/aws/aws-sdk-go-v2/service/signin v1.0.1/go.mod h1:iS6EPmNeqCsGo+xQmXv0jIMjyYtQfnwg36zl2FwEouk=
+-github.com/aws/aws-sdk-go-v2/service/sqs v1.42.16 h1:WQuccuCHV4wvJ0+pGeA38c78oKXBqz7ccN/u8CM/nhE=
+-github.com/aws/aws-sdk-go-v2/service/sqs v1.42.16/go.mod h1:ZxqweFQ2w6NNznWMUvWV9AvkAfM6J8F/MC250Mb4n1I=
+-github.com/aws/aws-sdk-go-v2/service/sso v1.30.4 h1:U//SlnkE1wOQiIImxzdY5PXat4Wq+8rlfVEw4Y7J8as=
+-github.com/aws/aws-sdk-go-v2/service/sso v1.30.4/go.mod h1:av+ArJpoYf3pgyrj6tcehSFW+y9/QvAY8kMooR9bZCw=
+-github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.9 h1:LU8S9W/mPDAU9q0FjCLi0TrCheLMGwzbRpvUMwYspcA=
+-github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.9/go.mod h1:/j67Z5XBVDx8nZVp9EuFM9/BS5dvBznbqILGuu73hug=
+-github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 h1:GdGmKtG+/Krag7VfyOXV17xjTCz0i9NT+JnqLTOI5nA=
+-github.com/aws/aws-sdk-go-v2/service/sts v1.41.1/go.mod h1:6TxbXoDSgBQ225Qd8Q+MbxUxUh6TtNKwbRt/EPS9xso=
+-github.com/aws/smithy-go v1.23.2 h1:Crv0eatJUQhaManss33hS5r40CG3ZFH+21XSkqMrIUM=
+-github.com/aws/smithy-go v1.23.2/go.mod h1:LEj2LM3rBRQJxPZTB4KuzZkaZYnZPnvgIhb4pu07mx0=
+-github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
+-github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
+-github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
+-github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+-github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/dchest/siphash v1.2.3 h1:QXwFc8cFOR2dSa/gE6o/HokBMWtLUaNDVd+22aKHeEA=
+ github.com/dchest/siphash v1.2.3/go.mod h1:0NvQU092bT0ipiFN++/rXm69QG9tVxLAlQHIXMPAkHc=
+-github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
+-github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1mIlRU8Am5FuJP05cCM98=
+-github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
+-github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
+-github.com/golang/mock v1.1.1/go.mod h1:oTYuIxOrZwtPieC+H1uAHpcLFnEyAGVDL/k47Jfbm0A=
+-github.com/golang/mock v1.6.0 h1:ErTB+efbowRARo13NNdxyJji2egdxLGQhRaY+DUumQc=
+-github.com/golang/mock v1.6.0/go.mod h1:p6yTPP+5HYm5mzsMV8JkE6ZKdX+/wYM6Hr+LicevLPs=
+-github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
+-github.com/golang/protobuf v1.3.2/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
+-github.com/golang/protobuf v1.3.3/go.mod h1:vzj43D7+SQXF/4pzW/hwtAqwc6iTitCiVSaWz5lYuqw=
+-github.com/golang/protobuf v1.4.0-rc.1/go.mod h1:ceaxUfeHdC40wWswd/P6IGgMaK3YpKi5j83Wpe3EHw8=
+-github.com/golang/protobuf v1.4.0-rc.1.0.20200221234624-67d41d38c208/go.mod h1:xKAWHe0F5eneWXFV3EuXVDTCmh+JuBKY0li0aMyXATA=
+-github.com/golang/protobuf v1.4.0-rc.2/go.mod h1:LlEzMj4AhA7rCAGe4KMBDvJI+AwstrUpVNzEA03Pprs=
+-github.com/golang/protobuf v1.4.0-rc.4.0.20200313231945-b860323f09d0/go.mod h1:WU3c8KckQ9AFe+yFwt9sWVRKCVIyN9cPHBJSNnbL67w=
+-github.com/golang/protobuf v1.4.0/go.mod h1:jodUvKwWbYaEsadDk5Fwe5c77LiNKVO9IDvqG2KuDX0=
+-github.com/golang/protobuf v1.4.2/go.mod h1:oDoupMAO8OvCJWAcko0GGGIgR6R6ocIYbsSw735rRwI=
+-github.com/google/go-cmp v0.2.0/go.mod h1:oXzfMopK8JAjlY9xF4vHSVASa0yLyX7SntLO5aqRK0M=
+-github.com/google/go-cmp v0.3.0/go.mod h1:8QqcDgzrUqlUb/G2PQTWiueGozuR1884gddMywk6iLU=
+-github.com/google/go-cmp v0.3.1/go.mod h1:8QqcDgzrUqlUb/G2PQTWiueGozuR1884gddMywk6iLU=
+-github.com/google/go-cmp v0.4.0/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
+-github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
+-github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+-github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+-github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+-github.com/gopherjs/gopherjs v1.17.2 h1:fQnZVsXk8uxXIStYb0N4bGk7jeyTalG/wsZjQ25dO0g=
+-github.com/gopherjs/gopherjs v1.17.2/go.mod h1:pRRIvn/QzFLrKfvEz3qUuEhtE/zLCWfreZ6J5gM2i+k=
+-github.com/jtolds/gls v4.20.0+incompatible h1:xdiiI2gbIgH/gLH7ADydsJ1uDOEzR8yvV7C0MuV77Wo=
+-github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
+ github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
+ github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
+-github.com/klauspost/cpuid/v2 v2.2.6 h1:ndNyv040zDGIDh8thGkXYjnFtiN02M1PVVF+JE/48xc=
+-github.com/klauspost/cpuid/v2 v2.2.6/go.mod h1:Lcz8mBdAVJIBVzewtcLocK12l3Y+JytZYpaMropDUws=
+-github.com/klauspost/reedsolomon v1.12.0 h1:I5FEp3xSwVCcEh3F5A7dofEfhXdF/bWhQWPH+XwBFno=
+-github.com/klauspost/reedsolomon v1.12.0/go.mod h1:EPLZJeh4l27pUGC3aXOjheaoh1I9yut7xTURiW3LQ9Y=
+-github.com/miekg/dns v1.1.51/go.mod h1:2Z9d3CP1LQWihRZUf29mQ19yDThaI4DAYzte2CaQW5c=
+-github.com/miekg/dns v1.1.65 h1:0+tIPHzUW0GCge7IiK3guGP57VAw7hoPDfApjkMD1Fc=
+-github.com/miekg/dns v1.1.65/go.mod h1:Dzw9769uoKVaLuODMDZz9M6ynFU6Em65csPuoi8G0ck=
+-github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaRUnok+kx1WdO15EQc=
+-github.com/patrickmn/go-cache v2.1.0+incompatible/go.mod h1:3Qf8kWWT7OJRJbdiICTKqZju1ZixQ/KpMGzzAfe6+WQ=
+-github.com/pion/datachannel v1.6.0 h1:XecBlj+cvsxhAMZWFfFcPyUaDZtd7IJvrXqlXD/53i0=
+-github.com/pion/datachannel v1.6.0/go.mod h1:ur+wzYF8mWdC+Mkis5Thosk+u/VOL287apDNEbFpsIk=
+-github.com/pion/dtls/v3 v3.1.2 h1:gqEdOUXLtCGW+afsBLO0LtDD8GnuBBjEy6HRtyofZTc=
+-github.com/pion/dtls/v3 v3.1.2/go.mod h1:Hw/igcX4pdY69z1Hgv5x7wJFrUkdgHwAn/Q/uo7YHRo=
+-github.com/pion/ice/v4 v4.2.0 h1:jJC8S+CvXCCvIQUgx+oNZnoUpt6zwc34FhjWwCU4nlw=
+-github.com/pion/ice/v4 v4.2.0/go.mod h1:EgjBGxDgmd8xB0OkYEVFlzQuEI7kWSCFu+mULqaisy4=
+-github.com/pion/interceptor v0.1.43 h1:6hmRfnmjogSs300xfkR0JxYFZ9k5blTEvCD7wxEDuNQ=
+-github.com/pion/interceptor v0.1.43/go.mod h1:BSiC1qKIJt1XVr3l3xQ2GEmCFStk9tx8fwtCZxxgR7M=
+-github.com/pion/logging v0.2.4 h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=
+-github.com/pion/logging v0.2.4/go.mod h1:DffhXTKYdNZU+KtJ5pyQDjvOAh/GsNSyv1lbkFbe3so=
+-github.com/pion/mdns/v2 v2.1.0 h1:3IJ9+Xio6tWYjhN6WwuY142P/1jA0D5ERaIqawg/fOY=
+-github.com/pion/mdns/v2 v2.1.0/go.mod h1:pcez23GdynwcfRU1977qKU0mDxSeucttSHbCSfFOd9A=
+-github.com/pion/randutil v0.1.0 h1:CFG1UdESneORglEsnimhUjf33Rwjubwj6xfiOXBa3mA=
+-github.com/pion/randutil v0.1.0/go.mod h1:XcJrSMMbbMRhASFVOlj/5hQial/Y8oH/HVo7TBZq+j8=
+-github.com/pion/rtcp v1.2.16 h1:fk1B1dNW4hsI78XUCljZJlC4kZOPk67mNRuQ0fcEkSo=
+-github.com/pion/rtcp v1.2.16/go.mod h1:/as7VKfYbs5NIb4h6muQ35kQF/J0ZVNz2Z3xKoCBYOo=
+-github.com/pion/rtp v1.10.1 h1:xP1prZcCTUuhO2c83XtxyOHJteISg6o8iPsE2acaMtA=
+-github.com/pion/rtp v1.10.1/go.mod h1:rF5nS1GqbR7H/TCpKwylzeq6yDM+MM6k+On5EgeThEM=
+-github.com/pion/sctp v1.9.2 h1:HxsOzEV9pWoeggv7T5kewVkstFNcGvhMPx0GvUOUQXo=
+-github.com/pion/sctp v1.9.2/go.mod h1:OTOlsQ5EDQ6mQ0z4MUGXt2CgQmKyafBEXhUVqLRB6G8=
+-github.com/pion/sdp/v3 v3.0.17 h1:9SfLAW/fF1XC8yRqQ3iWGzxkySxup4k4V7yN8Fs8nuo=
+-github.com/pion/sdp/v3 v3.0.17/go.mod h1:9tyKzznud3qiweZcD86kS0ff1pGYB3VX+Bcsmkx6IXo=
+-github.com/pion/srtp/v3 v3.0.10 h1:tFirkpBb3XccP5VEXLi50GqXhv5SKPxqrdlhDCJlZrQ=
+-github.com/pion/srtp/v3 v3.0.10/go.mod h1:3mOTIB0cq9qlbn59V4ozvv9ClW/BSEbRp4cY0VtaR7M=
+-github.com/pion/stun/v3 v3.1.1 h1:CkQxveJ4xGQjulGSROXbXq94TAWu8gIX2dT+ePhUkqw=
+-github.com/pion/stun/v3 v3.1.1/go.mod h1:qC1DfmcCTQjl9PBaMa5wSn3x9IPmKxSdcCsxBcDBndM=
+-github.com/pion/transport/v3 v3.1.1 h1:Tr684+fnnKlhPceU+ICdrw6KKkTms+5qHMgw6bIkYOM=
+-github.com/pion/transport/v3 v3.1.1/go.mod h1:+c2eewC5WJQHiAA46fkMMzoYZSuGzA/7E2FPrOYHctQ=
+-github.com/pion/transport/v4 v4.0.1 h1:sdROELU6BZ63Ab7FrOLn13M6YdJLY20wldXW2Cu2k8o=
+-github.com/pion/transport/v4 v4.0.1/go.mod h1:nEuEA4AD5lPdcIegQDpVLgNoDGreqM/YqmEx3ovP4jM=
+-github.com/pion/turn/v4 v4.1.4 h1:EU11yMXKIsK43FhcUnjLlrhE4nboHZq+TXBIi3QpcxQ=
+-github.com/pion/turn/v4 v4.1.4/go.mod h1:ES1DXVFKnOhuDkqn9hn5VJlSWmZPaRJLyBXoOeO/BmQ=
+-github.com/pion/webrtc/v4 v4.2.3-securityfix h1:ia9OgJ6XEHhxn8kKt1gv2RYJFwtaNLesSMh22kZwTGY=
+-github.com/pion/webrtc/v4 v4.2.3-securityfix/go.mod h1:ZAyy7qhLJSwdblPrFVpuW/gHBkdf3jeymq6W2t8+UUs=
+-github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
+-github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+-github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+-github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+-github.com/prometheus/client_model v0.0.0-20190812154241-14fe0d1b01d4/go.mod h1:xMI15A0UPsDsEKsMN9yxemIoYk6Tm2C1GtYGdfGttqA=
+-github.com/realclientip/realclientip-go v1.0.0 h1:+yPxeC0mEaJzq1BfCt2h4BxlyrvIIBzR6suDc3BEF1U=
+-github.com/realclientip/realclientip-go v1.0.0/go.mod h1:CXnUdVwFRcXFJIRb/dTYqbT7ud48+Pi2pFm80bxDmcI=
+ github.com/refraction-networking/utls v1.8.2 h1:j4Q1gJj0xngdeH+Ox/qND11aEfhpgoEvV+S9iJ2IdQo=
+ github.com/refraction-networking/utls v1.8.2/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
+-github.com/smarty/assertions v1.15.0 h1:cR//PqUBUiQRakZWqBiFFQ9wb8emQGDb0HeGdqGByCY=
+-github.com/smarty/assertions v1.15.0/go.mod h1:yABtdzeQs6l1brC900WlRNwj6ZR55d7B+E8C6HtKdec=
+-github.com/smartystreets/goconvey v1.8.1 h1:qGjIddxOk4grTu9JPOU31tVfq3cNdBlNa5sSznIX1xY=
+-github.com/smartystreets/goconvey v1.8.1/go.mod h1:+/u4qLyY6x1jReYOp7GOM2FSt8aP9CzCZL03bI28W60=
+-github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
+-github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+-github.com/theodorsm/covert-dtls v1.5.0 h1:kGUnCuGB65kLrga0e1mYv8t2RA4vfRMN0iYlakY0z/c=
+-github.com/theodorsm/covert-dtls v1.5.0/go.mod h1:MTb9IO4aqSxrcrh569UGO4PlC1Yel37M440z+gcm13E=
+-github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
+-github.com/tjfoc/gmsm v1.4.1/go.mod h1:j4INPkHWMrhJb38G+J6W4Tw0AbuN8Thu3PbdVYhVcTE=
+-github.com/txthinking/runnergroup v0.0.0-20210608031112-152c7c4432bf h1:7PflaKRtU4np/epFxRXlFhlzLXZzKFrH5/I4so5Ove0=
+-github.com/txthinking/runnergroup v0.0.0-20210608031112-152c7c4432bf/go.mod h1:CLUSJbazqETbaR+i0YAhXBICV9TrKH93pziccMhmhpM=
+-github.com/txthinking/socks5 v0.0.0-20251011041537-5c31f201a10e h1:xA7GVlbz6teIF4FdvuqwbX6C4tiqNk2PH7FRPIDerao=
+-github.com/txthinking/socks5 v0.0.0-20251011041537-5c31f201a10e/go.mod h1:ntmMHL/xPq1WLeKiw8p/eRATaae6PiVRNipHFJxI8PM=
+-github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
+-github.com/wlynxg/anet v0.0.5/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=
+-github.com/xtaci/kcp-go/v5 v5.6.24 h1:0tZL4NfpoESDrhaScrZfVDnYZ/3LhyVAbN/dQ2b4hbI=
+-github.com/xtaci/kcp-go/v5 v5.6.24/go.mod h1:7cAxNX/qFGeRUmUSnnDMoOg53FbXDK9IWBXAUfh+aBA=
+-github.com/xtaci/lossyconn v0.0.0-20190602105132-8df528c0c9ae h1:J0GxkO96kL4WF+AIT3M4mfUVinOCPgf2uUWYFUzN0sM=
+-github.com/xtaci/lossyconn v0.0.0-20190602105132-8df528c0c9ae/go.mod h1:gXtu8J62kEgmN++bm9BVICuT/e8yiLI2KFobd/TRFsE=
+-github.com/xtaci/smux v1.5.56 h1:Eyv/dUULmkGZZNucLUisnkzJ/4UQ5YZTschhugFBM0U=
+-github.com/xtaci/smux v1.5.56/go.mod h1:IGQ9QYrBphmb/4aTnLEcJby0TNr3NV+OslIOMrX825Q=
+-github.com/yuin/goldmark v1.3.5/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
+ github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+ gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266 h1:IvjshROr8z24+UCiOe/90cUWt3QDr8Rt+VkUjZsn+i0=
+ gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266/go.mod h1:K/3SQWdJL6udzwInHk1gaYaECYxMp9dDayniPq6gCSo=
+ gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0 h1:KD9m+mRBwtEdqe94Sv72uiedMWeRdIr4sXbrRyzRiIo=
+ gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0/go.mod h1:70bhd4JKW/+1HLfm+TMrgHJsUHG4coelMWwiVEJ2gAg=
+-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315 h1:9lmXguW9aH5sdZR5h5jOrdInCt0tQ9NRa7+wFD4MQBk=
+-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315/go.mod h1:PK7EvweKeypdelDyh1m7N922aldSeCAG8n0lJ7RAXWQ=
+-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.14.1 h1:YsvVB5dmf3T4NHjLbB8FlUVmFLzTPm+j21O9n3FdWmo=
+-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.14.1/go.mod h1:hly8E4WHyMmpUhN0j9YcJP2ySpnAm2wNVZ4uhNPlgpk=
+ gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.7 h1:c7PutWnnXJytefsiENNo+iq2qAbE2RfUbggGtnnmuAA=
+ gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.7/go.mod h1:GlxU1bY/uoCOkbMJpmsiynfU20eL36CGitONPa3Z2gs=
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+-golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
+-golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+-golang.org/x/crypto v0.0.0-20201012173705-84dcc777aaee/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+ golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+ golang.org/x/crypto v0.13.0/go.mod h1:y6Z2r+Rw4iayiXXAIxJIDAJ1zMW4yaTpebo8fPOliYc=
+ golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
+ golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
+-golang.org/x/exp v0.0.0-20190121172915-509febef88a4/go.mod h1:CJ0aWSM057203Lf6IL+f9T1iT9GByDxfZKAQTCR3kQA=
+-golang.org/x/lint v0.0.0-20181026193005-c67002cb31c3/go.mod h1:UVdnD1Gm6xHRNCYTkRU2/jEulfH38KcIWyp/GAMgvoE=
+-golang.org/x/lint v0.0.0-20190227174305-5b3e6a55c961/go.mod h1:wehouNa3lNwaWXcvxsM5YxQ5yQlVC4a0KAMCusXpPoU=
+-golang.org/x/lint v0.0.0-20190313153728-d0100b6bd8b3/go.mod h1:6SW0HCj/g11FgYtHlgUYUwCkIfeOF89ocIRzGO/8vkc=
+-golang.org/x/mod v0.4.2/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
+ golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+-golang.org/x/mod v0.7.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
+ golang.org/x/mod v0.8.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
+-golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
+-golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
+-golang.org/x/net v0.0.0-20180724234803-3673e40ba225/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
+-golang.org/x/net v0.0.0-20180826012351-8a410e7b638d/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
+-golang.org/x/net v0.0.0-20190213061140-3a22650c66bd/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
+-golang.org/x/net v0.0.0-20190311183353-d8887717615a/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+-golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+ golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+-golang.org/x/net v0.0.0-20201010224723-4f7140c49acb/go.mod h1:sp8m0HH+o8qH0wwXwYZr8TS3Oi6o0r6Gce1SSxlDquU=
+ golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+-golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4/go.mod h1:p54w0d4576C0XHj96bSt6lcn1PtDYWL6XObtHCRCNQM=
+ golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+-golang.org/x/net v0.2.0/go.mod h1:KqCZLdyyvdV855qA2rE3GC2aiw5xGR5TEjj8smXukLY=
+ golang.org/x/net v0.6.0/go.mod h1:2Tu9+aMcznHK/AK1HMvgo6xiTLG5rD5rZLDS+rp2Bjs=
+ golang.org/x/net v0.10.0/go.mod h1:0qNGK6F8kojg2nk9dLZ2mShWaEBan6FAoqfSigmmuDg=
+ golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
+ golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
+-golang.org/x/oauth2 v0.0.0-20180821212333-d2e6202438be/go.mod h1:N/0e6XlmueqKjAGxoOufVs8QHGRruUQn6yWY3a++T0U=
+-golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.0.0-20181108010431-42b317875d0f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.0.0-20210220032951-036812b2e83c/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
+-golang.org/x/sync v0.23.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
+-golang.org/x/sys v0.0.0-20180830151530-49385e6e1522/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+-golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20210330210617-4fbd30eecc44/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20210510120138-977fb7262007/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.2.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.5.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.8.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.12.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+@@ -218,52 +45,19 @@ golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
+ golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+ golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+ golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+-golang.org/x/term v0.2.0/go.mod h1:TVmDHMZPmdnySmBfhjOoOdhjzdE1h4u1VwSiw2l1Nuc=
+ golang.org/x/term v0.5.0/go.mod h1:jMB1sMXY+tzblOD4FWmEbocvup2/aLOaQEp7JmGp78k=
+ golang.org/x/term v0.8.0/go.mod h1:xPskH00ivmX89bAKVGSKKtLOWNx2+17Eiy94tnKShWo=
+ golang.org/x/term v0.12.0/go.mod h1:owVbMEjm3cBLCHdkQu9b1opXd4ETQWc3BhuQGKgXgvU=
++golang.org/x/term v0.46.0/go.mod h1:+K02xbkittuwc0Am4abfA3Fc+XRGXkvBXNO88NCXPoc=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+ golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+-golang.org/x/text v0.4.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
+ golang.org/x/text v0.7.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
+ golang.org/x/text v0.9.0/go.mod h1:e1OnstbJyHTd6l/uOt8jFFHp6TRDWZR/bV3emEE/zU8=
+ golang.org/x/text v0.13.0/go.mod h1:TvPlkZtksWOMsz7fbANvkp4WM8x/WCo/om8BMLbz+aE=
+-golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
+ golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
+-golang.org/x/time v0.10.0 h1:3usCWA8tQn0L8+hFJQNgzpWbd89begxN66o1Ojdn5L4=
+-golang.org/x/time v0.10.0/go.mod h1:3BpzKBy/shNhVucY/MWOyx10tF3SFh9QdLuxbVysPQM=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+-golang.org/x/tools v0.0.0-20190114222345-bf090417da8b/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+-golang.org/x/tools v0.0.0-20190226205152-f727befe758c/go.mod h1:9Yl7xja0Znq3iFh3HoIrodX9oNMXvdceNzlUR8zjMvY=
+-golang.org/x/tools v0.0.0-20190311212946-11955173bddd/go.mod h1:LCzVGOaR6xXOjkQ3onu1FJEFr0SW1gC7cKk1uF8kGRs=
+-golang.org/x/tools v0.0.0-20190524140312-2c0ae7006135/go.mod h1:RgjU9mgBXZiqYHBnxXauZ1Gv1EHHAz9KjViQ78xBX0Q=
+ golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+-golang.org/x/tools v0.1.1/go.mod h1:o0xws9oXOQQZyjljx8fwUC0k7L1pTE6eaCbjGeHmOkk=
+ golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+-golang.org/x/tools v0.3.0/go.mod h1:/rWhSS2+zyEVwoJf8YAX6L2f0ntZ7Kn/mGgAWcipA5k=
+ golang.org/x/tools v0.6.0/go.mod h1:Xwgl3UAJ/d3gWutnCtw505GrjyAbvKui8lOU390QaIU=
+-golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
+-golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
+ golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+-golang.org/x/xerrors v0.0.0-20191011141410-1b5146add898/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+-golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+-golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+-google.golang.org/appengine v1.1.0/go.mod h1:EbEs0AVv82hx2wNQdGPgUI5lhzA/G0D9YwlJXL52JkM=
+-google.golang.org/appengine v1.4.0/go.mod h1:xpcJRLb0r/rnEns0DIKYYv+WjYCduHsrkT7/EB5XEv4=
+-google.golang.org/genproto v0.0.0-20180817151627-c66870c02cf8/go.mod h1:JiN7NxoALGmiZfu7CAH4rXhgtRTLTxftemlI0sWmxmc=
+-google.golang.org/genproto v0.0.0-20190819201941-24fa4b261c55/go.mod h1:DMBHOl98Agz4BDEuKkezgsaosCRResVns1a3J2ZsMNc=
+-google.golang.org/grpc v1.19.0/go.mod h1:mqu4LbDTu4XGKhr4mRzUsmM4RtVoemTSY81AxZiDr8c=
+-google.golang.org/grpc v1.23.0/go.mod h1:Y5yQAOtifL1yxbo5wqy6BxZv8vAUGQwXBOALyacEbxg=
+-google.golang.org/grpc v1.25.1/go.mod h1:c3i+UQWmh7LiEpx4sFZnkU36qjEYZ0imhYfXVyQciAY=
+-google.golang.org/grpc v1.31.0/go.mod h1:N36X2cJ7JwdamYAgDz+s+rVMFjt3numwzf/HckM8pak=
+-google.golang.org/protobuf v0.0.0-20200109180630-ec00e32a8dfd/go.mod h1:DFci5gLYBciE7Vtevhsrf46CRTquxDuWsQurQQe4oz8=
+-google.golang.org/protobuf v0.0.0-20200221191635-4d8936d0db64/go.mod h1:kwYJMbMJ01Woi6D6+Kah6886xMZcty6N08ah7+eCXa0=
+-google.golang.org/protobuf v0.0.0-20200228230310-ab0ca4ff8a60/go.mod h1:cfTl7dwQJ+fmap5saPgwCLgHXTUD7jkjRqWcaiX5VyM=
+-google.golang.org/protobuf v1.20.1-0.20200309200217-e05f789c0967/go.mod h1:A+miEFZTKqfCUM6K7xSMQL9OKL/b6hQv+e19PK+JZNE=
+-google.golang.org/protobuf v1.21.0/go.mod h1:47Nbq4nVaFHyn7ilMalzfO3qCViNmqZ2kzikPIcrTAo=
+-google.golang.org/protobuf v1.23.0/go.mod h1:EGpADcykh3NcUnDUJcl1+ZksZNG86OlYog2l/sGQquU=
+-gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+-gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+-honnef.co/go/tools v0.0.0-20190102054323-c2f93a96b099/go.mod h1:rf3lG4BRIbNafJWhAfAdb/ePZxsR/4RtNHQocxwk9r4=
+-honnef.co/go/tools v0.0.0-20190523083050-ea95bdfd59fc/go.mod h1:rf3lG4BRIbNafJWhAfAdb/ePZxsR/4RtNHQocxwk9r4=
+diff --git a/transports/meeklite/README.md b/transports/meeklite/README.md
+deleted file mode 100644
+index 1395e81..0000000
+--- a/transports/meeklite/README.md
++++ /dev/null
+@@ -1,15 +0,0 @@
+-The meek transport uses Domain Fronting to move Tor data:  
+-  https://www.bamsoftware.com/papers/fronting/
+-
+-It supports multiple urls and fronts in the `targets` argument. Each url is
+-followed by a `|` and a list of fronts separated by `+`, the url/fronts groups
+-are separated by `,`. An example of a bridgeline with multiple domain fronts:
+-````
+-meek_lite 192.0.2.20:80 targets=https://xxx.rsc.cdn77.org|www.phpmyadmin.net+www.cdn77.org,https://xxx.netlify.app|vuejs.org+nettlify.com
+-````
+-
+-For backward compatiblity for situations with a single url and front they can
+-be provided as `url` and `front` arguments:
+-````
+-meek_lite 192.0.2.20:80 url=https://xxx.rsc.cdn77.org front=www.phpmyadmin.net
+-````
+diff --git a/transports/meeklite/base.go b/transports/meeklite/base.go
+deleted file mode 100644
+index cdb228b..0000000
+--- a/transports/meeklite/base.go
++++ /dev/null
+@@ -1,94 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-// Package meeklite provides an implementation of the Meek circumvention
+-// protocol.  Only a client implementation is provided, and no effort is
+-// made to normalize the TLS fingerprint.
+-//
+-// It borrows quite liberally from the real meek-client code.
+-package meeklite // import "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/meeklite"
+-
+-import (
+-	"fmt"
+-	"net"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-)
+-
+-const transportName = "meek_lite"
+-
+-// Transport is the Meek implementation of the base.Transport interface.
+-type Transport struct{}
+-
+-// Name returns the name of the Meek transport protocol.
+-func (t *Transport) Name() string {
+-	return transportName
+-}
+-
+-// ClientFactory returns a new meekClientFactory instance.
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	cf := &meekClientFactory{transport: t}
+-	return cf, nil
+-}
+-
+-// ServerFactory will one day return a new meekServerFactory instance.
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	// TODO: Fill this in eventually, though for servers people should
+-	// just use the real thing.
+-	return nil, fmt.Errorf("server not supported")
+-}
+-
+-type meekClientFactory struct {
+-	transport base.Transport
+-}
+-
+-func (cf *meekClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *meekClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	return newClientArgs(args)
+-}
+-
+-func (cf *meekClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	// Validate args before opening outgoing connection.
+-	ca, ok := args.(*meekClientArgs)
+-	if !ok {
+-		return nil, fmt.Errorf("invalid argument type for args")
+-	}
+-
+-	return newMeekConn(network, addr, dialFn, ca)
+-}
+-
+-// Not yet implemented
+-func (cf *meekClientFactory) OnEvent(f func(base.TransportEvent)) {}
+-
+-var (
+-	_ base.ClientFactory = (*meekClientFactory)(nil)
+-	_ base.Transport     = (*Transport)(nil)
+-)
+diff --git a/transports/meeklite/certs.go b/transports/meeklite/certs.go
+deleted file mode 100644
+index 3c8df0f..0000000
+--- a/transports/meeklite/certs.go
++++ /dev/null
+@@ -1,54 +0,0 @@
+-package meeklite
+-
+-import (
+-	"crypto/x509"
+-	"log"
+-)
+-
+-// https://crt.sh/?id=9314791
+-const LetsEncryptRootCert = `-----BEGIN CERTIFICATE-----
+-MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+-TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+-cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+-WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+-ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+-MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+-h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+-0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+-A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+-T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+-B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+-B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+-KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+-OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+-jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+-qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+-rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+-HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+-hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+-ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+-3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+-NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+-ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+-TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+-jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+-oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+-4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+-mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+-emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+------END CERTIFICATE-----`
+-
+-// GetRootCAs is a workaround for older versions of Android that do not trust
+-// Let's Encrypt's ISRG Root X1. This manually adds the ISRG root to the device's
+-// existing cert pool.
+-func GetRootCAs() *x509.CertPool {
+-	rootCerts, err := x509.SystemCertPool()
+-	if err != nil {
+-		rootCerts = x509.NewCertPool()
+-	}
+-	if ok := rootCerts.AppendCertsFromPEM([]byte(LetsEncryptRootCert)); !ok {
+-		log.Println("Error appending Let's Encrypt root certificate to cert poool")
+-		return nil
+-	}
+-	return rootCerts
+-}
+diff --git a/transports/meeklite/frontlist.go b/transports/meeklite/frontlist.go
+deleted file mode 100644
+index d9b9ff3..0000000
+--- a/transports/meeklite/frontlist.go
++++ /dev/null
+@@ -1,78 +0,0 @@
+-package meeklite
+-
+-import (
+-	"fmt"
+-	"math/rand"
+-	gourl "net/url"
+-	"slices"
+-	"strings"
+-)
+-
+-type frontArgs struct {
+-	url   *gourl.URL
+-	front string
+-}
+-
+-type frontsList struct {
+-	list  []frontArgs
+-	index int
+-}
+-
+-func NewFrontsList() *frontsList {
+-	return &frontsList{
+-		list:  []frontArgs{},
+-		index: 0,
+-	}
+-}
+-
+-// Add inserts the url/front pair in the list in a random position
+-func (fl *frontsList) Add(url string, front string) error {
+-	fa := frontArgs{
+-		front: front,
+-	}
+-	var err error
+-	fa.url, err = toGoURL(url)
+-	if err != nil {
+-		return err
+-	}
+-
+-	index := rand.Intn(len(fl.list) + 1)
+-	fl.list = slices.Insert(fl.list, index, fa)
+-	return nil
+-}
+-
+-func toGoURL(urlStr string) (*gourl.URL, error) {
+-	url, err := gourl.Parse(urlStr)
+-	if err != nil {
+-		return nil, fmt.Errorf("malformed url: '%s'", urlStr)
+-	}
+-	switch url.Scheme {
+-	case "http", "https":
+-	default:
+-		return nil, fmt.Errorf("invalid scheme: '%s'", url.Scheme)
+-	}
+-	return url, nil
+-}
+-
+-func (fl *frontsList) Next() {
+-	fl.index++
+-	if fl.index >= len(fl.list) {
+-		fl.index = 0
+-	}
+-}
+-
+-func (fl *frontsList) Front() string {
+-	return fl.list[fl.index].front
+-}
+-
+-func (fl *frontsList) URL() *gourl.URL {
+-	return fl.list[fl.index].url
+-}
+-
+-func (fl *frontsList) String() string {
+-	str := ""
+-	for _, front := range fl.list {
+-		str += front.front + "|" + front.url.String() + " "
+-	}
+-	return strings.TrimSpace(str)
+-}
+diff --git a/transports/meeklite/meek.go b/transports/meeklite/meek.go
+deleted file mode 100644
+index 76fb745..0000000
+--- a/transports/meeklite/meek.go
++++ /dev/null
+@@ -1,426 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-package meeklite
+-
+-import (
+-	"bytes"
+-	"crypto/rand"
+-	"crypto/sha256"
+-	"encoding/hex"
+-	"errors"
+-	"fmt"
+-	"io"
+-	"net"
+-	"net/http"
+-	"os"
+-	"runtime"
+-	"strings"
+-	"sync"
+-	"time"
+-
+-	utls "github.com/refraction-networking/utls"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/utlsutil"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-)
+-
+-const (
+-	targetsArg = "targets"
+-	urlArg     = "url"
+-	frontArg   = "front"
+-	utlsArg    = "utls"
+-
+-	maxChanBacklog = 16
+-
+-	// Constants shamelessly stolen from meek-client.go...
+-	maxPayloadLength       = 0x10000
+-	initPollInterval       = 100 * time.Millisecond
+-	maxPollInterval        = 5 * time.Second
+-	pollIntervalMultiplier = 1.5
+-	maxRetries             = 10
+-	retryDelay             = 100 * time.Millisecond
+-)
+-
+-var (
+-	// ErrNotSupported is the error returned for a unsupported operation.
+-	ErrNotSupported = errors.New("meek_lite: operation not supported")
+-
+-	loopbackAddr = net.IPv4(127, 0, 0, 1)
+-)
+-
+-type meekClientArgs struct {
+-	fronts *frontsList
+-	utls   *utls.ClientHelloID
+-}
+-
+-func (ca *meekClientArgs) Network() string {
+-	return transportName
+-}
+-
+-func (ca *meekClientArgs) String() string {
+-	return transportName + ": " + ca.fronts.String()
+-}
+-
+-func newClientArgs(args *pt.Args) (ca *meekClientArgs, err error) {
+-	ca = &meekClientArgs{}
+-
+-	targetsStr, ok := args.Get(targetsArg)
+-	if ok {
+-		ca.fronts, err = parseTargets(targetsStr)
+-	} else {
+-		ca.fronts = NewFrontsList()
+-		url, ok := args.Get(urlArg)
+-		if !ok {
+-			return nil, fmt.Errorf("missing argument '%s'", urlArg)
+-		}
+-		front, _ := args.Get(frontArg)
+-		err = ca.fronts.Add(url, front)
+-	}
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	// Parse the (optional) utls argument.
+-	utlsOpt, _ := args.Get(utlsArg)
+-	if ca.utls, err = utlsutil.ParseClientHelloID(utlsOpt); err != nil {
+-		return nil, err
+-	}
+-
+-	return ca, nil
+-}
+-
+-func parseTargets(targetsStr string) (*frontsList, error) {
+-	fl := NewFrontsList()
+-	toParse := targetsStr
+-	for {
+-		parts := strings.SplitN(toParse, "|", 2)
+-		if len(parts) != 2 {
+-			return nil, fmt.Errorf("invalid targets in bridgline, missing '|': %s", targetsStr)
+-		}
+-		url := parts[0]
+-
+-		parts = strings.SplitN(parts[1], ",", 2)
+-		for _, front := range strings.Split(parts[0], "+") {
+-			err := fl.Add(url, front)
+-			if err != nil {
+-				return nil, err
+-			}
+-		}
+-
+-		if len(parts) == 1 {
+-			break
+-		} else {
+-			toParse = parts[1]
+-		}
+-	}
+-	return fl, nil
+-}
+-
+-type meekConn struct {
+-	args         *meekClientArgs
+-	sessionID    string
+-	roundTripper http.RoundTripper
+-
+-	closeOnce       sync.Once
+-	workerWrChan    chan []byte
+-	workerRdChan    chan []byte
+-	workerCloseChan chan struct{}
+-	rdBuf           *bytes.Buffer
+-}
+-
+-func (c *meekConn) Read(p []byte) (n int, err error) {
+-	// If there is data left over from the previous read,
+-	// service the request using the buffered data.
+-	if c.rdBuf != nil {
+-		if c.rdBuf.Len() == 0 {
+-			panic("empty read buffer")
+-		}
+-		n, err = c.rdBuf.Read(p)
+-		if c.rdBuf.Len() == 0 {
+-			c.rdBuf = nil
+-		}
+-		return
+-	}
+-
+-	// Wait for the worker to enqueue more incoming data.
+-	b, ok := <-c.workerRdChan
+-	if !ok {
+-		// Close() was called and the worker's shutting down.
+-		return 0, io.ErrClosedPipe
+-	}
+-
+-	// Ew, an extra copy, but who am I kidding, it's meek.
+-	buf := bytes.NewBuffer(b)
+-	n, err = buf.Read(p)
+-	if buf.Len() > 0 {
+-		// If there's data pending, stash the buffer so the next
+-		// Read() call will use it to fulfuill the Read().
+-		c.rdBuf = buf
+-	}
+-	return
+-}
+-
+-func (c *meekConn) Write(b []byte) (n int, err error) {
+-	// Check to see if the connection is actually open.
+-	select {
+-	case <-c.workerCloseChan:
+-		return 0, io.ErrClosedPipe
+-	default:
+-	}
+-
+-	if len(b) == 0 {
+-		return 0, nil
+-	}
+-
+-	// Copy the data to be written to a new slice, since
+-	// we return immediately after queuing and the peer can
+-	// happily reuse `b` before data has been sent.
+-	b2 := append([]byte{}, b...)
+-	if ok := c.enqueueWrite(b2); !ok {
+-		// Technically we did enqueue data, but the worker's
+-		// got closed out from under us.
+-		return 0, io.ErrClosedPipe
+-	}
+-	runtime.Gosched()
+-	return len(b), nil
+-}
+-
+-func (c *meekConn) Close() error {
+-	err := os.ErrClosed
+-
+-	c.closeOnce.Do(func() {
+-		// Tear down the worker, if it is still running.
+-		close(c.workerCloseChan)
+-		err = nil
+-	})
+-
+-	return err
+-}
+-
+-func (c *meekConn) LocalAddr() net.Addr {
+-	return &net.IPAddr{IP: loopbackAddr}
+-}
+-
+-func (c *meekConn) RemoteAddr() net.Addr {
+-	return c.args
+-}
+-
+-func (c *meekConn) SetDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (c *meekConn) SetReadDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (c *meekConn) SetWriteDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (c *meekConn) enqueueWrite(b []byte) (ok bool) {
+-	defer func() {
+-		if err := recover(); err != nil {
+-			ok = false
+-		}
+-	}()
+-	c.workerWrChan <- b
+-	return true
+-}
+-
+-func (c *meekConn) roundTrip(sndBuf []byte) (recvBuf []byte, err error) {
+-	var req *http.Request
+-	var resp *http.Response
+-
+-	for retries := 0; retries < maxRetries; retries++ {
+-		url := *c.args.fronts.URL()
+-		originalUrl := url.String()
+-		front := c.args.fronts.Front()
+-
+-		host := url.Host
+-		if front != "" {
+-			url.Host = front
+-		}
+-
+-		var body io.Reader
+-		if len(sndBuf) > 0 {
+-			body = bytes.NewReader(sndBuf)
+-		}
+-		req, err = http.NewRequest("POST", url.String(), body)
+-		if err != nil {
+-			pt.Log(pt.LogSeverityWarning, "Failed to create a request to "+originalUrl+" using front "+front+": "+err.Error())
+-			return nil, err
+-		}
+-		if front != "" {
+-			req.Host = host
+-		}
+-		req.Header.Set("X-Session-Id", c.sessionID)
+-		req.Header.Set("User-Agent", "")
+-
+-		resp, err = c.roundTripper.RoundTrip(req)
+-		if err != nil {
+-			pt.Log(pt.LogSeverityWarning, "Failed to connect to "+originalUrl+" using front "+front+": "+err.Error())
+-			c.args.fronts.Next()
+-			continue
+-		}
+-
+-		if resp.StatusCode == http.StatusOK {
+-			pt.Log(pt.LogSeverityInfo, "Connected to "+originalUrl+" using front "+front)
+-			recvBuf, err = io.ReadAll(io.LimitReader(resp.Body, maxPayloadLength))
+-			resp.Body.Close()
+-			return
+-		}
+-
+-		resp.Body.Close()
+-		err = fmt.Errorf("status code was %d, not %d", resp.StatusCode, http.StatusOK)
+-		pt.Log(pt.LogSeverityWarning, "Failed to connect to "+originalUrl+" using front "+front+": "+err.Error())
+-		c.args.fronts.Next()
+-		time.Sleep(retryDelay)
+-	}
+-	return
+-}
+-
+-func (c *meekConn) ioWorker() {
+-	interval := initPollInterval
+-	var sndBuf, leftBuf []byte
+-
+-loop:
+-	for {
+-		sndBuf = nil
+-		select {
+-		case <-time.After(interval):
+-			// If the poll interval has elapsed, issue a request.
+-		case sndBuf = <-c.workerWrChan:
+-			// If there is data pending a send, issue a request.
+-		case <-c.workerCloseChan:
+-			break loop
+-		}
+-
+-		// Combine short writes as long as data is available to be
+-		// sent immediately and it will not put us over the max
+-		// payload limit.  Any excess data is stored and dispatched
+-		// as the next request).
+-		sndBuf = append(leftBuf, sndBuf...)
+-		wrSz := len(sndBuf)
+-		for len(c.workerWrChan) > 0 && wrSz < maxPayloadLength {
+-			b := <-c.workerWrChan
+-			sndBuf = append(sndBuf, b...)
+-			wrSz = len(sndBuf)
+-		}
+-		if wrSz > maxPayloadLength {
+-			wrSz = maxPayloadLength
+-		}
+-
+-		// Issue a request.
+-		rdBuf, err := c.roundTrip(sndBuf[:wrSz])
+-		if err != nil {
+-			// Welp, something went horrifically wrong.
+-			break loop
+-		}
+-
+-		// Stash the remaining payload if any.
+-		leftBuf = sndBuf[wrSz:] // Store the remaining data
+-		if len(leftBuf) == 0 {
+-			leftBuf = nil
+-		}
+-
+-		// Determine the next poll interval.
+-		if len(rdBuf) > 0 {
+-			// Received data, enqueue the read.
+-			c.workerRdChan <- rdBuf
+-
+-			// And poll immediately.
+-			interval = 0
+-		} else if wrSz > 0 {
+-			// Sent data, poll immediately.
+-			interval = 0
+-		} else if interval == 0 {
+-			// Neither sent nor received data after a poll, re-initialize the delay.
+-			interval = initPollInterval
+-		} else {
+-			// Apply a multiplicative backoff.
+-			interval = time.Duration(float64(interval) * pollIntervalMultiplier)
+-			if interval > maxPollInterval {
+-				interval = maxPollInterval
+-			}
+-		}
+-
+-		runtime.Gosched()
+-	}
+-
+-	// Unblock callers waiting in Read() for data that will never arrive,
+-	// and callers waiting in Write() for data that will never get sent.
+-	close(c.workerRdChan)
+-	close(c.workerWrChan)
+-
+-	// Close the connection (extra calls to Close() are harmless).
+-	_ = c.Close()
+-}
+-
+-func newMeekConn(network, addr string, dialFn base.DialFunc, ca *meekClientArgs) (net.Conn, error) {
+-	id, err := newSessionID()
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	var rt http.RoundTripper
+-	switch ca.utls {
+-	case nil:
+-		rt = &http.Transport{Dial: dialFn}
+-	default:
+-		rt = newRoundTripper(dialFn, ca.utls)
+-	}
+-
+-	conn := &meekConn{
+-		args:            ca,
+-		sessionID:       id,
+-		roundTripper:    rt,
+-		workerWrChan:    make(chan []byte, maxChanBacklog),
+-		workerRdChan:    make(chan []byte, maxChanBacklog),
+-		workerCloseChan: make(chan struct{}),
+-	}
+-
+-	// Start the I/O worker.
+-	go conn.ioWorker()
+-
+-	return conn, nil
+-}
+-
+-func newSessionID() (string, error) {
+-	var b [64]byte
+-	if _, err := rand.Read(b[:]); err != nil {
+-		return "", err
+-	}
+-	h := sha256.Sum256(b[:])
+-	return hex.EncodeToString(h[:16]), nil
+-}
+-
+-var (
+-	_ net.Conn = (*meekConn)(nil)
+-	_ net.Addr = (*meekClientArgs)(nil)
+-)
+diff --git a/transports/meeklite/meek_test.go b/transports/meeklite/meek_test.go
+deleted file mode 100644
+index ad318b1..0000000
+--- a/transports/meeklite/meek_test.go
++++ /dev/null
+@@ -1,76 +0,0 @@
+-package meeklite
+-
+-import (
+-	"testing"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-)
+-
+-func TestClientTargets(t *testing.T) {
+-	args := pt.Args{
+-		"targets": []string{"https://example.com/test|frontexample.com,https://example2.com/foo|example2front.info+anotherfront.net"},
+-	}
+-
+-	ca, err := newClientArgs(&args)
+-	if err != nil {
+-		t.Fatal("Error parsing args", err)
+-	}
+-	if len(ca.fronts.list) != 3 {
+-		t.Error("There should be 3 fronts", ca.fronts)
+-	}
+-
+-	for _, front := range ca.fronts.list {
+-		switch front.front {
+-		case "frontexample.com":
+-			if front.url.String() != "https://example.com/test" {
+-				t.Error("Wrong front pair", front.front, front.url)
+-			}
+-		case "example2front.info":
+-			if front.url.String() != "https://example2.com/foo" {
+-				t.Error("Wrong front pair", front.front, front.url)
+-			}
+-		case "anotherfront.net":
+-			if front.url.String() != "https://example2.com/foo" {
+-				t.Error("Wrong front pair", front.front, front.url)
+-			}
+-		default:
+-			t.Error("Wrong front pair", front.front, front.url)
+-		}
+-	}
+-}
+-
+-func TestParseTargets(t *testing.T) {
+-	testTargets := map[string][2]string{
+-		"https://example.com/test|":                  [2]string{"https://example.com/test", ""},
+-		"https://example.com/+test|frontexample.com": [2]string{"https://example.com/+test", "frontexample.com"},
+-		"https://example.com/,test|frontexample.com": [2]string{"https://example.com/,test", "frontexample.com"},
+-	}
+-	for targets, frontPair := range testTargets {
+-		fl, err := parseTargets(targets)
+-		if err != nil {
+-			t.Error("Error parsing targets", targets, ":", err)
+-			continue
+-		}
+-
+-		if fl.URL().String() != frontPair[0] {
+-			t.Error("Wrong url, got", fl.URL().String(), "expected", frontPair[0])
+-		}
+-		if fl.Front() != frontPair[1] {
+-			t.Error("Wrong front, got", fl.Front(), "expected", frontPair[1])
+-		}
+-	}
+-}
+-
+-func TestParseTargetsFailures(t *testing.T) {
+-	testTargets := []string{
+-		"|frontexample.com",
+-		"ftp://example.com|",
+-	}
+-	for _, targets := range testTargets {
+-		_, err := parseTargets(targets)
+-		if err == nil {
+-			t.Error("targets", targets, "should have given an error")
+-		}
+-	}
+-
+-}
+diff --git a/transports/meeklite/transport.go b/transports/meeklite/transport.go
+deleted file mode 100644
+index c34c4f1..0000000
+--- a/transports/meeklite/transport.go
++++ /dev/null
+@@ -1,189 +0,0 @@
+-/*
+- * Copyright (c) 2019 Yawning Angel <yawning at schwanenlied dot me>
+- *
+- * This program is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+- */
+-
+-package meeklite
+-
+-import (
+-	"crypto/tls"
+-	"errors"
+-	"fmt"
+-	"net"
+-	"net/http"
+-	"net/url"
+-	"strconv"
+-	"strings"
+-	"sync"
+-
+-	utls "github.com/refraction-networking/utls"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-	"golang.org/x/net/http2"
+-)
+-
+-var (
+-	errProtocolNegotiated = errors.New("meek_lite: protocol negotiated")
+-)
+-
+-type roundTripper struct {
+-	sync.Mutex
+-
+-	clientHelloID *utls.ClientHelloID
+-	dialFn        base.DialFunc
+-	transport     http.RoundTripper
+-
+-	initConn net.Conn
+-}
+-
+-func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+-	// Note: This isn't protected with a lock, since the meeklite ioWorker
+-	// serializes RoundTripper requests.
+-	//
+-	// This also assumes that req.URL.Host will remain constant for the
+-	// lifetime of the roundTripper, which is a valid assumption for meeklite.
+-	if rt.transport == nil {
+-		if err := rt.getTransport(req); err != nil {
+-			return nil, err
+-		}
+-	}
+-	return rt.transport.RoundTrip(req)
+-}
+-
+-func (rt *roundTripper) getTransport(req *http.Request) error {
+-	switch strings.ToLower(req.URL.Scheme) {
+-	case "http":
+-		rt.transport = newHTTPTransport(rt.dialFn, nil)
+-		return nil
+-	case "https":
+-	default:
+-		return fmt.Errorf("meek_lite: invalid URL scheme: '%v'", req.URL.Scheme)
+-	}
+-
+-	_, err := rt.dialTLS("tcp", getDialTLSAddr(req.URL))
+-	switch err {
+-	case errProtocolNegotiated:
+-	case nil:
+-		// Should never happen.
+-		panic("meek_lite: dialTLS returned no error when determining transport")
+-	default:
+-		return err
+-	}
+-
+-	return nil
+-}
+-
+-func (rt *roundTripper) dialTLS(network, addr string) (net.Conn, error) {
+-	// Unlike rt.transport, this is protected by a critical section
+-	// since past the initial manual call from getTransport, the HTTP
+-	// client will be the caller.
+-	rt.Lock()
+-	defer rt.Unlock()
+-
+-	// If we have the connection from when we determined the HTTPS
+-	// transport to use, return that.
+-	if conn := rt.initConn; conn != nil {
+-		rt.initConn = nil
+-		return conn, nil
+-	}
+-
+-	rawConn, err := rt.dialFn(network, addr)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	var host string
+-	if host, _, err = net.SplitHostPort(addr); err != nil {
+-		host = addr
+-	}
+-
+-	conn := utls.UClient(rawConn, &utls.Config{
+-		ServerName: host,
+-
+-		// `crypto/tls` gradually ramps up the record size.  While this is
+-		// a good optimization and is a relatively common server feature,
+-		// neither Firefox nor Chromium appear to use such optimizations.
+-		DynamicRecordSizingDisabled: true,
+-		RootCAs:                     GetRootCAs(),
+-	}, *rt.clientHelloID)
+-
+-	if err = conn.Handshake(); err != nil {
+-		conn.Close()
+-		return nil, err
+-	}
+-
+-	if rt.transport != nil {
+-		return conn, nil
+-	}
+-
+-	// No http.Transport constructed yet, create one based on the results
+-	// of ALPN.
+-	switch conn.ConnectionState().NegotiatedProtocol {
+-	case http2.NextProtoTLS:
+-		// The remote peer is speaking HTTP 2 + TLS.
+-		rt.transport = &http2.Transport{DialTLS: rt.dialTLSHTTP2}
+-	default:
+-		// Assume the remote peer is speaking HTTP 1.x + TLS.
+-		rt.transport = newHTTPTransport(nil, rt.dialTLS)
+-	}
+-
+-	// Stash the connection just established for use servicing the
+-	// actual request (should be near-immediate).
+-	rt.initConn = conn
+-
+-	return nil, errProtocolNegotiated
+-}
+-
+-func (rt *roundTripper) dialTLSHTTP2(network, addr string, cfg *tls.Config) (net.Conn, error) {
+-	return rt.dialTLS(network, addr)
+-}
+-
+-func getDialTLSAddr(u *url.URL) string {
+-	host, port, err := net.SplitHostPort(u.Host)
+-	if err == nil {
+-		return net.JoinHostPort(host, port)
+-	}
+-	pInt, _ := net.LookupPort("tcp", u.Scheme)
+-
+-	return net.JoinHostPort(u.Host, strconv.Itoa(pInt))
+-}
+-
+-func newRoundTripper(dialFn base.DialFunc, clientHelloID *utls.ClientHelloID) http.RoundTripper {
+-	return &roundTripper{
+-		clientHelloID: clientHelloID,
+-		dialFn:        dialFn,
+-	}
+-}
+-
+-func newHTTPTransport(dialFn, dialTLSFn base.DialFunc) *http.Transport {
+-	base := (http.DefaultTransport).(*http.Transport)
+-
+-	return &http.Transport{
+-		Dial:    dialFn,
+-		DialTLS: dialTLSFn,
+-
+-		// Use default configuration values, taken from the runtime.
+-		MaxIdleConns:          base.MaxIdleConns,
+-		IdleConnTimeout:       base.IdleConnTimeout,
+-		TLSHandshakeTimeout:   base.TLSHandshakeTimeout,
+-		ExpectContinueTimeout: base.ExpectContinueTimeout,
+-	}
+-}
+-
+-func init() {
+-	// Attempt to increase compatibility, there's an encrypted link
+-	// underneath, and this doesn't (shouldn't) affect the external
+-	// fingerprint.
+-	utls.EnableWeakCiphers()
+-}
+diff --git a/transports/obfs2/obfs2.go b/transports/obfs2/obfs2.go
+deleted file mode 100644
+index 6e68db4..0000000
+--- a/transports/obfs2/obfs2.go
++++ /dev/null
+@@ -1,377 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-// Package obfs2 provides an implementation of the Tor Project's obfs2
+-// obfuscation protocol.  This protocol is considered trivially broken by most
+-// sophisticated adversaries.
+-package obfs2 // import "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/obfs2"
+-
+-import (
+-	"crypto/aes"
+-	"crypto/cipher"
+-	"crypto/sha256"
+-	"encoding/binary"
+-	"fmt"
+-	"io"
+-	"net"
+-	"time"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/csrand"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-)
+-
+-const (
+-	transportName   = "obfs2"
+-	sharedSecretArg = "shared-secret"
+-
+-	clientHandshakeTimeout = time.Duration(30) * time.Second
+-	serverHandshakeTimeout = time.Duration(30) * time.Second
+-
+-	magicValue         = 0x2bf5ca7e
+-	initiatorPadString = "Initiator obfuscation padding"
+-	responderPadString = "Responder obfuscation padding"
+-	initiatorKdfString = "Initiator obfuscated data"
+-	responderKdfString = "Responder obfuscated data"
+-	maxPadding         = 8192
+-	keyLen             = 16
+-	seedLen            = 16
+-	hsLen              = 4 + 4
+-)
+-
+-func validateArgs(args *pt.Args) error {
+-	if _, ok := args.Get(sharedSecretArg); ok {
+-		// "shared-secret" is something no bridges use in practice and is thus
+-		// unimplemented.
+-		return fmt.Errorf("unsupported argument '%s'", sharedSecretArg)
+-	}
+-	return nil
+-}
+-
+-// Transport is the obfs2 implementation of the base.Transport interface.
+-type Transport struct{}
+-
+-// Name returns the name of the obfs2 transport protocol.
+-func (t *Transport) Name() string {
+-	return transportName
+-}
+-
+-// ClientFactory returns a new obfs2ClientFactory instance.
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	cf := &obfs2ClientFactory{transport: t}
+-	return cf, nil
+-}
+-
+-// ServerFactory returns a new obfs2ServerFactory instance.
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	if err := validateArgs(args); err != nil {
+-		return nil, err
+-	}
+-
+-	sf := &obfs2ServerFactory{t}
+-	return sf, nil
+-}
+-
+-type obfs2ClientFactory struct {
+-	transport base.Transport
+-}
+-
+-func (cf *obfs2ClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *obfs2ClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	return nil, validateArgs(args)
+-}
+-
+-func (cf *obfs2ClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	conn, err := dialFn(network, addr)
+-	if err != nil {
+-		return nil, err
+-	}
+-	dialConn := conn
+-	if conn, err = newObfs2ClientConn(conn); err != nil {
+-		dialConn.Close()
+-		return nil, err
+-	}
+-	return conn, nil
+-}
+-
+-// Not yet implemented
+-func (cf *obfs2ClientFactory) OnEvent(f func(base.TransportEvent)) {}
+-
+-type obfs2ServerFactory struct {
+-	transport base.Transport
+-}
+-
+-func (sf *obfs2ServerFactory) Transport() base.Transport {
+-	return sf.transport
+-}
+-
+-func (sf *obfs2ServerFactory) Args() *pt.Args {
+-	return nil
+-}
+-
+-func (sf *obfs2ServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
+-	return newObfs2ServerConn(conn)
+-}
+-
+-type obfs2Conn struct {
+-	net.Conn
+-
+-	isInitiator bool
+-
+-	rx *cipher.StreamReader
+-	tx *cipher.StreamWriter
+-}
+-
+-func (conn *obfs2Conn) Read(b []byte) (int, error) {
+-	return conn.rx.Read(b)
+-}
+-
+-func (conn *obfs2Conn) Write(b []byte) (int, error) {
+-	return conn.tx.Write(b)
+-}
+-
+-func newObfs2ClientConn(conn net.Conn) (c *obfs2Conn, err error) {
+-	// Initialize a client connection, and start the handshake timeout.
+-	c = &obfs2Conn{conn, true, nil, nil}
+-	deadline := time.Now().Add(clientHandshakeTimeout)
+-	if err = c.SetDeadline(deadline); err != nil {
+-		return nil, err
+-	}
+-
+-	// Handshake.
+-	if err = c.handshake(); err != nil {
+-		return nil, err
+-	}
+-
+-	// Disarm the handshake timer.
+-	if err = c.SetDeadline(time.Time{}); err != nil {
+-		return nil, err
+-	}
+-
+-	return
+-}
+-
+-func newObfs2ServerConn(conn net.Conn) (c *obfs2Conn, err error) {
+-	// Initialize a server connection, and start the handshake timeout.
+-	c = &obfs2Conn{conn, false, nil, nil}
+-	deadline := time.Now().Add(serverHandshakeTimeout)
+-	if err = c.SetDeadline(deadline); err != nil {
+-		return nil, err
+-	}
+-
+-	// Handshake.
+-	if err = c.handshake(); err != nil {
+-		return nil, err
+-	}
+-
+-	// Disarm the handshake timer.
+-	if err = c.SetDeadline(time.Time{}); err != nil {
+-		return nil, err
+-	}
+-
+-	return
+-}
+-
+-func (conn *obfs2Conn) handshake() error {
+-	// Each begins by generating a seed and a padding key as follows.
+-	// The initiator generates:
+-	//
+-	//  INIT_SEED = SR(SEED_LENGTH)
+-	//  INIT_PAD_KEY = MAC("Initiator obfuscation padding", INIT_SEED)[:KEYLEN]
+-	//
+-	// And the responder generates:
+-	//
+-	//  RESP_SEED = SR(SEED_LENGTH)
+-	//  RESP_PAD_KEY = MAC("Responder obfuscation padding", INIT_SEED)[:KEYLEN]
+-	//
+-	// Each then generates a random number PADLEN in range from 0 through
+-	// MAX_PADDING (inclusive).
+-	var seed [seedLen]byte
+-	if err := csrand.Bytes(seed[:]); err != nil {
+-		return err
+-	}
+-	var padMagic []byte
+-	if conn.isInitiator {
+-		padMagic = []byte(initiatorPadString)
+-	} else {
+-		padMagic = []byte(responderPadString)
+-	}
+-	padKey, padIV := hsKdf(padMagic, seed[:], conn.isInitiator)
+-	padLen := uint32(csrand.IntRange(0, maxPadding))
+-
+-	hsBlob := make([]byte, hsLen+padLen)
+-	binary.BigEndian.PutUint32(hsBlob[0:4], magicValue)
+-	binary.BigEndian.PutUint32(hsBlob[4:8], padLen)
+-	if padLen > 0 {
+-		if err := csrand.Bytes(hsBlob[8:]); err != nil {
+-			return err
+-		}
+-	}
+-
+-	// The initiator then sends:
+-	//
+-	//  INIT_SEED | E(INIT_PAD_KEY, UINT32(MAGIC_VALUE) | UINT32(PADLEN) | WR(PADLEN))
+-	//
+-	// and the responder sends:
+-	//
+-	//  RESP_SEED | E(RESP_PAD_KEY, UINT32(MAGIC_VALUE) | UINT32(PADLEN) | WR(PADLEN))
+-	txBlock, err := aes.NewCipher(padKey)
+-	if err != nil {
+-		return err
+-	}
+-	txStream := cipher.NewCTR(txBlock, padIV)
+-	conn.tx = &cipher.StreamWriter{S: txStream, W: conn.Conn}
+-	if _, err := conn.Conn.Write(seed[:]); err != nil {
+-		return err
+-	}
+-	if _, err := conn.Write(hsBlob); err != nil {
+-		return err
+-	}
+-
+-	// Upon receiving the SEED from the other party, each party derives
+-	// the other party's padding key value as above, and decrypts the next
+-	// 8 bytes of the key establishment message.
+-	var peerSeed [seedLen]byte
+-	if _, err := io.ReadFull(conn.Conn, peerSeed[:]); err != nil {
+-		return err
+-	}
+-	var peerPadMagic []byte
+-	if conn.isInitiator {
+-		peerPadMagic = []byte(responderPadString)
+-	} else {
+-		peerPadMagic = []byte(initiatorPadString)
+-	}
+-	peerKey, peerIV := hsKdf(peerPadMagic, peerSeed[:], !conn.isInitiator)
+-	rxBlock, err := aes.NewCipher(peerKey)
+-	if err != nil {
+-		return err
+-	}
+-	rxStream := cipher.NewCTR(rxBlock, peerIV)
+-	conn.rx = &cipher.StreamReader{S: rxStream, R: conn.Conn}
+-	hsHdr := make([]byte, hsLen)
+-	if _, err := io.ReadFull(conn, hsHdr[:]); err != nil {
+-		return err
+-	}
+-
+-	// If the MAGIC_VALUE does not match, or the PADLEN value is greater than
+-	// MAX_PADDING, the party receiving it should close the connection
+-	// immediately.
+-	if peerMagic := binary.BigEndian.Uint32(hsHdr[0:4]); peerMagic != magicValue {
+-		return fmt.Errorf("invalid magic value: %x", peerMagic)
+-	}
+-	padLen = binary.BigEndian.Uint32(hsHdr[4:8])
+-	if padLen > maxPadding {
+-		return fmt.Errorf("padlen too long: %d", padLen)
+-	}
+-
+-	// Otherwise, it should read the remaining PADLEN bytes of padding data
+-	// and discard them.
+-	tmp := make([]byte, padLen)
+-	if _, err := io.ReadFull(conn.Conn, tmp); err != nil { // Note: Skips AES.
+-		return err
+-	}
+-
+-	// Derive the actual keys.
+-	if err := conn.kdf(seed[:], peerSeed[:]); err != nil {
+-		return err
+-	}
+-
+-	return nil
+-}
+-
+-func (conn *obfs2Conn) kdf(seed, peerSeed []byte) error {
+-	// Additional keys are then derived as:
+-	//
+-	//  INIT_SECRET = MAC("Initiator obfuscated data", INIT_SEED|RESP_SEED)
+-	//  RESP_SECRET = MAC("Responder obfuscated data", INIT_SEED|RESP_SEED)
+-	//  INIT_KEY = INIT_SECRET[:KEYLEN]
+-	//  INIT_IV = INIT_SECRET[KEYLEN:]
+-	//  RESP_KEY = RESP_SECRET[:KEYLEN]
+-	//  RESP_IV = RESP_SECRET[KEYLEN:]
+-	combSeed := make([]byte, 0, seedLen*2)
+-	if conn.isInitiator {
+-		combSeed = append(combSeed, seed...)
+-		combSeed = append(combSeed, peerSeed...)
+-	} else {
+-		combSeed = append(combSeed, peerSeed...)
+-		combSeed = append(combSeed, seed...)
+-	}
+-
+-	initKey, initIV := hsKdf([]byte(initiatorKdfString), combSeed, true)
+-	initBlock, err := aes.NewCipher(initKey)
+-	if err != nil {
+-		return err
+-	}
+-	initStream := cipher.NewCTR(initBlock, initIV)
+-
+-	respKey, respIV := hsKdf([]byte(responderKdfString), combSeed, false)
+-	respBlock, err := aes.NewCipher(respKey)
+-	if err != nil {
+-		return err
+-	}
+-	respStream := cipher.NewCTR(respBlock, respIV)
+-
+-	if conn.isInitiator {
+-		conn.tx.S = initStream
+-		conn.rx.S = respStream
+-	} else {
+-		conn.tx.S = respStream
+-		conn.rx.S = initStream
+-	}
+-
+-	return nil
+-}
+-
+-func hsKdf(magic, seed []byte, isInitiator bool) (padKey, padIV []byte) {
+-	// The actual key/IV is derived in the form of:
+-	// m = MAC(magic, seed)
+-	// KEY = m[:KEYLEN]
+-	// IV = m[KEYLEN:]
+-	m := mac(magic, seed)
+-	padKey = m[:keyLen]
+-	padIV = m[keyLen:]
+-
+-	return
+-}
+-
+-func mac(s, x []byte) []byte {
+-	// H(x) is SHA256 of x.
+-	// MAC(s, x) = H(s | x | s)
+-	h := sha256.New()
+-	_, _ = h.Write(s)
+-	_, _ = h.Write(x)
+-	_, _ = h.Write(s)
+-	return h.Sum(nil)
+-}
+-
+-var _ base.ClientFactory = (*obfs2ClientFactory)(nil)
+-var _ base.ServerFactory = (*obfs2ServerFactory)(nil)
+-var _ base.Transport = (*Transport)(nil)
+-var _ net.Conn = (*obfs2Conn)(nil)
+diff --git a/transports/obfs3/obfs3.go b/transports/obfs3/obfs3.go
+deleted file mode 100644
+index 1d5d98a..0000000
+--- a/transports/obfs3/obfs3.go
++++ /dev/null
+@@ -1,369 +0,0 @@
+-/*
+- * Copyright (c) 2014, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-// Package obfs3 provides an implementation of the Tor Project's obfs3
+-// obfuscation protocol.
+-package obfs3 // import "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/obfs3"
+-
+-import (
+-	"bytes"
+-	"crypto/aes"
+-	"crypto/cipher"
+-	"crypto/hmac"
+-	"crypto/sha256"
+-	"errors"
+-	"io"
+-	"net"
+-	"time"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/csrand"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/uniformdh"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-)
+-
+-const (
+-	transportName = "obfs3"
+-
+-	clientHandshakeTimeout = time.Duration(30) * time.Second
+-	serverHandshakeTimeout = time.Duration(30) * time.Second
+-
+-	initiatorKdfString   = "Initiator obfuscated data"
+-	responderKdfString   = "Responder obfuscated data"
+-	initiatorMagicString = "Initiator magic"
+-	responderMagicString = "Responder magic"
+-	maxPadding           = 8194
+-	keyLen               = 16
+-)
+-
+-// Transport is the obfs3 implementation of the base.Transport interface.
+-type Transport struct{}
+-
+-// Name returns the name of the obfs3 transport protocol.
+-func (t *Transport) Name() string {
+-	return transportName
+-}
+-
+-// ClientFactory returns a new obfs3ClientFactory instance.
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	cf := &obfs3ClientFactory{transport: t}
+-	return cf, nil
+-}
+-
+-// ServerFactory returns a new obfs3ServerFactory instance.
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	sf := &obfs3ServerFactory{transport: t}
+-	return sf, nil
+-}
+-
+-type obfs3ClientFactory struct {
+-	transport base.Transport
+-}
+-
+-func (cf *obfs3ClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *obfs3ClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	return nil, nil
+-}
+-
+-func (cf *obfs3ClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	conn, err := dialFn(network, addr)
+-	if err != nil {
+-		return nil, err
+-	}
+-	dialConn := conn
+-	if conn, err = newObfs3ClientConn(conn); err != nil {
+-		dialConn.Close()
+-		return nil, err
+-	}
+-	return conn, nil
+-}
+-
+-// Not yet implemented
+-func (cf *obfs3ClientFactory) OnEvent(f func(base.TransportEvent)) {}
+-
+-type obfs3ServerFactory struct {
+-	transport base.Transport
+-}
+-
+-func (sf *obfs3ServerFactory) Transport() base.Transport {
+-	return sf.transport
+-}
+-
+-func (sf *obfs3ServerFactory) Args() *pt.Args {
+-	return nil
+-}
+-
+-func (sf *obfs3ServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
+-	return newObfs3ServerConn(conn)
+-}
+-
+-type obfs3Conn struct {
+-	net.Conn
+-
+-	isInitiator bool
+-	rxMagic     []byte
+-	txMagic     []byte
+-	rxBuf       *bytes.Buffer
+-
+-	rx *cipher.StreamReader
+-	tx *cipher.StreamWriter
+-}
+-
+-func newObfs3ClientConn(conn net.Conn) (c *obfs3Conn, err error) {
+-	// Initialize a client connection, and start the handshake timeout.
+-	c = &obfs3Conn{conn, true, nil, nil, new(bytes.Buffer), nil, nil}
+-	deadline := time.Now().Add(clientHandshakeTimeout)
+-	if err = c.SetDeadline(deadline); err != nil {
+-		return nil, err
+-	}
+-
+-	// Handshake.
+-	if err = c.handshake(); err != nil {
+-		return nil, err
+-	}
+-
+-	// Disarm the handshake timer.
+-	if err = c.SetDeadline(time.Time{}); err != nil {
+-		return nil, err
+-	}
+-
+-	return
+-}
+-
+-func newObfs3ServerConn(conn net.Conn) (c *obfs3Conn, err error) {
+-	// Initialize a server connection, and start the handshake timeout.
+-	c = &obfs3Conn{conn, false, nil, nil, new(bytes.Buffer), nil, nil}
+-	deadline := time.Now().Add(serverHandshakeTimeout)
+-	if err = c.SetDeadline(deadline); err != nil {
+-		return nil, err
+-	}
+-
+-	// Handshake.
+-	if err = c.handshake(); err != nil {
+-		return nil, err
+-	}
+-
+-	// Disarm the handshake timer.
+-	if err = c.SetDeadline(time.Time{}); err != nil {
+-		return nil, err
+-	}
+-
+-	return
+-}
+-
+-func (conn *obfs3Conn) handshake() error {
+-	// The party who opens the connection is the 'initiator'; the one who
+-	// accepts it is the 'responder'.  Each begins by generating a
+-	// UniformDH keypair, and a random number PADLEN in [0, MAX_PADDING/2].
+-	// Both parties then send:
+-	//
+-	//  PUB_KEY | WR(PADLEN)
+-	privateKey, err := uniformdh.GenerateKey(csrand.Reader)
+-	if err != nil {
+-		return err
+-	}
+-	padLen := csrand.IntRange(0, maxPadding/2)
+-	blob := make([]byte, uniformdh.Size+padLen)
+-	publicKey, err := privateKey.PublicKey.Bytes()
+-	if err != nil {
+-		return err
+-	}
+-	copy(blob[0:], publicKey)
+-	if err := csrand.Bytes(blob[uniformdh.Size:]); err != nil {
+-		return err
+-	}
+-	if _, err := conn.Conn.Write(blob); err != nil {
+-		return err
+-	}
+-
+-	// Read the public key from the peer.
+-	rawPeerPublicKey := make([]byte, uniformdh.Size)
+-	if _, err := io.ReadFull(conn.Conn, rawPeerPublicKey); err != nil {
+-		return err
+-	}
+-	var peerPublicKey uniformdh.PublicKey
+-	if err := peerPublicKey.SetBytes(rawPeerPublicKey); err != nil {
+-		return err
+-	}
+-
+-	// After retrieving the public key of the other end, each party
+-	// completes the DH key exchange and generates a shared-secret for the
+-	// session (named SHARED_SECRET).
+-	sharedSecret, err := uniformdh.Handshake(privateKey, &peerPublicKey)
+-	if err != nil {
+-		return err
+-	}
+-	if err := conn.kdf(sharedSecret); err != nil {
+-		return err
+-	}
+-
+-	return nil
+-}
+-
+-func (conn *obfs3Conn) kdf(sharedSecret []byte) error {
+-	// Using that shared-secret each party derives its encryption keys as
+-	// follows:
+-	//
+-	//   INIT_SECRET = HMAC(SHARED_SECRET, "Initiator obfuscated data")
+-	//   RESP_SECRET = HMAC(SHARED_SECRET, "Responder obfuscated data")
+-	//   INIT_KEY = INIT_SECRET[:KEYLEN]
+-	//   INIT_COUNTER = INIT_SECRET[KEYLEN:]
+-	//   RESP_KEY = RESP_SECRET[:KEYLEN]
+-	//   RESP_COUNTER = RESP_SECRET[KEYLEN:]
+-	initHmac := hmac.New(sha256.New, sharedSecret)
+-	_, _ = initHmac.Write([]byte(initiatorKdfString))
+-	initSecret := initHmac.Sum(nil)
+-	initHmac.Reset()
+-	_, _ = initHmac.Write([]byte(initiatorMagicString))
+-	initMagic := initHmac.Sum(nil)
+-
+-	respHmac := hmac.New(sha256.New, sharedSecret)
+-	_, _ = respHmac.Write([]byte(responderKdfString))
+-	respSecret := respHmac.Sum(nil)
+-	respHmac.Reset()
+-	_, _ = respHmac.Write([]byte(responderMagicString))
+-	respMagic := respHmac.Sum(nil)
+-
+-	// The INIT_KEY value keys a block cipher (in CTR mode) used to
+-	// encrypt values from initiator to responder thereafter.  The counter
+-	// mode's initial counter value is INIT_COUNTER.  The RESP_KEY value
+-	// keys a block cipher (in CTR mode) used to encrypt values from
+-	// responder to initiator thereafter.  That counter mode's initial
+-	// counter value is RESP_COUNTER.
+-	//
+-	// Note: To have this be the last place where the shared secret is used,
+-	// also generate the magic value to send/scan for here.
+-	initBlock, err := aes.NewCipher(initSecret[:keyLen])
+-	if err != nil {
+-		return err
+-	}
+-	initStream := cipher.NewCTR(initBlock, initSecret[keyLen:])
+-
+-	respBlock, err := aes.NewCipher(respSecret[:keyLen])
+-	if err != nil {
+-		return err
+-	}
+-	respStream := cipher.NewCTR(respBlock, respSecret[keyLen:])
+-
+-	if conn.isInitiator {
+-		conn.tx = &cipher.StreamWriter{S: initStream, W: conn.Conn}
+-		conn.rx = &cipher.StreamReader{S: respStream, R: conn.rxBuf}
+-		conn.txMagic = initMagic
+-		conn.rxMagic = respMagic
+-	} else {
+-		conn.tx = &cipher.StreamWriter{S: respStream, W: conn.Conn}
+-		conn.rx = &cipher.StreamReader{S: initStream, R: conn.rxBuf}
+-		conn.txMagic = respMagic
+-		conn.rxMagic = initMagic
+-	}
+-
+-	return nil
+-}
+-
+-func (conn *obfs3Conn) findPeerMagic() error {
+-	var hsBuf [maxPadding + sha256.Size]byte
+-	for {
+-		n, err := conn.Conn.Read(hsBuf[:])
+-		if err != nil {
+-			// Yes, Read can return partial data and an error, but continuing
+-			// past that is nonsensical.
+-			return err
+-		}
+-		conn.rxBuf.Write(hsBuf[:n])
+-
+-		pos := bytes.Index(conn.rxBuf.Bytes(), conn.rxMagic)
+-		if pos == -1 {
+-			if conn.rxBuf.Len() >= maxPadding+sha256.Size {
+-				return errors.New("failed to find peer magic value")
+-			}
+-			continue
+-		} else if pos > maxPadding {
+-			return errors.New("peer sent too much pre-magic-padding")
+-		}
+-
+-		// Discard the padding/MAC.
+-		pos += len(conn.rxMagic)
+-		_ = conn.rxBuf.Next(pos)
+-
+-		return nil
+-	}
+-}
+-
+-func (conn *obfs3Conn) Read(b []byte) (n int, err error) {
+-	// If this is the first time we read data post handshake, scan for the
+-	// magic value.
+-	if conn.rxMagic != nil {
+-		if err = conn.findPeerMagic(); err != nil {
+-			conn.Close()
+-			return
+-		}
+-		conn.rxMagic = nil
+-	}
+-
+-	// If the handshake receive buffer is still present...
+-	if conn.rxBuf != nil {
+-		// And it is empty...
+-		if conn.rxBuf.Len() == 0 {
+-			// There is no more trailing data left from the handshake process,
+-			// so rewire the cipher.StreamReader to pull data from the network
+-			// instead of the temporary receive buffer.
+-			conn.rx.R = conn.Conn
+-			conn.rxBuf = nil
+-		}
+-	}
+-
+-	return conn.rx.Read(b)
+-}
+-
+-func (conn *obfs3Conn) Write(b []byte) (n int, err error) {
+-	// If this is the first time we write data post handshake, send the
+-	// padding/magic value.
+-	if conn.txMagic != nil {
+-		padLen := csrand.IntRange(0, maxPadding/2)
+-		blob := make([]byte, padLen+len(conn.txMagic))
+-		if err = csrand.Bytes(blob[:padLen]); err != nil {
+-			conn.Close()
+-			return
+-		}
+-		copy(blob[padLen:], conn.txMagic)
+-		if _, err = conn.Conn.Write(blob); err != nil {
+-			conn.Close()
+-			return
+-		}
+-		conn.txMagic = nil
+-	}
+-
+-	return conn.tx.Write(b)
+-}
+-
+-var _ base.ClientFactory = (*obfs3ClientFactory)(nil)
+-var _ base.ServerFactory = (*obfs3ServerFactory)(nil)
+-var _ base.Transport = (*Transport)(nil)
+-var _ net.Conn = (*obfs3Conn)(nil)
+diff --git a/transports/scramblesuit/base.go b/transports/scramblesuit/base.go
+deleted file mode 100644
+index 9a3d525..0000000
+--- a/transports/scramblesuit/base.go
++++ /dev/null
+@@ -1,102 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-// Package scramblesuit provides an implementation of the ScrambleSuit
+-// obfuscation protocol.  The implementation is client only.
+-package scramblesuit // import "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/scramblesuit"
+-
+-import (
+-	"fmt"
+-	"net"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-)
+-
+-const transportName = "scramblesuit"
+-
+-// Transport is the ScrambleSuit implementation of the base.Transport interface.
+-type Transport struct{}
+-
+-// Name returns the name of the ScrambleSuit transport protocol.
+-func (t *Transport) Name() string {
+-	return transportName
+-}
+-
+-// ClientFactory returns a new ssClientFactory instance.
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	tStore, err := loadTicketStore(stateDir)
+-	if err != nil {
+-		return nil, err
+-	}
+-	cf := &ssClientFactory{transport: t, ticketStore: tStore}
+-	return cf, nil
+-}
+-
+-// ServerFactory will one day return a new ssServerFactory instance.
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	// TODO: Fill this in eventually, though obfs4 is better.
+-	return nil, fmt.Errorf("server not supported")
+-}
+-
+-type ssClientFactory struct {
+-	transport   base.Transport
+-	ticketStore *ssTicketStore
+-}
+-
+-func (cf *ssClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *ssClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	return newClientArgs(args)
+-}
+-
+-func (cf *ssClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	// Validate args before opening outgoing connection.
+-	ca, ok := args.(*ssClientArgs)
+-	if !ok {
+-		return nil, fmt.Errorf("invalid argument type for args")
+-	}
+-
+-	conn, err := dialFn(network, addr)
+-	if err != nil {
+-		return nil, err
+-	}
+-	dialConn := conn
+-	if conn, err = newScrambleSuitClientConn(conn, cf.ticketStore, ca); err != nil {
+-		dialConn.Close()
+-		return nil, err
+-	}
+-	return conn, nil
+-}
+-
+-// Not yet implemented
+-func (cf *ssClientFactory) OnEvent(f func(base.TransportEvent)) {}
+-
+-var _ base.ClientFactory = (*ssClientFactory)(nil)
+-var _ base.Transport = (*Transport)(nil)
+diff --git a/transports/scramblesuit/conn.go b/transports/scramblesuit/conn.go
+deleted file mode 100644
+index f64d813..0000000
+--- a/transports/scramblesuit/conn.go
++++ /dev/null
+@@ -1,523 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-package scramblesuit
+-
+-import (
+-	"bytes"
+-	"crypto/aes"
+-	"crypto/cipher"
+-	"crypto/hmac"
+-	"crypto/sha256"
+-	"encoding/base32"
+-	"encoding/binary"
+-	"errors"
+-	"fmt"
+-	"hash"
+-	"io"
+-	"net"
+-	"time"
+-
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/csrand"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/drbg"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/probdist"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/uniformdh"
+-)
+-
+-const (
+-	passwordArg = "password"
+-
+-	maxSegmentLength       = 1448
+-	maxPayloadLength       = 1427
+-	sharedSecretLength     = 160 / 8 // k_B
+-	clientHandshakeTimeout = time.Duration(60) * time.Second
+-
+-	minLenDistLength = 21
+-	maxLenDistLength = maxSegmentLength
+-
+-	keyLength = 32 + 8 + 32
+-
+-	pktPrngSeedLength = 32
+-	pktOverhead       = macLength + pktHdrLength
+-	pktHdrLength      = 2 + 2 + 1
+-	pktPayload        = 1
+-	pktNewTicket      = 1 << 1
+-	pktPrngSeed       = 1 << 2
+-)
+-
+-var (
+-	// ErrNotSupported is the error returned for a unsupported operation.
+-	ErrNotSupported = errors.New("scramblesuit: operation not supported")
+-
+-	// ErrInvalidPacket is the error returned when a invalid packet is received.
+-	ErrInvalidPacket = errors.New("scramblesuit: invalid packet")
+-
+-	zeroPadBytes [maxPayloadLength]byte
+-)
+-
+-type ssSharedSecret [sharedSecretLength]byte
+-
+-type ssClientArgs struct {
+-	kB         *ssSharedSecret
+-	sessionKey *uniformdh.PrivateKey
+-}
+-
+-func newClientArgs(args *pt.Args) (ca *ssClientArgs, err error) {
+-	ca = &ssClientArgs{}
+-	if ca.kB, err = parsePasswordArg(args); err != nil {
+-		return nil, err
+-	}
+-
+-	// Generate the client keypair before opening a connection since the time
+-	// taken is visible to an adversary.  This key might not end up being used
+-	// if a session ticket is present, but this doesn't take that long.
+-	if ca.sessionKey, err = uniformdh.GenerateKey(csrand.Reader); err != nil {
+-		return nil, err
+-	}
+-	return
+-}
+-
+-func parsePasswordArg(args *pt.Args) (*ssSharedSecret, error) {
+-	str, ok := args.Get(passwordArg)
+-	if !ok {
+-		return nil, fmt.Errorf("missing argument '%s'", passwordArg)
+-	}
+-
+-	// To match the obfsproxy behavior, 'str' should contain a Base32 encoded
+-	// shared secret (k_B) used for handshaking.
+-	decoded, err := base32.StdEncoding.DecodeString(str)
+-	if err != nil {
+-		return nil, fmt.Errorf("failed to decode password: %s", err)
+-	}
+-	if len(decoded) != sharedSecretLength {
+-		return nil, fmt.Errorf("password length %d is invalid", len(decoded))
+-	}
+-	ss := new(ssSharedSecret)
+-	copy(ss[:], decoded)
+-	return ss, nil
+-}
+-
+-type ssCryptoState struct {
+-	s   cipher.Stream
+-	mac hash.Hash
+-}
+-
+-func newCryptoState(aesKey []byte, ivPrefix []byte, macKey []byte) (*ssCryptoState, error) {
+-	// The ScrambleSuit CTR-AES256 link crypto uses an 8 byte prefix from the
+-	// KDF, and a 64 bit counter initialized to 1 as the IV.  The initial value
+-	// of the counter isn't documented in the spec either.
+-	var initialCtr = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
+-	iv := make([]byte, 0, aes.BlockSize)
+-	iv = append(iv, ivPrefix...)
+-	iv = append(iv, initialCtr...)
+-	b, err := aes.NewCipher(aesKey)
+-	if err != nil {
+-		return nil, err
+-	}
+-	s := cipher.NewCTR(b, iv)
+-	mac := hmac.New(sha256.New, macKey)
+-	return &ssCryptoState{s: s, mac: mac}, nil
+-}
+-
+-type ssConn struct {
+-	net.Conn
+-
+-	isServer bool
+-
+-	lenDist              *probdist.WeightedDist
+-	receiveBuffer        *bytes.Buffer
+-	receiveDecodedBuffer *bytes.Buffer
+-	receiveState         ssRxState
+-
+-	txCrypto *ssCryptoState
+-	rxCrypto *ssCryptoState
+-
+-	ticketStore *ssTicketStore
+-}
+-
+-type ssRxState struct {
+-	mac []byte
+-	hdr []byte
+-
+-	totalLen   int
+-	payloadLen int
+-}
+-
+-func (conn *ssConn) Read(b []byte) (n int, err error) {
+-	// If the receive payload buffer is empty, consume data off the network.
+-	for conn.receiveDecodedBuffer.Len() == 0 {
+-		if err = conn.readPackets(); err != nil {
+-			break
+-		}
+-	}
+-
+-	// Service the read request using buffered payload.
+-	if conn.receiveDecodedBuffer.Len() > 0 {
+-		n, _ = conn.receiveDecodedBuffer.Read(b)
+-	}
+-	return
+-}
+-
+-func (conn *ssConn) Write(b []byte) (n int, err error) {
+-	var frameBuf bytes.Buffer
+-	p := b
+-	toSend := len(p)
+-
+-	for toSend > 0 {
+-		// Send as much payload as will fit into each frame as possible.
+-		wrLen := len(p)
+-		if wrLen > maxPayloadLength {
+-			wrLen = maxPayloadLength
+-		}
+-		payload := p[:wrLen]
+-		if err = conn.makePacket(&frameBuf, pktPayload, payload, 0); err != nil {
+-			return 0, err
+-		}
+-
+-		toSend -= wrLen
+-		p = p[wrLen:]
+-		n += wrLen
+-	}
+-
+-	// Pad out the burst as appropriate.
+-	if err = conn.padBurst(&frameBuf, conn.lenDist.Sample()); err != nil {
+-		return 0, err
+-	}
+-
+-	// Write and return.
+-	_, err = conn.Conn.Write(frameBuf.Bytes())
+-	return
+-}
+-
+-func (conn *ssConn) SetDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (conn *ssConn) SetReadDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (conn *ssConn) SetWriteDeadline(t time.Time) error {
+-	return ErrNotSupported
+-}
+-
+-func (conn *ssConn) makePacket(w io.Writer, pktType byte, data []byte, padLen int) error {
+-	payloadLen := len(data)
+-	totalLen := payloadLen + padLen
+-	if totalLen > maxPayloadLength {
+-		panic(fmt.Sprintf("BUG: makePacket() len(data) + padLen > maxPayloadLength: %d + %d > %d", len(data), padLen, maxPayloadLength))
+-	}
+-
+-	// Build the packet header (total length, payload length, flags),
+-	// and append the payload and padding.
+-	pkt := make([]byte, pktHdrLength, pktHdrLength+payloadLen+padLen)
+-	binary.BigEndian.PutUint16(pkt[0:], uint16(totalLen))
+-	binary.BigEndian.PutUint16(pkt[2:], uint16(payloadLen))
+-	pkt[4] = pktType
+-	pkt = append(pkt, data...)
+-	pkt = append(pkt, zeroPadBytes[:padLen]...)
+-
+-	// Encrypt the packet, and calculate the MAC.
+-	conn.txCrypto.s.XORKeyStream(pkt, pkt)
+-	conn.txCrypto.mac.Reset()
+-	_, _ = conn.txCrypto.mac.Write(pkt)
+-	mac := conn.txCrypto.mac.Sum(nil)[:macLength]
+-
+-	// Write out MAC | Packet.  Note that this does not go onto the network
+-	// yet, as w is a byte.Buffer (This is done so each call to conn.Write()
+-	// gets padding added).
+-	if _, err := w.Write(mac); err != nil {
+-		return err
+-	}
+-	_, err := w.Write(pkt)
+-	return err
+-}
+-
+-func (conn *ssConn) readPackets() error {
+-	// Consume and buffer up to 1 MSS worth of data.
+-	var buf [maxSegmentLength]byte
+-	rdLen, rdErr := conn.Conn.Read(buf[:])
+-	conn.receiveBuffer.Write(buf[:rdLen])
+-
+-	// Process incoming packets incrementally.  conn.receiveState stores
+-	// the results of partial processing.
+-	for conn.receiveBuffer.Len() > 0 {
+-		if conn.receiveState.mac == nil {
+-			// Read and store the packet MAC.
+-			if conn.receiveBuffer.Len() < macLength {
+-				break
+-			}
+-			mac := make([]byte, macLength)
+-			_, _ = conn.receiveBuffer.Read(mac)
+-			conn.receiveState.mac = mac
+-		}
+-
+-		if conn.receiveState.hdr == nil {
+-			// Read and store the packet header.
+-			if conn.receiveBuffer.Len() < pktHdrLength {
+-				break
+-			}
+-			hdr := make([]byte, pktHdrLength)
+-			_, _ = conn.receiveBuffer.Read(hdr)
+-
+-			// Add the encrypted packet header to the HMAC instance, and then
+-			// decrypt it so that the length of the packet can be determined.
+-			conn.rxCrypto.mac.Reset()
+-			_, _ = conn.rxCrypto.mac.Write(hdr)
+-			conn.rxCrypto.s.XORKeyStream(hdr, hdr)
+-
+-			// Store the plaintext packet header, and host byte order length
+-			// values.
+-			totalLen := int(binary.BigEndian.Uint16(hdr[0:]))
+-			payloadLen := int(binary.BigEndian.Uint16(hdr[2:]))
+-			if payloadLen > totalLen || totalLen > maxPayloadLength {
+-				return ErrInvalidPacket
+-			}
+-			conn.receiveState.hdr = hdr
+-			conn.receiveState.totalLen = totalLen
+-			conn.receiveState.payloadLen = payloadLen
+-		}
+-
+-		var data []byte
+-		if conn.receiveState.totalLen > 0 {
+-			// If the packet actually has payload (including padding), read,
+-			// digest and decrypt it.
+-			if conn.receiveBuffer.Len() < conn.receiveState.totalLen {
+-				break
+-			}
+-			data = make([]byte, conn.receiveState.totalLen)
+-			_, _ = conn.receiveBuffer.Read(data)
+-			_, _ = conn.rxCrypto.mac.Write(data)
+-			conn.rxCrypto.s.XORKeyStream(data, data)
+-		}
+-
+-		// Authenticate the packet, by comparing the received MAC with the one
+-		// calculated over the ciphertext consumed off the network.
+-		cmpMAC := conn.rxCrypto.mac.Sum(nil)[:macLength]
+-		if !hmac.Equal(cmpMAC, conn.receiveState.mac[:]) {
+-			return ErrInvalidPacket
+-		}
+-
+-		// Based on the packet flags, do something useful with the payload.
+-		data = data[:conn.receiveState.payloadLen]
+-		switch conn.receiveState.hdr[4] {
+-		case pktPayload:
+-			// User data, write it into the decoded payload buffer so that Read
+-			// calls can be serviced.
+-			conn.receiveDecodedBuffer.Write(data)
+-		case pktNewTicket:
+-			// New Session Ticket to be used for future handshakes, store it in
+-			// the Session Ticket store.
+-			if conn.isServer || len(data) != ticketKeyLength+ticketLength {
+-				return ErrInvalidPacket
+-			}
+-			conn.ticketStore.storeTicket(conn.RemoteAddr(), data)
+-		case pktPrngSeed:
+-			// New PRNG_SEED for the protocol polymorphism.  Regenerate the
+-			// length obfuscation probability distribution.
+-			if conn.isServer || len(data) != pktPrngSeedLength {
+-				return ErrInvalidPacket
+-			}
+-			seed, err := drbg.SeedFromBytes(data)
+-			if err != nil {
+-				return ErrInvalidPacket
+-			}
+-			conn.lenDist.Reset(seed)
+-		default:
+-			return ErrInvalidPacket
+-		}
+-
+-		// Done processing a packet, clear the partial state.
+-		conn.receiveState.mac = nil
+-		conn.receiveState.hdr = nil
+-		conn.receiveState.totalLen = 0
+-		conn.receiveState.payloadLen = 0
+-	}
+-	return rdErr
+-}
+-
+-func (conn *ssConn) clientHandshake(kB *ssSharedSecret, sessionKey *uniformdh.PrivateKey) error {
+-	if conn.isServer {
+-		return fmt.Errorf("clientHandshake called on server connection")
+-	}
+-
+-	// Query the Session Ticket store to see if there is a stored session
+-	// ticket.
+-	ticket, err := conn.ticketStore.getTicket(conn.RemoteAddr())
+-	if err != nil {
+-		return err
+-	} else if ticket != nil {
+-		// Ok, there is an existing ticket, so attempt to do a Session Ticket
+-		// handshake.  Until we write to the network, failures are non-fatal as
+-		// we can transition gracefully into doing a UniformDH handshake.
+-
+-		// Derive the keys from the prestored master key received with the
+-		// ticket.  This is done before the actual handshake since the
+-		// handshake uses the outgoing HMAC-SHA256-128 key for authentication.
+-		if err = conn.initCrypto(ticket.key[:]); err != nil {
+-			goto handshakeUDH
+-		}
+-
+-		// Generate and send the ticket handshake.  There is no response, since
+-		// both sides have the keying material.
+-		hs := newTicketClientHandshake(conn.txCrypto.mac, ticket)
+-		blob, err := hs.generateHandshake()
+-		if err != nil {
+-			goto handshakeUDH
+-		}
+-		if _, err = conn.Conn.Write(blob); err != nil {
+-			return err
+-		}
+-		return nil
+-	}
+-
+-handshakeUDH:
+-	// No session ticket, so take the slow path and do a UniformDH based
+-	// handshake.
+-
+-	// Generate and send the client handshake.
+-	hs := newDHClientHandshake(kB, sessionKey)
+-	blob, err := hs.generateHandshake()
+-	if err != nil {
+-		return err
+-	}
+-	if _, err = conn.Conn.Write(blob); err != nil {
+-		return err
+-	}
+-
+-	// Consume the server handshake.  Since we don't actually know the length
+-	// of the respose, we need to consume data off the network till we either
+-	// find the tail marker + MAC digest indicating that a handshake response
+-	// has been received, or the maximum handshake size passes without a valid
+-	// response.
+-	var hsBuf [maxHandshakeLength]byte
+-	for {
+-		var n int
+-		if n, err = conn.Conn.Read(hsBuf[:]); err != nil {
+-			return err
+-		}
+-		conn.receiveBuffer.Write(hsBuf[:n])
+-
+-		// Attempt to process all the data seen so far as a response.
+-		var seed []byte
+-		n, seed, err = hs.parseServerHandshake(conn.receiveBuffer.Bytes())
+-		if err == errMarkNotFoundYet {
+-			// No response found yet, keep trying.
+-			continue
+-		} else if err != nil {
+-			return err
+-		}
+-
+-		// Ok, done processing the handshake, discard the response, and do the
+-		// key derivation based off the calculated shared secret.
+-		_ = conn.receiveBuffer.Next(n)
+-		err = conn.initCrypto(seed)
+-		return err
+-	}
+-}
+-
+-func (conn *ssConn) initCrypto(seed []byte) error {
+-	// Use HKDF-SHA256 (Expand only, no Extract) to generate session keys from
+-	// initial keying material.
+-	okm := hkdfExpand(sha256.New, seed, nil, kdfSecretLength)
+-	var err error
+-	conn.txCrypto, err = newCryptoState(okm[0:32], okm[32:40], okm[80:112])
+-	if err != nil {
+-		return err
+-	}
+-	conn.rxCrypto, err = newCryptoState(okm[40:72], okm[72:80], okm[112:144])
+-	if err != nil {
+-		return err
+-	}
+-	return nil
+-}
+-
+-func (conn *ssConn) padBurst(burst *bytes.Buffer, sampleLen int) error {
+-	// Burst contains the fully encrypted+MACed outgoing payload that will be
+-	// written to the network.  Pad it out so that the last segment (based on
+-	// the ScrambleSuit MTU) is sampleLen bytes.
+-
+-	dataLen := burst.Len() % maxSegmentLength
+-	padLen := 0
+-	if sampleLen >= dataLen {
+-		padLen = sampleLen - dataLen
+-	} else {
+-		padLen = (maxSegmentLength - dataLen) + sampleLen
+-	}
+-	if padLen < pktOverhead {
+-		// The padLen is less than the MAC + packet header in length, so
+-		// two packets are required.
+-		padLen += maxSegmentLength
+-	}
+-
+-	if padLen == 0 {
+-		return nil
+-	}
+-	if padLen > maxSegmentLength {
+-		// Note: packetmorpher.py: getPadding is slightly wrong and only
+-		// accounts for one of the two packet headers.
+-		if err := conn.makePacket(burst, pktPayload, nil, 700-pktOverhead); err != nil {
+-			return err
+-		}
+-		return conn.makePacket(burst, pktPayload, nil, padLen-(700+2*pktOverhead))
+-	}
+-	return conn.makePacket(burst, pktPayload, nil, padLen-pktOverhead)
+-}
+-
+-func newScrambleSuitClientConn(conn net.Conn, tStore *ssTicketStore, ca *ssClientArgs) (net.Conn, error) {
+-	// At this point we have kB and our session key, so we can directly
+-	// start handshaking and seeing what happens.
+-
+-	// Seed the initial polymorphism distribution.
+-	seed, err := drbg.NewSeed()
+-	if err != nil {
+-		return nil, err
+-	}
+-	dist := probdist.New(seed, minLenDistLength, maxLenDistLength, true)
+-
+-	// Allocate the client structure.
+-	c := &ssConn{conn, false, dist, bytes.NewBuffer(nil), bytes.NewBuffer(nil), ssRxState{}, nil, nil, tStore}
+-
+-	// Start the handshake timeout.
+-	deadline := time.Now().Add(clientHandshakeTimeout)
+-	if err := conn.SetDeadline(deadline); err != nil {
+-		return nil, err
+-	}
+-
+-	// Attempt to handshake.
+-	if err := c.clientHandshake(ca.kB, ca.sessionKey); err != nil {
+-		return nil, err
+-	}
+-
+-	// Stop the handshake timeout.
+-	if err := conn.SetDeadline(time.Time{}); err != nil {
+-		return nil, err
+-	}
+-
+-	return c, nil
+-}
+diff --git a/transports/scramblesuit/handshake_ticket.go b/transports/scramblesuit/handshake_ticket.go
+deleted file mode 100644
+index a89b0d4..0000000
+--- a/transports/scramblesuit/handshake_ticket.go
++++ /dev/null
+@@ -1,228 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-package scramblesuit
+-
+-import (
+-	"bytes"
+-	"encoding/base32"
+-	"encoding/json"
+-	"errors"
+-	"fmt"
+-	"hash"
+-	"io/ioutil"
+-	"net"
+-	"os"
+-	"path"
+-	"strconv"
+-	"sync"
+-	"time"
+-
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/csrand"
+-)
+-
+-const (
+-	ticketFile = "scramblesuit_tickets.json"
+-
+-	ticketKeyLength = 32
+-	ticketLength    = 112
+-	ticketLifetime  = 60 * 60 * 24 * 7
+-
+-	ticketMinPadLength = 0
+-	ticketMaxPadLength = 1388
+-)
+-
+-var (
+-	errInvalidTicket = errors.New("scramblesuit: invalid serialized ticket")
+-)
+-
+-type ssTicketStore struct {
+-	sync.Mutex
+-
+-	filePath string
+-	store    map[string]*ssTicket
+-}
+-
+-type ssTicket struct {
+-	key      [ticketKeyLength]byte
+-	ticket   [ticketLength]byte
+-	issuedAt int64
+-}
+-
+-type ssTicketJSON struct {
+-	KeyTicket string `json:"key-ticket"`
+-	IssuedAt  int64  `json:"issuedAt"`
+-}
+-
+-func (t *ssTicket) isValid() bool {
+-	return t.issuedAt+ticketLifetime > time.Now().Unix()
+-}
+-
+-func newTicket(raw []byte) (*ssTicket, error) {
+-	if len(raw) != ticketKeyLength+ticketLength {
+-		return nil, errInvalidTicket
+-	}
+-	t := &ssTicket{issuedAt: time.Now().Unix()}
+-	copy(t.key[:], raw[0:])
+-	copy(t.ticket[:], raw[ticketKeyLength:])
+-	return t, nil
+-}
+-
+-func (s *ssTicketStore) storeTicket(addr net.Addr, rawT []byte) {
+-	t, err := newTicket(rawT)
+-	if err != nil {
+-		// Silently ignore ticket store failures.
+-		return
+-	}
+-
+-	s.Lock()
+-	defer s.Unlock()
+-
+-	// Add the ticket to the map, and checkpoint to disk.  Serialization errors
+-	// are ignored because the handshake code will just use UniformDH if a
+-	// ticket is not available.
+-	s.store[addr.String()] = t
+-	_ = s.serialize()
+-}
+-
+-func (s *ssTicketStore) getTicket(addr net.Addr) (*ssTicket, error) {
+-	aStr := addr.String()
+-
+-	s.Lock()
+-	defer s.Unlock()
+-
+-	t, ok := s.store[aStr]
+-	if ok && t != nil {
+-		// Tickets are one use only, so remove tickets from the map, and
+-		// checkpoint the map to disk.
+-		delete(s.store, aStr)
+-		err := s.serialize()
+-		if !t.isValid() {
+-			// Expired ticket, ignore it.
+-			return nil, err
+-		}
+-		return t, err
+-	}
+-
+-	// No ticket was found, that's fine.
+-	return nil, nil
+-}
+-
+-func (s *ssTicketStore) serialize() error {
+-	encMap := make(map[string]*ssTicketJSON)
+-	for k, v := range s.store {
+-		kt := make([]byte, 0, ticketKeyLength+ticketLength)
+-		kt = append(kt, v.key[:]...)
+-		kt = append(kt, v.ticket[:]...)
+-		ktStr := base32.StdEncoding.EncodeToString(kt)
+-		jsonObj := &ssTicketJSON{KeyTicket: ktStr, IssuedAt: v.issuedAt}
+-		encMap[k] = jsonObj
+-	}
+-	jsonStr, err := json.Marshal(encMap)
+-	if err != nil {
+-		return err
+-	}
+-	return ioutil.WriteFile(s.filePath, jsonStr, 0600)
+-}
+-
+-func loadTicketStore(stateDir string) (*ssTicketStore, error) {
+-	fPath := path.Join(stateDir, ticketFile)
+-	s := &ssTicketStore{filePath: fPath}
+-	s.store = make(map[string]*ssTicket)
+-
+-	f, err := ioutil.ReadFile(fPath)
+-	if err != nil {
+-		// No ticket store is fine.
+-		if os.IsNotExist(err) {
+-			return s, nil
+-		}
+-
+-		// But a file read error is not.
+-		return nil, err
+-	}
+-
+-	encMap := make(map[string]*ssTicketJSON)
+-	if err = json.Unmarshal(f, &encMap); err != nil {
+-		return nil, fmt.Errorf("failed to load ticket store '%s': '%s'", fPath, err)
+-	}
+-	for k, v := range encMap {
+-		raw, err := base32.StdEncoding.DecodeString(v.KeyTicket)
+-		if err != nil || len(raw) != ticketKeyLength+ticketLength {
+-			// Just silently skip corrupted tickets.
+-			continue
+-		}
+-		t := &ssTicket{issuedAt: v.IssuedAt}
+-		if !t.isValid() {
+-			// Just ignore expired tickets.
+-			continue
+-		}
+-		copy(t.key[:], raw[0:])
+-		copy(t.ticket[:], raw[ticketKeyLength:])
+-		s.store[k] = t
+-	}
+-	return s, nil
+-}
+-
+-type ssTicketClientHandshake struct {
+-	mac    hash.Hash
+-	ticket *ssTicket
+-	padLen int
+-}
+-
+-func (hs *ssTicketClientHandshake) generateHandshake() ([]byte, error) {
+-	var buf bytes.Buffer
+-	hs.mac.Reset()
+-
+-	// The client handshake is T | P | M | MAC(T | P | M | E)
+-	_, _ = hs.mac.Write(hs.ticket.ticket[:])
+-	m := hs.mac.Sum(nil)[:macLength]
+-	p, err := makePad(hs.padLen)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	// Write T, P, M.
+-	buf.Write(hs.ticket.ticket[:])
+-	buf.Write(p)
+-	buf.Write(m)
+-
+-	// Calculate and write the MAC.
+-	e := []byte(strconv.FormatInt(getEpochHour(), 10))
+-	_, _ = hs.mac.Write(p)
+-	_, _ = hs.mac.Write(m)
+-	_, _ = hs.mac.Write(e)
+-	buf.Write(hs.mac.Sum(nil)[:macLength])
+-
+-	hs.mac.Reset()
+-	return buf.Bytes(), nil
+-}
+-
+-func newTicketClientHandshake(mac hash.Hash, ticket *ssTicket) *ssTicketClientHandshake {
+-	hs := &ssTicketClientHandshake{mac: mac, ticket: ticket}
+-	hs.padLen = csrand.IntRange(ticketMinPadLength, ticketMaxPadLength)
+-	return hs
+-}
+diff --git a/transports/scramblesuit/handshake_uniformdh.go b/transports/scramblesuit/handshake_uniformdh.go
+deleted file mode 100644
+index 38c2dbc..0000000
+--- a/transports/scramblesuit/handshake_uniformdh.go
++++ /dev/null
+@@ -1,173 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-package scramblesuit
+-
+-import (
+-	"bytes"
+-	"crypto/hmac"
+-	"crypto/sha256"
+-	"errors"
+-	"hash"
+-	"strconv"
+-	"time"
+-
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/csrand"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/common/uniformdh"
+-)
+-
+-const (
+-	minHandshakeLength = uniformdh.Size + macLength*2
+-	maxHandshakeLength = 1532
+-	dhMinPadLength     = 0
+-	dhMaxPadLength     = 1308
+-	macLength          = 128 / 8 // HMAC-SHA256-128()
+-
+-	kdfSecretLength = keyLength * 2
+-)
+-
+-var (
+-	errMarkNotFoundYet = errors.New("mark not found yet")
+-
+-	// ErrInvalidHandshake is the error returned when the handshake fails.
+-	ErrInvalidHandshake = errors.New("invalid handshake")
+-)
+-
+-type ssDHClientHandshake struct {
+-	mac       hash.Hash
+-	keypair   *uniformdh.PrivateKey
+-	epochHour []byte
+-	padLen    int
+-
+-	serverPublicKey *uniformdh.PublicKey
+-	serverMark      []byte
+-}
+-
+-func (hs *ssDHClientHandshake) generateHandshake() ([]byte, error) {
+-	var buf bytes.Buffer
+-	hs.mac.Reset()
+-
+-	// The client handshake is X | P_C | M_C | MAC(X | P_C | M_C | E)
+-	x, err := hs.keypair.PublicKey.Bytes()
+-	if err != nil {
+-		return nil, err
+-	}
+-	_, _ = hs.mac.Write(x)
+-	mC := hs.mac.Sum(nil)[:macLength]
+-	pC, err := makePad(hs.padLen)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	// Write X, P_C, M_C.
+-	buf.Write(x)
+-	buf.Write(pC)
+-	buf.Write(mC)
+-
+-	// Calculate and write the MAC.
+-	hs.epochHour = []byte(strconv.FormatInt(getEpochHour(), 10))
+-	_, _ = hs.mac.Write(pC)
+-	_, _ = hs.mac.Write(mC)
+-	_, _ = hs.mac.Write(hs.epochHour)
+-	buf.Write(hs.mac.Sum(nil)[:macLength])
+-
+-	return buf.Bytes(), nil
+-}
+-
+-func (hs *ssDHClientHandshake) parseServerHandshake(resp []byte) (int, []byte, error) {
+-	if len(resp) < minHandshakeLength {
+-		return 0, nil, errMarkNotFoundYet
+-	}
+-
+-	// The server response is Y | P_S | M_S | MAC(Y | P_S | M_S | E).
+-	if hs.serverPublicKey == nil {
+-		y := resp[:uniformdh.Size]
+-
+-		// Pull out the public key, and derive the server mark.
+-		hs.serverPublicKey = &uniformdh.PublicKey{}
+-		if err := hs.serverPublicKey.SetBytes(y); err != nil {
+-			return 0, nil, err
+-		}
+-		hs.mac.Reset()
+-		_, _ = hs.mac.Write(y)
+-		hs.serverMark = hs.mac.Sum(nil)[:macLength]
+-	}
+-
+-	// Find the mark+MAC, if it exits.
+-	endPos := len(resp)
+-	if endPos > maxHandshakeLength-macLength {
+-		endPos = maxHandshakeLength - macLength
+-	}
+-	pos := bytes.Index(resp[uniformdh.Size:endPos], hs.serverMark)
+-	if pos == -1 {
+-		if len(resp) >= maxHandshakeLength {
+-			// Couldn't find the mark in a maximum length response.
+-			return 0, nil, ErrInvalidHandshake
+-		}
+-		return 0, nil, errMarkNotFoundYet
+-	} else if len(resp) < pos+2*macLength {
+-		// Didn't receive the full M_S.
+-		return 0, nil, errMarkNotFoundYet
+-	}
+-	pos += uniformdh.Size
+-
+-	// Validate the MAC.
+-	_, _ = hs.mac.Write(resp[uniformdh.Size : pos+macLength])
+-	_, _ = hs.mac.Write(hs.epochHour)
+-	macCmp := hs.mac.Sum(nil)[:macLength]
+-	macRx := resp[pos+macLength : pos+2*macLength]
+-	if !hmac.Equal(macCmp, macRx) {
+-		return 0, nil, ErrInvalidHandshake
+-	}
+-
+-	// Derive the shared secret.
+-	ss, err := uniformdh.Handshake(hs.keypair, hs.serverPublicKey)
+-	if err != nil {
+-		return 0, nil, err
+-	}
+-	seed := sha256.Sum256(ss)
+-	return pos + 2*macLength, seed[:], nil
+-}
+-
+-func newDHClientHandshake(kB *ssSharedSecret, sessionKey *uniformdh.PrivateKey) *ssDHClientHandshake {
+-	hs := &ssDHClientHandshake{keypair: sessionKey}
+-	hs.mac = hmac.New(sha256.New, kB[:])
+-	hs.padLen = csrand.IntRange(dhMinPadLength, dhMaxPadLength)
+-	return hs
+-}
+-
+-func getEpochHour() int64 {
+-	return time.Now().Unix() / 3600
+-}
+-
+-func makePad(padLen int) ([]byte, error) {
+-	pad := make([]byte, padLen)
+-	if err := csrand.Bytes(pad); err != nil {
+-		return nil, err
+-	}
+-	return pad, nil
+-}
+diff --git a/transports/scramblesuit/hkdf_expand.go b/transports/scramblesuit/hkdf_expand.go
+deleted file mode 100644
+index cbdcbb3..0000000
+--- a/transports/scramblesuit/hkdf_expand.go
++++ /dev/null
+@@ -1,67 +0,0 @@
+-/*
+- * Copyright (c) 2015, Yawning Angel <yawning at schwanenlied dot me>
+- * All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions are met:
+- *
+- *  * Redistributions of source code must retain the above copyright notice,
+- *    this list of conditions and the following disclaimer.
+- *
+- *  * Redistributions in binary form must reproduce the above copyright notice,
+- *    this list of conditions and the following disclaimer in the documentation
+- *    and/or other materials provided with the distribution.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+- * POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-package scramblesuit
+-
+-import (
+-	"crypto/hmac"
+-	"hash"
+-)
+-
+-func hkdfExpand(hashFn func() hash.Hash, prk []byte, info []byte, l int) []byte {
+-	// Why, yes.  golang.org/x/crypto/hkdf exists, and is a fine
+-	// implementation of HKDF.  However it does both the extract
+-	// and expand, while ScrambleSuit only does extract, with no
+-	// way to separate the two steps.
+-
+-	h := hmac.New(hashFn, prk)
+-	digestSz := h.Size()
+-	if l > 255*digestSz {
+-		panic("hkdf: requested OKM length > 255*HashLen")
+-	}
+-
+-	var t []byte
+-	okm := make([]byte, 0, l)
+-	toAppend := l
+-	ctr := byte(1)
+-	for toAppend > 0 {
+-		h.Reset()
+-		_, _ = h.Write(t)
+-		_, _ = h.Write(info)
+-		_, _ = h.Write([]byte{ctr})
+-		t = h.Sum(nil)
+-		ctr++
+-
+-		aLen := digestSz
+-		if toAppend < digestSz {
+-			aLen = toAppend
+-		}
+-		okm = append(okm, t[:aLen]...)
+-		toAppend -= aLen
+-	}
+-	return okm
+-}
+diff --git a/transports/snowflake/snowflake.go b/transports/snowflake/snowflake.go
+deleted file mode 100644
+index b1976a7..0000000
+--- a/transports/snowflake/snowflake.go
++++ /dev/null
+@@ -1,135 +0,0 @@
+-package snowflake
+-
+-import (
+-	"errors"
+-	"fmt"
+-	"net"
+-	"net/url"
+-	"strconv"
+-	"strings"
+-
+-	pt "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-	sf "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/client/lib"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/event"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/proxy"
+-)
+-
+-const transportName = "snowflake"
+-
+-type sfEventLogger struct {
+-	onEventCallback func(e base.TransportEvent)
+-}
+-
+-func (el *sfEventLogger) OnNewSnowflakeEvent(e event.SnowflakeEvent) {
+-	if el.onEventCallback != nil {
+-		el.onEventCallback(e)
+-	}
+-}
+-
+-type Transport struct{}
+-
+-// Name returns the name of the snowflake transport protocol.
+-func (t *Transport) Name() string {
+-	return transportName
+-}
+-
+-// ClientFactory returns a new snowflakeClientFactory instance.
+-func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+-	cf := &snowflakeClientFactory{transport: t}
+-	cf.eventLogger = &sfEventLogger{}
+-	return cf, nil
+-}
+-
+-// ServerFactory is not implemented for snowflake
+-func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
+-	return nil, errors.New("ServerFactory not implemented for the snowflake transport")
+-}
+-
+-type snowflakeClientFactory struct {
+-	transport   base.Transport
+-	eventLogger *sfEventLogger
+-}
+-
+-func (cf *snowflakeClientFactory) Transport() base.Transport {
+-	return cf.transport
+-}
+-
+-func (cf *snowflakeClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+-	config := sf.ClientConfig{}
+-	if arg, ok := args.Get("ampcache"); ok {
+-		config.AmpCacheURL = arg
+-	}
+-	if arg, ok := args.Get("sqsqueue"); ok {
+-		config.SQSQueueURL = arg
+-	}
+-	if arg, ok := args.Get("sqscreds"); ok {
+-		config.SQSCredsStr = arg
+-	}
+-	if arg, ok := args.Get("fronts"); ok {
+-		if arg != "" {
+-			config.FrontDomains = strings.Split(strings.TrimSpace(arg), ",")
+-		}
+-	} else if arg, ok := args.Get("front"); ok {
+-		config.FrontDomains = strings.Split(strings.TrimSpace(arg), ",")
+-	}
+-	if arg, ok := args.Get("ice"); ok {
+-		config.ICEAddresses = strings.Split(strings.TrimSpace(arg), ",")
+-	}
+-	if arg, ok := args.Get("max"); ok {
+-		max, err := strconv.Atoi(arg)
+-		if err != nil {
+-			return nil, fmt.Errorf("Invalid SOCKS arg: max=%s", arg)
+-		}
+-		config.Max = max
+-	}
+-	if arg, ok := args.Get("url"); ok {
+-		config.BrokerURL = arg
+-	}
+-	if arg, ok := args.Get("utls-nosni"); ok {
+-		switch strings.ToLower(arg) {
+-		case "true", "yes":
+-			config.UTLSRemoveSNI = true
+-		}
+-	}
+-	if arg, ok := args.Get("utls-imitate"); ok {
+-		config.UTLSClientID = arg
+-	}
+-	if arg, ok := args.Get("fingerprint"); ok {
+-		config.BridgeFingerprint = arg
+-	}
+-	if arg, ok := args.Get("proxy"); ok {
+-		outboundProxy, err := url.Parse(arg)
+-		if err != nil {
+-			return nil, fmt.Errorf("Invalid SOCKS arg: proxy=%s", arg)
+-		}
+-		if err := proxy.CheckProxyProtocolSupport(outboundProxy); err != nil {
+-			return nil, fmt.Errorf("proxy is not supported: %s", err.Error())
+-		}
+-		client := proxy.NewSocks5UDPClient(outboundProxy)
+-		conn, err := client.ListenPacket("udp", nil)
+-		if err != nil {
+-			return nil, fmt.Errorf("proxy test failure: %s", err.Error())
+-		}
+-		conn.Close()
+-		config.CommunicationProxy = outboundProxy
+-	}
+-	return config, nil
+-}
+-
+-func (cf *snowflakeClientFactory) OnEvent(f func(e base.TransportEvent)) {
+-	cf.eventLogger.onEventCallback = f
+-}
+-
+-func (cf *snowflakeClientFactory) Dial(network, address string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+-	config, ok := args.(sf.ClientConfig)
+-	if !ok {
+-		return nil, errors.New("invalid type for args")
+-	}
+-	transport, err := sf.NewSnowflakeClient(config)
+-	if err != nil {
+-		return nil, err
+-	}
+-	transport.AddSnowflakeEventListener(cf.eventLogger)
+-	return transport.Dial()
+-}
+diff --git a/transports/transports.go b/transports/transports.go
+index 08c09c4..31c66ea 100644
+--- a/transports/transports.go
++++ b/transports/transports.go
+@@ -33,15 +33,9 @@ import (
+ 	"fmt"
+ 	"sync"
+ 
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/snowflake"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/webtunnel"
+-
+ 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/base"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/meeklite"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/obfs2"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/obfs3"
+ 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/obfs4"
+-	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/scramblesuit"
++	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird/transports/webtunnel"
+ )
+ 
+ var transportMapLock sync.Mutex
+@@ -88,12 +82,7 @@ func Get(name string) base.Transport {
+ // Init initializes all of the integrated transports.
+ func Init() error {
+ 	for _, v := range []base.Transport{
+-		new(meeklite.Transport),
+-		new(obfs2.Transport),
+-		new(obfs3.Transport),
+ 		new(obfs4.Transport),
+-		new(scramblesuit.Transport),
+-		new(snowflake.Transport),
+ 		webtunnel.Transport,
+ 	} {
+ 		if err := Register(v); err != nil {

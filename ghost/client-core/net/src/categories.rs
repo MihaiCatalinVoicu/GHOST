@@ -27,6 +27,16 @@ pub const NOT_BUCKET_SIZED: &str = "not_bucket_sized";
 pub const NOT_STORED: &str = "not_stored";
 pub const MALFORMED_RESPONSE: &str = "malformed_response";
 pub const INTERNAL: &str = "internal";
+// Phase 12 (design faza12-transports.md §8.3): the PT slice's four categories. `pt_hash_mismatch`
+// and `pt_unsupported_abi` are raised by the APK-asset extraction (`:network`'s PtInstaller, the
+// PT-1 surface) before any client exists; `bridge_line_invalid` and
+// `bridge_line_unsupported_transport` are raised by the bridge-line storage write (PT-3, validated
+// by `nativeValidateBridgeLines`). None carries a line's text — the failing index crosses as the
+// exception detail, never the line (§6.6, T58).
+pub const PT_HASH_MISMATCH: &str = "pt_hash_mismatch";
+pub const PT_UNSUPPORTED_ABI: &str = "pt_unsupported_abi";
+pub const BRIDGE_LINE_INVALID: &str = "bridge_line_invalid";
+pub const BRIDGE_LINE_UNSUPPORTED_TRANSPORT: &str = "bridge_line_unsupported_transport";
 
 pub const ALL: &[&str] = &[
     INVALID_ARGUMENT,
@@ -49,11 +59,21 @@ pub const ALL: &[&str] = &[
     NOT_STORED,
     MALFORMED_RESPONSE,
     INTERNAL,
+    PT_HASH_MISMATCH,
+    PT_UNSUPPORTED_ABI,
+    BRIDGE_LINE_INVALID,
+    BRIDGE_LINE_UNSUPPORTED_TRANSPORT,
 ];
 
 pub fn for_transport(e: &TransportError) -> &'static str {
     match e {
-        TransportError::Config(_) => BRIDGE_CONFIG,
+        // Config-class: a malformed/unsupported line and a PT line without the extracted binary
+        // or the system linker are the same category at the JNI boundary (design §8.3:
+        // PtBinaryMissing is config class; rev 3 adds PtLinkerMissing to the same class — a
+        // device that cannot launch a PT child answers every PT line with a config error).
+        TransportError::Config(_)
+        | TransportError::PtBinaryMissing
+        | TransportError::PtLinkerMissing => BRIDGE_CONFIG,
         TransportError::Setup(_) => TOR_SETUP,
         TransportError::Bootstrap(_) => TOR_BOOTSTRAP,
         TransportError::BootstrapTimeout => TOR_BOOTSTRAP_TIMEOUT,
@@ -174,6 +194,14 @@ mod tests {
             BRIDGE_CONFIG
         );
         assert_eq!(
+            for_transport(&TransportError::PtBinaryMissing),
+            BRIDGE_CONFIG
+        );
+        assert_eq!(
+            for_transport(&TransportError::PtLinkerMissing),
+            BRIDGE_CONFIG
+        );
+        assert_eq!(
             for_transport(&TransportError::BootstrapTimeout),
             TOR_BOOTSTRAP_TIMEOUT
         );
@@ -189,8 +217,9 @@ mod tests {
     #[test]
     fn issuer_outcomes_use_existing_categories_only() {
         use tonic::Code;
-        // Design §5.7: no new category (ErrorPolicyTest stays at 21: these 20 + native_missing).
-        assert_eq!(ALL.len(), 20);
+        // Design §5.7: no new issuer category. The four Phase 12 PT categories (§8.3) join ALL;
+        // ErrorPolicyTest (sync) pins the same total.
+        assert_eq!(ALL.len(), 24);
         let table = [
             (Code::InvalidArgument, REJECTED),
             (Code::PermissionDenied, UNAUTHORIZED),

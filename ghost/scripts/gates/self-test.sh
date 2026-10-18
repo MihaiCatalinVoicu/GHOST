@@ -1150,6 +1150,55 @@ mp_case job-paths fail "pull_request paths miss ghost/Cargo.lock"
 mp_case dlsrc-templated fail "Dockerfile: fetches Monero binaries without reading"
 mp_case dockerfile-no-check fail "Dockerfile: fetches Monero binaries without checking them with sha256sum -c"
 mp_case monero-image fail "docker-compose.stagenet.yml:3: a Monero image not built from"
+# Phase 12 slice S3 (design faza12-transports.md §13, §14 row S3): the PT gates on their fixture
+# roots (test-harness/gates/pt-*/README-free layouts mirroring ghost/). Each negative must be
+# rejected; the gates' positive halves run on the real tree (and, for pt-double-build, in the
+# dispatch/weekly job — its self-test drills only the non-reproducibility rejection, a full
+# double build being minutes of Go compile).
+PTSP_FIX="$HARNESS/pt-source-pin"
+ptsp_case() { # $1 = case, $2 = pass|fail
+  local out got
+  if out="$(GHOST_ROOT="$PTSP_FIX/$1/ghost" bash "$DIR/pt-source-pin.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$2" ]; then
+    echo "SELF-TEST FAIL: pt-source-pin $1 ($got)" >&2; printf '%s\n' "$out" | tail -3 >&2; rc=1
+  else
+    echo "self-test ok: pt-source-pin $1"
+  fi
+}
+ptsp_case positive pass
+ptsp_case negative-mutable-ref fail
+ptsp_case negative-drifted-patch fail
+ptsp_case negative-second-hash fail
+ptsp_case negative-no-readme fail
+ptsp_case negative-tor-unpinned fail
+
+expect_fail pt-exec-site "$HARNESS/pt-exec-site/negative-rust-spawn/ghost"
+expect_fail pt-exec-site "$HARNESS/pt-exec-site/negative-kotlin-spawn/ghost"
+expect_fail pt-refusals "$HARNESS/pt-refusals/negative-snowflake-ok/ghost"
+expect_fail pt-refusals "$HARNESS/pt-refusals/negative-third-transport/ghost"
+expect_fail pt-refusals "$HARNESS/pt-refusals/negative-no-pt-gate/ghost"
+expect_fail pt-no-bridge-line-in-logs "$HARNESS/pt-logs/negative-injected/ghost"
+expect_fail pt-no-bridge-line-in-logs "$HARNESS/pt-logs/negative-empty/ghost"
+expect_fail pt-no-bridge-line-in-logs "$HARNESS/pt-logs/negative-logged-call/ghost"
+expect_fail pt-double-build "$HARNESS/pt-double-build/negative-nondeterministic/ghost"
+
+# G-T4 (apk-pt-assets.sh) over its fixture APKs: the positive passes against the fixture sums,
+# each negative is refused (hash drift, a third ABI, an embedded bridge line, an executable
+# asset). GHOST_PT_SUMS points the gate at the fixtures' tiny fake sums.
+PTA_FIX="$HARNESS/pt-assets"
+if out="$(GHOST_PT_SUMS="$PTA_FIX/SHA256SUMS.fake" bash "$DIR/apk-pt-assets.sh" "$PTA_FIX/positive.apk" 2>&1)"; then
+  echo "self-test ok: apk-pt-assets accepts the positive fixture"
+else
+  echo "SELF-TEST FAIL: apk-pt-assets rejected the positive fixture" >&2; printf '%s\n' "$out" | tail -3 >&2; rc=1
+fi
+for n in negative-bad-hash negative-third-abi negative-embedded-line negative-elf-asset; do
+  if GHOST_PT_SUMS="$PTA_FIX/SHA256SUMS.fake" bash "$DIR/apk-pt-assets.sh" "$PTA_FIX/$n.apk" >/dev/null 2>&1; then
+    echo "SELF-TEST FAIL: apk-pt-assets accepted $n" >&2; rc=1
+  else
+    echo "self-test ok: apk-pt-assets rejects $n"
+  fi
+done
+
 # Phase 8 (design §5.2, §14.1, RC G18): proto-check.sh checks every request message, not every
 # file. The fixture (test-harness/gates/negative-proto/README.md) has eight unversioned requests in
 # two files, each next to a versioned one: exactly those eight are reported, by name, and none of
@@ -2879,7 +2928,7 @@ site fixture-clock-epoch@0.1.0 src/lib.rs:6 elapsed clock-log [lib]"
   # Since slice S2b links the crate into ghost-client-net, the forbidden-feature and host-only
   # clauses read both graphs, so their hooks fire twice (the review of S2b found this case still
   # expecting 17 and failing); and S2b's two shipped-graph clauses get their hooks here.
-  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graphs have (the channel crate's and, linked since S2b, the shipped one), a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in both graphs, a build configuration naming the backend cfg, a patched fork, a lock with sources other than crates.io, a shipped graph without the channel crate and a feature of the crate's own the shipped graph may not carry" 21 \
+  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graphs have (the channel crate's and, linked since S2b, the shipped one), a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in both graphs, a build configuration naming the backend cfg, a patched fork, a lock with sources other than crates.io, a shipped graph without the channel crate and a feature of the crate's own the shipped graph may not carry" 22 \
 "hpke-rs feature 'hazmat' is enabled in ghost-client-mls's graph (G-M2
 hpke-rs feature 'hazmat' is enabled in ghost-client-net's graph (G-M2
 package 'openmls-no-such-crate' is not in ghost-client-mls's graph
@@ -2899,7 +2948,8 @@ Cargo.lock: openmls 0.9.0 has no source and is not a workspace member
 Cargo.lock: tls_codec 0.5.0 comes from git+https://github.com/example/tls_codec
 Cargo.lock: hpke-rs 0.6.0 has no checksum
 package 'ghost-client-mls-no-such-crate' is not in the shipped client graph
-ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M2 allows: default" \
+ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M2 allows: default
+Cargo.toml does not patch saturating-time to third_party/saturating-time (G-M2" \
     env GHOST_POLICY_MLS_FORBID_EXTRA=hpke-rs:hazmat GHOST_POLICY_MLS_GRAPH=openmls-no-such-crate \
       GHOST_POLICY_KAT=ghost-client-mls GHOST_POLICY_STUB_DIR="$MLSP/stub-nonempty" \
       GHOST_POLICY_MLS_SOURCES="$MLSP/sources" GHOST_POLICY_HOST_ONLY_EXTRA=rayon \

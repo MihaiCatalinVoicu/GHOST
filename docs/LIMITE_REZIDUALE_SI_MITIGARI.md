@@ -150,7 +150,7 @@ Ideea e bună și **implementabilă** în forma corectă: pragul nu „invalidea
 
 | Strat | Mitigare | Prio | Evidență |
 |---|---|---|---|
-| Prevenire | **Bridges + pluggable transports**: WebTunnel (trafic care arată ca HTTPS către un site obișnuit), obfs4, Snowflake (WebRTC). Arti le suportă; livrăm un set de bridges implicite în manifestul semnat și rotim | P1 (ADR-16) | test: captură nu conține fingerprint Tor |
+| Prevenire | **Bridges + pluggable transports**: WebTunnel (trafic care arată ca HTTPS către un site obișnuit), obfs4, Snowflake (WebRTC). Arti le suportă; livrăm un set de bridges implicite în manifestul semnat și rotim | P1 (ADR-16) | jumătatea de client livrată în Faza 12: obfs4 + WebTunnel pe liniile utilizatorului, captura de loopback fără fingerprint Tor la hop-ul client↔bridge (PT-L1, LIMITE L12); lista implicită, rotația și Snowflake rămân (Faza 14, 12b) |
 | Prevenire | **Mod „auto”**: clientul încearcă Tor direct; dacă e blocat sau utilizatorul alege „ascunde utilizarea Tor”, trece pe bridges; niciodată pe clearnet | P1 | test fail-closed |
 | Prevenire | Opțiunea **Tor peste VPN** (VPN-ul utilizatorului): ISP-ul vede VPN, furnizorul VPN vede Tor; explicat ca mutare a încrederii, nu eliminare | P1, non-tehnic | disclosure |
 | Prevenire | **Polling la ritm constant** (L2): utilizarea GHOST nu se distinge de orice altă utilizare Tor prin tipar temporal. Obiectiv încă neatins: bootstrap-urile Tor periodice din Faza 7 sunt o amprentă temporală (rândul „Conflict” de mai jos) | P1 | ADR-15 |
@@ -450,6 +450,47 @@ Orice altceva ce poate calcula un releu din vederea lui efectivă e o încălcar
 
 ---
 
+## L12. Transporturi pluggable (Faza 12; ADR-61, ADR-62; design `docs/design/faza12-transports.md` §2, §7)
+
+Reziduurile feliei de transporturi implementate (S0 … S4, ramura `p12-s4`). **Argumentul porții de ieșire e asamblat în design §12.6 și checklist-ul §15, cu starea fiecărui punct în notele feliei S4** (`docs/design/faza12-s4-notes.md` §3); această secțiune declară scurgerea acceptată și reziduurile, cu trimitere la evidența care măsoară fiecare margine (L12.2). Măsurătorile citate vin din rularea de referință a harness-ului de loopback (arti a făcut bootstrap 0→100% prin hop-ul obfs4 în 32,7 s, poarta întreagă verde în 187 s; logul `p12s3-ptloop-green.log`), rulată local pe stația proprietarului (CI-ul rulează local, ADR-58); rularea live pe bridge-uri publice (OA-1) și pasul pe dispozitivele de referință (OA-2) sunt ale proprietarului și completează cifra reală la ziua distribuției. Nimic din această secțiune nu se afirmă în UI (CP-10); interfața de introducere a liniilor (paste/QR) e a Fazei 13.
+
+### L12.0 Scurgerea declarată LT (singura informație pe care o cale cu transport pluggable o adaugă sau o lasă)
+
+| ID | Scurgere |
+|---|---|
+| LT-1 | IP-ul și portul bridge-ului sunt vizibile, iar „utilizatorul vorbește cu acel IP:port” e el însuși un semnal dacă bridge-ul e cunoscut sau enumerat |
+| LT-2 | Volumul și timingul sunt vizibile cap-coadă la observator: transporturile pluggable pad-uiesc handshake-ul și ascund structura de celule, dar nu pad-uiesc fondul (clauza de tuning a rândului 12, Q7 — F-T1, a proprietarului) |
+| LT-3 | Probing activ: un adversar activ poate confirma că IP-ul răspunde obfs4/webtunnel (obfs4 cere un `cert=` corect ca să răspundă; WebTunnel răspunde ca un server web) — un risc de enumerare a bridge-urilor, nu unul de partea clientului |
+| LT-4 | Formele de rețea ale binarului PT: ClientHello-ul parodiat al WebTunnel-ului arată *un TLS de browser*; un observator care compară cu browsere reale poate măsura deriva (întreținerea uTLS/lyrebird e în amonte, R-T4) |
+
+Mai puțin o „scurgere", dar declarat tot aici pentru ca nicio graniță să nu rămână implicită: **operatorul bridge-ului vede un client Tor** (ca un operator de guard — nicio clasă nouă de încredere): bridge-ul știe că e bridge Tor și vede traficul pe care îl poartă; de aceea calea dinspre el încolo rămâne Tor obișnuit (T60). Orice altceva ce poate calcula observatorul local din vederea lui efectivă pe hop-ul client↔bridge — în primul rând Tor-ness-ul — e o încălcare a P-T1 (asertată de captura PT-L1: prima serie de aplicație nu e o înregistrare TLS, semnăturile de 3 octeți ale stratului de înregistrări apar doar la densitate de întâmplare și niciodată grupate, peste ~22 MB de captură a bootstrap-ului întreg).
+
+### L12.1 Reziduuri (L12-C1 … L12-C7)
+
+| ID | Reziduu | Mitigare | Limita rămasă |
+|---|---|---|---|
+| L12-C1 | PT-ul ascunde Tor-ness doar față de observatorul local și doar până la bridge; un adversar global pasiv vede în continuare „calea Tor” (rândul AD-2 rămâne neschimbat) | forma față de relee neschimbată (T60) | — |
+| L12-C2 | Volumul și timingul sunt la fel de vizibile ca înainte; padding-ul de fond e clauza de tuning a rândului 12 (Q7), nu a transportului | LT-2 declarat | fondul rămâne măsurabil (LT-2) |
+| L12-C3 | IP-ul și portul bridge-ului sunt vizibile; un bridge cunoscut/enumerat e el însuși un semnal; un adversar activ poate confirma că IP-ul vorbește obfs4/webtunnel (probing) | T58 (linia nu scapă nicăieri în afara bazei); distribuția e Faza 14 | enumerarea bridge-urilor rămâne un risc de operator (LT-1, LT-3) |
+| L12-C4 | Parrotul uTLS al WebTunnel-ului îmbătrânește față de browserele reale; un DPI activ poate măsura deriva | bump-urile lyrebird re-rulează poarta (§4.4) | drift-ul față de amonte e consemnat la fiecare pin (R-T4) |
+| L12-C5 | Bootstrap-ul prin PT e mai lent decât cel direct (pe loopback, client→obfs4→ORPort: handshake-ul de legătură ≤ ~1–2 s, bootstrap-ul întreg 32,7 s pe rularea de referință; cifra reală vine din rularea live) | termen per încercare (180 s, D11); copia de onboarding măsoară (Faza 13) | numărul real e în checklist-ul de ieșire (§15), nu aici |
+| L12-C6 | Fără listă de bridge-uri încorporată: majoritatea utilizatorilor n-are bridge-uri până la distribuție (Faza 14) — disponibilitate, nu confidențialitate | Q5 explicit; paste/QR în Faza 13 | golul de disponibilitate până la Faza 14 (R-T6) |
+| L12-C7 | Un binar Go înseamnă o suprafață nouă de supply-chain (toolchain Go, module Go) | același regim ca biblioteca nativă: pin, dublă construcție la aceeași cale, hash în repo și la runtime, licență consemnată | un al doilea lanț de încredere, declarat |
+
+### L12.2 Evidența (ce măsoară fiecare margine)
+
+| ID | Evidența (suita / măsurarea / declarația) |
+|---|---|
+| L12-C1 | captura PT-L1 (primii octeți de aplicație ai hop-ului client↔bridge nu sunt o înregistrare TLS; semnăturile de 3 octeți doar la densitate de întâmplare, niciodată grupate); aserțiunile PT-L2 (bootstrap prin PT, echo onion, două circuite pentru două scope-uri); AD-2 neschimbat; fără nicio afirmație împotriva unui GPA (design §2.2) |
+| L12-C2 | declarat (LT-2); captura de referință măsoară volumul brut prin hop (~2,9 MB client→bridge, ~19,8 MB înapoi, bootstrap întreg) — vizibilitatea e proprietatea măsurată, nu o încălcare; padding-ul de fond e clauza de tuning a rândului 12 (Q7, F-T1 — a proprietarului) |
+| L12-C3 | canarul T58 (PT-P1: fingerprint-ul, cert-ul și textul integral al liniei sintetice nu apar în afara bazei; amendamentul S3-T8 pentru magazinele proprii ale arti); probing-ul e proprietatea bridge-ului, nu a clientului (LT-1); distribuția e Faza 14 |
+| L12-C4 | pinul lyrebird 0.9.0 (`89d54872…`) + patch-ul de prune fixat, cu procedura de bump §4.4 care re-rulează poarta; declarat (R-T4); rândul WebTunnel live vine cu OA-1 |
+| L12-C5 | măsurarea loopback a §9.2 (32,7 s prin obfs4 pe rularea de referință; termenul de 180 s per încercare e neschimbat); cifra live e item 2 din checklist-ul §15 (OA-1) |
+| L12-C6 | declarat (Q5, X-T2); interfața de introducere vine cu Faza 13 peste aceeași suprafață (PT-3/PT-4); distribuția cu Faza 14 |
+| L12-C7 | BUILD.sh + `pins.env` + `SHA256SUMS` (G-T1), dubla construcție byte-identică (G-T2), bugetele de dimensiune re-măsurate (G-T3), egalitatea bytes-ului APK cu sumele (G-T4), verificarea hash la runtime fără comutator de debug (G-T5), licența BSD-3-Clause consemnată la pin (G-T1, S3-T4) |
+
+---
+
 ## 5. Sinteză: ce rămâne cu adevărat imposibil după toate acestea
 
 | Limită | După mitigări rămâne |
@@ -459,7 +500,7 @@ Orice altceva ce poate calcula un releu din vederea lui efectivă e o încălcar
 | GPA | Poate afla „acest IP folosește Tor, posibil GHOST” și un tipar temporal; momentele listărilor nu reflectă activitatea (T19), dar volumul și trimiterile o reflectă până la cover traffic (L2.1). Nu poate afla cu cine sau ce |
 | Membru rău-intenționat | A văzut ce s-a postat cât a fost membru. Nu vede nimic după `Remove`; nu poate deanonimiza pe nimeni fără „reveal”; îl costă (strike-uri pe sponsor, abonament pierdut din canal) |
 | Canale (Faza 10) | Un membru scos (sau un dispozitiv înlocuit printr-o restaurare) nu decriptează nimic din epocile următoare, nici postările scrise după ce autorul lor a văzut scoaterea, și nu mai vede nimic din generația nouă a canalului; releele văd totuși, sub AD-1, că un canal își schimbă adresa și pot recunoaște rolurile (L8-C2, L8-C19), iar o partiție făcută de relee se detectează doar în afara aplicației (L8-C17). |
-| ISP | Vede trafic către o destinație (bridge/VPN/Tor); cu WebTunnel arată ca HTTPS; vede și bootstrap-urile Tor periodice ale joburilor de fundal (L4, până la mitigările din Faza 12). Nu vede GHOST |
+| ISP | Vede trafic către o destinație (bridge/VPN/Tor); cu transport pluggable (Faza 12, după poartă) nu mai vede nici Tor pe hop-ul client↔bridge — rămân conexiunea, volumul, timingul și IP-ul bridge-ului (L12.0); bootstrap-urile Tor periodice ale joburilor de fundal rămân o amprentă temporală până la clauza de tuning a rândului 12 (F-T1, a proprietarului). Nu vede GHOST |
 
 Formularea permisă în UI: „Reducem paguba și o facem vizibilă. Nu o putem face zero.”
 

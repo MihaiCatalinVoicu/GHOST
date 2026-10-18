@@ -323,6 +323,10 @@ private fun replaceGuardSql(table: String, conflict: String): String =
  *    only time columns an hour (`incomplete_after_hour`, `deadline_hour`) and a day (`retain_until_day`), no
  *    full-text index, the transitions of §7.6 as triggers and a `*_no_replace` guard on each. Q27: the Phase 9
  *    columns are not folded in (the owner has not decided), so the rebuilds copy the tables as they are at merge.
+ *  - v9 (Phase 12 transports, docs/design/faza12-transports.md §6.3 "Storage", slice S2): the one
+ *    table of the phase, `transport_bridge` — the user-provided bridge lines (plain and PT),
+ *    day-granular insertion order (WITHOUT ROWID, `added_day` then the line), no new key and no
+ *    new custody story (D7): the rows live in the SQLCipher database like everything else.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
@@ -333,7 +337,7 @@ private fun replaceGuardSql(table: String, conflict: String): String =
  * path of a timer change could be folded into the `dm_outbound_item` rebuild this way).
  */
 object Schema {
-    const val CURRENT_VERSION = 8
+    const val CURRENT_VERSION = 9
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -966,6 +970,10 @@ object Schema {
         Migration(
             version = 8,
             statements = migration8Guard() + migration8Rebuild() + migration8Tables() + migration8Triggers(),
+        ),
+        Migration(
+            version = 9,
+            statements = migration9(),
         ),
     )
 
@@ -2480,6 +2488,28 @@ object Schema {
         ),
     )
 
+    /**
+     * Migration 9 (Phase 12 transports, `docs/design/faza12-transports.md` §6.3, §11; ADR-62
+     * point 4): one additive table, `transport_bridge` — the user-provided bridge lines, the only
+     * schema change of the phase. Plain additive `CREATE TABLE`: no rebuild, no data movement, no
+     * `REPLACE` paths, so it joins [MigrationRunner.verifyIntegrity] without a T33 review beyond
+     * the day-granularity check below. Shape: the line is the primary key (exact-string dedup is
+     * §6.2 point 4's rule, and `INSERT OR IGNORE` is the writer's dedup semantics — so, per the
+     * v7/v8 convention, **no** `transport_bridge_no_replace` guard: it guards only tables whose
+     * writers do not use `INSERT OR IGNORE`); `added_day` is a day index (T33 discipline: no time
+     * column of finer granularity, `typeof` beside the range), and the listing order is
+     * `added_day, line` — insertion order with deterministic tie-break, no rowid (WITHOUT ROWID).
+     * The 1 024-char bound of a line (§6.2 point 3) is a schema CHECK, not only application code.
+     * Nothing else ever writes this table; the bridge lines live in the SQLCipher database like
+     * everything else — no new key, the existing no-backup posture (D7, T58's storage half).
+     */
+    private fun migration9(): List<String> = listOf(
+        """CREATE TABLE transport_bridge (
+                    line      TEXT PRIMARY KEY NOT NULL CHECK (length(line) > 0 AND length(line) <= 1024),
+                    added_day INTEGER NOT NULL CHECK (typeof(added_day) = 'integer' AND added_day >= 0)
+                ) WITHOUT ROWID""",
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
@@ -2512,6 +2542,9 @@ object Schema {
         // v8 (Phase 11 §13.6 "Schema migration M"): the v1 media and media_blobs are dropped (no longer expected),
         // five media tables arrive, and the five DM tables it rebuilds keep their names.
         "media_object", "media_upload", "media_blob", "media_fragment", "media_outbound_op",
+        // v9 (Phase 12 transports §6.3): the user-provided bridge lines (plain and PT), one table,
+        // written only through :network's repository class.
+        "transport_bridge",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */

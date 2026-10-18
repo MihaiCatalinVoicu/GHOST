@@ -52,7 +52,15 @@ rc=0
 # bump drill (the walker's golden tests over the new pin) runs in the CI rust job at a pin change,
 # as for G-R7. G-M9 (media-report-check.sh) checks the gate jobs' reports and is invoked by
 # scripts/ci/media-exit-gate.sh and media-emulator.sh, not here.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock; do
+# Phase 12 slice S3's static PT gates (design faza12-transports.md §13): pt-source-pin is G-T1
+# (the pins' internal consistency, the patch hash, the licence note, no second hash copies);
+# pt-exec-site is G-T6 (no spawn primitive on the production path; PT imports stay in
+# :network/:sync); pt-no-bridge-line-in-logs is G-T7 (no logging in :network/:sync at all, and
+# the PT fixtures' logs carry no bridge line); pt-refusals is G-T8 (the grammar table and the
+# PT-requires-binary pins in source). The build-dependent PT gates run where their inputs are:
+# pt-size (G-T3) and apk-pt-assets (G-T4) in the CI android job beside apk-native-libs, and
+# pt-double-build (G-T2) in the dispatch/weekly pt-loopback job (it re-runs BUILD.sh).
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock pt-source-pin pt-exec-site pt-no-bridge-line-in-logs pt-refusals; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

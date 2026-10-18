@@ -1,0 +1,24 @@
+# GHOST Phase 12 — lyrebird output hashes (rev 2, OA-3 applied; measured 2026-10-17).
+# Source: lyrebird 0.9.0 @ 89d54872b176f936232ff39f7a8189b77d83d65e + prune-snowflake.patch
+# (the binary carries exactly the approved P0 set: obfs4 + webtunnel).
+# Recipe: go1.26.0, GOFLAGS='-trimpath -mod=readonly -buildvcs=false',
+# CGO_ENABLED=0 for arm64 / CGO_ENABLED=1 + pinned NDK clang for x86_64,
+# -ldflags '-s -w -checklinkname=0 -X main.lyrebirdVersion=0.9.0'.
+# Double-built at the same path; A and B byte-identical; re-run stable
+# (evidence doc §10.2).
+#
+# THESE ARE THE BUILD.sh-IN-REPO HASHES: written by BUILD.sh in this directory's
+# own environment (fixed paths under ghost/third_party/lyrebird/) and verified
+# across two full re-runs. The S0+ scratch environment (D:\Forum\.claude\s0\,
+# same recipe) produced byte-different but internally-reproducible hashes
+# (38b2272c…/fafd01be…) — the 59 differing bytes are the Go build-ID note only,
+# per the design's §4.1 step 5 cross-environment note (Phase 14 owns
+# cross-environment byte identity). Same sizes in both environments.
+#
+# android/arm64 (arm64-v8a asset), 7 668 008 B (7.31 MiB), gzip-9 ~2.76 MiB:
+06e41e1ba2b23b2fc0cee4c12c16feaa8673aa7dab5b43b703c00438609acd36  lyrebird-android-arm64
+# android/amd64 (x86_64 asset), 7 556 392 B (7.21 MiB), gzip-9 ~2.96 MiB:
+13e1e50b1d2b32f485f37b7a2cb9b578f5609e3c65641d864fad45f4c9792bcb  lyrebird-android-amd64
+# host builds (loopback harness, not shipped in the APK; S0+ scratch env):
+#   windows/amd64 cd33ddf10f78180d87c298bf932ab69476e53400a9e551984e475321b8fe1489 (7 670 272 B)
+#   linux/amd64   d92fd03d170ee428bdd63566d9638ee0e202b16c8647ad5462f59e0602163b5b (7 504 034 B)

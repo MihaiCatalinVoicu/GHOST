@@ -54,3 +54,36 @@ class RevocationRepository(private val db: SqlExecutor, private val clock: () ->
     fun isRevoked(identityPublicKey: ByteArray): Boolean =
         db.queryLong("SELECT 1 FROM revocations WHERE identity_public_key = ?", listOf(identityPublicKey)) != null
 }
+
+/**
+ * The user-provided bridge lines (Phase 12 transports, design `faza12-transports.md` §6.3; ADR-62
+ * point 4): the only writer of `transport_bridge`. The lines that arrive here were validated by
+ * the single Rust validator (`nativeValidateBridgeLines`) in `:network`'s repository class before
+ * any call — this DAO trusts its input, stores at day granularity (T33), dedups with
+ * `INSERT OR IGNORE` (exact-string duplicates collapse, §6.2 point 4) and lists in insertion
+ * order (`added_day`, then the line — deterministic, rowid-free). Deletion is by exact line (the
+ * future UI's remove action and the host-side test entry). Nothing here ever logs a line (T58).
+ */
+class TransportBridgeRepository(private val db: SqlExecutor, private val clockDay: () -> Long) {
+
+    /** Replaces the whole configured set with [lines] (the settings screen writes the full list). */
+    fun replaceAll(lines: List<String>) {
+        db.transaction {
+            db.exec("DELETE FROM transport_bridge")
+            for (line in lines) {
+                db.exec("INSERT OR IGNORE INTO transport_bridge(line, added_day) VALUES (?, ?)", listOf(line, clockDay()))
+            }
+        }
+    }
+
+    /** The configured lines in insertion order (§6.3), empty when none are configured. */
+    fun list(): List<String> {
+        val out = ArrayList<String>()
+        db.query("SELECT line FROM transport_bridge ORDER BY added_day, line") { out += it.string(0) }
+        return out
+    }
+
+    /** Deletes one exact line; returns true when a row was removed. */
+    fun delete(line: String): Boolean =
+        db.execUpdate("DELETE FROM transport_bridge WHERE line = ?", listOf(line)) > 0
+}

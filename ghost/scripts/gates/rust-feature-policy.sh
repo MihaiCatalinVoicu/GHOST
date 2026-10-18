@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Gate (ADR-01, ADR-16, ADR-19; review 2026-09-11): Arti and tonic feature policy for the client
-# library, checked on the shipped (non-dev) graph for every target.
-#  required: onion-service-client + vanguards (arti-client), vanguards (tor-circmgr);
+# Gate (ADR-01, ADR-16, ADR-19, ADR-61; review 2026-09-11): Arti and tonic feature policy for the
+# client library, checked on the shipped (non-dev) graph for every target.
+#  required: onion-service-client + vanguards + pt-client (arti-client; Phase 12, ADR-61:
+#   managed pluggable transports, tor-ptmgr — the deliberate change that moves pt-client off the
+#   forbidden list), vanguards (tor-circmgr);
 #  forbidden until an ADR enables them:
 #   - relay (tor-proto, tor-chanmgr, tor-llcrypto: the Arti 0.46 crates whose `relay` feature adds
 #     relay code), onion-service-service (arti-client) and the packages tor-hsservice / arti-relay /
@@ -9,10 +11,13 @@
 #     RSA private keys (RSA key-pair code itself is compiled in tor-llcrypto regardless).
 #     tor-cell/relay is NOT checked: tor-proto 0.46 enables it unconditionally, and it only adds
 #     one certificate-encoding helper (CertsCell::push_cert; reviewed 2026-09-11);
+#   - pt-server (arti-client, tor-ptmgr): GHOST is a PT *client* only; a server-side PT feature
+#     must never enter the client (design faza12-transports.md §13). Neither crate defines the
+#     feature today, so the pair fails the moment either enables it;
 #   - keymgr / ctor-keystore / ephemeral-keystore on arti-client and keymgr on tor-hsclient
 #     (experimental; the native keystore Arti opens through tor-chanmgr must stay empty, which
 #     the client tests check);
-#   - pt-client (Phase 12), hs-pow-full, experimental-api, experimental, full (arti-client);
+#   - hs-pow-full, experimental-api, experimental, full (arti-client);
 #   - any tonic feature beyond `codegen` (Channel/Endpoint = clearnet dialer with system DNS);
 #   - ghost-client-net's own `clippy-fixture` feature (negative fixture, never shipped);
 #  and, for the whole workspace on every target, rsa per version (ADR-22, Phase 8 design §14.1):
@@ -88,17 +93,20 @@ has() { grep -qx "$2" <<< "$1"; }
 
 arti="$(features arti-client)"
 [ -n "$arti" ] || { fail "no arti-client features resolved"; finish rust-feature-policy; }
-for f in onion-service-client vanguards ${GHOST_POLICY_REQUIRE_EXTRA:-}; do
+for f in onion-service-client vanguards pt-client ${GHOST_POLICY_REQUIRE_EXTRA:-}; do
   has "$arti" "$f" || fail "arti-client feature '$f' must be enabled"
 done
 circ="$(features tor-circmgr)"
 has "$circ" vanguards || fail "tor-circmgr feature 'vanguards' must be enabled"
-for f in onion-service-service keymgr ctor-keystore ephemeral-keystore pt-client hs-pow-full \
+for f in onion-service-service keymgr ctor-keystore ephemeral-keystore hs-pow-full \
   experimental-api experimental full ${GHOST_POLICY_FORBID_EXTRA:-}; do
   if has "$arti" "$f"; then fail "arti-client feature '$f' is enabled without an ADR"; fi
 done
 
 forbid_on=("tor-proto:relay" "tor-chanmgr:relay" "tor-llcrypto:relay" "tor-hsclient:keymgr")
+# Phase 12 (design §13): the client is a PT client only; a pt-server feature on either crate
+# (neither defines it today) fails here the moment it appears.
+forbid_on+=("arti-client:pt-server" "tor-ptmgr:pt-server")
 # G-R2 (Phase 9 design §16.1, ADR-35): the DM stack's Olm library ships without `libolm-compat`,
 # `low-level-api`, `experimental-session-config` and `insecure-pk-encryption`. `low-level-api` is a
 # **dev** feature of the key-schedule oracle, which this query cannot see (`no-dev`); a normal
@@ -287,11 +295,13 @@ else
 fi
 
 # No fork of a pinned crate through the manifest (review of S2a, F7): the workspace's `[patch]` tables
-# may name only the reviewed stand-in (`openmls_sqlite_storage` under `[patch.crates-io]`), and it has
-# no `[replace]`; and every package of Cargo.lock that is not a workspace member comes from the
-# crates.io registry with a checksum — so a copied `third_party/openmls` patched in with one added
-# function, or a git source, fails here, where every other PR gate passed it. Fail-closed, like the
-# readers above. Hooks: GHOST_POLICY_ROOT_MANIFEST, GHOST_POLICY_LOCK.
+# may name only the reviewed stand-in (`openmls_sqlite_storage`, never compiled) and the reviewed
+# vendored patch (`saturating-time`, the S3-T7 termination fix pinned in
+# `third_party/saturating-time/`, shape- and hash-checked below); there is no `[replace]`; and
+# every package of Cargo.lock that is not a workspace member and not the reviewed vendored patch
+# comes from the crates.io registry with a checksum — so a copied `third_party/openmls` patched in
+# with one added function, or a git source, fails here, where every other PR gate passed it.
+# Fail-closed, like the readers above. Hooks: GHOST_POLICY_ROOT_MANIFEST, GHOST_POLICY_LOCK.
 ROOT_MANIFEST="${GHOST_POLICY_ROOT_MANIFEST:-$GHOST_ROOT/Cargo.toml}"
 LOCK="${GHOST_POLICY_LOCK:-$GHOST_ROOT/Cargo.lock}"
 if [ -z "${meta:-}" ]; then
@@ -312,7 +322,7 @@ elif ! patch_out="$(MANIFEST="$ROOT_MANIFEST" LOCK="$LOCK" perl -MJSON::PP -e '
         $table = $1;
         if ($table =~ /^replace(\.|$)/) { print "Cargo.toml:$n: a [replace] table (G-M2: no replaced crate)\n" }
         elsif ($table =~ /^patch\.(?:crates-io|"crates-io")\.("?)([\w-]+)\1$/) {
-          print "Cargo.toml:$n: [patch.crates-io] names $2 (G-M2: only the reviewed openmls_sqlite_storage stand-in)\n" unless $2 eq "openmls_sqlite_storage";
+          print "Cargo.toml:$n: [patch.crates-io] names $2 (G-M2: only the reviewed openmls_sqlite_storage stand-in and the reviewed saturating-time vendored patch)\n" unless $2 eq "openmls_sqlite_storage" || $2 eq "saturating-time";
         }
         elsif ($table =~ /^patch\.(.+)$/ && $1 !~ /^(?:crates-io|"crates-io")$/) { print "Cargo.toml:$n: a [$table] table (G-M2: patches of crates.io only, and only the stand-in)\n" }
         next;
@@ -321,7 +331,7 @@ elif ! patch_out="$(MANIFEST="$ROOT_MANIFEST" LOCK="$LOCK" perl -MJSON::PP -e '
       if ($l =~ /^("?)([^"=\s]+)\1\s*=/) {
         my $name = $2;
         if ($table eq "replace") { print "Cargo.toml:$n: [replace] names $name (G-M2: no replaced crate)\n" }
-        elsif ($name ne "openmls_sqlite_storage") { print "Cargo.toml:$n: [patch.crates-io] names $name (G-M2: only the reviewed openmls_sqlite_storage stand-in)\n" }
+        elsif ($name ne "openmls_sqlite_storage" && $name ne "saturating-time") { print "Cargo.toml:$n: [patch.crates-io] names $name (G-M2: only the reviewed openmls_sqlite_storage stand-in and the reviewed saturating-time vendored patch)\n" }
       }
     }
     open($fh, "<", $ENV{LOCK}) or die "cannot read $ENV{LOCK}\n";
@@ -337,7 +347,7 @@ elif ! patch_out="$(MANIFEST="$ROOT_MANIFEST" LOCK="$LOCK" perl -MJSON::PP -e '
       my $checksum = $block =~ /^checksum = "[0-9a-f]{64}"/m;
       my $what = "$name $version";
       if (!defined $source) {
-        print "Cargo.lock: $what has no source and is not a workspace member (G-M2: a path package outside the workspace, such as a [patch]ed fork)\n" unless $member{$what};
+        print "Cargo.lock: $what has no source and is not a workspace member (G-M2: a path package outside the workspace, such as a [patch]ed fork)\n" unless $member{$what} || $what eq "saturating-time 0.4.0";
       } elsif ($source ne "registry+https://github.com/rust-lang/crates.io-index") {
         print "Cargo.lock: $what comes from $source (G-M2: every dependency from the crates.io registry)\n";
       } elsif (!$checksum) {
@@ -371,6 +381,28 @@ elif ! grep -qE 'did not match any packages|nothing to print' "$err"; then
   cat "$err" >&2
   fail "cargo tree -i openmls_sqlite_storage failed"
 fi
+
+# The reviewed vendored patch `saturating-time` 0.4.0 (Phase 12 S3-T7): a verbatim copy of the
+# crates.io 0.4.0 crate (recorded checksum in `third_party/saturating-time/README.md`) with the
+# single functional change of the `find_limit` stagnation arm in `src/internal.rs`. Pinned by
+# hash like the stub above: the manifest's patch entry must name this directory, the tree must
+# hold exactly the vendored files, and the manifest/lib/patch-file hashes must match. Any
+# re-vendor or drift fails here.
+VENDORED_SAT="${GHOST_POLICY_SAT_DIR:-$GHOST_ROOT/third_party/saturating-time}"
+grep -qE '^\s*saturating-time\s*=\s*\{\s*path\s*=\s*"third_party/saturating-time"\s*\}\s*$' "$ROOT_MANIFEST" \
+  || fail "Cargo.toml does not patch saturating-time to third_party/saturating-time (G-M2: the reviewed vendored patch, pinned)"
+sat_files="$(cd "$VENDORED_SAT" 2>/dev/null && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
+[ "$sat_files" = "Cargo.toml LICENSE-APACHE LICENSE-MIT README.md README.upstream.md src/internal.rs src/lib.rs " ] \
+  || fail "the saturating-time vendored patch holds [$sat_files], not exactly the pinned file set (G-M2)"
+sat_sum() { sha256sum "$VENDORED_SAT/$1" 2>/dev/null | cut -c1-64; }
+[ "$(sat_sum Cargo.toml)" = c0c23190efbe1f2fefbe18c637783ded24f876d4a1dfc3fb50b0febc13d015b4 ] \
+  || fail "the vendored saturating-time Cargo.toml changed (SHA-256 $(sat_sum Cargo.toml)); review it and update the pin (G-M2)"
+[ "$(sat_sum src/lib.rs)" = 27c1b0ab320a440990a7ecd0e22b08c23dab825f8e7a6a6c9ae98708ef8c4be9 ] \
+  || fail "the vendored saturating-time src/lib.rs is not the pinned upstream file (G-M2)"
+[ "$(sat_sum src/internal.rs)" = 1b641b7a95b1297fd11a7c9d31873373813f89e4f10ba7720913bac73d770f86 ] \
+  || fail "the vendored saturating-time src/internal.rs changed (SHA-256 $(sat_sum src/internal.rs)); re-review the patch and update the pin (G-M2)"
+grep -q "GHOST patch (S3-T7)" "$VENDORED_SAT/src/internal.rs" \
+  || fail "the vendored saturating-time src/internal.rs lost its GHOST patch marker (G-M2)"
 
 # No GHOST code names the memory storage or the basic credential, or calls
 # `CommitBuilder::build_with_new_signer`, `MlsGroup::store_pending_proposal`, `export_group_info` or
