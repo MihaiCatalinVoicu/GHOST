@@ -56,4 +56,16 @@
     <string name="keystore_lost_body">The keys of this phone no longer open the GHOST data. Try again; if it still fails, the data cannot be read anymore: delete it and restore the identity from the 24 words.</string>
     <string name="keystore_lost_retry">Try again</string>
     <string name="keystore_lost_wipe">Delete and restore</string>
+    <string name="payment_title">Pay</string>
+    <string name="payment_disclosures">Paying from an exchange with identity checks links you to an invoice. The Monero network sees the broadcast moment and your wallet fingerprint. Prefer your own wallet over Tor, at a random moment.</string>
+    <string name="payment_no_refund">No refund. The exact amount only - a shortfall can be topped up inside the window, nothing extra is returned.</string>
+    <string name="payment_no_locktime">Do not add a lock time. Send unlocked.</string>
+    <string name="payment_windows">You have 24 hours to pay; confirmation can take up to 72 hours. You can pay from another device or later.</string>
+    <string name="payment_sync_hold">Sync pauses while this screen is open and for 20-60 minutes after it closes.</string>
+    <string name="payment_compare">After pasting the address into a wallet, compare its first and last six characters: a keyboard or a clipboard tool can replace it.</string>
+    <string name="payment_subaddress_label">Address</string>
+    <string name="payment_amount_label">Amount</string>
+    <string name="payment_deadline_label">Pay before</string>
+    <string name="payment_sent">Payment sent</string>
+    <string name="payment_sent_body">The tokens arrive after the network confirms - from minutes to days. GHOST shows one constant message when it happens; nothing else changes here.</string>
 </resources>

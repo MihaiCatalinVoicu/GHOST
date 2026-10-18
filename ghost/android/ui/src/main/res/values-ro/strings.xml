@@ -55,4 +55,16 @@
     <string name="keystore_lost_body">Cheile acestui telefon nu mai deschid datele GHOST. Încearcă din nou; dacă nu merge, datele nu se mai pot citi: șterge-le și restaurează identitatea din cele 24 de cuvinte.</string>
     <string name="keystore_lost_retry">Încearcă din nou</string>
     <string name="keystore_lost_wipe">Șterge și restaurează</string>
+    <string name="payment_title">Plătește</string>
+    <string name="payment_disclosures">Plata de pe o platformă cu verificare de identitate te leagă de o factură. Rețeaua Monero vede momentul difuzării și amprenta portofelului tău. Preferă portofelul propriu, prin Tor, la un moment aleatoriu.</string>
+    <string name="payment_no_refund">Fără rambursare. Exact suma - o diferență mică poate fi completată în fereastră, ce e în plus nu se întoarce.</string>
+    <string name="payment_no_locktime">Nu adăuga timp de blocare. Trimite fără.</string>
+    <string name="payment_windows">Ai 24 de ore să plătești; confirmarea poate dura până la 72 de ore. Poți plăti de pe alt dispozitiv sau mai târziu.</string>
+    <string name="payment_sync_hold">Sincronizarea se oprește cât acest ecran e deschis și 20-60 de minute după închidere.</string>
+    <string name="payment_compare">După ce lipești adresa într-un portofel, compară primele și ultimele șase caractere: o tastatură sau o unealtă de clipboard o poate înlocui.</string>
+    <string name="payment_subaddress_label">Adresă</string>
+    <string name="payment_amount_label">Sumă</string>
+    <string name="payment_deadline_label">Plătește înainte de</string>
+    <string name="payment_sent">Plată trimisă</string>
+    <string name="payment_sent_body">Tokenurile sosesc după confirmarea în rețea - de la minute la zile. GHOST arată un singur mesaj constant când se întâmplă; altceva nu se schimbă aici.</string>
 </resources>

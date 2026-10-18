@@ -34,6 +34,8 @@ class IdentityGatewayAdapterTest {
         var restoreResult: org.ghost.entitlement.api.RestoreResult =
             org.ghost.entitlement.api.RestoreResult.RESTORED
 
+        override fun openPurchases(): List<org.ghost.entitlement.api.OpenPurchase> = emptyList()
+        override fun invites(): List<org.ghost.entitlement.api.InviteIndex> = emptyList()
         override fun inspectInvite(text: String, nowUnixSeconds: Long) = inspect
         override fun activate(inviteText: String) = activateResult
         override fun activationState() = org.ghost.entitlement.api.ActivationState.ACTIVE
