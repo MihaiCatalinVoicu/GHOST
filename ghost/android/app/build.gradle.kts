@@ -73,6 +73,11 @@ android {
         buildConfig = false
     }
 
+    testOptions {
+        // Phase 13 §12.1: Robolectric reads the merged resources of the unit-tested variant.
+        unitTests.isIncludeAndroidResources = true
+    }
+
     packaging {
         // Reproducibility: drop build-host metadata that varies between machines.
         resources.excludes += setOf("META-INF/*.version", "META-INF/DEPENDENCIES", "kotlin/**")
@@ -127,6 +132,47 @@ tasks.withType<Test>().configureEach {
             .withPropertyName("dmHostLibrary")
             .withPathSensitivity(PathSensitivity.NAME_ONLY)
     }
+    // Phase 13 design §12.1: Robolectric runs offline — the android-all-instrumented jars the
+    // runner needs are a test-runtime configuration resolved by Gradle (pinned in
+    // verification-metadata.xml) and copied next to the test task; never downloaded at test time.
+    systemProperty("robolectric.offline", "true")
+    val robolectricDeps = layout.buildDirectory.dir("rbdeps")
+    systemProperty("robolectric.dependency.dir", robolectricDeps.get().asFile.absolutePath)
+}
+
+// The android-all-instrumented images, one detached resolvable configuration each: four
+// versions of one coordinate in one classpath would resolve to the newest only (Gradle's
+// conflict resolution), and each SDK needs its own image.
+val robolectricImages = listOf(
+    "15-robolectric-13954326-i7", // SDK 35 (the default)
+    "14-robolectric-10818077-i7", // SDK 34
+    "13-robolectric-9030017-i7", // SDK 33
+    "10-robolectric-5803371-i7", // SDK 29
+)
+val robolectricImageConfigurations = robolectricImages.map { version ->
+    val confName = "robolectricImage$version"
+    configurations.create(confName) {
+        isCanBeResolved = true
+        isCanBeConsumed = false
+    }.also {
+        project.dependencies.add(confName, "org.robolectric:android-all-instrumented:$version")
+    }
+}
+
+val copyRobolectricDeps = tasks.register<Copy>("copyRobolectricDeps") {
+    description = "Copies the android-all-instrumented jars into build/rbdeps for offline Robolectric (design §12.1)."
+    // Resolved at execution: the configurations exist once the module's dependencies are set.
+    from({
+        robolectricImageConfigurations.flatMap { it.resolve() }
+            .filter { it.name.startsWith("android-all-instrumented") && it.name.endsWith(".jar") }
+    }) {
+        eachFile { path = name }
+        includeEmptyDirs = false
+    }
+    into(layout.buildDirectory.dir("rbdeps"))
+}
+tasks.withType<Test>().configureEach {
+    dependsOn(copyRobolectricDeps)
 }
 
 // Third-party notices (ADR-37; Phase 9 design §2.10.2, gates G-L1 … G-L3). Every variant packages
@@ -297,5 +343,18 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
+    // Phase 13 design §12.1, §13.3 (Q25): the JVM-instrumentation runner, pinned and offline —
+    // the android-all-instrumented jars resolve through Gradle (verification-metadata pins
+    // them) and the test task copies them into build/rbdeps, where the runner's
+    // dependency.dir points; nothing is downloaded at test time. SDK 35 default (36/37 are
+    // emulator-only).
+    testImplementation("org.robolectric:robolectric:4.17")
+    // The android-all-instrumented images the runner would fetch at runtime are declared as the
+    // detached configurations above (one per SDK image) — four versions of one coordinate
+    // cannot share one classpath (conflict resolution keeps the newest only). SDK 35 default,
+    // 29/33/34 for the version-gated cases; SDK 36/37 stay emulator-only (JDK 21, ADR-34).
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core:1.6.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     androidTestImplementation(libs.junit)
 }

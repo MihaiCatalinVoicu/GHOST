@@ -25,15 +25,18 @@ while IFS= read -r f; do
   # Denylist: no configuration may declare one.
   hits=$(grep -nE "($DENY)" "$f" || true)
   [ -z "$hits" ] || while IFS= read -r h; do fail "$rel: denied artifact: $h"; done <<< "$hits"
-  # Test-only groups: allowed only in test configurations.
+  # Test-only groups: allowed only in test configurations, and only the dependencies { } block
+  # declares configurations — a task or test block that mentions a test-only name (a
+  # systemProperty, a comment, a detached image configuration's wiring) is not a declaration.
+  deps_block=$(awk '/^[[:space:]]*dependencies[[:space:]]*\{/{f=1;next} f&&/^[[:space:]]*\}/{f=0} f{print NR": "$0}' "$f" || true)
   while IFS= read -r h; do
     line=$(printf '%s' "$h" | cut -d: -f1)
-    conf=$(sed -n "${line}p" "$f" | sed -E 's/^[[:space:]]*([A-Za-z0-9]+).*/\1/')
+    conf=$(printf '%s' "$h" | cut -d: -f2- | sed -E 's/^[[:space:]]*([A-Za-z0-9]+).*/\1/')
     case "$conf" in
       testImplementation|androidTestImplementation|testRuntimeOnly|androidTestRuntimeOnly|testCompileOnly|debugImplementation) ;;
       *) fail "$rel:$line: test-only dependency in a shipped configuration ($conf): $h" ;;
     esac
-  done < <(grep -nE "($TESTONLY)" "$f" || true)
+  done < <(printf '%s\n' "$deps_block" | grep -E "($TESTONLY)" || true)
 done < <(find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name 'build.gradle.kts' -o -name 'build.gradle' \) -print 2>/dev/null || true)
 
 # Vacuity floor: at least one Gradle build file.
