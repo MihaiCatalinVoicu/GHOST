@@ -44,6 +44,10 @@ interface IdentityGateway {
     @UserAction
     suspend fun activateInvite(text: String): ActivateResult
 
+    /** Genesis activation (Q21): refuses unless the build's genesis policy is on; §3.6. */
+    @UserAction
+    suspend fun activateGenesis(acknowledged: Boolean): ActivateResult
+
     /** Restores the identity from the 24 words (§5.7; local, `Entitlement.restore`). */
     @UserAction
     suspend fun restore(words: List<String>): RestoreResult
