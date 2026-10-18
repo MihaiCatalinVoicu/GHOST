@@ -23,10 +23,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # The PT loopback gate (design faza12-transports.md §12.3): weekly, off-peak (Wednesday 02:13)
+    # — it needs the public Tor network and the pinned fixture fetches, so it never runs per push.
+    - cron: "13 2 * * 3"
   workflow_dispatch:
     inputs:
       live_tor:
         description: "Run the live Tor bootstrap test (network)"
+        type: boolean
+        default: false
+      pt_loopback:
+        description: "Run the PT loopback gate (lyrebird harness, network)"
         type: boolean
         default: false
 
@@ -448,6 +456,16 @@ jobs:
       # equivalence entry point. `./gradlew build` above assembled the release that wrote it.
       - name: G-DM5 release mapping (no debug hook, harness or test entry point; GHOST names kept)
         run: bash ../scripts/gates/apk-no-debug-hooks.sh app/build/outputs/mapping/release/mapping.txt
+      # Phase 12 (design faza12-transports.md §13, slice S3): the PT size budgets (G-T3) over the
+      # lyrebird BUILD.sh outputs, and the APK's PT assets (G-T4): both ABIs byte-identical to
+      # the recorded SHA256SUMS, no other executable asset, no bridge line in the package
+      # (PT-P3's APK half). The ptAssets Gradle task refused a drifted binary at build time;
+      # these gates are the independent check on what actually shipped.
+      - name: G-T3 PT size budgets, G-T4 APK PT assets
+        working-directory: ghost
+        run: |
+          bash scripts/gates/pt-size.sh
+          bash scripts/gates/apk-pt-assets.sh android/app/build/outputs/apk/release/app-release-unsigned.apk
 
   sync-exit-gate:
     name: sync exit gate (JVM harness, 20000 seeded worlds, double crashes in both journal modes)
@@ -572,3 +590,44 @@ jobs:
           # the runner), not a /tmp that keeps a previous run's state on a persistent runner.
           TMPDIR: ${{ runner.temp }}
         run: cargo test -p ghost-client-net --locked --test live_tor -- --ignored --nocapture
+
+  # Phase 12 slice S3 (design faza12-transports.md §12.3, §14 row S3): the PT loopback gate.
+  # PT-L1/PT-L2 and PT-P1/PT-P2 run the pinned harness end to end (tor expert bundle relay +
+  # lyrebird server + arti through obfs4); G-T2 re-proves the reproducible double build.
+  # Dispatch/weekly only (ADR-58's capacity rule: it needs the public directory and the pinned
+  # fixture downloads, and runs for minutes).
+  pt-loopback:
+    name: PT loopback gate (arti through obfs4 at the pinned lyrebird; G-T2 double build)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pt_loopback)
+    runs-on: [self-hosted, linux, x64, ghost]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+      - name: install pinned protoc
+        run: |
+          bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      # G-T2: two same-path harness builds must be byte-identical (the recorded android sums
+      # are checked when the android outputs exist — this job builds harness targets only).
+      - name: G-T2 lyrebird reproducible double build
+        run: bash scripts/gates/pt-double-build.sh
+      # The harness fixtures: the pinned tor expert bundle (hash-verified by FETCH.sh) and the
+      # host lyrebird (built by G-T2's runs above).
+      - name: fetch the pinned tor fixture
+        run: bash third_party/tor-expert/FETCH.sh
+      # PT-L1/PT-L2/PT-P: the loopback gate itself (ignored by default; needs the network).
+      - name: PT loopback harness (PT-L1/PT-L2/PT-P1/PT-P2)
+        env:
+          GHOST_LIVE_LOG: info
+          TMPDIR: ${{ runner.temp }}
+        run: cargo test --locked -p ghost-client-net --test pt_loopback -- --ignored --nocapture --test-threads=1
