@@ -1,53 +1,29 @@
 package org.ghost.app
 
 import android.os.Bundle
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
+import org.ghost.ui.shell.DemoScreen
+import org.ghost.ui.shell.GhostRoot
+import org.ghost.ui.protect.SecureActivity
 
 /**
- * Developer-preview entry point. Shows the honest status of the build (CP-10: claims must match
- * evidence). FLAG_SECURE (FR-7.8) is set here so screenshot/recents protection is the default
- * for every screen that follows.
+ * Phase 13 design §3.1, §3.4, §4.1: the single activity of the app. `MainActivity` is the only
+ * activity and the only exported component (G-U11): `singleTask` and `persistableMode=
+ * "persistNever"` keep a launching link out of the persisted task record (D7), and the `ghost`
+ * scheme filters accept only the `invite`, `contact` and `channel` hosts (§3.4). The window
+ * protection (FLAG_SECURE, recents thumbnail off, autofill excluded, accessibility-data
+ * sensitive, no saved state) lives in [SecureActivity].
+ *
+ * Link intake (§3.4) and the lock wiring (§3.5) land with S1's shell; until then the demo
+ * screen shows only build-stage copy (CP-10).
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : SecureActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
-        setContent { GhostTheme { DevPreviewScreen() } }
-    }
-}
-
-@Composable
-fun GhostTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
-    MaterialTheme(colorScheme = scheme, content = content)
-}
-
-@Composable
-fun DevPreviewScreen() {
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.padding(24.dp)) {
-            Text(text = stringResource(R.string.devpreview_title), style = MaterialTheme.typography.headlineSmall)
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(text = stringResource(R.string.devpreview_stage), style = MaterialTheme.typography.labelLarge)
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(text = stringResource(R.string.devpreview_body), style = MaterialTheme.typography.bodyMedium)
+        setContent {
+            GhostRoot(clipboardOwner = null) {
+                DemoScreen()
+            }
         }
     }
 }

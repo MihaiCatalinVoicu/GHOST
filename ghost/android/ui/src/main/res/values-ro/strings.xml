@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="keypad_delete">Șterge</string>
+    <string name="keypad_confirm">Confirmă</string>
+    <string name="demo_title">GHOST</string>
+    <string name="demo_body">Build de previzualizare pentru dezvoltatori. Interfața de producție a Fazei 13 vine peste acest schelet.</string>
+</resources>

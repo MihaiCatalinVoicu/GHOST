@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 13 design §9.4 (Q9): Romanian and English at launch, Romanian written first.
+     G-U12: every string of `values` has a `values-ro` twin with the same placeholders. -->
+<resources>
+    <string name="keypad_delete">Delete</string>
+    <string name="keypad_confirm">Confirm</string>
+    <string name="demo_title">GHOST</string>
+    <string name="demo_body">Developer preview build. The production UX of Phase 13 lands on this shell.</string>
+</resources>

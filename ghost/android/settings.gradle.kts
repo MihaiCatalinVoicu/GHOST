@@ -37,3 +37,5 @@ include(":sync")
 include(":network")
 include(":entitlement")
 include(":media")
+// Phase 13 design §3.1 (slice S0b): the UI module. No project() dependency of its own (G-U5).
+include(":ui")

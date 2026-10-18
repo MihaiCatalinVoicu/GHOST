@@ -280,6 +280,8 @@ dependencies {
     implementation(project(":network"))
     implementation(project(":entitlement"))
     implementation(project(":media"))
+    // Phase 13 design §3.1 (slice S0b): the UI module; :app is the composition root.
+    implementation(project(":ui"))
     // `PickedVideo` and `NoBitmapsLoader` (the sender pipeline's `:app` half, slice S5): media3's
     // `MediaItem`/`BitmapLoader` types cross the module boundary; the pipeline itself is `:media`.
     implementation(libs.androidx.media3.common)

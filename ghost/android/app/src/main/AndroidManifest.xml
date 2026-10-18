@@ -9,6 +9,12 @@
     <!-- ADR-20: the sync job's network constraint (required from targetSdk 34). -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Phase 13 design §4.7 (Q12): the camera is used for QR scanning only and is not required —
+         a device without one uses the paste fallback (G-U11). -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <application
         android:name=".GhostApp"
         android:allowBackup="false"
@@ -20,12 +26,25 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
+        <!-- Phase 13 design §3.4, §4.1 (G-U11): the single activity, the only exported component.
+             singleTask + persistNever: the task's persisted base intent carries no link (D7);
+             the ghost:// filters accept only the invite, contact and channel hosts — no http(s)
+             data, no autoVerify. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:persistableMode="persistNever">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="ghost" android:host="invite" />
+                <data android:scheme="ghost" android:host="contact" />
+                <data android:scheme="ghost" android:host="channel" />
             </intent-filter>
         </activity>
 
