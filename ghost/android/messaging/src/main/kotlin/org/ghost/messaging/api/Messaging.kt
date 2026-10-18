@@ -211,6 +211,9 @@ interface Messaging {
      * Olm identity transitively through the bundle signature and binding v3 (§8.4) — and a card
      * that arrived as a link starts `unverified`, because a substituted link is a MITM.
      */
+    /** §13.2's add, with the §3.6 alias applied when the add succeeds. */
+    fun addContact(card: ByteArray, source: CardSource, name: String?): AddContactResult
+
     fun addContact(card: ByteArray, source: CardSource): AddContactResult
 
     /** §13.2 `contacts`: ids and enums only, never a time (T33). */
@@ -246,6 +249,9 @@ interface Messaging {
     fun unblock(contact: ContactId): Boolean
 
     /** §12.4: every row of the contact; its two namespaces wait for SWEEP (§21.12 point 3). */
+    /** Phase 13 §3.6: renames (or clears, null) the contact's alias. False when no such contact. */
+    fun rename(contact: ContactId, name: String?): Boolean
+
     fun deleteContact(contact: ContactId): Boolean
 
     // --------------------------------------------------------------------- send
@@ -577,6 +583,8 @@ class ContactView(
     val establishment: Establishment,
     val source: CardSource?,
     val resetNeeded: Boolean,
+    /** The alias of Phase 13 §3.6, decrypted into memory only (like the message text). */
+    val name: String? = null,
 ) {
     override fun toString(): String = "ContactView($trust, $establishment)"
 }

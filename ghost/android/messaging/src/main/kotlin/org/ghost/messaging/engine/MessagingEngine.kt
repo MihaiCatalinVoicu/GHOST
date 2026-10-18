@@ -162,6 +162,16 @@ internal class MessagingEngine(
     override fun addContact(card: ByteArray, source: CardSource): AddContactResult =
         onActor { AddContactResult.of(contactSteps.addContact(card, source.toStore())) }
 
+    override fun addContact(card: ByteArray, source: CardSource, name: String?): AddContactResult =
+        onActor {
+            AddContactResult.of(contactSteps.addContact(card, source.toStore(), name))
+                .also { if (it != AddContactResult.INVALID_CARD && it != AddContactResult.CRYPTO_UNAVAILABLE) hint(ChangeKind.CONTACTS) }
+        }
+
+    override fun rename(contact: ContactId, name: String?): Boolean = onActor {
+        contactSteps.rename(contact.toByteArray(), name).also { if (it) hint(ChangeKind.CONTACTS) }
+    }
+
     override fun contacts(): List<ContactView> = onActor {
         contactSteps.contacts().map { view ->
             ContactView(
@@ -170,6 +180,7 @@ internal class MessagingEngine(
                 establishment = establishmentOf(view.establishment),
                 source = sourceOf(view.source),
                 resetNeeded = view.resetNeeded,
+                name = view.name,
             )
         }
     }

@@ -93,6 +93,8 @@ internal class ContactSteps(
         val establishment: ContactStore.Establishment,
         val source: ContactStore.Source,
         val resetNeeded: Boolean,
+        /** The §3.6 alias, decrypted into memory only. */
+        val name: String? = null,
     ) {
         override fun toString(): String = "ContactView(trust=$trust, establishment=$establishment)"
     }
@@ -186,11 +188,46 @@ internal class ContactSteps(
         return if (stored.contentEquals(card)) AddResult.ALREADY_KNOWN else AddResult.CARD_CHANGED
     }
 
-    /** §13.2 `contacts`: ids and enums only, never a time (T33). */
+    /** §13.2 `contacts`: ids and enums only, never a time (T33); the alias decrypts here, into memory only. */
     fun contacts(): List<ContactView> = database.transaction { tx ->
+        val self = contexts.get()
         store.contacts(tx.sql).map { row ->
-            ContactView(row.contactId, row.trust, row.establishment, row.source, row.resetNeeded)
+            val name = self?.let { s ->
+                row.nameEnv?.let { env -> s.content.open(env, row.contactId)?.toString(Charsets.UTF_8) }
+            }
+            ContactView(row.contactId, row.trust, row.establishment, row.source, row.resetNeeded, name)
         }
+    }
+
+    /** Phase 13 §3.6 (`rename`): seals the alias under the content key with the contact id as the
+     * associated data (the card's own pattern), or clears it. False when there is no such contact. */
+    fun rename(contactId: ByteArray, name: String?): Boolean {
+        val self = contexts.get() ?: if (crypto.isAvailable()) return false else return false
+        return database.transaction { tx ->
+            if (store.contact(tx.sql, contactId) == null) return@transaction false
+            if (name == null) {
+                store.setName(tx, contactId, null)
+            } else {
+                val nonce = random.bytes(org.ghost.messaging.store.ContentCipher.NONCE_BYTES)
+                store.setName(tx, contactId, self.content.seal(nonce, contactId, name.toByteArray(Charsets.UTF_8)))
+            }
+            true
+        }
+    }
+
+    /** §13.2's add followed by the §3.6 alias in the same state (the alias rides the card's identity key). */
+    fun addContact(card: ByteArray, source: ContactStore.Source, name: String?): AddResult {
+        val result = addContact(card, source)
+        if (name != null && (result == AddResult.ADDED || result == AddResult.ALREADY_KNOWN)) {
+            val self = contexts.get() ?: return result
+            val parsed = (crypto.parseCard(card) as? DmCards.ParseResult.Ok)?.card ?: return result
+            database.transaction { tx ->
+                val row = store.contactByIdentity(tx.sql, parsed.identityPk) ?: return@transaction
+                val nonce = random.bytes(org.ghost.messaging.store.ContentCipher.NONCE_BYTES)
+                store.setName(tx, row.contactId, self.content.seal(nonce, row.contactId, name.toByteArray(Charsets.UTF_8)))
+            }
+        }
+        return result
     }
 
     /**

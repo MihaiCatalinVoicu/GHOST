@@ -102,6 +102,8 @@ internal class ContactStore {
         val requestUntilDay: Long?,
         /** `SHA-256(displayed digits)` of the safety number the user compared (§8.4). */
         val verifiedFp: ByteArray?,
+        /** The sealed alias of Phase 13 §3.6 (`name_env`, sealed under the content key). */
+        val nameEnv: ByteArray? = null,
     ) {
         /** Never shows the card: it is a bearer secret for "may message me" (§3.3). */
         override fun toString(): String = "ContactRow(trust=$trust, establishment=$establishment)"
@@ -153,7 +155,7 @@ internal class ContactStore {
     private val contactColumns =
         "contact_id, identity_pk, card_env, card_index, pinned_identity, pending_identity, " +
             "bundle_week_seen, trust_state, source, establishment, fetch_attempts, " +
-            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp"
+            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp, name_env"
 
     fun contact(sql: SqlExecutor, contactId: ByteArray): ContactRow? =
         contactBy(sql, "contact_id = ?", listOf(contactId))
@@ -175,6 +177,14 @@ internal class ContactStore {
             out += readContact(r)
         }
         return out
+    }
+
+    /** Phase 13 §3.6: stores the alias, sealed under the content key (NULL clears it). */
+    fun setName(tx: SyncTransaction, contactId: ByteArray, nameEnv: ByteArray?) {
+        tx.sql.execUpdate(
+            "UPDATE dm_contact SET name_env = ? WHERE contact_id = ?",
+            listOf(nameEnv, contactId),
+        )
     }
 
     /** The contacts whose establishment is `fetching`, for the time-triggered EST steps. */
@@ -216,7 +226,7 @@ internal class ContactStore {
     ) {
         tx.sql.exec(
             "INSERT INTO dm_contact($contactColumns) " +
-                "VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 'card_only', 0, NULL, 0, ?, NULL)",
+                "VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 'card_only', 0, NULL, 0, ?, NULL, NULL)",
             listOf(
                 contactId,
                 identityPk,
@@ -312,6 +322,7 @@ internal class ContactStore {
         resetNeeded = r.long(12) != 0L,
         requestUntilDay = if (r.isNull(13)) null else r.long(13),
         verifiedFp = if (r.isNull(14)) null else r.blob(14),
+        nameEnv = if (r.isNull(15)) null else r.blob(15),
     )
 
     // --------------------------------------------------- key change (§8.3, KEYDEC)
