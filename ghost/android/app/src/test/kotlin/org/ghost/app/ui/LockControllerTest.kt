@@ -131,6 +131,21 @@ class LockControllerTest {
     }
 
     @Test
+    fun aProcessStartWithALockConfiguredStartsLocked() {
+        val store = MemoryStore()
+        val clock = FakeClock()
+        val first = LockController(store, SoftwareMac(), SecureRandom(), clock)
+        first.setPin(charArrayOf('1', '2', '3', '4', '5', '6'))
+        assertEquals(LockController.State.UNLOCKED, first.state)
+        // A "kill and restart" with the PIN set: the new process starts LOCKED (§5.1), and a
+        // submission is legal at once (MC-U20's restart half).
+        val second = LockController(store, SoftwareMac(), SecureRandom(), clock)
+        assertEquals(LockController.State.LOCKED, second.state)
+        val outcome = second.submit(charArrayOf('1', '2', '3', '4', '5', '6'))
+        assertEquals(LockController.SubmitOutcome.Unlocked, outcome)
+    }
+
+    @Test
     fun processStartWithFailuresReArmsTheBackoffInFull() {
         val store = MemoryStore()
         val clock = FakeClock()

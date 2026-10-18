@@ -14,4 +14,11 @@
     <string name="banner_open">Deschide</string>
     <string name="hold_to_confirm">Ține apăsat pentru confirmare</string>
     <string name="confirm_alternative">Altă metodă de confirmare</string>
+    <string name="lock_title">GHOST este blocat</string>
+    <plurals name="lock_failures">
+        <item quantity="one">%d încercare greșită</item>
+        <item quantity="few">%d încercări greșite</item>
+        <item quantity="other">%d încercări greșite</item>
+    </plurals>
+    <string name="lock_backoff">Prea multe încercări. Așteaptă %d secunde.</string>
 </resources>

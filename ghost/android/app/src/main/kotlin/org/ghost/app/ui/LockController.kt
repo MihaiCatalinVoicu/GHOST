@@ -55,10 +55,16 @@ class LockController(
     private var backoffUntilMs = 0L
 
     init {
-        // The back-off is armed in full at every process start with failures ≥ 5 (§5.2).
-        val failures = store.read()?.failures ?: 0
-        if (failures >= BACKOFF_THRESHOLD) {
-            state = State.BACKOFF
+        // A new process starts LOCKED when a lock is configured (§5.1); the back-off is armed in
+        // full at every process start with failures ≥ 5 (§5.2).
+        val record = store.read()
+        val failures = record?.failures ?: 0
+        state = when {
+            record == null -> State.UNCONFIGURED
+            failures >= BACKOFF_THRESHOLD -> State.BACKOFF
+            else -> State.LOCKED
+        }
+        if (state == State.BACKOFF) {
             backoffUntilMs = clock.nowMs() + waitSeconds(failures) * 1000L
         }
     }

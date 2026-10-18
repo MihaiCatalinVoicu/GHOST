@@ -16,4 +16,10 @@
     <string name="banner_open">Open</string>
     <string name="hold_to_confirm">Hold to confirm</string>
     <string name="confirm_alternative">Another way to confirm</string>
+    <string name="lock_title">GHOST is locked</string>
+    <plurals name="lock_failures">
+        <item quantity="one">%d wrong attempt</item>
+        <item quantity="other">%d wrong attempts</item>
+    </plurals>
+    <string name="lock_backoff">Too many attempts. Wait %d seconds.</string>
 </resources>
