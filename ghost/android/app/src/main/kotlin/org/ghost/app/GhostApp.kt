@@ -169,6 +169,19 @@ class GhostApp : Application(), SyncHost {
         })
     }
 
+    /** The notifier, cancelled at lock (§4.6). */
+    private var notifier: org.ghost.app.ui.GhostNotifier? = null
+
+    private fun toHubKind(kind: org.ghost.messaging.api.ChangeKind): org.ghost.app.ui.ChangeHub.ChangeKind =
+        when (kind) {
+            org.ghost.messaging.api.ChangeKind.CONTACTS -> org.ghost.app.ui.ChangeHub.ChangeKind.CONTACTS
+            org.ghost.messaging.api.ChangeKind.MESSAGES -> org.ghost.app.ui.ChangeHub.ChangeKind.MESSAGES
+            org.ghost.messaging.api.ChangeKind.REQUESTS -> org.ghost.app.ui.ChangeHub.ChangeKind.REQUESTS
+            org.ghost.messaging.api.ChangeKind.TRUST -> org.ghost.app.ui.ChangeHub.ChangeKind.TRUST
+            org.ghost.messaging.api.ChangeKind.OUTCOMES -> org.ghost.app.ui.ChangeHub.ChangeKind.OUTCOMES
+            org.ghost.messaging.api.ChangeKind.STATUS -> org.ghost.app.ui.ChangeHub.ChangeKind.STATUS
+        }
+
     override fun onCreate() {
         super.onCreate()        // Phase 11 design §9.2 (V-M19): Android instantiates the Application in every process,
         // including the isolated `:mdec` decoding service's. `wiring.onProcessStart()` and
@@ -181,6 +194,19 @@ class GhostApp : Application(), SyncHost {
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()
         messagingWiring.onProcessStart(keyExists = keys.exists())
+        // Phase 13 §3.6, §4.6: the UI's hint listener (content-free kinds into the ChangeHub) and
+        // the one constant notification, both held by the wiring across database reopens. The
+        // notifier cancels at lock; the listener's hints ride the actor thread's hand-off rule.
+        messagingWiring.setUiListener(org.ghost.messaging.api.MessagingListener { kinds ->
+            kinds.forEach { kind -> org.ghost.app.ui.ChangeHub.hint(toHubKind(kind)) }
+        })
+        val notifier = org.ghost.app.ui.GhostNotifier(
+            context = this,
+            interactive = { presence.presence == org.ghost.app.ui.AppPresence.Presence.INTERACTIVE },
+            lockScreenAllowed = { org.ghost.app.ui.GhostNotifier.countOption },
+        )
+        messagingWiring.setNotifier(notifier)
+        this.notifier = notifier
         // ON_START when the first activity starts, ON_STOP shortly after the last one stops. A
         // process started for the background job has no activity and never sees ON_START.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
@@ -227,6 +253,7 @@ class GhostApp : Application(), SyncHost {
     fun onLock() {
         presence.onLocked()
         messagingWiring.onLock()
+        notifier?.cancelAll() // §4.6: nothing waits on the lock screen
     }
 
     /** The app unlocked: presence becomes INTERACTIVE when the activity also resumes (X-U14). */

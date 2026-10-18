@@ -44,8 +44,8 @@ class GhostNotifier(
         executor.execute { postOrCancel(count) }
     }
 
-    /** An unlock cancels whatever the background left (§4.6). */
-    fun onUnlock() {
+    /** An unlock — and a lock — cancels whatever the background left (§4.6). */
+    fun cancelAll() {
         executor.execute { manager.cancel(NOTIFICATION_ID) }
     }
 

@@ -259,6 +259,28 @@ internal class MessagingWiring(
     }
 
     /**
+     * Phase 13 §3.6 (`setListener`): the UI's listener. Held here so a stack built later (a
+     * database reopen) receives it in the same ensureStack pass; cleared with the stack at a
+     * wipe. The listener hands off to the UI's conflated hub and never blocks the actor (§13.7).
+     */
+    @Volatile
+    private var uiListener: org.ghost.messaging.api.MessagingListener? = null
+
+    fun setUiListener(listener: org.ghost.messaging.api.MessagingListener?) {
+        uiListener = listener
+        stack?.messaging?.setListener(listener)
+    }
+
+    /** Phase 13 §4.6: the notification port, held for the same reopen reason as [setUiListener]. */
+    @Volatile
+    private var notificationPort: org.ghost.messaging.api.NotificationPort? = null
+
+    fun setNotifier(port: org.ghost.messaging.api.NotificationPort?) {
+        notificationPort = port
+        stack?.messaging?.setNotificationPort(port)
+    }
+
+    /**
      * The stack of the open database, built on first use. A new stack is wired and opened here, in
      * this order: the Inbox listener, the context (posted, and only if [contextWanted]), then the
      * database-open time trigger (§21.12 point 2, §10.7 trigger 2) — posted after the open, so the
@@ -287,6 +309,8 @@ internal class MessagingWiring(
                 stack = built
                 built.onForeground(foreground)
                 built.open(identity, ::contextWanted)
+                uiListener?.let { built.messaging.setListener(it) }
+                notificationPort?.let { built.messaging.setNotificationPort(it) }
                 built.onTimeTrigger()
                 built
             } catch (e: RuntimeException) {
@@ -414,6 +438,9 @@ internal class MessagingWiring(
      * for the pass in flight.
      */
     fun onWipe() {
+        uiListener = null
+        notificationPort = null
+        stack?.messaging?.setListener(null)
         val old = synchronized(lock) {
             wiped = true
             stack.also { stack = null }

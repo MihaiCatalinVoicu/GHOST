@@ -55,7 +55,7 @@ class GhostNotifierTest {
         n2.onUnreadChanged(2)
         Thread.sleep(150)
         assertNotNull(Shadows.shadowOf(manager2).getNotification(NOTIFICATION_ID))
-        n2.onUnlock()
+        n2.cancelAll()
         Thread.sleep(150)
         assertNull("unlock cancels", Shadows.shadowOf(manager2).getNotification(NOTIFICATION_ID))
     }
