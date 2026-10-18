@@ -231,6 +231,9 @@ interface Messaging {
      * message minute; no text, ever (T33). */
     fun conversationSummaries(): List<ConversationSummary>
 
+    /** Phase 13 §3.6 (`conversationTimer`): the conversation's timer, or null when off. */
+    fun conversationTimer(contact: ContactId): Timer?
+
     fun conversation(contact: ContactId, limit: Int, before: MessageCursor?): List<MessageView>
 
     /** §12.3: an unknown card holder's request becomes a contact the user may write to. */

@@ -192,6 +192,10 @@ internal class MessagingEngine(
         contactSteps.conversationSummaries(nowMinute)
     }
 
+    override fun conversationTimer(contact: ContactId): Timer? = onActor {
+        contactSteps.conversationTimer(contact.toByteArray())
+    }
+
     override fun conversation(
         contact: ContactId,
         limit: Int,

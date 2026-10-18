@@ -199,6 +199,12 @@ internal class ContactSteps(
         }
     }
 
+    /** Phase 13 §3.6 (`conversationTimer`): the conversation's own timer code, null when off. */
+    fun conversationTimer(contactId: ByteArray): org.ghost.messaging.api.Timer? =
+        database.transaction { tx ->
+            store.conversation(tx.sql, contactId)?.timerCode?.let { org.ghost.messaging.api.Timer.ofCode(it) }
+        }
+
     /** Phase 13 §3.6 (`conversationSummaries`): contact id, live unread count, newest live message
      * minute - never a text, never a key (T33). */
     fun conversationSummaries(nowMinute: Long): List<org.ghost.messaging.api.ConversationSummary> =

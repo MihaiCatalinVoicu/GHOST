@@ -155,8 +155,9 @@ interface DmGateway {
     @UserAction
     suspend fun send(contactId: String, body: SensitiveText, replyTo: String?)
 
+    /** The batch the §3.5 "displayed" rule counted: exactly the ids half-visible for 500 ms. */
     @UserAction
-    suspend fun markDisplayed(contactId: String, upToMinute: Long)
+    suspend fun markDisplayed(contactId: String, messageIds: List<String>)
 
     @UserAction
     suspend fun setConversationOnScreen(contactId: String?)
@@ -166,9 +167,6 @@ interface DmGateway {
 
     @UserAction
     suspend fun retry(messageId: String)
-
-    @UserAction
-    suspend fun reconnect(contactId: String)
 
     @UserAction
     suspend fun addContact(cardText: String, source: String, name: String?)
