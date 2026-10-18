@@ -78,7 +78,7 @@ class OnboardingModel(
         step = Step.ACTIVATING
         val result = identity.activateInvite(text)
         step = when (result) {
-            ActivateResult.ACTIVATED -> Step.WORDS
+            ActivateResult.ACTIVATED, ActivateResult.ALREADY_ACTIVE -> Step.WORDS
             else -> Step.INVITE
         }
         return result
@@ -90,7 +90,7 @@ class OnboardingModel(
         check(step == Step.INVITE) { "onGenesisConfirmed only from INVITE, was $step" }
         step = Step.ACTIVATING
         val result = identity.activateGenesis(acknowledged = true)
-        step = if (result == ActivateResult.ACTIVATED) Step.WORDS else Step.INVITE
+        step = if (result == ActivateResult.ACTIVATED || result == ActivateResult.ALREADY_ACTIVE) Step.WORDS else Step.INVITE
         return result
     }
 

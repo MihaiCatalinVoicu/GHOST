@@ -26,8 +26,8 @@ enum class ActivationState { NONE, ACTIVE, RESTORED }
 /** The restore outcome (§5.7 step 3, `Entitlement.restore` mapped). */
 enum class RestoreResult { RESTORED, REFUSED_MNEMONIC, ALREADY_ACTIVE, UNAVAILABLE }
 
-/** The activation outcome of an invite (local naming of the engine's ActivationResult). */
-enum class ActivateResult { ACTIVATED, REFUSED, UNAVAILABLE }
+/** The activation outcome (the engine's ActivationResult in UI naming, §3.6). */
+enum class ActivateResult { ACTIVATED, ALREADY_ACTIVE, REFUSED, UNAVAILABLE }
 
 /** Identity and onboarding: the database key, the invite, restore, the words, backup. */
 interface IdentityGateway {
