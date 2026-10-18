@@ -47,4 +47,13 @@
     <string name="onboarding_notifications_allow">Allow notifications</string>
     <string name="onboarding_notifications_skip">Not now</string>
     <string name="onboarding_disclosures_title">Before you continue</string>
+    <string name="wipe_title">Delete local data</string>
+    <string name="wipe_body_what">What this deletes: every message and contact on this phone, your access tokens and unused credits, your identity keys. Copies others hold stay with them; relay copies stay until their time runs out.</string>
+    <string name="wipe_body_how">Deleted files and keys are as final as this phone storage and its key store allow. Your identity can come back only from the 24 words.</string>
+    <string name="wipe_reenter_pin">Re-enter your PIN</string>
+    <string name="wipe_confirm_hold">Hold to delete everything</string>
+    <string name="keystore_lost_title">The keys no longer open</string>
+    <string name="keystore_lost_body">The keys of this phone no longer open the GHOST data. Try again; if it still fails, the data cannot be read anymore: delete it and restore the identity from the 24 words.</string>
+    <string name="keystore_lost_retry">Try again</string>
+    <string name="keystore_lost_wipe">Delete and restore</string>
 </resources>

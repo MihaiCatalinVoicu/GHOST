@@ -46,4 +46,13 @@
     <string name="onboarding_notifications_allow">Permite notificările</string>
     <string name="onboarding_notifications_skip">Nu acum</string>
     <string name="onboarding_disclosures_title">Înainte să continui</string>
+    <string name="wipe_title">Șterge datele locale</string>
+    <string name="wipe_body_what">Ce șterge: fiecare mesaj și contact de pe acest telefon, tokenurile tale de acces și creditele nefolosite, cheile identității. Copiile deținute de alții rămân la ei; copiile de pe releuri rămân până le expiră timpul.</string>
+    <string name="wipe_body_how">Fișierele și cheile șterse sunt atât de definitive pe cât îi permit stocarea telefonului și magazia lui de chei. Identitatea se poate întoarce doar din cele 24 de cuvinte.</string>
+    <string name="wipe_reenter_pin">Reintrodu PIN-ul</string>
+    <string name="wipe_confirm_hold">Ține apăsat pentru a șterge tot</string>
+    <string name="keystore_lost_title">Cheile nu mai deschid</string>
+    <string name="keystore_lost_body">Cheile acestui telefon nu mai deschid datele GHOST. Încearcă din nou; dacă nu merge, datele nu se mai pot citi: șterge-le și restaurează identitatea din cele 24 de cuvinte.</string>
+    <string name="keystore_lost_retry">Încearcă din nou</string>
+    <string name="keystore_lost_wipe">Șterge și restaurează</string>
 </resources>
