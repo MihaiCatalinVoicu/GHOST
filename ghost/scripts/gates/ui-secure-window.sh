@@ -36,6 +36,10 @@ while IFS= read -r f; do
   rel="${f#"$GHOST_ROOT"/}"
   case "$rel" in
     android/ui/src/main/kotlin/org/ghost/ui/protect/SecureActivity.kt) continue ;;
+    # §3.4's relaunch: LinkIntake sets launch flags on GHOST's OWN explicit intent to replace
+    # the task's link-carrying base intent — task flags, not window flags (the G-U2 scutire
+    # carries the same reason).
+    android/app/src/main/kotlin/org/ghost/app/ui/LinkIntake.kt) continue ;;
   esac
   # The whole file as one string, comments blanked, so wrapped calls are still seen.
   hits=$(perl -e '

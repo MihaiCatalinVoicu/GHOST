@@ -53,6 +53,10 @@ for dir in "${SRC_DIRS[@]}"; do
     rel="${f#"$GHOST_ROOT"/}"
     case "$rel" in
       android/ui/src/main/kotlin/org/ghost/ui/platform/SystemIntents.kt) continue ;;
+      # §3.4's relaunch: LinkIntake starts GHOST's OWN activity explicitly to replace the task's
+      # link-carrying base intent with a clean one — the opposite of an exit, never a URI to
+      # another app. The relaunch is the D7 mechanism the manifest gate (G-U11) pairs with.
+      android/app/src/main/kotlin/org/ghost/app/ui/LinkIntake.kt) continue ;;
     esac
     hits=$(perl -e '
       require "'"$GATES_DIR"'/source-text.pl";

@@ -337,7 +337,7 @@ private fun replaceGuardSql(table: String, conflict: String): String =
  * path of a timer change could be folded into the `dm_outbound_item` rebuild this way).
  */
 object Schema {
-    const val CURRENT_VERSION = 9
+    const val CURRENT_VERSION = 10
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -974,6 +974,10 @@ object Schema {
         Migration(
             version = 9,
             statements = migration9(),
+        ),
+        Migration(
+            version = 10,
+            statements = migration10(),
         ),
     )
 
@@ -2510,6 +2514,52 @@ object Schema {
                 ) WITHOUT ROWID""",
     )
 
+    /**
+     * Migration 10 (Phase 13 UX, `docs/design/faza13-ux.md` §10; Q40's number): the UI's own
+     * state — `ui_settings` (the single settings row), `ui_lock` (the PIN salt/tag and the
+     * failure counter, NO retry time — §5.2, T33) and `ui_crash` (the local crash reports,
+     * §10's FR-8.11 half). Plainly additive; the guard table refuses to run on a database that
+     * already has `ui_*` tables (the §10 normative guard, one transaction, fail-closed).
+     * Everything is day-granular at most, `typeof` CHECKs everywhere, and `ui_settings.clip_label`
+     * carries only the 8-byte ownership token of §4.4 — never a clip's content or time.
+     */
+    private fun migration10(): List<String> = listOf(
+        """CREATE TABLE ux_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))""",
+        """INSERT INTO ux_migration_guard(row_count) SELECT count(*) FROM sqlite_master WHERE name GLOB 'ui_*'""",
+        """DROP TABLE ux_migration_guard""",
+        """CREATE TABLE ui_settings (
+                    id               INTEGER PRIMARY KEY CHECK (id = 1),
+                    privacy_mode     INTEGER NOT NULL CHECK (privacy_mode IN (0, 1)),
+                    lock_timeout_s   INTEGER NOT NULL CHECK (lock_timeout_s IN (0, 60, 300, 1800)),
+                    biometric        INTEGER NOT NULL CHECK (biometric IN (0, 1)),
+                    notif_mode       INTEGER NOT NULL CHECK (notif_mode IN (0, 1, 2)),
+                    notif_lockscreen INTEGER NOT NULL CHECK (notif_lockscreen IN (0, 1)),
+                    theme            INTEGER NOT NULL CHECK (theme IN (0, 1, 2)),
+                    dynamic_color    INTEGER NOT NULL CHECK (dynamic_color IN (0, 1)),
+                    a11y_hide        INTEGER NOT NULL CHECK (a11y_hide IN (0, 1)),
+                    onboarding_step  INTEGER NOT NULL CHECK (onboarding_step BETWEEN 0 AND 11),
+                    backup_verified  INTEGER NOT NULL CHECK (backup_verified IN (0, 1)),
+                    ime_warned       INTEGER NOT NULL CHECK (ime_warned IN (0, 1)),
+                    disclosures_v    INTEGER NOT NULL CHECK (typeof(disclosures_v) = 'integer' AND disclosures_v >= 0),
+                    clip_label       BLOB CHECK (clip_label IS NULL OR length(clip_label) = 8)
+                )""",
+        """INSERT INTO ui_settings (id, privacy_mode, lock_timeout_s, biometric, notif_mode, notif_lockscreen, theme,
+                         dynamic_color, a11y_hide, onboarding_step, backup_verified, ime_warned, disclosures_v, clip_label)
+                  VALUES (1, 0, 60, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, NULL)""",
+        """CREATE TABLE ui_lock (
+                    id       INTEGER PRIMARY KEY CHECK (id = 1),
+                    salt     BLOB NOT NULL CHECK (length(salt) = 16),
+                    tag      BLOB NOT NULL CHECK (length(tag) = 32),
+                    failures INTEGER NOT NULL CHECK (typeof(failures) = 'integer' AND failures BETWEEN 0 AND 1000000)
+                )""",
+        """CREATE TABLE ui_crash (
+                    crash_id   BLOB    PRIMARY KEY NOT NULL CHECK (length(crash_id) = 16),
+                    day        INTEGER NOT NULL CHECK (typeof(day) = 'integer' AND day >= 0),
+                    version    INTEGER NOT NULL CHECK (typeof(version) = 'integer' AND version > 0),
+                    report_env BLOB    NOT NULL CHECK (length(report_env) BETWEEN 29 AND 8220)
+                ) WITHOUT ROWID""",
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
@@ -2545,6 +2595,9 @@ object Schema {
         // v9 (Phase 12 transports §6.3): the user-provided bridge lines (plain and PT), one table,
         // written only through :network's repository class.
         "transport_bridge",
+        // v10 (Phase 13 UX §10): the UI's own state — settings, the PIN record and the local
+        // crash reports; nothing else of the UI is persisted (T54).
+        "ui_settings", "ui_lock", "ui_crash",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */

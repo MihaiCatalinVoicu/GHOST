@@ -610,7 +610,7 @@ sub cmd_rust_notices {
 # ---------------------------------------------------------------------------------------------
 # Gradle part (G-L1) and the Gradle licence allowlist (G-L2).
 my @POM_LICENCES = (
-  [qr/^(?:the )?apache (?:software )?license,? version 2\.0$|^apache-2\.0$|^apache license 2\.0$/i, qr{apache\.org/licenses/LICENSE-2\.0}i, "Apache-2.0"],
+  [qr/^(?:the )?apache (?:software )?license,? version 2\.0$|^apache-2\.0$|^apache license 2\.0$|^apache 2\.0$/i, qr{apache\.org/licenses/LICENSE-2\.0}i, "Apache-2.0"],
   [qr/^(?:the )?mit license$|^mit$/i, qr{opensource\.org/licenses/MIT}i, "MIT"],
   [qr/^bouncy castle licen[cs]e$/i, qr{bouncycastle\.org/licen[cs]e\.html}i, "MIT"],
   [qr/^$/, qr{zetetic\.net/sqlcipher/license}i, "BSD-3-Clause"],

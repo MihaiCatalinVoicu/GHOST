@@ -8,4 +8,12 @@
     <string name="demo_body">Developer preview build. The production UX of Phase 13 lands on this shell.</string>
     <string name="shell_master_pane">Navigation</string>
     <string name="curtain_label">GHOST</string>
+    <string name="state_empty">Nothing here yet</string>
+    <string name="state_offline">No connection — content stays readable, sends queue</string>
+    <string name="state_degraded">Fewer operators than usual</string>
+    <string name="state_locked">Locked</string>
+    <string name="state_unavailable">Starting up…</string>
+    <string name="banner_open">Open</string>
+    <string name="hold_to_confirm">Hold to confirm</string>
+    <string name="confirm_alternative">Another way to confirm</string>
 </resources>

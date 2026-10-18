@@ -376,6 +376,13 @@ class DmForensicResidueTest {
         "dm_scheduled" to "L7-D7 (added in S5): a pending reconnect or revocation notice and its due minute",
         // Not DM state at all: the v1 row that records which schema version created the database.
         "schema_meta" to "the schema's own version row (migration 1), which says nothing about a conversation",
+        // Not DM state either (Phase 13 UX, design faza13-ux.md §10): the UI's own settings row,
+        // the empty PIN record table (ui_lock holds 0 rows until a PIN is set) and the empty
+        // crash table — all declared empty-or-constant there, named here so the full-dump corpus
+        // stays exactly the declarations' union.
+        "ui_settings" to "F13 §10: the single settings row (mode, timeouts, flags), day-granular at most",
+        // ui_lock and ui_crash hold zero rows in this world (a PIN is never set, no crash is
+        // imported), so they survive nothing and are named only by the column test below.
     )
 
     @Test
@@ -564,6 +571,13 @@ class DmForensicResidueTest {
                 "dm_seen.tag", "dm_seen.until_day",
                 // The schema's own version row, which no conversation writes.
                 "schema_meta.key", "schema_meta.value",
+                // The UI's single settings row (Phase 13 §10): flags, modes and day-granular
+                // counters only; `clip_label` is NULL on a fresh install and adds nothing here.
+                "ui_settings.id", "ui_settings.privacy_mode", "ui_settings.lock_timeout_s",
+                "ui_settings.biometric", "ui_settings.notif_mode", "ui_settings.notif_lockscreen",
+                "ui_settings.theme", "ui_settings.dynamic_color", "ui_settings.a11y_hide",
+                "ui_settings.onboarding_step", "ui_settings.backup_verified", "ui_settings.ime_warned",
+                "ui_settings.disclosures_v",
             ),
             db.nonNullColumns(),
         )
@@ -599,6 +613,7 @@ class DmForensicResidueTest {
             "dm_pair_offer.offer_env" to "erased once the offer was acknowledged (§9.4)",
             "olm_prekey_gen.superseded_day" to "the surviving generation is the live one",
             "olm_prekey_gen.delete_after_day" to "derived from the supersession day, so also unset",
+            "ui_settings.clip_label" to "NULL until GHOST copies something; the 8-byte ownership token only (F13 §4.4), never content or time",
         )
         val everyColumn = survivingTables.keys.flatMap { table -> db.columnsOf(table).map { "$table.$it" } }.toSet()
         assertEquals(

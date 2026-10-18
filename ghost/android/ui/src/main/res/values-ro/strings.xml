@@ -6,4 +6,12 @@
     <string name="demo_body">Build de previzualizare pentru dezvoltatori. Interfața de producție a Fazei 13 vine peste acest schelet.</string>
     <string name="shell_master_pane">Navigare</string>
     <string name="curtain_label">GHOST</string>
+    <string name="state_empty">Încă nimic aici</string>
+    <string name="state_offline">Fără conexiune — conținutul rămâne citibil, trimiterile așteaptă</string>
+    <string name="state_degraded">Mai puțini operatori decât de obicei</string>
+    <string name="state_locked">Blocat</string>
+    <string name="state_unavailable">Pornește…</string>
+    <string name="banner_open">Deschide</string>
+    <string name="hold_to_confirm">Ține apăsat pentru confirmare</string>
+    <string name="confirm_alternative">Altă metodă de confirmare</string>
 </resources>

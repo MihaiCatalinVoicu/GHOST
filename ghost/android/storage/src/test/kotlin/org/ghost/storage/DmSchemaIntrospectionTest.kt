@@ -67,6 +67,10 @@ class DmSchemaIntrospectionTest {
      */
     private val timeColumnsOfMigration9 = setOf("transport_bridge.added_day")
 
+    /** Phase 13 UX (faza13-ux.md §10): the crash report's day index — day-granular by design,
+     * no finer column exists in the UI's tables (T33's §10 half). */
+    private val timeColumnsOfMigration10 = setOf("ui_crash.day")
+
     /**
      * The integer counter of migration 6 that is no time and no period index: the capability's
      * generation, the rejection race guard of Phase 7 §3.8. Its name matches none of the rule's words,
@@ -191,6 +195,9 @@ class DmSchemaIntrospectionTest {
         // Phase 9 §9.1: a timer is a bucket code (0..5) and a version counter, not a time. This is
         // what R-M1 keeps after every message has expired, and it says nothing about when.
         "dm_conversation.timer_code" to "the disappearing-timer bucket code, 0..5",
+        // Phase 13 UX (faza13-ux.md §10, Q5): the lock timeout CHOICE (0/60/300/1800 s), a
+        // setting like the theme, not a point in time and never of activity (T33).
+        "ui_settings.lock_timeout_s" to "the lock-timeout choice in seconds, a setting, not a time",
         "dm_conversation.timer_version" to "the timer's version counter, monotone, not a time",
         "dm_message.timer_code" to "the bucket code the message was written under",
     )
@@ -220,7 +227,7 @@ class DmSchemaIntrospectionTest {
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
         val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
-            timeColumnsOfMigration9 + timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
+            timeColumnsOfMigration9 + timeColumnsOfMigration10 + timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
         val indices = periodIndices + ChannelSchema.epochColumns
         val exempt = notTimes + ChannelSchema.notTimes + MediaSchema.notTimes
         val foundTimes = HashSet<String>()
