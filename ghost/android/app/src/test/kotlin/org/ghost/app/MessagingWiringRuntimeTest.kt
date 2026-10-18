@@ -188,7 +188,7 @@ class MessagingWiringRuntimeTest {
         val messaging = requireNotNull(wiring.messaging) { "the first database open built the stack" }
         messaging.status() // queues behind the database-open pass on the actor
         assertEquals("dm_self", 1L, count("SELECT count(*) FROM dm_self"))
-        assertEquals("X_0 and P_0", 2L, count("SELECT count(*) FROM dm_own_namespace"))
+        assertEquals("X_0, P_0 and M_0 (Phase 11 S4-owner)", 3L, count("SELECT count(*) FROM dm_own_namespace"))
         assertEquals("the first bundle", 1L, count("SELECT count(*) FROM dm_outbound_op WHERE purpose = 'bundle'"))
         assertTrue(
             "KEEPER installed the owner's READ credentials on the relays DirectoryEsSlots resolved",
@@ -285,7 +285,7 @@ class MessagingWiringRuntimeTest {
         wiring.messaging!!.status()
         assertEquals(1L, count("SELECT count(*) FROM dm_self"))
         val ownBefore = ownNamespaces()
-        assertEquals(2, ownBefore.size)
+        assertEquals(3, ownBefore.size)
         keyChanged = true
         assertEquals(ActivationOutcome.ALREADY_ACTIVE, wiring.activate(restored = false))
         assertEquals("the new identity is still running over the old one's rows", ownBefore, ownNamespaces())
@@ -293,7 +293,7 @@ class MessagingWiringRuntimeTest {
         val after = wiring.messaging!!.myCard()!!.card
         assertTrue("another card: every value derived from m changed", !before.contentEquals(after))
         val ownAfter = ownNamespaces()
-        assertEquals(2, ownAfter.size)
+        assertEquals(3, ownAfter.size)
         assertTrue("the old identity's own namespaces were cleared (§22.13 item 7)", ownAfter.none { it in ownBefore })
         assertEquals(1L, count("SELECT count(*) FROM dm_self"))
         assertEquals(ActivationOutcome.ALREADY_ACTIVE, wiring.activate(restored = true))
