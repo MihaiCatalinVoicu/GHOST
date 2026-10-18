@@ -68,4 +68,24 @@
     <string name="payment_deadline_label">Pay before</string>
     <string name="payment_sent">Payment sent</string>
     <string name="payment_sent_body">The tokens arrive after the network confirms - from minutes to days. GHOST shows one constant message when it happens; nothing else changes here.</string>
+    <string name="dm_list_title">Conversations</string>
+    <string name="dm_list_empty">No conversations yet. Scan a contact card to start one.</string>
+    <string name="dm_conversation_title">Conversation</string>
+    <string name="dm_composer_label">Message</string>
+    <string name="dm_send">Send</string>
+    <string name="dm_menu_reply">Reply</string>
+    <string name="dm_menu_react">React</string>
+    <string name="dm_menu_details">Details</string>
+    <string name="dm_menu_retry">Send again</string>
+    <string name="dm_timer_off">Off</string>
+    <string name="dm_timer_5m">5 minutes</string>
+    <string name="dm_timer_1h">1 hour</string>
+    <string name="dm_timer_1d">1 day</string>
+    <string name="dm_timer_7d">7 days</string>
+    <string name="dm_timer_30d">30 days</string>
+    <string name="dm_provenance_question">Where did you see this code?</string>
+    <string name="dm_provenance_in_person">On the phone of the person, in front of me</string>
+    <string name="dm_provenance_elsewhere">In a photo, a message, a video call or on another screen</string>
+    <string name="dm_provenance_dont_know">I do not know</string>
+    <string name="dm_safety_prompt">Compare the safety number in person before trusting this contact.</string>
 </resources>
