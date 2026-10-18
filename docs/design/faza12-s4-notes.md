@@ -173,6 +173,54 @@ policy; the JNI trim contract. Each of these was read in the tree, not assumed f
 | S4-T4 — `needsPt` prefix check is a third grammar-naming site | implementability | **Recorded** (nit; fail-closed today; fold into 12b's JNI surface) |
 | S4-T5 — G-M1's writer allowlist missing PtInstaller's two writers (latent since S2) | implementability/privacy | **Fired by the S4 run-all, corrected in S4** (two motivated allowlist entries, counts pinned) |
 
+### 2.6 The independent review's findings (E-1, E-2 — applied on the closing tree)
+
+A second, independent review pass over the closing tree returned two findings. Both are
+applied here (code, design, invariants); **no commit — the lead reviews and commits.**
+
+- **E-2 (LOW) — the env scrub's host residual and the Windows temp no-op.**
+  (i) `scrub_pt_child_env` removes the proxy variables and `HOME` and redirects `TMPDIR`,
+  but the PT child on **hosts** still inherits the full session environment —
+  `USERNAME`/`USERPROFILE`/`USERDOMAIN`/`HOMEDRIVE`/`HOMEPATH`/the `*APPDATA` profile
+  variables/`PATH` (Windows), `USER`/`LOGNAME`/`XDG_*`/`SHELL` (Unix) — while on **Android**
+  the zygote-built environment is minimal by construction, so the shipped path was never
+  affected. (ii) On Windows the `TMPDIR` redirect alone is a **no-op**: Go's `os.TempDir`
+  (lyrebird) and the MSVC runtime read `%TEMP%`/`%TMP%`.
+  **Fix (a)** — `transport.rs`: on Windows the scrub now also sets `TEMP` and `TMP` to the
+  attempt's state dir alongside `TMPDIR`; `PT_ENV_STRIP` stays minimal (proxies + `HOME`)
+  and its doc comment records why the temp variables are redirected, not removed.
+  **Fix (b)** — design §5.3 (rev 5): the "nothing inherited that names the user" claim is
+  scoped to Android; the host residual is named and accepted (hosts build/test the client;
+  the shipped client is the APK).
+  **Fix (c)** — the probe below. **Regression** — `transport.rs`'s new
+  `env_scrub_strips_proxies_home_and_redirects_temp_dirs` unit test pins both halves
+  (removals on every platform; the `TEMP`/`TMP` redirect asserted under `cfg(windows)`).
+  **Hardening the fix cost one race down:** because the scrub is process-wide, the first
+  test shape redirected `TEMP`/`TMP` at a not-yet-created dir (and its sentinel phase used
+  a *relative* value) — on Windows that broke or relocated parallel `temp_dir()` callers
+  in the same process during the window (observed live: a parallel test's scratch dirs
+  landed in the crate root; the lib suite flaked at rates the base tree never showed, 0 in
+  26 runs vs failing several of the first runs). Two corrections: the scrub now
+  `create_dir_all`s the state dir before redirecting (a no-op on the normal path, where
+  arti's storage layer already created it), and the test uses only existing absolute
+  values and restores the saved ones. Post-correction: 36 consecutive full-suite runs
+  green.
+  **The probe (fix c).** A throwaway integration test built a PT config (which runs the
+  scrub) and dumped, sorted, the environment a real child process inherits on this Windows
+  host. Post-scrub the residual list is: `APPDATA`, `COMSPEC`, `HOMEDRIVE`, `HOMEPATH`,
+  `LOCALAPPDATA`, `LOGONSERVER`, `PATH`, `PATHEXT`, `SYSTEMDRIVE`, `SYSTEMROOT`,
+  `TEMP`/`TMP`/`TMPDIR` (all three = the attempt's state dir — the fix verified by the dump
+  itself), `USERDOMAIN`, `USERNAME`, `USERPROFILE`, `WINDIR`, plus the launching
+  session's tool-specific variables; the proxy variables and `HOME` are absent. The
+  user/machine-naming residual is the list's first sentence; it is the accepted host
+  residual of fix (b). (The probe file was deleted after the dump; the list is the record.)
+- **E-1 (informational) — the install→spawn hash gap, named.** `PtInstaller` verifies the
+  binary's SHA-256 at extraction; ptmgr spawns lazily at first channel use. A swap of the
+  binary *between* install and spawn would execute the replacement. The write requires the
+  app uid — outside the threat model (only AD-8 holds that, and AD-8 sees everything) — but
+  the gap is now **named**, not passed over: one line in the threat model's exec entry
+  (the T59 row of `ghost/test-harness/privacy/INVARIANTS.md`).
+
 ---
 
 ## 3. The §15 exit checklist, item by item
@@ -230,6 +278,16 @@ All under `LC_ALL=C.UTF-8`; logs in `D:\Forum\.claude\s4\`.
   `:messaging` 34/0 — S2 §8), the emulator probe (S2 §7, API 29+35), the Gradle asset hook
   and the double builds (S2 §1/§9, S3 §6) — S4 touched no code those suites cover, and the
   one file S4 did touch (the G-M1 allowlist) is a gate table, re-verified by the gate itself.
+- **Post-close, the independent review's E-1/E-2 fixes (§2.6), same session, still
+  uncommitted** — re-verified on this tree (Windows host, `LC_ALL=C.UTF-8` where a gate
+  reads text): `cargo fmt -p ghost-client-net -- --check` clean; `cargo clippy --locked -p
+  ghost-client-net --all-targets -- -D warnings` green, no warnings; `cargo test --locked -p
+  ghost-client-net` green (lib **78 passed / 0 failed** — the 77 of the close plus the new
+  scrub regression test — and every integration target ok: 5 + 5 + 9 + 2 + 0 + 1 + 7 + 3 +
+  7, the two live tests ignored as designed), the lib suite additionally run 36 consecutive
+  times green against the process-wide-env race the new test surfaced (§2.6's hardening);
+  the gates `sync-no-catch-all`, `pt-no-bridge-line-in-logs` and `pt-refusals` (the one that
+  greps `transport.rs`) all **OK**.
 
 ## 5. The owner's remaining items (restated from §0.6 and §16)
 
@@ -252,4 +310,8 @@ All under `LC_ALL=C.UTF-8`; logs in `D:\Forum\.claude\s4\`.
 `D:\Forum\.claude\s4\` (the run logs named above). Review base: the whole phase —
 `bridge_line.rs`, `transport.rs`, `jni_bridge.rs`, `pt_loopback.rs`, `PtInstaller.kt`,
 `BridgeLines.kt`, `BootstrapPlan.kt`, `TorTransportHolder.kt`, `BUILD.sh`, the pt-* gates,
-the vendored trees — read in the tree; every finding reproduced before it was recorded.*
+the vendored trees — read in the tree; every finding reproduced before it was recorded.
+Post-close addition (same session, still uncommitted): the independent review's E-1/E-2,
+applied per §2.6 — `transport.rs` (the Windows `TEMP`/`TMP` redirect + the regression
+test), the design's §5.3 + header (rev 5), INVARIANTS' T59 (the named install→spawn gap),
+and this §2.6 with the child-env probe's residual list.*

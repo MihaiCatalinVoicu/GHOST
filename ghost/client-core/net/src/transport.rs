@@ -375,8 +375,10 @@ fn pt_binary(cfg: &TransportConfig) -> Result<PathBuf, TransportError> {
 
 /// Environment variables a PT child must not see (design §5.3): every proxy variable (a PT makes
 /// its own connections; an inherited proxy would reroute and de-anonymise them) and `HOME`
-/// (must not point at readable storage). `TMPDIR` is redirected into the attempt's own
-/// app-private state directory.
+/// (must not point at readable storage). The list is deliberately minimal (the S4 review's E-2):
+/// the temp variables are *redirected*, not removed — `TMPDIR` on every platform, and on
+/// Windows also `TEMP`/`TMP` (Go's `os.TempDir` and the MSVC runtime read `%TEMP%`, so a
+/// `TMPDIR`-only redirect is a no-op there) — all into the attempt's own app-private state dir.
 const PT_ENV_STRIP: &[&str] = &[
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -394,17 +396,29 @@ const PT_ENV_STRIP: &[&str] = &[
 /// S0-T4 (evidence §5): ptmgr spawns with `Command::new(path).args(arguments).envs(TOR_PT_*)` —
 /// the child **inherits arti's full process environment**; there is no env_clear or scrub on the
 /// arti side. The scrub is therefore GHOST's own job and can only be process-wide (ptmgr exposes
-/// no per-spawn environment hook). The variables are removed, not edited; removal is idempotent,
-/// and a PT child inherits the app's (Android: already minimal) environment plus nothing that
-/// names the user. Idempotent and cheap: runs on every PT config build.
+/// no per-spawn environment hook). The variables in [`PT_ENV_STRIP`] are removed, not edited;
+/// removal is idempotent, and a PT child inherits nothing of them. On Android the rest of the
+/// inherited environment is already minimal (zygote construction) and names no user; on hosts it
+/// is the full shell/session environment and the residual (e.g. `PATH`, `USERNAME`,
+/// `USERPROFILE`) names the machine or account — recorded, accepted, and probed in the S4 notes
+/// (E-2). Idempotent and cheap: runs on every PT config build.
 fn scrub_pt_child_env(state_dir: &Path) {
     for var in PT_ENV_STRIP {
         std::env::remove_var(var);
     }
     // The attempt's state dir already exists at this point (arti's storage layer created it by
     // the time a PT could spawn); redirecting TMPDIR there keeps any child temp file inside the
-    // per-attempt dir that the caller deletes with the attempt (design §5.3).
+    // per-attempt dir that the caller deletes with the attempt (design §5.3). On Windows,
+    // TMPDIR alone is a no-op (E-2: Go reads %TEMP%): redirect TEMP and TMP to the same dir.
+    // The redirect target must exist: TEMP/TMP are read process-wide (every tempfile caller in
+    // the process), and a nonexistent value breaks parallel users mid-window — create it if
+    // the storage layer has not yet (a no-op on the normal path).
+    let _ = std::fs::create_dir_all(state_dir);
     std::env::set_var("TMPDIR", state_dir);
+    if cfg!(windows) {
+        std::env::set_var("TEMP", state_dir);
+        std::env::set_var("TMP", state_dir);
+    }
 }
 
 /// The only place in the crate that opens a Tor stream (clippy `disallowed-methods` bans the Arti
@@ -562,6 +576,59 @@ mod tests {
             }
             other => panic!("snowflake must stay refused, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_scrub_strips_proxies_home_and_redirects_temp_dirs() {
+        // E-2 regression (the S4 review): the scrub must remove every proxy variable and
+        // HOME, and must redirect the temp variables into the attempt's state dir — on
+        // Windows TEMP and TMP too (Go reads %TEMP%, so a TMPDIR-only redirect leaves child
+        // temp files in the user-profile temp). Values are saved and restored: the scrub is
+        // process-wide, and the parallel config-build tests below legitimately re-run it.
+        let dir = std::env::temp_dir().join("ghost-net-env-scrub-test");
+        // The dir must exist and every value this test puts in TEMP/TMP must be an existing
+        // absolute path: on Windows they are live process-wide (every tempfile::tempdir and
+        // std::env::temp_dir caller in this process reads them), and the parallel config-
+        // build tests legitimately re-run the scrub — a nonexistent or relative value would
+        // break or relocate them mid-window (observed: a relative sentinel landed their
+        // scratch dirs in the crate root).
+        std::fs::create_dir_all(&dir).unwrap();
+        let sentinel = std::env::temp_dir().join("ghost-scrub-sentinel");
+        std::fs::create_dir_all(&sentinel).unwrap();
+        let saved: Vec<(&str, Option<String>)> = PT_ENV_STRIP
+            .iter()
+            .chain(["TMPDIR", "TEMP", "TMP"].iter())
+            .map(|v| (*v, std::env::var(v).ok()))
+            .collect();
+        for var in PT_ENV_STRIP {
+            std::env::set_var(var, &sentinel);
+        }
+        #[cfg(windows)]
+        for var in ["TEMP", "TMP"] {
+            std::env::set_var(var, &sentinel);
+        }
+        scrub_pt_child_env(&dir);
+        for var in PT_ENV_STRIP {
+            assert!(std::env::var(var).is_err(), "{var} must be removed");
+        }
+        let expected = dir.to_string_lossy().into_owned();
+        assert_eq!(std::env::var("TMPDIR").as_deref(), Ok(expected.as_str()));
+        #[cfg(windows)]
+        for var in ["TEMP", "TMP"] {
+            assert_eq!(
+                std::env::var(var).as_deref(),
+                Ok(expected.as_str()),
+                "{var} must be redirected alongside TMPDIR (E-2)"
+            );
+        }
+        for (var, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+        // Hygiene only: remove the sentinel dir if no parallel window user left scratch in it.
+        let _ = std::fs::remove_dir(&sentinel);
     }
 
     #[test]
