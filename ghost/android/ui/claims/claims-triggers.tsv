@@ -1,0 +1,37 @@
+# GHOST claims triggers (Phase 13 design faza13-ux.md §8.5 rule 1; ADR-56).
+# One lowercase substring per line; a string resource whose Romanian or English text contains
+# a trigger states what an adversary, device, relay, network or platform can, cannot or will do,
+# and must be a CLAIM row in claims.tsv (with evidence) or a reviewed line in claims-allow.tsv.
+nu poate
+nu vede
+nu pot
+nu văd
+dispare
+sunt eliminate
+este eliminată
+e blocată
+este blocată
+trece prin tor
+fără expeditor
+fără text
+criptat
+protejat
+sigur
+anonim
+cannot
+is removed
+are removed
+is blocked
+goes through tor
+disappears from
+without sender
+encrypted
+secure
+private
+anonymous
+protects
+impossible
+imposibil
+garantat
+guaranteed
+100%

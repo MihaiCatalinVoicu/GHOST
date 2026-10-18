@@ -1,0 +1,9 @@
+# GHOST claims register (Phase 13 design faza13-ux.md §8.5; ADR-56).
+# Columns (TSV): id	kind	evidence	residue	source	[ro text]	[en text]
+#   id: the string resource id
+#   kind: LIMIT | FEATURE | GOAL | CLAIM
+#   evidence: comma-separated evidence IDs, or -
+#   residue: the id of the sentence that must accompany it (DC-25 for CLAIMs), or -
+#   source: document and line
+#   CLAIM rows carry the Romanian and English text (columns 6 and 7).
+# G-U8 reads this file; a security sentence outside it fails the gate (rules 1-6 of §8.5).

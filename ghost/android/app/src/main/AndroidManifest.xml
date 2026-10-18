@@ -8,6 +8,14 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- ADR-20: the sync job's network constraint (required from targetSdk 34). -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Phase 11's media3-exoplayer declares WAKE_LOCK in its manifest; GHOST holds no wake
+         locks (no setWakeMode call anywhere; the player is released at every hide and lock,
+         design faza13-ux.md §3.3). The permission is removed at the merge so the T15 allowlist
+         stays exact — the pre-existing WAKE_LOCK red on the merged manifest (found by Phase 13
+         S0b's ui-manifest gate, 2026-10-18) closes with this. -->
+    <uses-permission
+        android:name="android.permission.WAKE_LOCK"
+        tools:node="remove" />
 
     <!-- Phase 13 design §4.7 (Q12): the camera is used for QR scanning only and is not required —
          a device without one uses the paste fallback (G-U11). -->

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Runs the UI emulator suites of Phase 13 design faza13-ux.md §12.3 on one booted emulator and
+# writes the raw instrumentation output `scripts/gates/ui-emulator-check.sh` reads.
+# `ui-emulator.yml` calls it on the ghost-runner machines (and the owner calls it locally for
+# the signed runs Q44 accepts); the judge is always ui-emulator-check.sh, never this status.
+#
+#   ui-emulator-run.sh <api> <out-dir>
+#
+# Writes `<out-dir>/api<api>/`:
+#   device.txt         the emulator's `sdk=` and `abi=` (the check refuses another level or ABI);
+#   suite-<name>.txt   the complete `am instrument -r -w` output of each suite the counts pin
+#                      names (`test-harness/gates/ui-emulator-counts.txt`), so the check sees
+#                      the result code and the runner's summary line as the device printed them.
+#
+# The suite list is the counts pin — a suite lands with its count line and its run block here in
+# the same commit (S1's smoke first). Until then the pin is empty and this script has nothing
+# to run: it says so and exits 1 (not run is red), it does not pretend a pass.
+#
+# Environment:
+#   GHOST_ADB        the adb to use (default: adb);
+#   GHOST_ANDROID    the Android project whose gate APKs are installed (default: <ghost>/android).
+#
+# Exit status: 0 when every suite finished RESULT_OK, 1 otherwise, 2 on a usage error.
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHOST_ROOT="${GHOST_ROOT:-$(cd "$DIR/../.." && pwd)}"
+api="${1:-}"
+out="${2:-}"
+[ -n "$api" ] && [ -n "$out" ] || { echo "usage: ui-emulator-run.sh <api> <out-dir>" >&2; exit 2; }
+case "$api" in *[!0-9]*) echo "not an API level: $api" >&2; exit 2 ;; esac
+adb="${GHOST_ADB:-adb}"
+android="${GHOST_ANDROID:-$DIR/../../android}"
+counts="$GHOST_ROOT/test-harness/gates/ui-emulator-counts.txt"
+
+suites=()
+while IFS=' ' read -r name count; do
+  case "$name" in ''|\#*) continue ;; esac
+  suites+=("$name")
+done < "$counts"
+if [ "${#suites[@]}" -eq 0 ]; then
+  echo "ui-emulator-run: the counts pin names no suites (S0b: none have landed; not run is red)" >&2
+  exit 1
+fi
+
+dir="$out/api$api"
+rm -rf "$dir"
+mkdir -p "$dir"
+"$adb" shell getprop ro.build.version.sdk | sed 's/^/sdk=/' > "$dir/device.txt"
+"$adb" shell getprop ro.product.cpu.abi | sed 's/^/abi=/' >> "$dir/device.txt"
+
+# The gate variant and its instrumentation, built by the workflow's build step (or by
+# `./gradlew :app:assembleGate :app:assembleGateAndroidTest` in a signed local run).
+app_apk=$(find "$android/app/build/outputs/apk/gate" -name '*.apk' 2>/dev/null | head -1)
+test_apk=$(find "$android/app/build/outputs/apk/androidTest/gate" -name '*.apk' 2>/dev/null | head -1)
+[ -n "$app_apk" ] && [ -n "$test_apk" ] || {
+  echo "ui-emulator-run: the gate APKs are missing (build :app:assembleGate :app:assembleGateAndroidTest first)" >&2
+  exit 1
+}
+
+"$adb" install -r "$app_apk" >/dev/null
+"$adb" install -r "$test_apk" >/dev/null
+# The instrumentation runner of Q25's AndroidJUnitRunner; a suite that needs another names it
+# in its own run block.
+runner="androidx.test.runner.AndroidJUnitRunner"
+
+rc=0
+for name in "${suites[@]}"; do
+  # Each suite's run block lands with the suite itself; until it does, the suite name in the
+  # pin with no block here is a build error, not a silent skip.
+  if ! declare -f "run_$name" >/dev/null 2>&1; then
+    echo "ui-emulator-run: suite $name has no run block (land it with the suite)" >&2
+    rc=1
+    continue
+  fi
+  "run_$name" "$adb" "$dir/suite-$name.txt" "$runner" || rc=1
+done
+exit "$rc"

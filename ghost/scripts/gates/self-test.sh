@@ -1182,6 +1182,43 @@ expect_fail pt-no-bridge-line-in-logs "$HARNESS/pt-logs/negative-empty/ghost"
 expect_fail pt-no-bridge-line-in-logs "$HARNESS/pt-logs/negative-logged-call/ghost"
 expect_fail pt-double-build "$HARNESS/pt-double-build/negative-nondeterministic/ghost"
 
+# Phase 13 slice S0b's UI gates (design faza13-ux.md §13.1): each gate rejects its negative
+# fixture and an empty tree (a scan over nothing is red, not green).
+UI_HARNESS="$HARNESS"
+for g in ui-secure-window ui-text-protection ui-sensitive-text ui-input ui-isolation ui-no-persist ui-deps ui-claims ui-coroutines ui-notifications ui-l10n; do
+  expect_fail "$g" "$UI_HARNESS/negative-ui-${g#ui-}"
+done
+expect_fail ui-secure-window "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-text-protection "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-sensitive-text "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-input "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-isolation "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-no-persist "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-deps "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-claims "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-coroutines "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-notifications "$UI_HARNESS/negative-ui-empty"
+expect_fail ui-l10n "$UI_HARNESS/negative-ui-empty"
+
+# The UI emulator report check (design §12.3): rejects a missing API level's report and a
+# suite with a skipped test, and accepts the complete fixture. The counts pin lives inside the
+# fixture root, so these cases do not depend on the (currently empty) tree-wide pin.
+if GHOST_ROOT="$UI_HARNESS/ui-emulator/bad-missing-api/ghost" bash "$DIR/ui-emulator-check.sh" "$UI_HARNESS/ui-emulator/bad-missing-api/report" 35 >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: ui-emulator-check passed a missing API level (not run is red)" >&2; rc=1
+else
+  echo "self-test ok: ui-emulator-check rejects a missing API level"
+fi
+if GHOST_ROOT="$UI_HARNESS/ui-emulator/bad-skipped/ghost" bash "$DIR/ui-emulator-check.sh" "$UI_HARNESS/ui-emulator/bad-skipped/report" 35 >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: ui-emulator-check passed a suite with a skipped test" >&2; rc=1
+else
+  echo "self-test ok: ui-emulator-check rejects a skipped test"
+fi
+if GHOST_ROOT="$UI_HARNESS/ui-emulator/good/ghost" bash "$DIR/ui-emulator-check.sh" "$UI_HARNESS/ui-emulator/good/report" 35 >/dev/null 2>&1; then
+  echo "self-test ok: ui-emulator-check accepts the complete fixture"
+else
+  echo "SELF-TEST FAIL: ui-emulator-check rejected the complete fixture" >&2; rc=1
+fi
+
 # G-T4 (apk-pt-assets.sh) over its fixture APKs: the positive passes against the fixture sums,
 # each negative is refused (hash drift, a third ABI, an embedded bridge line, an executable
 # asset). GHOST_PT_SUMS points the gate at the fixtures' tiny fake sums.

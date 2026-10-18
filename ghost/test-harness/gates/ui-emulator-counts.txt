@@ -1,0 +1,7 @@
+# UI emulator suite counts (Phase 13 design faza13-ux.md §12.3; the ui-emulator-check.sh pin).
+# `<suite-name> <exact test count>` — the count a suite must report on every API level, so a
+# suite that silently lost tests fails the check. A slice that lands a suite adds its line in the
+# same commit that lands the suite.
+#
+# Empty at S0b: no UI suite runs on the emulator yet (the smoke suite lands with S1; T10/T24/T11/
+# T54/T55/T57/ATF/process-death with their slices). An empty file means not-run-is-red.

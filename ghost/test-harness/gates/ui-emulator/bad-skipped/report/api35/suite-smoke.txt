@@ -1,0 +1,3 @@
+INSTRUMENTATION_RESULT: stream=
+Tests run: 3, Failures: 0, Skipped: 1
+INSTRUMENTATION_CODE: -1

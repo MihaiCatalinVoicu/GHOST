@@ -1,0 +1,70 @@
+name: ui-emulator
+
+# The UI emulator tier of Phase 13 (design faza13-ux.md §12.3, §13.2): the platform behaviour
+# of the window/text/clipboard/lock protections that the JVM suite cannot prove, plus ATF, the
+# process-death cases and the smoke journeys — AOSP x86_64 images API 29, 33, 35, 36 and
+# google_apis 37 (no AOSP 37 image exists), instrumented against :app's `gate` variant.
+#
+# **Rotation, not every night** (Q44, §13.2): API 29, 35 and 37 take three runs each on the
+# closing commit, API 33 and 36 one run each; this workflow runs by schedule (the rotation the
+# S0a occupancy measurement sets) and on dispatch, never per push. PRs touching android/ui or
+# android/app run API 35 only. No other heavy job at the same time (F9 §22.32 item 11).
+#
+# **Not run is red.** The check step (`scripts/gates/ui-emulator-check.sh`) runs whatever
+# happened: a missing API level, suite or report line fails; skipped device tests fail; the
+# counts pin (`test-harness/gates/ui-emulator-counts.txt`) fails a suite that lost tests.
+#
+# Signed local runs (Q44): when the runner cannot run (the laptop hours, R-U8), the owner runs
+# `scripts/device/ui-emulator-run.sh` locally on the closing commit and archives the report; the
+# same check judges it. The workflow and the script write the same report layout.
+#
+# Uploads (G-L5): text outputs only, kept 3 days; no APK leaves the runner. Every action pinned
+# by full commit SHA (ci.yml's rule).
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+    inputs:
+      api:
+        description: "API level to run (29, 33, 35, 36, 37); empty runs the rotation's nightly level"
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - "ghost/android/ui/**"
+      - "ghost/android/app/**"
+
+concurrency:
+  group: ui-emulator-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ui-emulator:
+    runs-on: ghost-runner
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build the gate variant
+        working-directory: ghost/android
+        run: ./gradlew --no-configuration-cache :app:assembleGate :app:assembleGateAndroidTest
+      - name: Run the UI suites on the emulator
+        working-directory: ghost
+        env:
+          API_LEVEL: ${{ github.event.inputs.api }}
+        run: bash scripts/device/ui-emulator-run.sh "$API_LEVEL"
+      - name: Judge the reports
+        working-directory: ghost
+        run: bash scripts/gates/ui-emulator-check.sh ../ui-emulator-reports "${API_LEVEL:-35}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ui-emulator-reports
+          path: ui-emulator-reports/
+          retention-days: 3
+          if-no-files-found: error

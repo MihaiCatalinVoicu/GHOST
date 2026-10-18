@@ -1,0 +1,4 @@
+# GHOST claims allowlist (Phase 13 design faza13-ux.md §8.5 rule 1).
+# A trigger-matching string resource that is NOT a claim: id<TAB>reason, one per line.
+# The reason names the reviewer and why the sentence is not an effect sentence.
+# Empty at S0b — no trigger-matching string ships unregistered.

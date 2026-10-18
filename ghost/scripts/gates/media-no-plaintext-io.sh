@@ -129,6 +129,10 @@ EOF
 cat > "$TMP/sink-exemptions" <<'EOF'
 media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|cache-dir|3
 media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|transformer|6
+# Phase 13 S0b (design faza13-ux.md §13.1 G-U2 × G-M1's shared exemption): the one ClipData of
+# the UI is the sensitive clipboard writer's own labelled clip — exactly the sink G-U2 confines
+# to SensitiveClipboard.kt, never plaintext IO of media bytes.
+ui/src/main/kotlin/org/ghost/ui/protect/SensitiveClipboard.kt|clip-data|3
 EOF
 
 mapfile -t files < <({ android_main_files; android_gate_files; } | sort -u)

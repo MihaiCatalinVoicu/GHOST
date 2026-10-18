@@ -1,0 +1,11 @@
+# Phase 13 design §13.1 G-U5: the only :app files that may call a traffic-causing facade method
+# (the §2.4 closed list). Format: path<TAB>reason — one file per line, the reason names the
+# screen or journey the adapter serves, or the wiring clause that owns the call (G-DM2's
+# pattern). A file not listed fails the gate on its first traffic-causing call.
+#
+# The wiring clauses (not UI adapters): the process lifecycle wiring of §3.5 (X-U14) lives in
+# GhostApp and SyncWiring — the foreground/background hooks are the presence transitions the
+# design itself assigns to the wiring, never to a screen. The UI's own traffic goes through
+# org.ghost.app.ui adapters only.
+android/app/src/main/kotlin/org/ghost/app/GhostApp.kt	GhostApp wiring: builds the sync controller (§3.5 X-U14); no screen call site
+android/app/src/main/kotlin/org/ghost/app/SyncWiring.kt	SyncWiring: the process observer's onAppForeground/onAppBackground presence transitions (§3.5, X-U14)

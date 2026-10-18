@@ -60,6 +60,19 @@ rc=0
 # PT-requires-binary pins in source). The build-dependent PT gates run where their inputs are:
 # pt-size (G-T3) and apk-pt-assets (G-T4) in the CI android job beside apk-native-libs, and
 # pt-double-build (G-T2) in the dispatch/weekly pt-loopback job (it re-runs BUILD.sh).
+# Phase 13 slice S0b's UI gates (design faza13-ux.md §13.1): G-U1 ui-secure-window (T10: every
+# window secure, every activity a SecureActivity); G-U2 ui-text-protection (T24: no selection,
+# share, drag, linkify, process text; the clipboard only in SensitiveClipboard/GhostRoot); G-U3
+# ui-sensitive-text (the SensitiveText unwrap site); G-U4 ui-input (one text field, the menu
+# filter, the IME interceptor in GhostRoot); G-U5 ui-isolation (:ui isolated; the :app traffic
+# list confined to the allowlist); G-U6 ui-no-persist (T54); G-U7 ui-deps (denylist, test-only
+# groups); G-U8 ui-claims (the register, T56); G-U9 ui-coroutines (the suspend/coroutines ban on
+# every module except :ui and :app's org.ghost.app.ui); G-U10 ui-notifications (T11: one
+# constant notification); G-U12 ui-l10n (Q9: ro/en parity). G-U11 is ui-manifest, build-dependent
+# like merged-manifest-lint: it runs in the android job, not here.
+for g in ui-secure-window ui-text-protection ui-sensitive-text ui-input ui-isolation ui-no-persist ui-deps ui-claims ui-coroutines ui-notifications ui-l10n; do
+  bash "$DIR/$g.sh" || rc=1
+done
 for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock pt-source-pin pt-exec-site pt-no-bridge-line-in-logs pt-refusals; do
   bash "$DIR/$g.sh" || rc=1
 done

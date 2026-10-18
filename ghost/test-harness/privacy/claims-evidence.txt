@@ -1,0 +1,4 @@
+# GHOST claims evidence green list (Phase 13 design faza13-ux.md §8.5 rule 4; ADR-56).
+# One line per evidence ID that is green: <id> <ci-run-id> <commit> <report-check> <sha256 of the archived report>
+# Empty today: no evidence is green, so no CLAIM string ships (rule 3). G-U8 pins every addition
+# against the archived report's hash under docs/evidence/.
