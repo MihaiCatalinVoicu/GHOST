@@ -34,6 +34,7 @@ pin() { # $1 = file, $2 = key
 [ -f "$PINS" ] || fail "ghost/third_party/lyrebird/pins.env missing"
 [ -f "$TE_PINS" ] || fail "ghost/third_party/tor-expert/pins.env missing"
 
+commit=""; tag=""
 if [ -f "$PINS" ]; then
   commit="$(pin "$PINS" LYREBIRD_COMMIT)"
   tag="$(pin "$PINS" LYREBIRD_TAG)"
