@@ -114,4 +114,9 @@
     <string name="ch_detail_send">Send</string>
     <string name="ch_detail_leave_hold">Hold to leave the channel</string>
     <string name="ch_detail_rejoin">Resync the channel</string>
+    <string name="media_attach">Attach a photo or video</string>
+    <string name="media_attach_note">The photo is re-encoded before it is sent; the original stays in your gallery</string>
+    <string name="media_pause_downloads">Pause downloads</string>
+    <string name="media_pause_note">The relays see that you stopped the downloads</string>
+    <string name="media_retry">Try again</string>
 </resources>

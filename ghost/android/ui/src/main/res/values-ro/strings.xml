@@ -113,4 +113,9 @@
     <string name="ch_detail_send">Trimite</string>
     <string name="ch_detail_leave_hold">Ține apăsat pentru a părăsi canalul</string>
     <string name="ch_detail_rejoin">Resincronizează canalul</string>
+    <string name="media_attach">Atașează o fotografie sau un videoclip</string>
+    <string name="media_attach_note">Fotografia e re-codată înainte de trimitere; originalul rămâne în galeria ta</string>
+    <string name="media_pause_downloads">Pauzează descărcările</string>
+    <string name="media_pause_note">Releele văd că ai oprit descărcările</string>
+    <string name="media_retry">Încearcă din nou</string>
 </resources>
