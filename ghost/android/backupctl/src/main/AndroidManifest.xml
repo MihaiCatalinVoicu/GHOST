@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T4's control application (design faza13-ux.md Appendix B.2): the relaxed counterpart of
+     GHOST's backup posture - allowBackup is true and nothing is excluded, so the canary file
+     the Application writes must appear in any backup the transport carries. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:name=".BackupCtlApp"
+        android:label="backupctl"
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_dialog_info">
+        <activity
+            android:name=".BackupCtlActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

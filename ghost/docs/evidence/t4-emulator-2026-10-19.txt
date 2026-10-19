@@ -1,0 +1,15 @@
+T4 emulator evidence - local-transport backup path (design faza13-ux.md Appendix B.2)
+Run locally on the build machine 2026-10-19 by scripts/device/t4-backup-run.sh
+(control application: :backupctl, relaxed rules; target: :app's gate variant).
+
+API 29 (ghost-dm-api29):
+- bmgr backupnow org.ghost.backupctl   -> Success
+- archive tar lists apps/org.ghost.backupctl/f/t4_canary.txt  (the canary rode the backup)
+- bmgr backupnow org.ghost.app.gate    -> "Backup is not allowed" (allowBackup=false respected)
+- no org.ghost.app.gate entry in /data/data/com.android.localtransport/files/1/_full/
+
+API 35 (ghost-dm-api35): same results, script exit 0 on both levels.
+
+Not covered here (stays on the device checklist): the device-transfer path
+(is_device_transfer=true, D2D flow, where allowBackup is ignored for target >= 31 and only the
+<device-transfer> exclusions protect) and API 29-30's cloud transport specifics.

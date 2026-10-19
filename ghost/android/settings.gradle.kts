@@ -41,3 +41,5 @@ include(":media")
 include(":ui")
 // Phase 13 design §3.1 (slice S1b): the emulator platform-test module, never shipped.
 include(":app-uitest")
+// Phase 13 Appendix B.2 (T4): the backup control application, test-only, never shipped.
+include(":backupctl")
