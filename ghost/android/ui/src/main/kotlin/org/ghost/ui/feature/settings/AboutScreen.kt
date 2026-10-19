@@ -22,7 +22,7 @@ import org.ghost.ui.R
  * sentence appears only beside an allowed claim (DC-25) — none is allowed yet, so it is absent.
  * The build-stage sentence (DC-27) states what this stage is and what it lacks. [version] and
  * [securityContact] arrive from :app (BuildConfig and the owner's OA-6 value); an empty contact
- * hides the row rather than showing a placeholder — no invented address.
+ * hides the row rather than showing filler text - no invented address.
  */
 @Composable
 fun AboutScreen(

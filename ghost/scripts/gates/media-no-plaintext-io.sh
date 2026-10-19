@@ -133,6 +133,11 @@ media/src/main/kotlin/org/ghost/media/send/GhostTranscoder.kt|transformer|6
 # the UI is the sensitive clipboard writer's own labelled clip — exactly the sink G-U2 confines
 # to SensitiveClipboard.kt, never plaintext IO of media bytes.
 ui/src/main/kotlin/org/ghost/ui/protect/SensitiveClipboard.kt|clip-data|3
+# Phase 13 S6 (design faza13-ux.md §6.6, V-U34/FX-1): SystemIntents builds the platform
+# photo-picker ACTION (MediaStore.ACTION_PICK_IMAGES on API 33+) — an intent constant the
+# design prescribes, not provider IO; the picked bytes are read by :app through the resolver,
+# never written to any MediaStore surface.
+ui/src/main/kotlin/org/ghost/ui/platform/SystemIntents.kt|mediastore|1
 EOF
 
 mapfile -t files < <({ android_main_files; android_gate_files; } | sort -u)

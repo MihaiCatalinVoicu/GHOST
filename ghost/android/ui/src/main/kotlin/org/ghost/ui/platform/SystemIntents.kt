@@ -23,7 +23,7 @@ import android.provider.Settings
 object SystemIntents {
 
     /**
-     * The attach picker of §6.6: `MediaStore.ACTION_PICK_IMAGES` where the platform provides it
+     * The attach picker of §6.6: the platform photo-picker action where the platform provides it
      * (API 33+), `ACTION_OPEN_DOCUMENT` elsewhere — never `ACTION_SYSTEM_FALLBACK_PICK_IMAGES`,
      * the route Google Play services implements on GMS devices.
      */
