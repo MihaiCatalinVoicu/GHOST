@@ -13,3 +13,14 @@ API 35 (ghost-dm-api35): same results, script exit 0 on both levels.
 Not covered here (stays on the device checklist): the device-transfer path
 (is_device_transfer=true, D2D flow, where allowBackup is ignored for target >= 31 and only the
 <device-transfer> exclusions protect) and API 29-30's cloud transport specifics.
+
+Addendum, T20's wipe half and T57's emulator floor (same day, CS-U1 wiring):
+- scripts/device/t20-wipe-run.sh plants databases/ghost.db with a canary on a fresh-cleared
+  install (no key envelope), force-stops and relaunches the app; CS-U1's resumption (W4-W6,
+  wired in GhostApp.onCreate this round) deleted the planted file before any wiring - green on
+  API 29 and API 35.
+- Scheduler dumps after a plain launch: no owned jobscheduler entry, nothing posted in the
+  notification list on either level; the channel registration (ghost_messages_v1) and the one
+  inexact alarm are by design (reported, allowed).
+- The wiring also closed a real gap: WipeController.needsResumption existed with no caller in
+  the tree (GhostApp.kt's own note said so); the predicate now runs at every process start.

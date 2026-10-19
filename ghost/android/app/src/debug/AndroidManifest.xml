@@ -1,16 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug variant only: the Compose test rule's host activity for instrumented suites that
-     target the debug build (local runs), declared in the target app so it runs in the target
-     process (Phase 13 §12.3, Q25) - never exported, no launcher filter. Never in a release
-     source set (G-DM5, T15m read the release manifests). -->
+<!-- Debug variant: the Compose test rule's host activity arrives from androidx.compose.ui's
+     ui-test-manifest (already a debug dependency) - declaring it here too collides with that
+     AAR's manifest. This source set now contributes nothing; kept for future debug-only
+     declarations. Never in a release source set (G-DM5, T15m read the release manifests). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application
-        android:allowBackup="false"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:networkSecurityConfig="@xml/network_security_config">
-        <activity
-            android:name="androidx.activity.ComponentActivity"
-            android:exported="false" />
-    </application>
 </manifest>

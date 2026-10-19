@@ -190,6 +190,24 @@ class GhostApp : Application(), SyncHost {
         // (measured in S0: no onServiceConnected within 15 s). Nothing of GHOST runs here:
         // `MediaDecodeService` uses only platform decoder APIs. Mutant MC-M23 removes this.
         if (android.os.Process.isIsolated()) return
+        // Phase 13 §5.5, CS-U1: a crash between W3 and W6 leaves data files without the key
+        // envelope. The resumption tail (W4-W6) runs silently before any wiring - W5's file
+        // deletion and W6's notification/clipboard cleanups, never W3's envelopes (the key is
+        // already gone; that was the crash point). [WipeController.needsResumption] is the
+        // predicate; at this stage no stacks run, so W4 is a no-op.
+        val resumption = org.ghost.app.ui.WipeController(
+            files = org.ghost.app.ui.ContextFilesystem(dataDir),
+            stopStacks = {},
+            deleteEnvelopes = {},
+            deleteKeystoreAliases = {},
+            cancelNotifications = {},
+            clearClipboard = {},
+            exitProcess = {},
+        )
+        if (resumption.needsResumption()) {
+            resumption.deleteFiles()
+            resumption.resumptionCleanups()
+        }
         // The K20 hook (Phase 9 design §13.4) before anything can activate an identity.
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()
