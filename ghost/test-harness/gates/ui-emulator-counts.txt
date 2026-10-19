@@ -5,3 +5,4 @@
 #
 # Empty at S0b: no UI suite runs on the emulator yet (the smoke suite lands with S1; T10/T24/T11/
 # T54/T55/T57/ATF/process-death with their slices). An empty file means not-run-is-red.
+smoke 2

@@ -53,8 +53,14 @@ for api in "$@"; do
     f="$d/suite-$name.txt"
     [ -f "$f" ] || { bad "api$api: suite $name has no report (not run is red)"; continue; }
     grep -q 'INSTRUMENTATION_CODE: -1' "$f" || bad "api$api: suite $name did not finish RESULT_OK"
-    if ! grep -qE "Tests run: ${EXPECT[$name]}, .*Failures: 0, .*Skipped: 0" "$f"; then
-      bad "api$api: suite $name must report exactly ${EXPECT[$name]} tests, 0 failed, 0 skipped"
+    # The raw `am instrument -r` stream reports each passed test with an
+    # INSTRUMENTATION_STATUS_CODE: 1 block; a failure or a skip arrives as -2 or -3. The OK
+    # line carries the total. The legacy "Tests run:" JUnit summary is what this check
+    # expected blind at S0b - the device prints no such line.
+    runs=$(tr -d '\r' < "$f" | grep -c 'INSTRUMENTATION_STATUS_CODE: 1')
+    [ "$runs" = "${EXPECT[$name]}" ] || bad "api$api: suite $name must report exactly ${EXPECT[$name]} passing tests, saw $runs"
+    if tr -d '\r' < "$f" | grep -qE 'INSTRUMENTATION_STATUS_CODE: -[23]'; then
+      bad "api$api: suite $name has a failure or a skipped test"
     fi
   done
 done

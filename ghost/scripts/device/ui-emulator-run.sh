@@ -49,9 +49,10 @@ mkdir -p "$dir"
 "$adb" shell getprop ro.product.cpu.abi | sed 's/^/abi=/' >> "$dir/device.txt"
 
 # The gate variant and its instrumentation, built by the workflow's build step (or by
-# `./gradlew :app:assembleGate :app:assembleGateAndroidTest` in a signed local run).
+# `./gradlew :app:assembleGate :app-uitest:assembleGate` in a local run — the test module's gate
+# build type wires its APK at :app's gate variant, org.ghost.app.gate, the process Q25 fixes).
 app_apk=$(find "$android/app/build/outputs/apk/gate" -name '*.apk' 2>/dev/null | head -1)
-test_apk=$(find "$android/app/build/outputs/apk/androidTest/gate" -name '*.apk' 2>/dev/null | head -1)
+test_apk=$(find "$android/app-uitest/build/outputs/apk/gate" -name '*.apk' 2>/dev/null | head -1)
 [ -n "$app_apk" ] && [ -n "$test_apk" ] || {
   echo "ui-emulator-run: the gate APKs are missing (build :app:assembleGate :app:assembleGateAndroidTest first)" >&2
   exit 1
@@ -62,6 +63,15 @@ test_apk=$(find "$android/app/build/outputs/apk/androidTest/gate" -name '*.apk' 
 # The instrumentation runner of Q25's AndroidJUnitRunner; a suite that needs another names it
 # in its own run block.
 runner="androidx.test.runner.AndroidJUnitRunner"
+
+# The S1 smoke suite: GateSmokeTest in the gate process (Q25). The instrumentation component is
+# the test module's package (org.ghost.uitest — its applicationId) over the shared runner; the
+# gate build type of the module wires its target at org.ghost.app.gate.
+run_smoke() { # $1 = adb, $2 = out file, $3 = runner
+  "$1" shell am instrument -r -w -e class org.ghost.uitest.GateSmokeTest \
+    "org.ghost.uitest/$3" > "$2" 2>&1
+  tr -d '\r' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
+}
 
 rc=0
 for name in "${suites[@]}"; do

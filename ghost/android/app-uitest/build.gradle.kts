@@ -20,6 +20,17 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    buildTypes {
+        // The test module's target variant is chosen by build-type name: the `gate` build type
+        // wires this module's gate APK at :app's gate variant (org.ghost.app.gate — the process
+        // Q25's suites must run in), the debug build type at :app's debug variant. Both keep the
+        // module's applicationId (org.ghost.uitest), so only one installs at a time.
+        create("gate") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
