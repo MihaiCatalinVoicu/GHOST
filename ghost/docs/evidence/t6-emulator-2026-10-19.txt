@@ -24,3 +24,11 @@ API 29 (ghost-dm-api29) - the platform image limits the tap, documented honestly
 Not covered here (stays on the device checklist): the Tor-inaccessible twin capture with a
 configured identity (no identity activates in this run by construction, §3.5 - no session
 starts), and the update-run leg, both of which need the J1 journey on a signed device.
+
+Addendum, API 37 attempt (ghost-dm-api37, google_apis, created locally 2026-10-19):
+- the smoke suite PASSED on API 37 (GateSmokeTest, 2 tests, RESULT_OK);
+- the accessibility/ATF/inventory runs could not complete: the google_apis image's system_server
+  repeatedly crashed under instrumentation load on this host (DeadObjectException, then
+  INSTRUMENTATION_ABORTED: System has crashed, even with the other emulators stopped) - an
+  image/host-capacity matter, not a GHOST finding. API 36/37 matrix rows stay with the
+  ghost-runner machines per design §14.3 item 3 (OA-1).
