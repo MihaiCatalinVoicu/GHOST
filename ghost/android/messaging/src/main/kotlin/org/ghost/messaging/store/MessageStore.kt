@@ -32,6 +32,8 @@ internal class MessageStore {
         val timerCode: Int,
         val bodyEnv: ByteArray?,
         val state: String,
+        /** Phase 13 §3.6: the row's own expiry minute (live timer messages only). */
+        val expireAtMinute: Long? = null,
     ) {
         /** Never shows the body (T3). */
         override fun toString(): String = "MessageRow(state=$state)"
@@ -387,6 +389,7 @@ internal class MessageStore {
         timerCode = r.long(7).toInt(),
         bodyEnv = if (r.isNull(8)) null else r.blob(8),
         state = r.string(9),
+        expireAtMinute = if (r.isNull(10)) null else r.long(10),
     )
 
     // --------------------------------------------------------------- dm_reaction
@@ -409,6 +412,16 @@ internal class MessageStore {
                 listOf(targetId, self, graphemeEnv),
             )
         }
+    }
+
+    /** Phase 13 §3.6: one side's sealed grapheme for a message, or null. */
+    fun reactionOf(tx: SyncTransaction, targetId: ByteArray, fromSelf: Boolean): ByteArray? {
+        var out: ByteArray? = null
+        tx.sql.query(
+            "SELECT grapheme_env FROM dm_reaction WHERE target_id = ? AND from_self = ?",
+            listOf(targetId, if (fromSelf) 1L else 0L),
+        ) { r -> out = if (r.isNull(0)) null else r.blob(0) }
+        return out
     }
 
     fun deleteReaction(tx: SyncTransaction, targetId: ByteArray, fromSelf: Boolean) {
@@ -642,14 +655,14 @@ internal class MessageStore {
         /** §13.2 `conversation`, newest first; R-O1's order, reversed for paging. */
         const val CONVERSATION_PAGE: String =
             "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "ORDER BY sort_minute DESC, minute_index DESC, message_id DESC LIMIT ?"
 
         /** The same page before a cursor, with the tuple comparison written out (§13.2). */
         const val CONVERSATION_PAGE_BEFORE: String =
             "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (sort_minute < ? OR (sort_minute = ? AND minute_index < ?) " +
                 "OR (sort_minute = ? AND minute_index = ? AND message_id < ?)) " +
@@ -658,7 +671,7 @@ internal class MessageStore {
         /** One message, for the reaction target rule and the display transition. */
         const val MESSAGE_BY_ID: String =
             "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE message_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
 
         /** The unread badge (§10.7): a count, which is mutant ME-16's own shape. */

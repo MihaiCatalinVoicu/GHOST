@@ -51,12 +51,10 @@ class DmGatewayAdapter(
                     minute = msg.authorMinute,
                     body = SensitiveText(msg.text ?: ""),
                     state = stateOf(msg.state),
-                    // §3.6's per-message timer/reaction fields land with the MessageView additions
-                    // (the facade's conversation query does not select them yet); nulls until then.
-                    timerMinutes = null,
-                    expireAtMinute = null,
-                    myReaction = null,
-                    peerReaction = null,
+                    timerMinutes = msg.timer?.let { timerMinutes(it) },
+                    expireAtMinute = msg.expireAtMinute,
+                    myReaction = msg.myReaction,
+                    peerReaction = msg.peerReaction,
                 )
             },
             // The conversation timer is the dm_conversation row's own code (§7.1).

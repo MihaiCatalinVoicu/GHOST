@@ -189,13 +189,17 @@ internal class ContactSteps(
     }
 
     /** §13.2 `contacts`: ids and enums only, never a time (T33); the alias decrypts here, into memory only. */
-    fun contacts(): List<ContactView> = database.transaction { tx ->
+    fun contacts(): List<ContactView> {
+        // The context resolves OUTSIDE the transaction (its own lookup opens one); inside, the
+        // rows decrypt against the already-held self.
         val self = contexts.get()
+        return database.transaction { tx ->
         store.contacts(tx.sql).map { row ->
             val name = self?.let { s ->
                 row.nameEnv?.let { env -> s.content.open(env, row.contactId)?.toString(Charsets.UTF_8) }
             }
             ContactView(row.contactId, row.trust, row.establishment, row.source, row.resetNeeded, name)
+        }
         }
     }
 

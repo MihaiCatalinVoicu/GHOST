@@ -132,7 +132,7 @@ class DmGatewayAdapterTest {
         assertEquals(UiMessageState.SENDING, conv.items[0].state)
         assertEquals(UiMessageState.SENT, conv.items[1].state)
         assertEquals("hi there", conv.items[1].body.value)
-        assertNull("the per-message timer fields land with the §3.6 MessageView additions", conv.items[0].timerMinutes)
+        assertNull("the fake's messages carry no timers", conv.items[0].timerMinutes)
     }
 
     @Test

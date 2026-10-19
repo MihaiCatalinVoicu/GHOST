@@ -606,6 +606,14 @@ class MessageView(
     val text: String?,
     val quote: MessageId?,
     val cursor: MessageCursor,
+    /** Phase 13 §3.6: the message's own timer (null when off). */
+    val timer: Timer? = null,
+    /** Phase 13 §3.6: when this message expires (live timer messages only). */
+    val expireAtMinute: Long? = null,
+    /** Phase 13 §3.6: our reaction's grapheme, decrypted into memory only. */
+    val myReaction: String? = null,
+    /** Phase 13 §3.6: the peer's reaction's grapheme, decrypted into memory only. */
+    val peerReaction: String? = null,
 ) {
     /** Never shows the text (T3). */
     override fun toString(): String = "MessageView($kind, $state)"

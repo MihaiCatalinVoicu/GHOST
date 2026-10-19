@@ -1123,10 +1123,13 @@ internal object DmMutants {
             "ORDER BY root_gen DESC, week DESC"
 
     /** `ContactStore.contactByIdentity`'s statement (through `contactBy`), verbatim: MC-24 matches it exactly. */
+    // Phase 13 §3.6 added name_env to ContactStore.contactColumns; the statement this matches is
+    // ContactStore.contactByIdentity's, verbatim (through contactBy) - the mutant must follow the
+    // real text, or it rewrites nothing and "survives" by never being applied.
     private const val CONTACT_BY_IDENTITY =
         "SELECT contact_id, identity_pk, card_env, card_index, pinned_identity, pending_identity, " +
             "bundle_week_seen, trust_state, source, establishment, fetch_attempts, " +
-            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp " +
+            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp, name_env " +
             "FROM dm_contact WHERE identity_pk = ?"
 
     /**

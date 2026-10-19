@@ -37,6 +37,7 @@ import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.sync.api.SyncDatabase
+import org.ghost.sync.api.SyncTransaction
 
 /**
  * The DM engine behind the facade (Phase 9 design §13.1 `…messaging.engine`), at the size slices
@@ -223,7 +224,7 @@ internal class MessagingEngine(
                     beforeMessageId = before.messageId.toByteArray(),
                 )
             }
-            rows.map { row -> view(self, row) }
+            rows.map { row -> view(self, row, tx) }
         }
     }
 
@@ -593,7 +594,7 @@ internal class MessagingEngine(
 
     // -------------------------------------------------------------- internals
 
-    private fun view(self: SelfContext, row: MessageStore.MessageRow): MessageView {
+    private fun view(self: SelfContext, row: MessageStore.MessageRow, tx: SyncTransaction): MessageView {
         val plain = row.bodyEnv?.let { self.content.open(it, row.messageId) }
         var quote: ByteArray? = null
         var text: String? = null
@@ -607,6 +608,14 @@ internal class MessagingEngine(
             }
             text = String(plain, at, plain.size - at, Charsets.UTF_8)
         }
+        // The caller's transaction: the conversation read and the reactions are one consistent view.
+        val reactions = run {
+            val mine = org.ghost.messaging.store.MessageStore().reactionOf(tx, row.messageId, fromSelf = true)
+                ?.let { env -> self.content.open(env, row.messageId)?.toString(Charsets.UTF_8) }
+            val peer = org.ghost.messaging.store.MessageStore().reactionOf(tx, row.messageId, fromSelf = false)
+                ?.let { env -> self.content.open(env, row.messageId)?.toString(Charsets.UTF_8) }
+            mine to peer
+        }
         return MessageView(
             id = MessageId(row.messageId),
             outgoing = row.outgoing,
@@ -616,6 +625,10 @@ internal class MessagingEngine(
             text = text,
             quote = quote?.let { MessageId(it) },
             cursor = MessageCursor(row.sortMinute, row.minuteIndex, MessageId(row.messageId)),
+            timer = Timer.ofCode(row.timerCode),
+            expireAtMinute = row.expireAtMinute,
+            myReaction = reactions.first,
+            peerReaction = reactions.second,
         )
     }
 
