@@ -26,6 +26,18 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
  */
 @Composable
 fun QrImage(
+    payload: org.ghost.ui.protect.SensitiveText,
+    modifier: Modifier = Modifier,
+    size: Dp = 240.dp,
+    errorCorrection: ErrorCorrectionLevel = ErrorCorrectionLevel.L,
+) {
+    // The sensitive overload consumes the value through the value class's single declared
+    // consumption door (encodePixels); the matrix build holds the payload only for the encode.
+    QrImage(payload.encodePixels { it }, modifier, size, errorCorrection)
+}
+
+@Composable
+fun QrImage(
     payload: String,
     modifier: Modifier = Modifier,
     size: Dp = 240.dp,
