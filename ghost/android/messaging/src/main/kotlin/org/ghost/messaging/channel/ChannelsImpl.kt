@@ -1,4 +1,8 @@
-package org.ghost.messaging.channel.engine
+package org.ghost.messaging.channel
+
+import org.ghost.messaging.channel.engine.ChannelEngine
+import org.ghost.messaging.channel.engine.ChannelPostStep
+import org.ghost.messaging.channel.engine.ChannelRejoinStep
 
 import org.ghost.messaging.api.ChannelActionResult
 import org.ghost.messaging.api.ChannelId
@@ -35,7 +39,7 @@ internal class ChannelsImpl(private val engine: ChannelEngine) : Channels {
         ChannelPostStep.LeaveResult.NOTHING, ChannelPostStep.LeaveResult.NOT_ALLOWED -> ChannelActionResult.NOT_A_MEMBER
     }
 
-    override fun resync(channel: ChannelId): ChannelActionResult = when (engine.resync(channel)) {
+    override fun rejoin(channel: ChannelId): ChannelActionResult = when (engine.rejoin(channel)) {
         ChannelRejoinStep.ResyncResult.REQUESTED -> ChannelActionResult.DONE
         ChannelRejoinStep.ResyncResult.UNAVAILABLE -> ChannelActionResult.UNAVAILABLE
         ChannelRejoinStep.ResyncResult.REINVITE_NEEDED,

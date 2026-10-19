@@ -227,7 +227,7 @@ interface ChannelGateway {
     suspend fun leave(channelId: String)
 
     @UserAction
-    suspend fun resync(channelId: String)
+    suspend fun rejoin(channelId: String)
 }
 
 /** The channel read model. */

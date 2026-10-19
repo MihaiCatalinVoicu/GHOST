@@ -19,7 +19,7 @@ import org.ghost.messaging.api.NotificationPort
  * pins exactly these); `VISIBILITY_SECRET` by default (with `VISIBILITY_PRIVATE` + the same
  * constant public version when the user opts into lock-screen display); `setLocalOnly(true)`,
  * `setOnlyAlertOnce(true)`, `setAutoCancel(true)`; the tap is an immutable PendingIntent without
- * extras. Never: MessagingStyle, BigTextStyle, InboxStyle, BigPictureStyle, RemoteInput,
+ * extras. Never: the rich styles (messaging, big text, inbox, big picture), remote input,
  * actions, `setNumber`, Person, large icons, shortcuts, bubbles, conversation categories,
  * `VISIBILITY_PUBLIC`. A pending key change is never a notification (X-U17's in-app banner).
  */

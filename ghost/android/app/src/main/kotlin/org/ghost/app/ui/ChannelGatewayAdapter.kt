@@ -46,7 +46,8 @@ class ChannelGatewayAdapter(
 
     override suspend fun createInvite(channelId: String): SensitiveText = onIo {
         val c = facade() ?: throw IllegalStateException("channels unavailable")
-        val result = c.invite(ChannelId(unhex(channelId)), expiryDays = 14, password = null)
+        // §6.5: the sponsor chooses the expiry up to 7 days; the adapter fixes the normative cap.
+        val result = c.invite(ChannelId(unhex(channelId)), expiryDays = 7, password = null)
         SensitiveText(result.link?.let { String(it, Charsets.US_ASCII) } ?: "")
     }
 
@@ -76,16 +77,29 @@ class ChannelGatewayAdapter(
         Unit
     }
 
-    override suspend fun resync(channelId: String) = onIo {
-        facade()?.resync(ChannelId(unhex(channelId)))
+    override suspend fun rejoin(channelId: String) = onIo {
+        facade()?.rejoin(ChannelId(unhex(channelId)))
         Unit
     }
 
-    /** Indices -> words -> space-joined passphrase (Q35's distinct framing happens in the UI). */
+    /**
+     * Indices -> words -> space-joined passphrase (Q35's distinct framing happens in the UI).
+     * Built directly into the CharArray: no intermediate String holds the passphrase, and every
+     * word copy is zeroed once copied (a `joinToString` result cannot be wiped).
+     */
     private fun expand(indices: IntArray): CharArray {
+        if (indices.isEmpty()) return CharArray(0)
         val words = wordList()
-        val joined = indices.joinToString(" ") { words[it] }
-        return joined.toCharArray().also { java.util.Arrays.fill(joined.toCharArray(), '0') }
+        val parts = indices.map { words[it].toCharArray() }
+        val out = CharArray(parts.sumOf { it.size } + parts.size - 1)
+        var at = 0
+        parts.forEachIndexed { i, w ->
+            if (i > 0) out[at++] = ' '
+            System.arraycopy(w, 0, out, at, w.size)
+            at += w.size
+            java.util.Arrays.fill(w, '0')
+        }
+        return out
     }
 
     private suspend fun <T> onIo(block: () -> T): T = withContext(GhostUiIo.dispatcher) {

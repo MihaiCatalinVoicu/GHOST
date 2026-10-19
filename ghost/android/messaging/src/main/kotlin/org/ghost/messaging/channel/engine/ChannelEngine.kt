@@ -179,6 +179,13 @@ internal class ChannelEngine(
     fun resync(channel: ChannelId): ChannelRejoinStep.ResyncResult =
         actor.call { rejoinStep.resync(channel.toByteArray()) }
 
+    /**
+     * Phase 13 §3.2: the domain-facing name of [resync] for the [org.ghost.messaging.api.Channels]
+     * facade — the user action is a rejoin; `resync(` stays the step-level entry point (G-M5 lets only
+     * the step files write it).
+     */
+    fun rejoin(channel: ChannelId): ChannelRejoinStep.ResyncResult = resync(channel)
+
     // ------------------------------------------------------------------------------------------- the pass
 
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {

@@ -386,7 +386,7 @@ class MessagingRuntime(
 
     /** Phase 13 §3.2: the channel facade for the UI; null without [channelPorts]. */
     val channels: org.ghost.messaging.api.Channels? =
-        channelEngine?.let { org.ghost.messaging.channel.engine.ChannelsImpl(it) }
+        channelEngine?.let { org.ghost.messaging.channel.ChannelsImpl(it) }
 
     /**
      * The inbox listener of §13.7: it posts a coalesced flag and returns, touching nothing — the

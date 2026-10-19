@@ -112,7 +112,7 @@ CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelRevealStep.kt Chan
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.
 CH_HOLDERS='
-ChannelPostStep postStep|ChannelEngine.kt ChannelInviteStep.kt ChannelPassStep.kt ChannelRevealStep.kt
+ChannelPostStep postStep|ChannelEngine.kt ChannelInviteStep.kt ChannelPassStep.kt ChannelRevealStep.kt ChannelsImpl.kt
 ChannelPassStep passStep|ChannelEngine.kt
 ChannelSettleStep settleStep|ChannelEngine.kt
 ChannelSweepStep sweepStep|ChannelEngine.kt
@@ -120,11 +120,11 @@ ChannelSwitchStep switchStep|ChannelEngine.kt
 ChannelFunderStep funderStep|ChannelEngine.kt
 ChannelCreateStep createStep|ChannelEngine.kt
 ChannelAcceptStep acceptStep|ChannelEngine.kt
-ChannelRejoinStep rejoinStep|ChannelEngine.kt
+ChannelRejoinStep rejoinStep|ChannelEngine.kt ChannelsImpl.kt
 ChannelOutcomeStep channelOutcomeStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt
 ChannelRevealStep revealStep|ChannelEngine.kt
-ChannelEngine|MessagingRuntime.kt
+ChannelEngine|MessagingRuntime.kt ChannelsImpl.kt
 ChannelPassSteps|ChannelEngine.kt DmActor.kt MessagingRuntime.kt
 '
 HOLDER_NAMES=''

@@ -1,0 +1,10 @@
+# Phase 13 design §13.1 G-U3: the only files that may read SensitiveText's `value` outside
+# SensitiveTextView.kt. Format: path<TAB>reason — one file per line, the reason names the edge
+# the unwrap serves (G-DM2's pattern, like ui-traffic-callers.allow). Everywhere else the unwrap
+# belongs in SensitiveTextView.kt; a file not listed fails the gate on its first `.value` read.
+#
+# The adapters are the :app-owned crossing where a body typed in the UI leaves as facade bytes
+# (§3.2): the unwrap happens exactly once per call, on ghost-ui-io (CS-U6), immediately before
+# the facade call — never into a stored, logged or composed value.
+android/app/src/main/kotlin/org/ghost/app/ui/DmGatewayAdapter.kt	the DM send edge: the facade takes the body String once, at the crossing (§3.2, CS-U6)
+android/app/src/main/kotlin/org/ghost/app/ui/ChannelGatewayAdapter.kt	the channel post edge: the body bytes cross to the facade once (§3.2, CS-U6); the passphrase expands indices -> CharArray, never through a .value read

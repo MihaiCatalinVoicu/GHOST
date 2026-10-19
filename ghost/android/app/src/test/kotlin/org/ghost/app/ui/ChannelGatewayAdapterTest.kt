@@ -22,6 +22,7 @@ import org.junit.Test
 class ChannelGatewayAdapterTest {
     private class FakeChannels : Channels {
         var createdPassword: CharArray? = null
+        var inviteExpiryDays: Int? = null
         var postedBody: String? = null
         override fun create(
             name: ByteArray,
@@ -33,8 +34,11 @@ class ChannelGatewayAdapterTest {
             return CreateResult(CreateResult.Status.CREATED, ChannelId(ByteArray(32) { 1 }))
         }
 
-        override fun invite(channel: ChannelId, expiryDays: Int, password: CharArray?): InviteResult =
-            InviteResult(InviteResult.Status.CREATED, ByteArray(8) { 2 })
+        override fun invite(channel: ChannelId, expiryDays: Int, password: CharArray?): InviteResult {
+            inviteExpiryDays = expiryDays
+            password?.fill('0')
+            return InviteResult(InviteResult.Status.CREATED, ByteArray(8) { 2 })
+        }
 
         override fun accept(link: ByteArray, password: CharArray?): AcceptResult = AcceptResult.PENDING
         override fun post(channel: ChannelId, text: ByteArray, replyTo: PostId?): PostResult {
@@ -43,7 +47,7 @@ class ChannelGatewayAdapterTest {
         }
 
         override fun leave(channel: ChannelId): ChannelActionResult = ChannelActionResult.DONE
-        override fun resync(channel: ChannelId): ChannelActionResult = ChannelActionResult.DONE
+        override fun rejoin(channel: ChannelId): ChannelActionResult = ChannelActionResult.DONE
     }
 
     @Test
@@ -52,8 +56,15 @@ class ChannelGatewayAdapterTest {
         val g = ChannelGatewayAdapter({ fake }, wordList = { Bip39.wordlist })
         // Indices for "abandon ability" - the first two words of the list.
         g.create("test", passwordIndices = intArrayOf(0, 1))
-        // The adapter built a passphrase from the list; the fake saw the create run.
         assertEquals(CreateResult.Status.CREATED, CreateResult(CreateResult.Status.CREATED, null).status)
+    }
+
+    @Test
+    fun theInviteUsesTheSevenDayCap(): Unit = runBlocking {
+        val fake = FakeChannels()
+        val g = ChannelGatewayAdapter({ fake }, wordList = { Bip39.wordlist })
+        g.createInvite("01".repeat(32))
+        assertEquals(7, fake.inviteExpiryDays)
     }
 
     @Test

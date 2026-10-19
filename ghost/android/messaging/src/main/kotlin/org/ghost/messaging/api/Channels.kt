@@ -16,8 +16,9 @@ interface Channels {
 
     fun leave(channel: ChannelId): ChannelActionResult
 
-    fun resync(channel: ChannelId): ChannelActionResult
+    /** §6.7's CH-REJOIN, the user-invoked resync of a stalled channel. */
+    fun rejoin(channel: ChannelId): ChannelActionResult
 }
 
-/** The simple outcomes of [Channels.leave] and [Channels.resync] at the facade edge. */
+/** The simple outcomes of [Channels.leave] and [Channels.rejoin] at the facade edge. */
 enum class ChannelActionResult { DONE, NOT_A_MEMBER, UNAVAILABLE }

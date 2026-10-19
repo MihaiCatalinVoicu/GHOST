@@ -16,3 +16,9 @@ org.ghost
 org.bouncycastle
 # test-only: JVM SQLite driver for schema/migration unit tests (never shipped)
 org.xerial
+# ADR-57 item 3: QR encode/decode for QrImage/QrScanner (Apache-2.0, no runtime deps)
+com.google.zxing
+# ADR-57 item 7: JVM UI tests (never shipped; absent from the release graph, G-U7)
+org.robolectric
+# ADR-57 item 7: the instrumented-test module's plugin (test-only)
+com.android.test
