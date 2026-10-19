@@ -384,6 +384,10 @@ class MessagingRuntime(
     /** The facade of §13.2. Every call posts to the DM actor and returns after its commit. */
     val messaging: Messaging get() = engine
 
+    /** Phase 13 §3.2: the channel facade for the UI; null without [channelPorts]. */
+    val channels: org.ghost.messaging.api.Channels? =
+        channelEngine?.let { org.ghost.messaging.channel.engine.ChannelsImpl(it) }
+
     /**
      * The inbox listener of §13.7: it posts a coalesced flag and returns, touching nothing — the
      * committing thread can be a lane thread (`SyncDatabase` delivers hints there).

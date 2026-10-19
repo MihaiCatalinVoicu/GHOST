@@ -72,6 +72,7 @@ class MessagingWiringTest {
         var activateThrows = false
         val deferred = ArrayList<() -> Unit>()
         val changes = ArrayList<Set<SyncChange>>()
+        override val channels: org.ghost.messaging.api.Channels? = null
         override val messaging: Messaging = recordingMessaging(tag)
         override val listener: SyncListener = SyncListener { changes += it; log += "$tag.hint" }
         override val consumerTail: ConsumerTail = ConsumerTail { kind, _ -> log += "$tag.tail:$kind" }
@@ -537,7 +538,9 @@ class MessagingWiringTest {
         w.onProcessStart(keyExists = true)
         log.clear()
         w.onWipe()
-        assertEquals(listOf("stack1.close", "cancelAlarm", "setAlarmHandler:cleared"), log)
+        // Phase 13 S5: the wipe detaches the UI listener (and the notifier) before the close.
+        // Phase 13 S5: the wipe detaches the UI listener on the stack before the close.
+        assertEquals(listOf("stack1.setListener", "stack1.close", "cancelAlarm", "setAlarmHandler:cleared"), log)
         assertNull(w.messaging)
         assertNull(alarmHandler)
         db.database.transaction { tx ->

@@ -31,6 +31,9 @@ internal interface DmStack : AutoCloseable {
     val listener: SyncListener
     val consumerTail: ConsumerTail
 
+    /** Phase 13 §3.2: the channel facade, null in a build without channels. */
+    val channels: org.ghost.messaging.api.Channels?
+
     /**
      * Posts a time-triggered pass (§21.9 rule 1). [sessionStart] is true for a relay session start
      * alone: the one trigger that may open the next bundle-fetch attempt (§21.7 point 5).
@@ -71,6 +74,7 @@ internal interface DmStack : AutoCloseable {
 
 /** [DmStack] over the real `MessagingRuntime`. */
 internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
+    override val channels: org.ghost.messaging.api.Channels? get() = runtime.channels
     override val stores: SyncStores get() = runtime.stores
     override val messaging: Messaging get() = runtime.messaging
     override val listener: SyncListener get() = runtime.listener
