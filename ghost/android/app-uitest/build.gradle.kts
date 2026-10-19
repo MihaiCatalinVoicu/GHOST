@@ -48,6 +48,9 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.junit)
     implementation("androidx.compose.foundation:foundation")
+    // Phase 13 §9.2 (ADR-57 item 7): Accessibility Test Framework over the semantics tree -
+    // test-only, like the rest of this module.
+    implementation("com.google.android.apps.common.testing.accessibility.framework:accessibility-test-framework:4.1.1")
     implementation("androidx.test:runner:1.6.2")
     implementation("androidx.test:rules:1.6.1")
     implementation("androidx.test.ext:junit:1.2.1")

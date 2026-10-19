@@ -7,3 +7,4 @@
 # T54/T55/T57/ATF/process-death with their slices). An empty file means not-run-is-red.
 smoke 2
 accessibility 2
+atf 1
