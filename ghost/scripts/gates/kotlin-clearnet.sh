@@ -14,6 +14,10 @@ BANNED='\bjava\.net\.(\*|(Socket|SocketImpl|ServerSocket|DatagramSocket|Multicas
 checked=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
+  # The T4/T6 control application (Appendix B.2) is the positive control: its entire job is a
+  # deliberate clearnet DNS query and connection that the capture must see. Test-only, never
+  # shipped; the ban's target is the production client.
+  case "$f" in *android/backupctl/*) continue ;; esac
   checked=$((checked + 1))
   hits="$(grep -nP -- "$BANNED" "$f" || true)"
   [ -z "$hits" ] || while IFS= read -r line; do fail "$f:$line (clearnet primitive; the only network path is the Tor core)"; done <<< "$hits"
