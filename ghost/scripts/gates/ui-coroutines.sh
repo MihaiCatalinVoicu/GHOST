@@ -27,6 +27,10 @@ while IFS= read -r f; do
   rel="${f#"$GHOST_ROOT"/}"
   case "$rel" in
     android/messaging/*|android/crypto-bridge/*|android/media/*|android/ui/*) continue ;;
+    # The platform-test module (com.android.test, Q25) is tests by construction - it ships no
+    # artifact, and its fakes implement the gateways' suspend interfaces; the ban's target is
+    # production code.
+    android/app-uitest/*) continue ;;
     android/app/*)
       case "$rel" in
         android/app/src/*/kotlin/org/ghost/app/ui/*) continue ;;

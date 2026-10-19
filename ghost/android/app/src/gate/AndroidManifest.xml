@@ -11,7 +11,11 @@
         android:label="GHOST gate"
         android:targetPackage="${applicationId}" />
 
-    <application>
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:networkSecurityConfig="@xml/network_security_config">
         <!-- Phase 13 §12.3 (S9): the Compose test rule's host activity, declared in the target
              app so it runs in the target process (Q25) - never exported, no launcher filter, so
              the launcher still resolves MainActivity alone (GateSmokeTest's contract). -->
