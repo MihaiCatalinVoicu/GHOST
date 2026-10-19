@@ -1,0 +1,26 @@
+T6 dynamic evidence (design faza13-ux.md Appendix B.2)
+Run locally on the build machine 2026-10-19 by scripts/device/t6-dynamic-run.sh
+(control application: :backupctl - a DNS query plus a socket held in SYN-SENT against
+TEST-NET-1 192.0.2.1; target: :app's gate variant; attribution via /proc/net uid columns as
+root; capture via the image's own tcpdump).
+
+API 35 (ghost-dm-api35) - script exit 0, all four checks green:
+- positive control: 2 socket(s) owned by the control's uid (10154) seen in the snapshots;
+- zero sockets owned by GHOST's uid (10152) in the foreground - no GHOST packets exist;
+- no GHOST-owned socket to a DNS server;
+- the pcap carries the control's DNS query for example.com (4 packets).
+
+API 29 (ghost-dm-api29) - the platform image limits the tap, documented honestly:
+- per-uid sockets are NOT exposed: /proc/net/tcp lists only adbd's socket on this image, and
+  toybox ss shows no uid column, so per-uid socket attribution - the invariant's measuring
+  stick - cannot run there;
+- floor evidence instead: a GHOST-only capture window (force-stop everything, foreground
+  MainActivity for 15 s, tcpdump on any) contains ZERO packets once infrastructure noise is
+  excluded (ARP, DHCP 67/68, DNS 53, ICMP, adb 5555);
+- the control's probe also proved a platform quirk worth the checklist: after a same-version
+  reinstall its sockets were EPERM until a full uninstall/reinstall - the granted INTERNET
+  permission was not enough on this image until the package was re-created.
+
+Not covered here (stays on the device checklist): the Tor-inaccessible twin capture with a
+configured identity (no identity activates in this run by construction, §3.5 - no session
+starts), and the update-run leg, both of which need the J1 journey on a signed device.

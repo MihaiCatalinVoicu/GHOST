@@ -3,6 +3,8 @@
      GHOST's backup posture - allowBackup is true and nothing is excluded, so the canary file
      the Application writes must appear in any backup the transport carries. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- T6's positive control resolves a name and connects clearnet on purpose. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:name=".BackupCtlApp"
         android:label="backupctl"
