@@ -73,6 +73,19 @@ run_smoke() { # $1 = adb, $2 = out file, $3 = runner
   tr -d '\r' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
 }
 
+# The S9 accessibility suite (design §9.2-§9.4): font scale 2.0 composition and the ro/en label
+# twins at runtime, over the same runner. The yardstick is a device condition: the block puts
+# the device at font_scale 2.0 for the suite and restores it afterwards.
+run_accessibility() { # $1 = adb, $2 = out file, $3 = runner
+  local scale
+  scale=$("$1" shell settings get system font_scale | tr -d '\r')
+  "$1" shell settings put system font_scale 2.0 >/dev/null
+  "$1" shell am instrument -r -w -e class org.ghost.uitest.AccessibilitySuite \
+    "org.ghost.uitest/$3" > "$2" 2>&1
+  "$1" shell settings put system font_scale "${scale:-1.0}" >/dev/null
+  tr -d '\r' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
+}
+
 rc=0
 for name in "${suites[@]}"; do
   # Each suite's run block lands with the suite itself; until it does, the suite name in the

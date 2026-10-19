@@ -5,6 +5,9 @@ plugins {
     // AGP 9.4.0 is already on the root build's classpath (the application/library plugins share
     // its artifact); the test plugin id resolves from there, no version request.
     id("com.android.test")
+    // The S9 suite calls setContent with composable lambdas - without the Compose compiler
+    // plugin they compile as plain Function0 and the rule's setContent rejects them at runtime.
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -39,8 +42,12 @@ android {
 
 dependencies {
     implementation(project(":app"))
+    // The S9 accessibility suite composes :ui's screens directly; :app's dependency on :ui is
+    // an implementation one, so the test module names it too.
+    implementation(project(":ui"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.junit)
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.test:runner:1.6.2")
     implementation("androidx.test:rules:1.6.1")
     implementation("androidx.test.ext:junit:1.2.1")

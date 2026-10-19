@@ -11,4 +11,13 @@
         android:label="GHOST gate"
         android:targetPackage="${applicationId}" />
 
+    <application>
+        <!-- Phase 13 §12.3 (S9): the Compose test rule's host activity, declared in the target
+             app so it runs in the target process (Q25) - never exported, no launcher filter, so
+             the launcher still resolves MainActivity alone (GateSmokeTest's contract). -->
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="false" />
+    </application>
+
 </manifest>

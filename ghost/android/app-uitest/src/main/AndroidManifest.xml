@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Phase 13 design §3.1: the platform-test module's manifest — it holds no components of its
-     own; the instrumentation the runner needs arrives from the test plugin. -->
+     own; the instrumentation the runner needs arrives from the test plugin. The Compose test
+     rule's host activity is declared in the TARGET app's debug/gate manifests instead (Q25: the
+     content must run in the target process, not the test package's). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 </manifest>
