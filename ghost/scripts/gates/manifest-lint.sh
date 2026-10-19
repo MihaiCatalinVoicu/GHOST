@@ -13,10 +13,18 @@ while IFS= read -r m; do
   done < <(grep -oP 'uses-permission[^>]*android:name="\K[^"]+' "$m" || true)
   grep -q 'usesCleartextTraffic="true"' "$m" && fail "$m: usesCleartextTraffic=true is forbidden (ADR-01)"
   if grep -q '<application' "$m"; then
+    case "$m" in
+      # T4's control application (design faza13-ux.md Appendix B.2): its entire purpose is the
+      # relaxed backup posture that proves the pipeline carried data - the hardening attributes
+      # below would defeat it. The other rules of this gate still apply to it.
+      *backupctl*) ;;
+      *)
     grep -q 'android:allowBackup="false"' "$m" || fail "$m: application must declare android:allowBackup=\"false\" (FR-7.9)"
     grep -q 'android:dataExtractionRules=' "$m" || fail "$m: application must declare android:dataExtractionRules (FR-7.9)"
     grep -q 'android:fullBackupContent=' "$m" || fail "$m: application must declare android:fullBackupContent (FR-7.9)"
     grep -q 'android:networkSecurityConfig=' "$m" || fail "$m: application must declare android:networkSecurityConfig (ADR-01)"
+        ;;
+    esac
     exported="$(grep -c 'android:exported="true"' "$m" || true)"
     if [ "${exported:-0}" -gt 1 ]; then fail "$m: more than one exported component ($exported); each needs an ADR"; fi
     if [ "${exported:-0}" -eq 1 ] && ! grep -q 'android.intent.category.LAUNCHER' "$m"; then
