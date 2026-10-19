@@ -491,6 +491,34 @@ Mai puțin o „scurgere", dar declarat tot aici pentru ca nicio graniță să n
 
 ---
 
+## L11. Interfața (Faza 13; ADR-53 … ADR-57; design `docs/design/faza13-ux.md` §2, §15)
+
+| ID | Reziduu | De ce rămâne | Atenuare |
+|---|---|---|---|
+| L11-U1 | Ecranul poate fi fotografiat cu alt dispozitiv; un client modificat sau un telefon cu root anulează FLAG_SECURE; funcțiile de captură ale unor producători nu sunt testate | aplicația rulează pe sistemul utilizatorului | lista de dispozitive testate; timere scurte |
+| L11-U2 | Pe Android 10–11 (API 29–30) tastatura poate apărea în capturi; pe nivelurile următoare, până la măsurătoarea V-U1 | platforma nu securizează fereastra IME înainte de API 31 (după sursele AOSP, nemăsurat încă) | secretele pe tastaturile aplicației |
+| L11-U3 | Pe API 29–33 orice serviciu de accesibilitate citește textul; pe 34+ un serviciu care pretinde fals că e instrument, iar pe un telefon fără servicii Google nimic nu verifică declarația; instrumentele de sistem (din Android 16 QPR2, după sursele AOSP) pot captura ferestre securizate; funcții ale cititoarelor de ecran care trimit capturi în cloud la cererea utilizatorului | `isAccessibilityTool` e declarat de serviciu | ecranul „Cine poate citi ecranul”; opțiunea de ascundere |
+| L11-U4 | Clipboard-ul: 30 s de expunere cât procesul rulează; dacă procesul e înghețat sau oprit, clipul rămâne până la următoarea deschidere a GHOST sau până la ștergerea sistemului (~1 h pe Android 13+), iar pe Android 10–12 până e înlocuit; istoricul de clipboard al tastaturilor; ștergerea necondiționată poate șterge textul altei aplicații | Android permite citirea clipboard-ului doar aplicației cu focus și îngheață procesele din cache | doar date care nu sunt conținut; eticheta clipului păstrată; secretele nu se copiază |
+| L11-U5 | O tastatură terță sau preinstalată vede tot ce scrii în câmpul de compunere, inclusiv prin dictare | câmpul de compunere folosește tastatura sistemului (ADR-27 punctul 3) | flagul fără învățare (doar o recomandare); avertisment pentru orice tastatură în afară de cea AOSP |
+| L11-U6 | Aplicațiile care ascultă notificările (ceasuri, automatizări) văd textul constant și momentul lui, care e momentul decriptării unui mesaj; istoricul notificărilor (24 h, dacă e activ); evidențele de utilizare ale sistemului (L11-U17) | notificarea există | text constant; ascunsă pe ecranul de blocare; opțiunea „fără notificări” |
+| L11-U7 | Textul decriptat din ecrane (șiruri JVM) nu se poate șterge; după ascundere și blocare devine eligibil pentru GC | limbajul | starea ecranelor se golește la fiecare ascundere |
+| L11-U8 | PIN-ul aplicației oprește pe cineva care ține telefonul deblocat, nu un atacator cu root (încearcă PIN-uri cu cheia Keystore de pe telefon); contorul de eșecuri e un artefact; cheile nu sunt legate de fiecare deblocare (blocarea strictă are design separat) | HMAC-ul cu Keystore e un oracol pe dispozitiv | PIN de până la 16 cifre; așteptarea care nu se poate ocoli; designul separat al blocării stricte |
+| L11-U9 | Blocarea standard: contextul DM, cheile lui și ciornele rămân în memoria procesului cât acesta trăiește, și în fundal | primirea în fundal are nevoie de ele | starea ecranelor se golește la ascundere; ștergerea datelor |
+| L11-U10 | Setările (modul ridicat, durata blocării, opțiunile de notificare) și contorul de eșecuri ale PIN-ului sunt vizibile unui atacator cu baza deschisă | trebuie citite de procesele de fundal | — |
+| L11-U11 | După ștergere rămân: istoricul de joburi și alarme al sistemului, istoricul notificărilor (dacă e activ), înregistrarea canalului de notificare, evidențele de utilizare, blocuri de flash sub sistemul de fișiere, copiile de pe relee până la TTL, copiile contactelor | în afara aplicației | ștergerea criptografică înaintea fișierelor |
+| L11-U12 | Deblocarea aplicației pornește sesiunea de prim-plan, deci releele văd când aplicația e folosită | sincronizarea urmează folosirea | nimic la ecranul de blocare (LIMITE L2.1 punctul 4) |
+| L11-U13 | O altă aplicație poate revendica schema `ghost://` și intercepta sau înlocui un link deschis din afara GHOST; până la relansarea curată, sistemul ține linkul în memoria task-ului | schemele nu se pot verifica | QR în persoană; numărul de siguranță pentru carduri, amprenta pentru canale (suma de control arată doar deteriorarea) |
+| L11-U14 | Raportul de crash stă criptat într-un fișier tranzitoriu, fără timp, până la pornirea următoare | handler-ul nu poate scrie sigur în baza de date | fără mesaje, fire sau căi în raport |
+| L11-U15 | Fără copiere din mesaje, utilizatorul retastează URL-urile și adresele (risc de greșeală) | ADR-27 punctul 3 | — |
+| L11-U16 | Selectorul de fotografii al sistemului și DocumentsUI pot păstra istoricul selecțiilor | scris de sistem | Faza 11 L9-M15 |
+| L11-U17 | Sistemul păstrează evenimente de utilizare (deschiderea, trecerea în fundal, notificările, cu canalul ascuns), istoricul permisiunii camerei (fiecare scanare QR) și intrările de crash; le citesc aplicațiile cu acces la utilizare și o examinare a telefonului | le scrie sistemul | notificări opționale; DC-30 |
+| L11-U18 | O aplicație sau o pagină web poate deschide GHOST la un moment ales; dacă utilizatorul deblochează atunci, sesiunea pornește la câteva secunde sau minute după, iar un releu care colaborează poate lega momentul de dispozitiv sau de browser | Android lasă orice aplicație să pornească activitatea de lansare | sesiunea doar la deblocare; încă U[0, 2 min] după o deschidere cu link |
+| L11-U19 | Înghețarea proceselor din cache (Android 14+) oprește temporizatoarele GHOST în fundal; ștergerea clipboard-ului și alți pași locali întârzie până rulează din nou | decizia sistemului | eticheta clipului păstrată; ștergerea la următoarea deschidere |
+| L11-U20 | Pe API 29–33 apăsările pe tastaturile aplicației ajung la orice serviciu de accesibilitate activ; pe API 34+ la un serviciu care pretinde fals că e instrument; evenimentele de fereastră pot spune unui serviciu care nu e instrument când GHOST e în față | platforma nu impune nimic sub API 34 | avertismentul înaintea secretelor; opțiunea de ascundere |
+| L11-U21 | Ștergerea unei chei din Keystore e definitivă doar dacă Keystore-ul telefonului are rezistență la rollback; ștergerea unui fișier nu îl suprascrie pe flash | hardware-ul și sistemul de fișiere | distrugerea criptografică prin aliasuri; V-U29 citește proprietatea pe telefoanele testate |
+| L11-U22 | Deblocarea biometrică poate fi forțată (amprenta, fața) | biometria nu e un secret | PIN-ul rămâne; reafișarea cuvintelor cere PIN-ul tastat |
+| L11-U23 | Un crash nativ în procesul principal lasă un tombstone scris de sistem, care poate conține memorie din jurul erorii | scris de sistem | fără mesajul excepției în jurnale (handler-ul nu predă excepția) |
+
 ## 5. Sinteză: ce rămâne cu adevărat imposibil după toate acestea
 
 | Limită | După mitigări rămâne |

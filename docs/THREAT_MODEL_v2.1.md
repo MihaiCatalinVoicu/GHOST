@@ -109,6 +109,7 @@ Ce poate observa fiecare actor, per eveniment. „—” = nimic. Fiecare rând 
 | Dezvăluire (Faza 10) | nimic la relee; membrii văd autorul, nu destinatarul; destinatarul poate dovedi legătura oricui, L8-C8 | — | trafic Tor | destinatarul primește cardul | RV, T14 |
 | Parola de canal (Faza 10) | la relee nimic nou (invitația circulă în afara canalului; NI-CH5); cine are un link vede dacă cere parolă și poate ghici parola offline, cu costul unui Argon2id pe încercare; un membru care poate invita o ocolește (de aceea, cu Q46 (b), într-un canal cu parolă invită doar comitenții); orice membru, și orice membru scos, o cunoaște (LIMITE L8-C26) | — | trafic Tor | — | JN, NI-CH5, MM-PW1 … MM-PW5 |
 | Sync periodic (idle) | per pereche (relay, namespace): în prim-plan, listări cu `limit` 128 la 30 s × U[0,5; 1,5], cu fază independentă per pereche; în fundal, un eveniment per pereche per job, la momente alese de OS; get-uri câte produc scrierile altora; verificări ale propriilor copii (`check`) | — | începutul și sfârșitul sesiunilor Tor (aplicație deschisă, joburi OS, câte un bootstrap Tor per job: LIMITE L4); rată agregată proporțională cu numărul de perechi; momentele listărilor nu depind de activitate, volumul da (până la cover traffic, P2) | — | T19 (Faza 7, JVM); T17 (Faza 12, doar high-privacy mode cu cover traffic P2) (ADR-15, ADR-20) |
+| Interfața (Faza 13; ADR-53 … ADR-57) | prezența (aplicația deblocată) și acțiunile din lista închisă (design `docs/design/faza13-ux.md` §2.4); nimic din navigare, afișare, ecranul de blocare sau notificări; un atacator cu baza deschisă (AD-8) vede setările (modul ridicat, durata blocării, contorul de eșecuri ale PIN-ului); sistemul păstrează propriile evidențe de utilizare (LIMITE L11-U17) | — | — | — | T53 |
 
 Notă (Faza 7, ADR-20, design §6.3): trimiterile (hash, bucket, bucket de TTL, minut) urmează scrierile proprii, imediat în modul standard și cu întârziere U[0, 10 min] în high-privacy mode. Namespace-urile unui client nu împart un ceas de listare în prim-plan (faze independente, izolare de circuit per namespace, T21), dar toate perechile pornesc în primele 30 s după deschiderea aplicației și în primele 90 s ale fiecărui job de fundal. Reziduurile sunt în `LIMITE_REZIDUALE_SI_MITIGARI.md` L2.1.
 
@@ -188,6 +189,12 @@ Mitigări: avertisment blocant (**FR-4.6**; erată: nu FR-4.5): schimbarea cheii
 
 ### S13. Plata de la un exchange cu KYC direct la subadresa GHOST
 Obține (exchange-ul): „clientul X a plătit o subadresă asociată GHOST” doar dacă poate recunoaște subadresa (nu poate: subadresă unică per factură, nelegată public de GHOST). **Rezidual:** dacă utilizatorul declară scopul plății. Mitigare: avertisment înainte de plată (FR-6.8). **Test:** review UX.
+
+### S14. Aplicații de pe telefon care citesc ecranul, tastatura, clipboard-ul sau notificările
+Obține: ce afișează GHOST, dacă protecțiile nu se aplică. **Mitigare:** FLAG_SECURE pe fiecare fereastră, marcarea de accesibilitate (API 34+), avertismentul înaintea secretelor, clipboard sensibil cu ștergere la 30 s, secrete doar pe tastaturile aplicației, meniul de text fără acțiuni `PROCESS_TEXT`, notificări cu text constant (ADR-27, ADR-54). **Rezidual:** API 29–33 pentru accesibilitate (inclusiv apăsările pe tastaturile aplicației), API 29–30 pentru tastatură în capturi (până la V-U1), serviciile care mint că sunt instrumente, instrumentele de sistem, cameră sau alt dispozitiv, root. **Test:** T10, T11, T24.
+
+### S15. O aplicație sau o pagină web deschide GHOST la un moment ales
+Obține: dacă utilizatorul deblochează, momentul sesiunii; colaborând cu un releu, legătura dintre dispozitiv sau browser și namespace-urile clientului. **Mitigare:** sesiunea pornește doar la deblocare; după o deschidere cu link, încă U[0, 2 min] (ADR-53). **Rezidual:** momentul deblocării (LIMITE L11-U18). **Test:** T53.
 
 ## 8. Registrul de risc rezidual (delta față de §15 din spec)
 
