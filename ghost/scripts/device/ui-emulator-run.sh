@@ -76,8 +76,19 @@ run_smoke() { # $1 = adb, $2 = out file, $3 = runner
 # The S9 ATF suite (design §9.2, ADR-57 item 7): AccessibilityValidator over the live semantics
 # tree of the channel journey - zero errors is the requirement, over the same runner.
 run_atf() { # $1 = adb, $2 = out file, $3 = runner
-  "$1" shell am instrument -r -w -e class org.ghost.uitest.AtfSuite     "org.ghost.uitest/$3" > "$2" 2>&1
-  tr -d '' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
+  "$1" shell am instrument -r -w -e class org.ghost.uitest.AtfSuite \
+    "org.ghost.uitest/$3" > "$2" 2>&1
+  tr -d '\r' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
+}
+
+# The T20 inventory suite (Appendix B.2): the sandbox file floor after a launch, over the
+# same runner. T20's baseline is a fresh install: clear the target's data before the run.
+run_inventory() { # $1 = adb, $2 = out file, $3 = runner
+  "$1" shell pm clear org.ghost.app.gate >/dev/null 2>&1 || true
+  sleep 3 # the clear settles the package state; am instrument right behind it races a bad userId
+  "$1" shell am instrument -r -w -e class org.ghost.uitest.InventorySuite \
+    "org.ghost.uitest/$3" > "$2" 2>&1
+  tr -d '\r' < "$2" | grep -qx 'INSTRUMENTATION_CODE: -1'
 }
 
 # The S9 accessibility suite (design §9.2-§9.4): font scale 2.0 composition and the ro/en label

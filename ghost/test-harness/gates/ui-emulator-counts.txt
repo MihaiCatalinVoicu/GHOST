@@ -8,3 +8,4 @@
 smoke 2
 accessibility 2
 atf 1
+inventory 1
