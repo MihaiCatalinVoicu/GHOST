@@ -8,3 +8,7 @@ dm_safety_prompt	The RO 'siguranta' contains the 'sigur' trigger substring - the
 ch_accept_unreadable	The "nu poate"/"cannot" names a local state (the invite text failed the local parse), not an effect GHOST causes or an adversary capability; reviewed against §8.5 rule 1
 ch_accept_password_required	The "protejat" names the channel's password-protection state the preview just reported (a UI fact), not a security effect GHOST promises; reviewed against §8.5 rule 1
 media_pause_note	Registered as LIMIT (L9-M3's residue): the "vede" names the relay-observability limit the design prints beside the switch, not a product effect; evidence-free by kind, reviewed against §8.5 rule 1
+who_issuer_sees	The "fără expeditor" is plan §4's own wording for the Monero property (no sender visible), registered as a LIMIT row; reviewed against §8.5 rule 1
+who_dm_peer_sees	The RO "siguranță" trips the "sigur" substring - the cell lists what a DM correspondent sees (the safety number is a process tool, F9 §8.4), not an effect GHOST promises; registered as a LIMIT row
+who_operator_goal	The "nu pot"/"cannot" is plan §4's own wording for the operator's design goal, printed under the GOAL column with its not-verified status; registered as a GOAL row
+about_stage	The "are blocked" names the structural screenshot block of the secure window (FLAG_SECURE), a built property of the stage sentence DC-27, not a security effect claim; reviewed against §8.5 rule 1
