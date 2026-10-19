@@ -22,3 +22,5 @@ com.google.zxing
 org.robolectric
 # ADR-57 item 7: the instrumented-test module's plugin (test-only)
 com.android.test
+# ADR-57 item 7: Accessibility Test Framework for the emulator suites (test-only, checksums in verification-metadata)
+com.google.android.apps.common.testing.accessibility.framework

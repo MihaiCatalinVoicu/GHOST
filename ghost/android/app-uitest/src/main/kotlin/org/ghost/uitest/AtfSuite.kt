@@ -75,9 +75,6 @@ class AtfSuite {
             results,
             AccessibilityCheckResult.AccessibilityCheckResultType.WARNING,
         )
-        for (w in warnings) {
-            android.util.Log.i("AtfSuite", "warning: " + w.sourceCheckClass.simpleName)
-        }
         assertTrue(
             "ATF errors: " + errors.joinToString { it.sourceCheckClass.simpleName + " - " + it.message },
             errors.isEmpty(),
