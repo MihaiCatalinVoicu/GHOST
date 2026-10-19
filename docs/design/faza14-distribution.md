@@ -91,6 +91,8 @@
 
 ### 0.4 What this design deliberately does not do
 
+*Phase 13 forward note:* consumed by Phase 13 §6.7; release notes need a format field or are withdrawn (F-U11); the dynamic T6 test includes an update run (F14 §10.2); Q16 (no silent updates) unchanged.
+
 - **Self-update UX** (screens, the "Install unknown apps" prompt, alarms for STALE and CONFLICT, release notes): Phase 13. Phase 14 delivers a UI-less facade (§9.5).
 - **Bridges in the manifest**: the field is reserved and must be empty in v1 (§4.5); Phase 12 fills it and must also embed a default set, since a manifest cannot be fetched while Tor is blocked (F-D7).
 - **The mainnet genesis** (RK0 for network 1) and network selection at build: with the mainnet K1, Phase 16/17 (`ADR-22:29`). Phase 14 runs the full chain on stagenet.
@@ -156,6 +158,8 @@ The gate has four parts, and this design closes each with stated evidence (§11.
 **Not proved by the phase gate (release gates, §13.3 last row):** the auditor's reproduction and attestation (T12b, FR-8.9's second environment), the independent monitor's signed results, the production log policy on mainnet, a second independent mirror operator, the Android developer verification decision, the project identity's legal holder and the new public repository, counsel's items (§16), the licence screen (Phase 13).
 
 ### 1.3 Non-goals and deferrals (each with the constraint that decides it)
+
+*Phase 13 forward note:* consumed by Phase 13 §6.7; the update screens follow revision 2 (no in-app "verify this app", D25).
 
 | Item | Why not here | Where |
 |---|---|---|

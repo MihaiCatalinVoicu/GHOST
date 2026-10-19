@@ -340,6 +340,8 @@ The owner excluded libsignal and every (A)GPL component (2026-09-16). No permiss
 
 ### 2.5 DM context and state wrapping (normative)
 
+*Phase 13 forward note:* no Phase 13 lock closes the DM context (ADR-55, X-U1); `ctxClose` runs at wipe; the strict lock is deferred to its own design (Phase 13 Q6, §5.3).
+
 - `DmNative.ctxOpen(messagingBranch32, identitySeed32, sessionStateKey32) → handle` derives, in native memory, the Olm identity secret, the unused Olm account signing seed, `card_secret_0`, the schedule key and the read secrets; the Kotlin caller zeroises its arrays after the call (best effort). `ctxClose(handle)` zeroises (`zeroize` on drop). Lock and wipe call it; a closed or foreign handle returns `CRYPTO_UNAVAILABLE`.
 - `session_state_key`: 32 random bytes created at ACTIVATE, stored wrapped in `dm_self.state_key_wrapped` by a non-exportable Keystore key with the database-key authentication policy (the content-key pattern of §13.8). A restore creates a new one (sessions are lost anyway).
 - Every secret-bearing value that Kotlin stores or passes back is an envelope `nonce(12) ‖ ChaCha20-Poly1305(session_state_key, nonce, AD = "ghost/v1/wrap/" ‖ name ‖ binding, plaintext)`, with a binding that stays the same when the value moves between rows (session id, generation id, contact id and pair-key coordinates; the table of §22.8.3; an envelope that does not open under its binding is `STATE_CORRUPT`): Olm session pickles (`olm_session.state_env`), generation secrets (`olm_prekey_gen.secrets_env` = fallback secret ‖ X-Wing seed), `reply_seed` (`olm_session.prov_env`, `dm_held.prov_env`), pair week **opening** keys and roots (`dm_pair_key.open_env`, `dm_pair_offer.root_env`, `dm_pair_offer.offer_env`). Kotlin holds in clear only **recognition keys** (§6.2), card secrets of contacts (needed for credentials) and bearer credentials.
@@ -1229,6 +1231,8 @@ Anyone who holds c's card and my card can build an intro envelope that names c's
 - **Key-compromise impersonation at first contact (KC13).** An adversary holding B's entire state (Olm identity, every generation secret, `session_state_key`) and one genuine intro envelope from A, fresh within FRESH, that builds a new Olm PreKey message with its own base key under A's old binding and ciphertext is refused (`binding.base_key ≠ PreKey.base_key`); with a new ciphertext it is refused (signature); with a fresh base key and a fresh ciphertext under a binding it cannot sign it is refused. The declared limit is asserted too: re-sealing other content under A's own ciphertext and base key while withholding A's genuine envelope is accepted (the adversary holds that session's state). Mutant PM-34 (binding without base key and ciphertext) makes the first cases pass wrongly.
 
 ### 8.4 Safety number v1 (FR-4.6; D12; mechanics replaced by §22; a CP-09 exception with vectors)
+
+*Phase 13 forward note:* Phase 13 records `QR_IN_PERSON` only after the user says the code was on the person's own phone in front of them (X-U16); T35's PQ-R8 listing reads that answer (F-U15).
 
 ```
 own_id(party)  = identity_pk(32, Ed25519) || OI(32, Olm identity)
@@ -2150,6 +2154,8 @@ CREATE TABLE dm_peer_pq (              -- peer X-Wing keys: the establishment ge
 
 ### 13.7 Threads, background, wiring (normative)
 
+*Phase 13 forward note:* Phase 13 fixes the order (ACTIVATE inside the running foreground session) and measures it (BV-2, BV-3; Q54).
+
 - **DM actor.** One process-wide single-thread executor (`ghost-dm`) owns every `:messaging` transaction and every `DmNative` session call (§7.9). It is woken by: listener hints (`SyncChange.INBOX`, `OUTCOMES`, `CAPABILITIES`, `TOPOLOGY`), facade calls, the in-process expiry timer, the alarm receiver, the database open, and the `ConsumerTail`. Hints carry no payload and the actor re-reads state, so a lost or duplicated hint is harmless.
 - **No work on lane threads.** `Inbox.setListener` (one slot, unused until Phase 9, `Inbox.kt:26`) fires on the committing thread, which can be a lane thread (`SyncDatabase.kt:16-19`); the listener only posts a coalesced flag to the actor (test: "the listener returns without touching the database"). Phase 10 will turn the slot into a fan-out in `:app`; the API stays unchanged.
 - **Actor pass** (split by §21.9). Every pass (until empty or the deadline): SWEEP → OUTCOME loop → BUNDLE claims (`Consumer.PREKEYS`) → HELD replays (§22.8.1) → peek ordering and RECV claims (`Inbox.peek`, then `Inbox.claimOne` one blob at a time, §7.7; none while the native library or the DM context is unavailable, §21.12) → reschedule the timer and the alarm. Only a **time-triggered** pass (the actor timer, database open, a relay session start) also runs OWNER-WEEK and re-seals, the week-change parts of KEEPER and REGROWS, scheduled controls due, `EST-READY`, `EST-END` and expired pending items.
@@ -2469,6 +2475,8 @@ Gate: *"2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochea
 - **Status.** A regression net and gate evidence for the Android-specific parts, not the physical gate; a run that cannot start the emulator reports **not run**, never green. It also closes the Phase 7/8 "device-only" items that fit an emulator (SQLCipher migration, JNI on x86_64). The job uploads no artifact to a public destination (G-L5).
 
 ### 15.10 Physical-device checklist (manual, signed; G-15)
+
+*Phase 13 forward note:* a gate-variant restore command (Phase 13 Q51).
 
 **Setup.** Two phones: A a mid-range arm64 device on API 29–31, B a recent arm64 device on API 35 or later; the release candidate APK and its `gate` debug variant (never released) for the steps marked †, which exposes `Messaging` to an instrumentation runner and includes the debug key-change hook and the debug-only order digest export; live Tor; 3 staging relays over 2 operators with the stagenet ES; a host orchestrator `scripts/device/dm-gate.sh` that drives both phones through adb and **records digests, never content**. The APKs are built locally or in a job that uploads nothing and are installed only on the gate devices (G-L5, ADR-39).
 
@@ -4480,6 +4488,8 @@ nightly (`dm-fuzz` only nightly and on dispatch), and their first runner results
 | 11 | — | **What was run, and where.** A Linux container, 4 vCPU. `dm-fuzz`: item 7, through the job's own script. The libcrux suites: item 8, through the job's own script. `run-all.sh`: 17 gates OK. `self-test.sh`: **586** cases OK, 0 failed (571 at `451ae3d`; the 15 new ones are items 6 and 9; cargo-deny not installed, so its bans case reported skipped, as before). `cargo fmt --all -- --check` and `cargo clippy --locked --workspace --all-targets -- -D warnings` in `ghost/`: clean (the workspace is unchanged but for scripts, fixtures and docs); the fuzz crate, outside the workspace: rustfmt clean and `cargo +nightly-2026-09-25 clippy --all-targets -- -D warnings` clean. `workflow-yaml.sh` and `no-public-binaries.sh` OK over both workflows |
 
 ### 22.36 Forward notes (the privacy worlds on production's trigger mix, 2026-09-27)
+
+*Phase 13 forward note:* item 9(g): Phase 13 fixes the order (ACTIVATE inside the running foreground session) and measures it (BV-2, BV-3; Q54).
 
 **Precedence.** These notes record the harness work the phase review left recorded (review rows MD-2
 and MD-3, §22.34 item 6): the DM privacy world and the entitlement world JD8 runs in now give the DM

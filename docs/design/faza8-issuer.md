@@ -1150,6 +1150,8 @@ QR: byte mode, version 21-L (capacity 929 bytes; 20-L holds only 858).
 
 ### 8.3 Activation sequence (invitee; normative)
 
+*Phase 13 forward note:* the foreground starts at unlock, not at visibility (Phase 13 X-U14, D33); `SyncWiring.kt` hooks the presence transitions.
+
 1. `Entitlement.activate(inviteText)`: `Invite.parseAndVerify` (local) and the offline token check.
 2. One transaction: a trial purchase `prepared` {invite token, seed, base week, ES seq}; `ent_drop_target` from the invite (`waiting`); the invite nonce recorded.
 3. `IdentityManager.create(ViaInvite(invite))` (local). The identity is **not active** while a trial purchase is pending: `activationState()` reports `PENDING`, and the app registers no namespace.

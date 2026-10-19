@@ -521,6 +521,8 @@ op_id = SHA-256("ghost/v1/media/op" || object_id(16) || i16_be(ordinal) || u8(re
 
 ### 6.5 Facade additions (`:messaging`, UI-less, for Phase 13)
 
+*Phase 13 forward note:* the lock duties run through `GhostApp.onContentLock()` at every hide and every lock (Phase 13 X-U15); the pause switch needs a method and persisted state (F-U9); the picker sentence (line ~472) is consumed as F-U17.
+
 ```kotlin
 fun sendMedia(contact: ContactId, source: MediaSource, caption: String?, viewOnce: Boolean): SendResult
     // QUEUED(preparation: PreparationId) | TOO_LARGE | TOO_LARGE_FOR_TIMER | UNSUPPORTED_SOURCE | KEY_CHANGED | BLOCKED

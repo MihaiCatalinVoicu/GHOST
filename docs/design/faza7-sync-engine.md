@@ -991,6 +991,8 @@ UPDATE inbox_blob
 
 ### 5.4 Decision (goes into ADR-20)
 
+*Phase 13 forward note:* the foreground starts at unlock, not at visibility (Phase 13 X-U14, D33).
+
 - **Background job:**
   - `JOB_ID = 0x47535931`, `setPeriodic(15 min, 5 min)`, `setPersisted(true)`, `setRequiredNetworkType(NETWORK_TYPE_ANY)`, empty extras, no other constraints.
   - `JobSchedulerWake.ensurePeriodic()` compares `getPendingJob(JOB_ID)` and calls `schedule()` only if it differs, so the period timer is not reset.

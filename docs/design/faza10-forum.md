@@ -362,6 +362,8 @@ Adopt a hybrid suite when all hold: (1) the WG assigns final code points or Open
 
 ### 4.5 CP-10 wording
 
+*Phase 13 forward note:* (X-U11) the channel sentence loses its comparison clause until ADR-36's evidence.
+
 Forbidden for channels: "post-cuantic", "quantum", "PQ", any comparison implying DM-level protection. The Phase 13 copy states: "Mesajele din canale folosesc criptografie clasică (X25519); spre deosebire de mesajele directe, nu sunt protejate împotriva unui viitor calculator cuantic."
 
 ---
@@ -975,6 +977,8 @@ All functions are `static native`, take byte arrays and ints, return `code(1) �
 
 ### 10.3 `Channels` facade for Phase 13 (normative signatures)
 
+*Phase 13 forward note:* coordination items F-U8 (per-channel unread, per-post timer and expiry, a content-free listener) and F-U10 (`inspectInvite(link): ChannelInvitePreview?`, local parse only).
+
 ```kotlin
 interface Channels {
     fun create(name: String, timer: Timer, sizeClass: SizeClass): CreateResult              // CREATED | LIMIT_REACHED | NO_REPLICAS | CRYPTO_UNAVAILABLE
@@ -1019,7 +1023,7 @@ Every method posts to the messaging actor and returns after its transaction comm
 | `CH-OUTCOME` | Phase 7 outcomes | post states, own-commit bookkeeping |
 | `CH-SWEEP` | the ADR-32 sweep points | expired posts and their derived rows (§8.5), epochs past retention (`sweepPast` with the count of §8.3) and the box keys whose `last_epoch` left it, drained generations (their still-deferred fetched rows marked consumed first, §6.5), expired joins, invites, requests, seen tags, KeyPackage tags, fork signals; an own INDETERMINATE commit past its deadline plus the handshake TTL (CO-4 (c)); checkpoint |
 
-**State key.** `mls_state_key`: 32 random bytes created at the first channel use, wrapped by a non-exportable Keystore key with the database key's authentication policy (the F9 §2.5 `session_state_key` pattern; one key for all channels), held in native memory while unlocked (L7-D19 extended). A restore creates a new one (channel state is lost anyway).
+**State key.** `mls_state_key`: 32 random bytes created at the first channel use, wrapped by a non-exportable Keystore key with the database key's authentication policy (the F9 §2.5 `session_state_key` pattern; one key for all channels), held in native memory while unlocked — after Phase 13's X-U1, "while the process lives": no Phase 13 lock closes the context that holds it (L7-D19 extended). A restore creates a new one (channel state is lost anyway).
 
 ---
 
