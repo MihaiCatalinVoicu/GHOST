@@ -50,6 +50,9 @@ x-issuer-image: &issuer-image
     options:
       max-size: "1m"
       max-file: "1"
+      # Docker >= 28 enables the local driver's compression by default, which it refuses to
+      # combine with max-file: 1 (staging deployment on Docker 29, 2026-10-20): set it off.
+      compress: "false"
 
 services:
   tor:
