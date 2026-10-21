@@ -11,7 +11,7 @@ import org.ghost.identity.InviteKeys
  * [IdentityPort] over [IdentityManager] (design §8.3, §8.4). The root entropy is unwrapped only for
  * the derivation that needs it and zeroized right after.
  */
-internal class ManagerIdentity(private val manager: IdentityManager) : IdentityPort {
+class ManagerIdentity(private val manager: IdentityManager) : IdentityPort {
     override fun hasIdentity(): Boolean = manager.hasIdentity()
 
     override fun create(invite: Invite?) {
@@ -36,7 +36,7 @@ internal class ManagerIdentity(private val manager: IdentityManager) : IdentityP
 }
 
 /** [SealPort] over [DropSeal]; drop keys are re-derived from the root entropy per invite index (§8.4). */
-internal class IdentitySeal(private val manager: IdentityManager) : SealPort {
+class IdentitySeal(private val manager: IdentityManager) : SealPort {
     override fun sealCredit(creditToken: ByteArray, dropKey: ByteArray, dropNamespace: ByteArray): ByteArray =
         DropSeal.sealCredit(creditToken, dropKey, dropNamespace)
 

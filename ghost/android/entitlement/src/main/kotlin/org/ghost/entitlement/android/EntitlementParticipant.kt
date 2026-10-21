@@ -22,7 +22,7 @@ class EntitlementParticipant(private val engine: EntitlementEngine) : SessionPar
 }
 
 /** [SessionPort] over a `ParticipantSession`: the accesses it grants, and nothing else. */
-internal class ParticipantSessionPort(private val session: ParticipantSession) : SessionPort {
+class ParticipantSessionPort(private val session: ParticipantSession) : SessionPort {
     override val kind: SessionKind get() = session.kind
     override val closed: Boolean get() = session.closed
 
