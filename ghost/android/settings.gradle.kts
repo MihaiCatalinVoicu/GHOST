@@ -43,5 +43,5 @@ include(":ui")
 include(":app-uitest")
 // Phase 13 Appendix B.2 (T4): the backup control application, test-only, never shipped.
 include(":backupctl")
-# Phase 13 Appendix B.2 (T6 twin, J3-J5 real sessions): the staging harness, test-only.
+// Phase 13 Appendix B.2 (T6 twin, J3-J5 real sessions): the staging harness, test-only.
 include(":tools:staging-harness")
