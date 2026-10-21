@@ -14,11 +14,41 @@ Nu este livrat: modul de test, nicio dependență de producție inversă, porți
 
 ## Rulare (ghost-runner, WSL)
 
-```sh
-# nativul Linux (dm + net) se construiește o dată:
-./scripts/build-native.sh --host   # sau: cargo build --release -p ghost-dm-host … (vezi RUNBOOK-uri)
+### Mediul (o dată pe distro)
 
-./gradlew :tools:staging-harness:stagingRun --args='activate --issuer yc5kgo3q….onion:443 --state /srv/harness/alice'
+```sh
+# Rust 1.98.1 (pinuit de rust-toolchain.toml), profil minimal:
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.1 --profile minimal
+. "$HOME/.cargo/env"
+
+# Android SDK (AGP 9.4.0, compileSdk 37): cmdline-tools + platform + build-tools:
+mkdir -p "$HOME/Android/Sdk/cmdline-tools" && cd "$HOME/Android/Sdk/cmdline-tools"
+curl -fsSL -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+unzip -q tools.zip && rm tools.zip && mv cmdline-tools latest
+export ANDROID_HOME="$HOME/Android/Sdk"
+yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-37" "build-tools;37.0.0"
+```
+
+### Biblioteca nativă de host
+
+`ghost/scripts/build-native.sh` construiește **doar Android** (cargo-ndk, ABI-urile
+`aarch64/x86_64-linux-android`) — nu există mod `--host`. Pentru `.so`-urile Linux de care
+rulează harness-ul pe JVM, comanda directă (fără NDK):
+
+```sh
+sudo apt-get install -y protobuf-compiler   # build.rs-ul net cere protoc
+cargo build --release -p ghost-dm-host --locked      # → target/release/libghost_dm_host.so
+```
+
+Biblioteca se încarcă pe JVM prin proprietatea existentă
+(`DmNative.HOST_LIBRARY_PROPERTY`, `-Dghost.dm.native=<cale>/libghost_dm_host.so`); ea poartă
+suprafețele DM, entitlement și Tor ale `ghost-client-net` pentru host.
+
+### Comenzile
+
+```sh
+./gradlew :tools:staging-harness:stagingRun --args='activate --state /srv/harness/alice'
 ./gradlew :tools:staging-harness:stagingRun --args='dm --with /srv/harness/bob --state /srv/harness/alice'
 ./gradlew :tools:staging-harness:stagingRun --args='t6-twin --state /srv/harness/alice --out /srv/harness/t6'
 ```
@@ -49,10 +79,14 @@ releele au gossip pornit, nu e infrastructură de producție.
   circuite izolate per namespace); pe host se încarcă `.so`-ul Linux, nu dll-ul Windows.
 - **Activare**: fluxul de trial al `:entitlement` (cerere la issuer prin onion, confirmare,
   finalizare K20) — aceeași cale ca onboarding-ul aplicației, fără UI.
-- **T6**: captura și atribuirea pe UID urmează scriptul `scripts/device/t6-dynamic-run.sh`
-  (pcap pe dispozitiv + coloana uid din `/proc/net/*` ca root); geamănul rulează sesiunile o dată
-  cu Tor lăsat să iasă și o dată cu egress-ul Tor blocat pe emulator (firewall pe UID / rețea
-  oprită pentru procesul de transport), aceeași identitate.
+- **T6**: mecanismul se schimbă față de emulator, cerința nu. Scriptul existent
+  `ghost/scripts/device/t6-dynamic-run.sh` rulează pe dispozitiv (pcap pe emulator + coloana uid
+  din `/proc/net/*`). Geamănul harness-ului rulează pe host-ul Linux: procesul pornește sub un
+  **UID dedicat** (utilizator nou în distro), captura e `tcpdump` pe interfața de rețea, iar
+  atribuirea pe UID se face din `/proc/net/tcp{,6}` și `/proc/net/udp{,6}` (coloana uid) plus
+  filtrul pe UID în `nftables`/`iptables` (regulă de egress per-uid sau cgroup). Cele două brațe:
+  sesiuni cu Tor lăsat să iasă vs. egress blocat pentru UID-ul harnessului — aceeași identitate,
+  așteptat zero pachete non-Tor și zero interogări DNS în brațul blocat.
 
 ## Ieșire și jurnal
 
