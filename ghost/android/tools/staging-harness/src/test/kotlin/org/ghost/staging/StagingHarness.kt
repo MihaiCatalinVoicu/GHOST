@@ -73,7 +73,16 @@ private fun activate(args: List<String>) {
         }
         val status = world.entitlement.status()
         println("activate: engine=${status.javaClass.simpleName}")
-        val purchase = world.entitlement.openPurchases().firstOrNull()
+        // Terminal rows stay in openPurchases() (the list is "all purchases", §3.6); a run after
+        // an expiry must not resurrect them - drive the first live row, or start a fresh one.
+        val terminal = setOf(
+            org.ghost.entitlement.api.PurchaseUiState.EXPIRED_SEEN,
+            org.ghost.entitlement.api.PurchaseUiState.EXPIRED_UNPAID,
+            org.ghost.entitlement.api.PurchaseUiState.LOST,
+            org.ghost.entitlement.api.PurchaseUiState.CANCELLED,
+            org.ghost.entitlement.api.PurchaseUiState.FINALIZED,
+        )
+        val purchase = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }
         val id = if (purchase == null) {
             val fresh = world.entitlement.startPurchase(org.ghost.entitlement.api.PayWith.XMR)
             if (fresh == null) {
@@ -103,6 +112,17 @@ private fun activate(args: List<String>) {
                     world.entitlement.acknowledge(id, disclosures)
                     println("activate: DISCLOSURES_ACKNOWLEDGED count=${disclosures.size}")
                 }
+                // The app calls checkNow when the payer returns from the wallet; without it the
+                // issuer-side credit reaches this engine only on a later quiet run.
+                world.entitlement.checkNow(id)
+                println("activate: CHECK_NOW")
+                // HostSync runs WakeScheduler.NO_WAKE: no periodic job ever fires in this process,
+                // so the quiet-run issuer call (BlindSign attempts, credit sync past the
+                // invoiceStatus range) must be driven by hand, one due item per run.
+                world.controller.runUserIssuerCall { session ->
+                    world.participant.onQuietRun(session)
+                }
+                println("activate: QUIET_RUN_STEP")
                 val instructions = world.entitlement.paymentInstructions(id)
                 if (instructions != null) {
                     // The invoice address is public data (it is what the payer pays to); print it
@@ -119,7 +139,7 @@ private fun activate(args: List<String>) {
                     println("activate: invoice written to ${invoice.absolutePath}")
                     return
                 }
-                val state = world.entitlement.openPurchases().firstOrNull()?.state
+                val state = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }?.state
                 if (state == org.ghost.entitlement.api.PurchaseUiState.LOST || state == org.ghost.entitlement.api.PurchaseUiState.EXPIRED_UNPAID || state == org.ghost.entitlement.api.PurchaseUiState.CANCELLED) {
                     println("activate: INVOICE_FAILED state=$state")
                     kotlin.system.exitProcess(1)
