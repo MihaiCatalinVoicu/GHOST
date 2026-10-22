@@ -105,7 +105,18 @@ private fun activate(args: List<String>) {
                 }
                 val instructions = world.entitlement.paymentInstructions(id)
                 if (instructions != null) {
-                    println("activate: AWAITING_PAYMENT subaddress=${instructions.subaddress.take(8)}… amount=${instructions.amountAtomic} uri=${instructions.uri != null}")
+                    // The invoice address is public data (it is what the payer pays to); print it
+                    // whole and also drop it in the state dir for the payment step.
+                    val invoice = File(state, "invoice.txt")
+                    val nl = System.lineSeparator()
+                    invoice.writeText(
+                        "subaddress=" + instructions.subaddress + nl +
+                            "amount_atomic=" + instructions.amountAtomic + nl +
+                            "deadline_minute=" + instructions.deadlineMinute + nl +
+                            "uri=" + (instructions.uri ?: "") + nl,
+                    )
+                    println("activate: AWAITING_PAYMENT subaddress=${instructions.subaddress} amount=${instructions.amountAtomic}")
+                    println("activate: invoice written to ${invoice.absolutePath}")
                     return
                 }
                 val state = world.entitlement.openPurchases().firstOrNull()?.state
