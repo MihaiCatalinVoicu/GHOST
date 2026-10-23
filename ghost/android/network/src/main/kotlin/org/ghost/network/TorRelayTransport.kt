@@ -17,7 +17,15 @@ import java.util.concurrent.atomic.AtomicLong
  * Phase 12 storage validation (PT-3) — never a line's text (§6.6, T58).
  * Kept by R8 (`consumer-rules.pro`): native code throws it by class name.
  */
-class NetworkException(val category: String, val detail: String? = null) : RuntimeException(category)
+class NetworkException(val category: String, val detail: String? = null) : RuntimeException(category) {
+    /**
+     * The JNI glue (`jni_bridge.rs`) raises this with `ThrowNew`, which constructs via the
+     * single-string constructor: Kotlin default arguments do not generate a JVM overload, so
+     * without this the native error path itself dies with NoSuchMethodError and the real
+     * category is lost (found by the staging harness, 2026-10-23).
+     */
+    constructor(category: String) : this(category, null)
+}
 
 /**
  * Android face of the Rust network core (`libghost_client_net.so`, ADR-19). All traffic goes

@@ -29,7 +29,7 @@ fun main(args: Array<String>) {
     when (args[0]) {
         "activate" -> activate(args.drop(1))
         "trial" -> trial(args.drop(1))
-        "dm" -> println("dm: NOT_YET_WIRED")
+        "dm" -> dm(args.drop(1))
         "t6-twin" -> println("t6-twin: NOT_YET_WIRED")
         else -> {
             usage()
@@ -39,8 +39,84 @@ fun main(args: Array<String>) {
 }
 
 /**
- * Drive a pending invite activation to ACTIVE: the redemption is a quiet-run issuer call (like
- * BlindSign), and HostSync has no periodic jobs - so run quiet-run steps until the state settles.
+ * J3-J5 over the real staging relays, one PEER PER PROCESS: the Tor transport holder is a process
+ * singleton (HostSync's own note), so the two identities never share a JVM. The driver script runs
+ * two `dm` peers concurrently over a shared card file (design §21.12: every stage idempotent, keyed
+ * on the stored state, so re-runs and restarts advance what the last window did not finish):
+ *   dm --state <dir> --export-card                       print this identity's card (base64)
+ *   dm --state <dir> --peer-card <file> --as <name> --peer-name <name> [--deadline-min N]
+ *     J3  contact request to the peer, acceptance of the peer's request, establishment READY;
+ *     J4  one message each way, verified on the receiver;
+ *     J5  conversation timer set both ways, one post-timer message each way.
+ */
+private fun dm(args: List<String>) {
+    val state = File(args.option("--state") ?: run { usage(); return })
+    StagingWorld(state).use { world ->
+        System.load(System.getProperty("ghost.dm.native"))
+        val m = world.dm.messaging
+        if (args.contains("--export-card")) {
+            val card = m.myCard() ?: run { world.activateDm(); m.myCard() }
+            println("dm: CARD=" + java.util.Base64.getEncoder().encodeToString(card!!.card))
+            return
+        }
+        val peerCardFile = File(args.option("--peer-card") ?: run { usage(); return })
+        val me = args.option("--as") ?: "me"
+        val peer = args.option("--peer-name") ?: "peer"
+        val deadlineMs = (args.option("--deadline-min")?.toLongOrNull() ?: 25L) * 60_000
+        println("dm: ACTIVATE=${world.activateDm()}")
+        val contact = {
+            m.contacts().firstOrNull { it.name == peer }
+        }
+        if (contact() == null) {
+            val card = java.util.Base64.getDecoder().decode(peerCardFile.readText().trim())
+            println("dm: ADD=${m.addContact(card, org.ghost.messaging.api.CardSource.LINK, peer)}")
+        }
+        world.controller.onAppForeground()
+        val end = System.currentTimeMillis() + deadlineMs
+        var sentJ4 = false
+        var sentJ5 = false
+        var timerSet = false
+        while (System.currentTimeMillis() < end) {
+            val c = contact()
+            when {
+                c == null -> Unit
+                c.trust == org.ghost.messaging.api.TrustState.REQUEST -> {
+                    println("dm: ACCEPT=${m.acceptRequest(c.id)}")
+                }
+                c.establishment == org.ghost.messaging.api.Establishment.READY -> {
+                    val theirs = m.conversation(c.id, 10, null).mapNotNull { it.text }
+                    if (!sentJ4 && !theirs.contains("J4 $me->$peer")) {
+                        println("dm: J4_SEND=${m.send(c.id, "J4 $me->$peer", null)}")
+                        sentJ4 = true
+                    }
+                    if (theirs.contains("J4 $peer->$me") && !timerSet) {
+                        println("dm: J5_TIMER=${m.setTimer(c.id, org.ghost.messaging.api.Timer.MIN_5)}")
+                        timerSet = true
+                    }
+                    if (timerSet && !sentJ5 && !theirs.contains("J5 $me->$peer post-timer")) {
+                        println("dm: J5_SEND=${m.send(c.id, "J5 $me->$peer post-timer", null)}")
+                        sentJ5 = true
+                    }
+                    if (theirs.contains("J4 $me->$peer") && theirs.contains("J4 $peer->$me") &&
+                        theirs.contains("J5 $me->$peer post-timer") && theirs.contains("J5 $peer->$me post-timer")
+                    ) {
+                        println("dm: J3-J5_DONE me=$me peer=$peer")
+                        return
+                    }
+                }
+                else -> if ((System.currentTimeMillis() / 30_000) % 4 == 0L) {
+                    println("dm: ESTABLISHING ${c.establishment} trust=${c.trust} sync=${world.controller.status().transport}")
+                }
+            }
+            Thread.sleep(15_000)
+            world.controller.onAppForeground()
+        }
+        println("dm: TIMEOUT me=$me (re-run to continue; all state is stored)")
+    }
+}
+/**
+ * Drive a pending invite activation to ACTIVE: the redemption is a foreground user issuer call
+ * (Â§8.3), and HostSync has no periodic jobs - so run foreground steps until the state settles.
  */
 private fun trial(args: List<String>) {
     val state = File(args.option("--state") ?: run { usage(); return })
@@ -55,7 +131,7 @@ private fun trial(args: List<String>) {
                 return
             }
             if (s == org.ghost.entitlement.api.ActivationState.PENDING) {
-                // An onboarding trial runs as a USER issuer call at foreground (§8.3), never as
+                // An onboarding trial runs as a USER issuer call at foreground (Â§8.3), never as
                 // quiet-run work - that lane serves only revocations with a due time.
                 world.foreground()
                 world.controller.awaitIdle(150_000)
@@ -70,7 +146,7 @@ private fun trial(args: List<String>) {
 /**
  * The activation chain (owner directive, 2026-10-21): genesis is zero (E6), so the bootstrap is
  * staged and resumable - the asynchronous protocol windows (BlindSign ~4 h Q22, activation slot
- * ~28 h §12.3) never block a session: each run advances what is due and prints the stage.
+ * ~28 h Â§12.3) never block a session: each run advances what is due and prints the stage.
  */
 private fun activate(args: List<String>) {
     val state = File(args.option("--state") ?: run { usage(); return })
@@ -107,7 +183,7 @@ private fun activate(args: List<String>) {
         }
         val status = world.entitlement.status()
         println("activate: engine=${status.javaClass.simpleName}")
-        // Terminal rows stay in openPurchases() (the list is "all purchases", §3.6); a run after
+        // Terminal rows stay in openPurchases() (the list is "all purchases", Â§3.6); a run after
         // an expiry must not resurrect them - drive the first live row, or start a fresh one.
         val terminal = setOf(
             org.ghost.entitlement.api.PurchaseUiState.EXPIRED_SEEN,
@@ -119,7 +195,7 @@ private fun activate(args: List<String>) {
         val purchase = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }
         val id = if (purchase == null) {
             if (world.entitlement.openPurchases().any { it.state == org.ghost.entitlement.api.PurchaseUiState.FINALIZED }) {
-                // The pack is paid and signed: mint the invite for the second identity (§8.6).
+                // The pack is paid and signed: mint the invite for the second identity (Â§8.6).
                 val day = (System.currentTimeMillis() / 86_400_000L).toInt()
                 val invite = world.entitlement.createInvite(day + 14)
                 if (invite == null) {

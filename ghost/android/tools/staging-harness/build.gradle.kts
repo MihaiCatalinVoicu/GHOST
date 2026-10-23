@@ -67,6 +67,10 @@ tasks.register("stageHarnessRuntime") {
     group = "verification"
     description = "Copy the harness test runtime into build/harness-runtime/ for the WSL runner."
     dependsOn("compileDebugUnitTestKotlin")
+    // The module class jars appear on the test classpath as entries that only exist once their
+    // producing tasks ran (on a fresh WSL checkout they are missing and the stage silently
+    // skipped them - SqlExecutor and friends). Depending on the classpath pulls those producers in.
+    dependsOn((tasks.named("testDebugUnitTest").get() as Test).classpath)
     doLast {
         val testTask = tasks.named("testDebugUnitTest").get() as Test
         val out = layout.buildDirectory.dir("harness-runtime").get().asFile
