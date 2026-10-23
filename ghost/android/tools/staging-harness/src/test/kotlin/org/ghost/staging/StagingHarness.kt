@@ -93,6 +93,10 @@ private fun activate(args: List<String>) {
         if (inviteFile != null) {
             val result = world.entitlement.activate(inviteFile.readText().trim())
             println("activate: trial result=$result")
+            // The RedeemInvite runs as a user issuer call on a callback thread; keep the world
+            // alive until the runtime is idle so the call completes (or fails) in this run.
+            world.controller.awaitIdle(5 * 60_000)
+            println("activate: IDLE state=${world.entitlement.activationState()}")
             return
         }
         if (!world.hasIdentity()) {
