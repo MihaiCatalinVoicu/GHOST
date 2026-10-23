@@ -103,6 +103,9 @@ class StagingWorld(private val stateDir: File) : AutoCloseable {
     /** The engine as the sync runtime's one session participant. */
     val participant: EntitlementParticipant = EntitlementParticipant(engine)
 
+    /** The app's foreground hook (§8.3 step 4): a pending onboarding trial retries its user call. */
+    fun foreground() = engine.onForeground()
+
     val entitlement: org.ghost.entitlement.api.Entitlement get() = engine
 
     init {

@@ -28,11 +28,41 @@ fun main(args: Array<String>) {
     }
     when (args[0]) {
         "activate" -> activate(args.drop(1))
+        "trial" -> trial(args.drop(1))
         "dm" -> println("dm: NOT_YET_WIRED")
         "t6-twin" -> println("t6-twin: NOT_YET_WIRED")
         else -> {
             usage()
             kotlin.system.exitProcess(2)
+        }
+    }
+}
+
+/**
+ * Drive a pending invite activation to ACTIVE: the redemption is a quiet-run issuer call (like
+ * BlindSign), and HostSync has no periodic jobs - so run quiet-run steps until the state settles.
+ */
+private fun trial(args: List<String>) {
+    val state = File(args.option("--state") ?: run { usage(); return })
+    StagingWorld(state).use { world ->
+        System.load(System.getProperty("ghost.dm.native"))
+        for (i in 1..8) {
+            val s = world.entitlement.activationState()
+            println("trial: state=$s (round $i)")
+            if (s == org.ghost.entitlement.api.ActivationState.ACTIVE ||
+                s == org.ghost.entitlement.api.ActivationState.FAILED
+            ) {
+                return
+            }
+            if (s == org.ghost.entitlement.api.ActivationState.PENDING) {
+                // An onboarding trial runs as a USER issuer call at foreground (§8.3), never as
+                // quiet-run work - that lane serves only revocations with a due time.
+                world.foreground()
+                world.controller.awaitIdle(150_000)
+                println("trial: FOREGROUND_STEP")
+            } else {
+                Thread.sleep(15_000)
+            }
         }
     }
 }
@@ -84,6 +114,19 @@ private fun activate(args: List<String>) {
         )
         val purchase = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }
         val id = if (purchase == null) {
+            if (world.entitlement.openPurchases().any { it.state == org.ghost.entitlement.api.PurchaseUiState.FINALIZED }) {
+                // The pack is paid and signed: mint the invite for the second identity (§8.6).
+                val day = (System.currentTimeMillis() / 86_400_000L).toInt()
+                val invite = world.entitlement.createInvite(day + 14)
+                if (invite == null) {
+                    println("activate: INVITE_NOT_READY (no fresh token or no usable drop relays)")
+                } else {
+                    val out = File(state, "invite.txt")
+                    out.writeText(invite)
+                    println("activate: INVITE_WRITTEN ${out.absolutePath}")
+                }
+                return
+            }
             val fresh = world.entitlement.startPurchase(org.ghost.entitlement.api.PayWith.XMR)
             if (fresh == null) {
                 println("activate: PURCHASE_REFUSED (schedule window or engine not ready)")
@@ -118,11 +161,20 @@ private fun activate(args: List<String>) {
                 println("activate: CHECK_NOW")
                 // HostSync runs WakeScheduler.NO_WAKE: no periodic job ever fires in this process,
                 // so the quiet-run issuer call (BlindSign attempts, credit sync past the
-                // invoiceStatus range) must be driven by hand, one due item per run.
+                // invoiceStatus range) must be driven by hand, one due item per run. The call runs
+                // on a callback thread, so wait for the runtime to go idle before touching the
+                // state again - otherwise the world closes the database under the in-flight call.
                 world.controller.runUserIssuerCall { session ->
                     world.participant.onQuietRun(session)
                 }
+                world.controller.awaitIdle(5 * 60_000)
                 println("activate: QUIET_RUN_STEP")
+                val now = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }
+                if (now != null) println("activate: PURCHASE_NOW state=${now.state}")
+                if (world.entitlement.openPurchases().any { it.state == org.ghost.entitlement.api.PurchaseUiState.FINALIZED }) {
+                    println("activate: PACK_FINALIZED")
+                    return
+                }
                 val instructions = world.entitlement.paymentInstructions(id)
                 if (instructions != null) {
                     // The invoice address is public data (it is what the payer pays to); print it
