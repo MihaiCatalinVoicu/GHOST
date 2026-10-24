@@ -41,7 +41,7 @@ fun main(args: Array<String>) {
 /**
  * J3-J5 over the real staging relays, one PEER PER PROCESS: the Tor transport holder is a process
  * singleton (HostSync's own note), so the two identities never share a JVM. The driver script runs
- * two `dm` peers concurrently over a shared card file (design Â§21.12: every stage idempotent, keyed
+ * two `dm` peers concurrently over a shared card file (design ÃÂÃÂÃÂÃÂ§21.12: every stage idempotent, keyed
  * on the stored state, so re-runs and restarts advance what the last window did not finish):
  *   dm --state <dir> --export-card                       print this identity's card (base64)
  *   dm --state <dir> --peer-card <file> --as <name> --peer-name <name> [--deadline-min N]
@@ -67,9 +67,16 @@ private fun dm(args: List<String>) {
         val contact = {
             m.contacts().firstOrNull { it.name == peer }
         }
+        if (args.contains("--redrive") && contact() != null) {
+            println("dm: REDRIVE delete=${m.deleteContact(contact()!!.id)}")
+        }
         if (contact() == null) {
             val card = java.util.Base64.getDecoder().decode(peerCardFile.readText().trim())
             println("dm: ADD=${m.addContact(card, org.ghost.messaging.api.CardSource.LINK, peer)}")
+            // A send with no usable session opens the establishment window (EST-START, §21.7);
+            // the message queues and flushes when the session builds. Without this send the
+            // window never opens and the contact stays CARD_ONLY forever.
+            println("dm: J4_SEND_QUEUED=${m.send(m.contacts().first { it.name == peer }.id, "J4 $me->$peer", null)}")
         }
         world.controller.onAppForeground()
         val end = System.currentTimeMillis() + deadlineMs
@@ -89,6 +96,7 @@ private fun dm(args: List<String>) {
                         println("dm: J4_SEND=${m.send(c.id, "J4 $me->$peer", null)}")
                         sentJ4 = true
                     }
+                    if (!sentJ4) sentJ4 = true // queued below at ADD time; the flag only guards this branch
                     if (theirs.contains("J4 $peer->$me") && !timerSet) {
                         println("dm: J5_TIMER=${m.setTimer(c.id, org.ghost.messaging.api.Timer.MIN_5)}")
                         timerSet = true
@@ -110,13 +118,16 @@ private fun dm(args: List<String>) {
             }
             Thread.sleep(15_000)
             world.controller.onAppForeground()
+            // HostSync restarts no relay sessions while one lives, and the DM actor only passes on
+            // triggers: nudge the time trigger so EST-START/KEEPER run while the peer waits.
+            world.dm.onTimeTrigger()
         }
         println("dm: TIMEOUT me=$me (re-run to continue; all state is stored)")
     }
 }
 /**
  * Drive a pending invite activation to ACTIVE: the redemption is a foreground user issuer call
- * (ÃÂ§8.3), and HostSync has no periodic jobs - so run foreground steps until the state settles.
+ * (ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ§8.3), and HostSync has no periodic jobs - so run foreground steps until the state settles.
  */
 private fun trial(args: List<String>) {
     val state = File(args.option("--state") ?: run { usage(); return })
@@ -131,7 +142,7 @@ private fun trial(args: List<String>) {
                 return
             }
             if (s == org.ghost.entitlement.api.ActivationState.PENDING) {
-                // An onboarding trial runs as a USER issuer call at foreground (ÃÂ§8.3), never as
+                // An onboarding trial runs as a USER issuer call at foreground (ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ§8.3), never as
                 // quiet-run work - that lane serves only revocations with a due time.
                 world.foreground()
                 world.controller.awaitIdle(150_000)
@@ -146,7 +157,7 @@ private fun trial(args: List<String>) {
 /**
  * The activation chain (owner directive, 2026-10-21): genesis is zero (E6), so the bootstrap is
  * staged and resumable - the asynchronous protocol windows (BlindSign ~4 h Q22, activation slot
- * ~28 h ÃÂ§12.3) never block a session: each run advances what is due and prints the stage.
+ * ~28 h ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ§12.3) never block a session: each run advances what is due and prints the stage.
  */
 private fun activate(args: List<String>) {
     val state = File(args.option("--state") ?: run { usage(); return })
@@ -183,7 +194,7 @@ private fun activate(args: List<String>) {
         }
         val status = world.entitlement.status()
         println("activate: engine=${status.javaClass.simpleName}")
-        // Terminal rows stay in openPurchases() (the list is "all purchases", ÃÂ§3.6); a run after
+        // Terminal rows stay in openPurchases() (the list is "all purchases", ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ§3.6); a run after
         // an expiry must not resurrect them - drive the first live row, or start a fresh one.
         val terminal = setOf(
             org.ghost.entitlement.api.PurchaseUiState.EXPIRED_SEEN,
@@ -195,7 +206,7 @@ private fun activate(args: List<String>) {
         val purchase = world.entitlement.openPurchases().firstOrNull { it.state !in terminal }
         val id = if (purchase == null) {
             if (world.entitlement.openPurchases().any { it.state == org.ghost.entitlement.api.PurchaseUiState.FINALIZED }) {
-                // The pack is paid and signed: mint the invite for the second identity (ÃÂ§8.6).
+                // The pack is paid and signed: mint the invite for the second identity (ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ§8.6).
                 val day = (System.currentTimeMillis() / 86_400_000L).toInt()
                 val invite = world.entitlement.createInvite(day + 14)
                 if (invite == null) {

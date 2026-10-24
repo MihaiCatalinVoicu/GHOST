@@ -51,10 +51,11 @@ object HostSync {
         wake: WakeScheduler = NO_WAKE,
         clock: SyncClock = HostClock,
         random: RandomSources = KeyedRandomSources(),
+        policy: TrafficPolicy = TrafficPolicy.DEFAULT,
     ): AndroidSyncController {
         val threads = SyncThreads()
         val holder = TorTransportHolder({ TorRelayTransport.create(torState, torCache) }, clock, threads)
-        val runtime = SyncRuntime(opener, holder, clock, random, TrafficPolicy.DEFAULT, threads, leases = holder)
+        val runtime = SyncRuntime(opener, holder, clock, random, policy, threads, leases = holder)
         return AndroidSyncController(runtime, wake, opener)
     }
 }

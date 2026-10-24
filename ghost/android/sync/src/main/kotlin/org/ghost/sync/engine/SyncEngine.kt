@@ -17,12 +17,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Process-wide sync engine (design §1.1, §1.4): the stores, the ports, the policy, the injected
+ * Process-wide sync engine (design ÃÂ§1.1, ÃÂ§1.4): the stores, the ports, the policy, the injected
  * steps, and the in-memory state that outlives one session (whether the transport reached READY in
  * this process, status flags, 24-hour pauses). It owns at most one [Session] at a time; the Android
  * runtime (step S7) runs it with a [ThreadedLaneRunner], tests with a deterministic driver.
  *
- * Nothing here is persisted (design §2.4, T20).
+ * Nothing here is persisted (design ÃÂ§2.4, T20).
  */
 internal class SyncEngine(
     val stores: SyncStores,
@@ -33,7 +33,7 @@ internal class SyncEngine(
     val steps: Steps = Steps.default(),
     private val mode: () -> PrivacyMode,
 ) {
-    /** The transport reached READY in this process (Arti accepted the consensus clock): a precondition of [clockTrusted] (§3.7, §11.5 #2). */
+    /** The transport reached READY in this process (Arti accepted the consensus clock): a precondition of [clockTrusted] (ÃÂ§3.7, ÃÂ§11.5 #2). */
     @Volatile
     var readyInProcess: Boolean = false
         private set
@@ -42,7 +42,7 @@ internal class SyncEngine(
     var transportStatus: TransportStatus = TransportStatus.OFF
         private set
 
-    /** `native_missing` was seen: sync stays off for the life of the process (§3.6). */
+    /** `native_missing` was seen: sync stays off for the life of the process (ÃÂ§3.6). */
     @Volatile
     var disabled: Boolean = false
         private set
@@ -53,7 +53,7 @@ internal class SyncEngine(
     private val relayWorkPauses = ConcurrentHashMap<Long, Long>()
     private val jobs = AtomicLong()
 
-    /** Consecutive transport failures, for the 1 → 15 min recreation backoff (§3.6). */
+    /** Consecutive transport failures, for the 1 Ã¢ÂÂ 15 min recreation backoff (ÃÂ§3.6). */
     internal var transportFailures: Int = 0
 
     @Volatile
@@ -69,7 +69,7 @@ internal class SyncEngine(
 
     /**
      * Creates and starts a session; the caller runs it (a runner or a driver). The previous session
-     * must have finished (design §1.4: at most one session). Background sessions are numbered in
+     * must have finished (design ÃÂ§1.4: at most one session). Background sessions are numbered in
      * this process (the job index of the keyed offsets).
      */
     fun startSession(kind: SessionKind): Session {
@@ -85,7 +85,7 @@ internal class SyncEngine(
     /** The current session, if any. */
     fun currentSession(): Session? = session
 
-    /** Counts and enums only (design §7.3). Opens its own transaction. */
+    /** Counts and enums only (design ÃÂ§7.3). Opens its own transaction. */
     fun status(): SyncStatus {
         val counts = stores.counts()
         val out = EnumSet.noneOf(StatusFlag::class.java)
@@ -121,7 +121,7 @@ internal class SyncEngine(
     }
 
     /**
-     * Design §3.7 as corrected in §11.5 #2: the wall clock may be trusted (M3, the D1/D2/W sweep,
+     * Design ÃÂ§3.7 as corrected in ÃÂ§11.5 #2: the wall clock may be trusted (M3, the D1/D2/W sweep,
      * GC) only after a READY in this process, and only while it has moved with the monotonic clock
      * since the last READY, within [CLOCK_STEP_TOLERANCE_MILLIS]. A step beyond that is not trusted
      * until the next READY re-anchors it (Arti accepted the consensus clock again). Callers also
@@ -145,7 +145,7 @@ internal class SyncEngine(
         transportStatus = TransportStatus.NATIVE_MISSING
     }
 
-    // ------------------------------------------------------------------ 24-hour pauses (§3.6), monotonic time
+    // ------------------------------------------------------------------ 24-hour pauses (ÃÂ§3.6), monotonic time
 
     /** A list outcome (`rejected`, a local bug) paused the pair's listing; work-lane outcomes never do (T19). */
     internal fun pauseRead(pair: PairKey, until: Long) {
@@ -172,10 +172,10 @@ internal class SyncEngine(
     override fun toString(): String = "SyncEngine"
 
     companion object {
-        /** Length of the pauses for `rejected` and local bugs (design §3.6). */
+        /** Length of the pauses for `rejected` and local bugs (design ÃÂ§3.6). */
         const val PAUSE_MILLIS: Long = 24 * 3_600_000L
 
-        /** Largest difference between wall and monotonic time since the last READY that [clockTrusted] accepts (§11.5 #2). */
+        /** Largest difference between wall and monotonic time since the last READY that [clockTrusted] accepts (ÃÂ§11.5 #2). */
         const val CLOCK_STEP_TOLERANCE_MILLIS: Long = 3_600_000L
     }
 }

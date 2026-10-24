@@ -47,7 +47,7 @@ internal class ReadItem(
 }
 
 /**
- * The read lane of a session (design §1.4, §4.1, §6.1, §11.2 #12, #13).
+ * The read lane of a session (design ÃÂ§1.4, ÃÂ§4.1, ÃÂ§6.1, ÃÂ§11.2 #12, #13).
  *
  *  - Every read pair has its own [PairSchedule]; events are dispatched by scheduled time to at most
  *    [TrafficPolicy.readWorkers] event workers, one event per pair at a time. In the foreground an
@@ -58,7 +58,7 @@ internal class ReadItem(
  *    (only while pages are full and the cursor advances) run on a separate continuation worker and
  *    must end before the pair's next event, so inbound volume never occupies an event worker or
  *    delays any event. A further page still queued when its pair's next event is due is dropped;
- *    only a running one makes its pair busy (§11.5 #5). Their outcomes do not feed the breaker.
+ *    only a running one makes its pair busy (ÃÂ§11.5 #5). Their outcomes do not feed the breaker.
  *  - The read-lane [breaker] counts first-page outcomes only; pauses of the read lane come from list
  *    outcomes only. Nothing the work lane does changes this lane's state, and the lane never reads
  *    the database before sending (snapshot of cursor, token and generation).
@@ -248,7 +248,7 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
 
     /**
      * A further page still waiting in the queue never holds its pair past the pair's next event
-     * (design §11.5 #5): once that event is due, the page is dropped and the pair's work bundle is
+     * (design ÃÂ§11.5 #5): once that event is due, the page is dropped and the pair's work bundle is
      * queued, so inbound volume on another pair, whose further page may run up to its own deadline,
      * never delays or skips this pair's first page (T19). Only a running further page makes its pair
      * busy.
@@ -289,17 +289,17 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
         when (val outcome = item.outcome ?: return) {
             is PageOutcome.Committed -> {
                 // The cursor stored after the commit: the next one, the kept one, or the stored one
-                // reloaded when it was no longer the one this request sent (design §11.5 #3).
+                // reloaded when it was no longer the one this request sent (design ÃÂ§11.5 #3).
                 outcome.commit.cursor?.let { p.cursor = it }
                 if (!item.continuation) breaker.success(p.key.relayId)
                 when (outcome.commit.disposition) {
                     PageCommit.Disposition.ACCEPTED ->
                         if (!outcome.commit.staleCursor && continues(item, outcome)) {
-                            // Queued, not running: the pair stays free, and its next event drops the page (§11.5 #5).
+                            // Queued, not running: the pair stays free, and its next event drops the page (ÃÂ§11.5 #5).
                             continuations.addLast(Continuation(p.key, item.page + 1, item.pagesAllowed))
                         } else {
                             // The event ended at the relay's tail (a short page, an empty next cursor or an
-                            // unchanged one — a page limit spent is not the tail): CO-4 (ii)'s listing-pass
+                            // unchanged one Ã¢ÂÂ a page limit spent is not the tail): CO-4 (ii)'s listing-pass
                             // signal (F-S4-1). A stale-cursor race still listed to the tail: it counts.
                             if (atTail(item, outcome)) {
                                 context.stores.listingTailStore.record(p.key.relayId, p.key.namespace, now)

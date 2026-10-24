@@ -10,7 +10,7 @@ import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-/** Design §1.4: a session runs while the app is visible, or for one background job. */
+/** Design ÃÂ§1.4: a session runs while the app is visible, or for one background job. */
 internal enum class SessionKind { FOREGROUND, BACKGROUND }
 
 /**
@@ -22,8 +22,8 @@ internal class PairSnapshot(val sequence: Long, val read: List<ReadPair>, val wr
 }
 
 /**
- * Time budget of a session (design §3.7): a background session has 8 minutes; each call's deadline
- * is `min(policy, remaining − 5 s)` and no call is made with less than [TrafficPolicy.minCallMillis].
+ * Time budget of a session (design ÃÂ§3.7): a background session has 8 minutes; each call's deadline
+ * is `min(policy, remaining Ã¢ÂÂ 5 s)` and no call is made with less than [TrafficPolicy.minCallMillis].
  * The foreground has no session budget.
  */
 internal class SessionBudget(private val start: Long, private val total: Long?, private val policy: TrafficPolicy) {
@@ -41,14 +41,14 @@ internal class SessionBudget(private val start: Long, private val total: Long?, 
 }
 
 /**
- * One sync session (design §1.4, §5.4): M1, then the transport, then two lanes over the same
+ * One sync session (design ÃÂ§1.4, ÃÂ§5.4): M1, then the transport, then two lanes over the same
  * database until the session stops (foreground) or its work is done (background). It is the
  * [LaneSource] of its runner: [ThreadedLaneRunner] in production, a deterministic driver in tests.
  *
  * Session start: M1 (always first), EnsureTransport; on READY the pair snapshot, a maintenance pass
  * and (foreground) GC; then read-pair events on the read lane and write-pair events, passes every
  * minute and GC every hour on the work lane. A transport-level failure takes the session offline:
- * no call is made until EnsureTransport succeeds again (foreground, with the 1 → 15 min backoff);
+ * no call is made until EnsureTransport succeeds again (foreground, with the 1 Ã¢ÂÂ 15 min backoff);
  * a background session then drains and ends. A background session ends after every pair's one event,
  * the drained work lane and a final GC.
  *
@@ -100,7 +100,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
 
     /**
      * Stops accepting items; calls in flight finish and record their results, then the session is
-     * finished (foreground → background handover, app backgrounded, onStopJob after the abort).
+     * finished (foreground Ã¢ÂÂ background handover, app backgrounded, onStopJob after the abort).
      */
     fun stop() = lock.withLock {
         stopping = true
@@ -110,7 +110,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
         changed.signalAll()
     }
 
-    /** STANDARD foreground only: a pass for due stores now (never a read event, design §5.4). */
+    /** STANDARD foreground only: a pass for due stores now (never a read event, design ÃÂ§5.4). */
     fun expedite() = lock.withLock {
         if (kind != SessionKind.FOREGROUND || engine.privacyMode() != PrivacyMode.STANDARD) return@withLock
         val now = now()
@@ -186,7 +186,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
                 // A media pair's full slice reposts the rest of its bundle as a new item at [now],
                 // behind the non-media items already queued (a fresh sequence number: nothing already
                 // queued at or before [now] is overtaken). A non-media PairWork never queues behind
-                // a media continuation (Phase 11 design §5.5). The continuation carries fetches only:
+                // a media continuation (Phase 11 design ÃÂ§5.5). The continuation carries fetches only:
                 // the event body (check, HIGH stores, registrations) ran on the event's first item.
                 if (item.continueFetches) {
                     work.post(
@@ -245,7 +245,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
         work.dropNetworked()
     }
 
-    // ------------------------------------------------------------------ transport faults (design §3.6)
+    // ------------------------------------------------------------------ transport faults (design ÃÂ§3.6)
 
     /** A transport-level failure seen by a lane item (no lock held). */
     fun fault(failure: CallResult.Failed) = lock.withLock {
@@ -265,7 +265,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
             }
             // The holder bootstraps the same transport again.
             ErrorClass.NEEDS_BOOTSTRAP -> postEnsure(now)
-            // Close and recreate, with the 1 → 15 min backoff.
+            // Close and recreate, with the 1 Ã¢ÂÂ 15 min backoff.
             ErrorClass.NEW_TRANSPORT -> {
                 engine.transport.abort()
                 engine.setTransportStatus(TransportStatus.UNAVAILABLE)
@@ -295,7 +295,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
     /**
      * Reads the read pairs and the write-only work pairs in one transaction: outbox work with a
      * token that can check, and pairs with a due key registration, which needs a usable write
-     * capability (Phase 9 design §13.3 item 5). Registration work gives a pair its own work-lane
+     * capability (Phase 9 design ÃÂ§13.3 item 5). Registration work gives a pair its own work-lane
      * events in HIGH mode, where nothing else would schedule them; the read lane is untouched (T19).
      */
     fun loadSnapshot(): PairSnapshot = engine.stores.database.transaction { tx ->

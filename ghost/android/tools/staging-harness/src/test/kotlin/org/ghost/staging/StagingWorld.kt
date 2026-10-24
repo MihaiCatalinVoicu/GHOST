@@ -37,6 +37,7 @@ import org.ghost.sync.android.DatabaseOpener
 import org.ghost.sync.android.HostSync
 import org.ghost.sync.android.AndroidSyncController
 import org.ghost.sync.api.ParticipantSession
+import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayEntry
 import org.ghost.sync.api.SyncController
@@ -50,7 +51,7 @@ import org.ghost.network.OnionAddress
  * The staging world (tools/staging-harness/README.md): the app's real engine stack - sync runtime
  * over the real Tor transport, entitlement engine over the real native token crypto, identity over
  * a software wrapper - against the live staging deployment. One instance per identity, rooted at
- * [stateDir]; every stage of the harness is idempotent and resumable (design §21.12).
+ * [stateDir]; every stage of the harness is idempotent and resumable (design ÃÂ§21.12).
  */
 class StagingWorld(private val stateDir: File) : AutoCloseable {
     private val dbFile = File(stateDir, "ghost.db")
@@ -93,10 +94,13 @@ class StagingWorld(private val stateDir: File) : AutoCloseable {
     private val identity = IdentityManager(JvmSecretWrapper(secretsDir), FileSecretStore(secretsDir), SecureRandom())
 
     /** The process's one controller (HostSync: real Tor transport, no Context, no JobScheduler). */
+    // The staging Tor path to the relays measures 20-60 s a call; the 20 s default list deadline
+    // killed every read with RELAY_TRANSIENT_AMBIGUOUS (found 2026-10-24). 60 s is the policy max.
     val controller: AndroidSyncController = HostSync.controller(
         torState = File(stateDir, "tor/state"),
         torCache = File(stateDir, "tor/cache"),
         opener = opener,
+        policy = org.ghost.sync.engine.TrafficPolicy(listDeadlineMillis = 60_000),
     )
 
     private val engine = EntitlementEngine(
@@ -116,14 +120,14 @@ class StagingWorld(private val stateDir: File) : AutoCloseable {
     /** The engine as the sync runtime's one session participant. */
     val participant: EntitlementParticipant = EntitlementParticipant(engine)
 
-    /** The app's foreground hook (§8.3 step 4): a pending onboarding trial retries its user call. */
+    /** The app's foreground hook (ÃÂ§8.3 step 4): a pending onboarding trial retries its user call. */
     fun foreground() = engine.onForeground()
 
     val entitlement: org.ghost.entitlement.api.Entitlement get() = engine
 
     /**
      * The app's participant plus the DM layer's relay-session-start time trigger in front of it
-     * (GhostApp's `messagingWiring.sessionHooks(entitlementWiring.participant)`, Phase 9 §21.9
+     * (GhostApp's `messagingWiring.sessionHooks(entitlementWiring.participant)`, Phase 9 ÃÂ§21.9
      * rule 1). The DM stack builds lazily, so the first session's start also builds it.
      */
     private val combinedParticipant = object : SessionParticipant {
@@ -176,13 +180,13 @@ class StagingWorld(private val stateDir: File) : AutoCloseable {
             alarm = ExpiryWake.NONE,
             checkpoint = DmCheckpoint { Checkpoint.truncate(executor) },
         )
-        database.inbox.setListener(built.listener)
+        stores.inbox.setListener(built.listener)
         controller.setConsumerTail(built.consumerTail)
         built.onTimeTrigger()
         built
     }
 
-    /** The K20 hook's one turn (§8.3): opens the DM context from this identity and ACTIVATEs it. */
+    /** The K20 hook's one turn (ÃÂ§8.3): opens the DM context from this identity and ACTIVATEs it. */
     fun activateDm(): ActivationOutcome =
         dm.reopenAndActivate({ identity.unlock() }, restored = false, wanted = { true })
             ?: ActivationOutcome.CRYPTO_UNAVAILABLE
@@ -239,7 +243,7 @@ class StagingWorld(private val stateDir: File) : AutoCloseable {
 
     fun hasIdentity(): Boolean = identity.hasIdentity()
 
-    /** Genesis bootstrap (design §8.6, E6): no trial, no access - the first pack is bought later. */
+    /** Genesis bootstrap (design ÃÂ§8.6, E6): no trial, no access - the first pack is bought later. */
     fun genesis() {
         check(!identity.hasIdentity()) { "an identity already exists in $stateDir" }
         identity.create(IdentityManager.Activation.Genesis(policyAcknowledged = true)).root.zeroize()

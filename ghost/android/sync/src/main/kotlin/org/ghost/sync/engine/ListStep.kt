@@ -22,13 +22,13 @@ internal sealed class PageOutcome {
 }
 
 /**
- * List step of the read lane (design §4.1). One request is sent from the lane's in-memory snapshot
+ * List step of the read lane (design ÃÂÃÂÃÂÃÂ§4.1). One request is sent from the lane's in-memory snapshot
  * (cursor, token, generation; no database read before the send), and its page is committed in
  * **one** transaction: rows, sources, own-copy verification and, only for a non-empty next cursor,
  * the cursor (IN-3; an empty cursor keeps the stored one, the sticky tail). The lane decides
  * whether a further page follows.
  *
- * Open so the exit-gate harness can substitute mutants (design §8.8 M1 CursorFirst, M7 EmptyCursorStored).
+ * Open so the exit-gate harness can substitute mutants (design ÃÂÃÂÃÂÃÂ§8.8 M1 CursorFirst, M7 EmptyCursorStored).
  */
 internal open class ListStep {
 
@@ -56,7 +56,7 @@ internal open class ListStep {
         return PageOutcome.Committed(commit, page.hashes.size, next)
     }
 
-    /** `unauthorized`: the token of the generation the request used is refused (generation-guarded, design §3.8). */
+    /** `unauthorized`: the token of the generation the request used is refused (generation-guarded, design ÃÂÃÂÃÂÃÂ§3.8). */
     protected open fun refuse(ctx: EngineContext, request: ReadItem) {
         ctx.db.transaction { tx ->
             ctx.stores.capabilityStore.refuse(
