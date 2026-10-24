@@ -31,6 +31,12 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **Rezultat măsurat peste Tor** (curl prin SOCKS5, ambele oglinzi): `:80` → HTTP/1.1 200 cu manifestul JSON; `:443` cu `--http2-prior-knowledge` → **HTTP/2 200, 409 B** pe mirror-a și mirror-b. Amândoi listeneri funcționali pe același onion, decizia D14 de a păstra nginx e confirmată de V-D22 (un `ghost-mirror` propriu nu mai e justificat de această verificare; rămâne opțiunea din D14 dacă S0 mai găsește altceva).
 - **Efect asupra planului:** nimic de replanat; listenerul h2c din rândul V-D12 e bifat. Poarta G-D10 (configuration gate + container test) rămâne de construit în S1+.
 
+## V-D15 — parse v2 / v3 / v3.1 per SDK cu apksigner (2026-10-24)
+
+- **Matrice rulată** (build-tools 37.0.0, cheie throwaway, aceeași intrare, trei variante de schemă: v2-only, v3-only, v2+v3): `apksigner verify --print-certs --min-sdk-version {24,28,29,33,35}` parsează și verifică **toate cele trei variante pe toate cele cinci valori min-sdk** — parse-ul apksigner e pe schemă, nu e grozavat pe SDK.
+- **Nuanță consemnată:** *acceptarea* pe SDK e comportament de platformă (v2 = API 24+, v3 = API 28+, v3.1 = API 33+ pentru rotația cheii), pe care apksigner nu-l emulează — verificarea de instalare rămâne la V-D13 (emulator/dispozitiv, în drill).
+- **Consecință pentru decizii:** `minSdk = 29` al aplicației (`gradle/libs.versions.toml`) înseamnă că **v3 e disponibil pe fiecare dispozitiv suportat**; v3.1 (rotire la instalare) nu e necesar decât dacă designul cere citirea semnatarului pe SDK (§7.4 pasul 9) — consemnat, nu blocant.
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
