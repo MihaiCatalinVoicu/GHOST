@@ -450,7 +450,9 @@ struct ManifestSource {
     not_after_day: u32,
     floor_version_code: u32,
     release: Vec<ReleaseCfg>,
+    #[serde(default)]
     mirror: Vec<MirrorCfg>,
+    #[serde(default)]
     relay: Vec<MirrorCfg>,
 }
 
@@ -850,4 +852,100 @@ pub fn bundle(
         parsed.manifest.body.releases.len(),
         hex::encode(digest)
     ))
+}
+
+// ---------------------------------------------------------------------------
+// inspect — the client-side acceptance skeleton (§7.4) for a downloaded bundle
+// ---------------------------------------------------------------------------
+
+/// `inspect --bundle <ghrb> [--today <day>]` — parses a bundle exactly as a client would and
+/// checks the internal consistency: chain contiguity, each root's block under its own keysets,
+/// the manifest's block under the newest root's release keys, the attestation blocks, each
+/// proof's inclusion and cosignature count against the newest root's quorum, the network-wide
+/// match and the manifest's expiry against `--today` (epoch days; omitted = no expiry check).
+pub fn inspect(bundle_path: &Path, today: Option<u32>) -> Outcome {
+    let doc = std::fs::read(bundle_path).map_err(|e| format!("bundle: {e}"))?;
+    let b = GHRB::parse(&doc).map_err(|e| format!("bundle: {e}"))?;
+    let network = b.network;
+    let roots = &b.chain.roots;
+    if roots.is_empty() {
+        return Err("empty chain".into());
+    }
+    // Chain rule (§7.4 step 2): each root verifies under its predecessor's keysets; the first
+    // is the trust anchor and must verify under its own.
+    for (i, root) in roots.iter().enumerate() {
+        let (keys, t) = if i == 0 {
+            (&root.body.root.keys, root.body.root.threshold)
+        } else {
+            (&roots[i - 1].body.root.keys, roots[i - 1].body.root.threshold)
+        };
+        root.verify_block(keys, t)
+            .map_err(|e| format!("root {} block: {e}", root.body.root_version))?;
+    }
+    let newest = roots.last().unwrap();
+    let manifest = &b.manifest;
+    if manifest.body.root_version != newest.body.root_version
+        || manifest.body.root_sha256 != sha256(&newest.to_bytes())
+    {
+        return Err("manifest does not name the newest root".into());
+    }
+    manifest
+        .verify_block(&newest.body.release.keys, newest.body.release.threshold)
+        .map_err(|e| format!("manifest block: {e}"))?;
+    for (i, at) in manifest.attestations.iter().enumerate() {
+        at.meets(
+            &newest.body.attest.keys,
+            newest.body.attest.threshold,
+            &ghost_client_release::statement_bytes(
+                StatementType::BuildAttestation,
+                network,
+                &manifest.body.releases[i].attestation(network).to_bytes(),
+            ),
+        )
+        .map_err(|e| format!("attestation {i}: {e}"))?;
+    }
+    // Proofs (§4.7): inclusion and a cosignature count meeting the root's quorum.
+    for (i, p) in b.root_proofs.iter().enumerate() {
+        check_proof(p, &roots[i + 1].to_bytes(), newest.body.quorum, i)?;
+    }
+    check_proof(&b.manifest_proof, &manifest.body_bytes_with_block(), newest.body.quorum, usize::MAX)?;
+    if let Some(today) = today {
+        if today >= manifest.body.not_after_day {
+            return Err("manifest expired".into());
+        }
+        if manifest.body.issued_day >= manifest.body.not_after_day {
+            return Err("manifest validity is empty".into());
+        }
+    }
+    Ok(format!(
+        "BUNDLE_OK network={} roots={} root_version={} seq={} releases={} proofs={} quorum={}",
+        network,
+        roots.len(),
+        manifest.body.root_version,
+        manifest.body.manifest_seq,
+        manifest.body.releases.len(),
+        b.root_proofs.len() + 1,
+        newest.body.quorum
+    ))
+}
+
+fn check_proof(p: &GHRP, file: &[u8], quorum: usize, idx: usize) -> Result<(), String> {
+    if p.message != leaf_checksum(file) {
+        return Err(format!("proof {idx}: message mismatch"));
+    }
+    ghost_client_release::check_inclusion(
+        leaf_hash(&p.leaf(file)),
+        p.leaf_index,
+        &p.path,
+        &p.root_hash,
+    )
+    .map_err(|e| format!("proof {idx}: inclusion: {e}"))?;
+    if p.cosignatures.len() < quorum {
+        return Err(format!(
+            "proof {idx}: {} cosignatures below quorum {}",
+            p.cosignatures.len(),
+            quorum
+        ));
+    }
+    Ok(())
 }

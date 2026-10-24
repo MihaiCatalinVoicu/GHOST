@@ -109,6 +109,10 @@ fn main() {
                 &path(&a, "out"),
             )
         }
+        "inspect" => {
+            let today = a.get("today").and_then(|s| s.parse().ok());
+            build::inspect(&path(&a, "bundle"), today)
+        }
         "bundle" => {
             let proofs: Vec<PathBuf> = a.all("root-proof").iter().map(PathBuf::from).collect();
             build::bundle(
