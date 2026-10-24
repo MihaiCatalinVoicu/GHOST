@@ -75,6 +75,8 @@ pub enum UpdateError {
     ApkSigner,
     #[error("ATTESTATION_QUORUM")]
     AttestationQuorum,
+    #[error("OUT_OF_ORDER")]
+    OutOfOrder,
 }
 
 impl From<FormatError> for UpdateError {

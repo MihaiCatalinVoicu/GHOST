@@ -4,8 +4,14 @@
 //! only hashes what the platform would install. Same normative rule as `apkcore.rs` in
 //! `ghost-release-ops` (§6.5: the code lives in the ops tool, the client's step 9 and
 //! `ghost-verify`).
+//!
+//! The check streams (§9.2's `ApkCheck`): `begin` reads the end record from the file's last
+//! 22 bytes (Kotlin passes them), names the 24-byte footer range it must read next, then
+//! `update` consumes the body in order — the caller (the download loop, the staging pass, the
+//! installer stream) feeds exactly the bytes it has, and the crate never seeks. The one-shot
+//! `check_apk` is the same machine over an in-memory file.
 
-use ghost_client_release::manifest::GHRM;
+use ghost_client_release::manifest::{GHRM, Release};
 use ghost_client_release::root::GHRT;
 use sha2::{Digest, Sha256};
 
@@ -35,99 +41,339 @@ fn le64(b: &[u8]) -> u64 {
     u64::from_le_bytes(b.try_into().expect("8 bytes"))
 }
 
-/// The parsed layout facts a run needs more than once.
-#[derive(Debug, Clone)]
-struct Layout {
+/// What `begin` still needs: the 24 bytes before the central directory (the block footer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    Footer { offset: u64 },
+}
+
+/// The streaming APK check (§9.2 `ApkCheck`). Feeding bytes out of order is `OUT_OF_ORDER`.
+pub struct ApkCheck<'a> {
+    release_index: usize,
+    release: &'a Release,
+    manifest: &'a GHRM,
+    root: &'a GHRT,
+    sdk: u8,
     length: u64,
     cd_offset: u64,
     cd_size: u64,
-    block_s: u64,
-    block_start: u64,
-    /// The signing block pairs `(id, value range)` in file order.
-    pairs: Vec<(u32, u64, u64)>,
+    e: u64,
+    b: u64,
+    tail: [u8; EOCD_LEN],
+    full: Sha256,
+    core: Sha256,
+    block: Vec<u8>,
+    next: u64,
+    footer_seen: bool,
 }
 
-/// Step 9a–9c: EOCD at exactly `length − 22`, comment 0, single disk (no ZIP64), the block
-/// footer with both size copies equal.
-fn layout(file: &[u8]) -> Result<Layout, UpdateError> {
-    let length = file.len() as u64;
-    if length < EOCD_LEN as u64 + 16 + 8 + 8 {
+impl<'a> ApkCheck<'a> {
+    /// Step 9(a): read the end-of-central-directory record from the file's last 22 bytes.
+    /// `length` is the file's length (Kotlin knows it from the download/staging row), and
+    /// `release_index` the offered release's index in `manifest` (its attestation block is
+    /// part of the step-10 binding).
+    pub fn begin(
+        release_index: usize,
+        release: &'a Release,
+        manifest: &'a GHRM,
+        root: &'a GHRT,
+        sdk: u8,
+        length: u64,
+        tail: &[u8; EOCD_LEN],
+    ) -> Result<(Self, Need), UpdateError> {
+        if length < EOCD_LEN as u64 + 16 + 8 + 8 {
+            return Err(UpdateError::ApkLayout);
+        }
+        if &tail[..4] != b"PK\x05\x06" {
+            return Err(UpdateError::ApkLayout);
+        }
+        if le16(&tail[20..22]) != 0 {
+            return Err(UpdateError::ApkLayout); // comment length must be 0
+        }
+        if le16(&tail[4..6]) != 0 || le16(&tail[6..8]) != 0 {
+            return Err(UpdateError::ApkLayout); // a single disk, no ZIP64 EOCD
+        }
+        let cd_size = le32(&tail[12..16]) as u64;
+        let cd_offset = le32(&tail[16..20]) as u64;
+        if cd_offset + cd_size + EOCD_LEN as u64 != length {
+            return Err(UpdateError::ApkLayout);
+        }
+        let this = ApkCheck {
+            release_index,
+            release,
+            manifest,
+            root,
+            sdk,
+            length,
+            cd_offset,
+            cd_size,
+            e: 0,
+            b: 0,
+            tail: *tail,
+            full: Sha256::new(),
+            core: Sha256::new(),
+            block: Vec::new(),
+            next: 0,
+            footer_seen: false,
+        };
+        let need = Need::Footer {
+            offset: cd_offset - 24,
+        };
+        Ok((this, need))
+    }
+
+    /// Steps 9(b), 9(c): the 24 bytes before `cd_offset` — the block footer with its size
+    /// field and magic. Computes E and B and the padding-alignment rule.
+    pub fn footer(&mut self, bytes: &[u8; 24]) -> Result<(), UpdateError> {
+        if self.footer_seen {
+            return Err(UpdateError::OutOfOrder);
+        }
+        if &bytes[8..24] != SIG_MAGIC {
+            return Err(UpdateError::ApkLayout);
+        }
+        let s = le64(&bytes[..8]);
+        let block_start = self
+            .cd_offset
+            .checked_sub(8)
+            .and_then(|x| x.checked_sub(s))
+            .ok_or(UpdateError::ApkLayout)
+            .map_err(|e| {
+                e
+            })?;
+        if block_start + 8 > self.cd_offset - 24 {
+            return Err(UpdateError::ApkLayout);
+        }
+        // E and the §6.5 rule (unsigned_length comes from the offered release).
+        let e = self
+            .release
+            .unsigned_length
+            .checked_sub(self.cd_size)
+            .and_then(|x| x.checked_sub(EOCD_LEN as u64))
+            .ok_or(UpdateError::ApkLayout)?;
+        let b = block_start;
+        if !(0 < e && e <= b) || b != e + ((PAGE - e % PAGE) % PAGE) {
+            return Err(UpdateError::ApkLayout);
+        }
+        self.e = e;
+        self.b = b;
+        self.footer_seen = true;
+        Ok(())
+    }
+
+    /// Steps 9(d), 9(e): the body in order — `[0, cd_offset + cd_size)`, i.e. everything
+    /// before the end record. The whole-file hash takes every byte; the core hash takes
+    /// `[0, E)` and the central directory; the signing block is buffered for `finish`.
+    pub fn update(&mut self, offset: u64, chunk: &[u8]) -> Result<(), UpdateError> {
+        if !self.footer_seen {
+            return Err(UpdateError::OutOfOrder);
+        }
+        let body_end = self.cd_offset + self.cd_size;
+        if offset != self.next || offset + chunk.len() as u64 > body_end {
+            return Err(UpdateError::OutOfOrder);
+        }
+        // Split the chunk at the region boundaries and hash each span once.
+        let mut pos = offset;
+        let mut rest = chunk;
+        let boundaries = [self.e, self.b, self.cd_offset, body_end];
+        for boundary in boundaries {
+            if pos >= boundary {
+                continue;
+            }
+            let take = ((boundary - pos) as usize).min(rest.len());
+            let (head, tail) = rest.split_at(take);
+            match pos {
+                p if p < self.e || p >= self.cd_offset => {
+                    self.full.update(head);
+                    self.core.update(head);
+                }
+                p if p < self.b => {
+                    if head.iter().any(|&x| x != 0) {
+                        return Err(UpdateError::ApkLayout);
+                    }
+                    self.full.update(head);
+                }
+                _ => {
+                    self.block.extend_from_slice(head);
+                    self.full.update(head);
+                }
+            }
+            pos += take as u64;
+            rest = tail;
+            if rest.is_empty() {
+                break;
+            }
+        }
+        self.next = pos;
+        Ok(())
+    }
+
+    /// Step 10: hash comparisons, the signer selection and the attestation clause. The file
+    /// must have been consumed exactly to `cd_offset + cd_size` (the end record itself was
+    /// given to `begin`).
+    pub fn finish(self) -> Result<(), UpdateError> {
+        if !self.footer_seen || self.next != self.cd_offset + self.cd_size {
+            return Err(UpdateError::OutOfOrder);
+        }
+        if self.length != self.release.apk_length {
+            return Err(UpdateError::ApkLength);
+        }
+        // Whole-file SHA-256: streamed bytes + the end record.
+        let mut full = self.full;
+        full.update(self.tail);
+        let full: [u8; 32] = full.finalize().into();
+        if full != self.release.apk_sha256 {
+            return Err(UpdateError::ApkHash);
+        }
+        // Core: [0, E) and the central directory, end record with its cd-offset field set to E.
+        let mut core_tail = self.tail;
+        core_tail[16..20].copy_from_slice(&(self.e as u32).to_le_bytes());
+        let mut core = self.core;
+        core.update(core_tail);
+        let core: [u8; 32] = core.finalize().into();
+        if self.release.unsigned_length != self.cd_size + EOCD_LEN as u64 + self.e
+            || core != self.release.unsigned_sha256
+        {
+            return Err(UpdateError::ApkCore);
+        }
+        let signer = signer_digest(&self.block, self.sdk)?;
+        if !self.root.body.apk_signers.contains(&signer) {
+            return Err(UpdateError::ApkSigner);
+        }
+        let index = self.release_index;
+        let at = self
+            .manifest
+            .attestations
+            .get(index)
+            .ok_or(UpdateError::AttestationQuorum)?;
+        at.meets(
+            &self.root.body.attest.keys,
+            self.root.body.attest.threshold,
+            &ghost_client_release::statement_bytes(
+                ghost_client_release::StatementType::BuildAttestation,
+                self.manifest.body.network,
+                &self.release.attestation(self.manifest.body.network).to_bytes(),
+            ),
+        )
+        .map_err(|_| UpdateError::AttestationQuorum)
+    }
+}
+
+/// Steps 9–10 over a whole in-memory file (the staging re-check and the tests).
+pub fn check_apk(
+    file: &[u8],
+    manifest: &GHRM,
+    release_index: usize,
+    r: &GHRT,
+    sdk: u8,
+) -> Result<(), UpdateError> {
+    let release = manifest
+        .body
+        .releases
+        .get(release_index)
+        .ok_or(UpdateError::Malformed)?;
+    if file.len() < EOCD_LEN + 24 {
         return Err(UpdateError::ApkLayout);
     }
-    let eocd_at = (length - EOCD_LEN as u64) as usize;
-    if &file[eocd_at..eocd_at + 4] != b"PK\x05\x06" {
+    let n = file.len();
+    let tail: [u8; EOCD_LEN] = file[n - EOCD_LEN..].try_into().expect("22 bytes");
+    let (mut check, need) = ApkCheck::begin(release_index, release, manifest, r, sdk, n as u64, &tail)?;
+    let Need::Footer { offset } = need;
+    let footer: [u8; 24] = file[offset as usize..offset as usize + 24]
+        .try_into()
+        .expect("24 bytes");
+    check.footer(&footer)?;
+    check.update(0, &file[..n - EOCD_LEN])?;
+    check.finish()
+}
+
+/// The block ids present in a signed APK (the `blocks=` vocabulary), for tests and reports.
+pub fn block_ids(file: &[u8]) -> Result<Vec<u32>, UpdateError> {
+    if file.len() < EOCD_LEN + 24 {
         return Err(UpdateError::ApkLayout);
     }
-    let eocd = &file[eocd_at..];
-    if le16(&eocd[20..22]) != 0 {
-        return Err(UpdateError::ApkLayout); // comment length must be 0
-    }
-    if le16(&eocd[4..6]) != 0 || le16(&eocd[6..8]) != 0 {
-        return Err(UpdateError::ApkLayout); // a single disk, no ZIP64 EOCD
-    }
-    let cd_size = le32(&eocd[12..16]) as u64;
-    let cd_offset = le32(&eocd[16..20]) as u64;
-    if cd_offset + cd_size + EOCD_LEN as u64 != length {
+    let n = file.len();
+    let tail = &file[n - EOCD_LEN..];
+    if &tail[..4] != b"PK\x05\x06" {
         return Err(UpdateError::ApkLayout);
     }
-    if cd_offset < 8 + 24 {
+    let cd_offset = le32(&tail[16..20]) as usize;
+    if cd_offset < 24 {
         return Err(UpdateError::ApkLayout);
     }
-    let footer = cd_offset as usize - 24;
+    let footer = cd_offset - 24;
     if &file[footer + 8..footer + 24] != SIG_MAGIC {
         return Err(UpdateError::ApkLayout);
     }
     let s = le64(&file[footer..footer + 8]);
     let block_start = cd_offset
         .checked_sub(8)
-        .and_then(|x| x.checked_sub(s))
+        .and_then(|x| x.checked_sub(s as usize))
         .ok_or(UpdateError::ApkLayout)?;
-    if block_start + 8 > footer as u64 || le64(&file[block_start as usize..block_start as usize + 8]) != s {
-        return Err(UpdateError::ApkLayout);
-    }
-    // The pairs: [len u64][id u32][value] until the footer.
-    let mut pairs = Vec::new();
-    let mut pos = block_start as usize + 8;
+    let mut ids = Vec::new();
+    let mut pos = block_start + 8;
     while pos + 12 <= footer {
-        let len = le64(&file[pos..pos + 8]);
-        let id = le32(&file[pos + 8..pos + 12]);
-        let start = pos + 12;
-        let end = start.checked_add(len as usize).ok_or(UpdateError::ApkLayout)?;
-        if end > footer {
-            return Err(UpdateError::ApkLayout);
-        }
-        pairs.push((id, start as u64, end as u64));
-        pos = end;
+        let len = le64(&file[pos..pos + 8]) as usize;
+        ids.push(le32(&file[pos + 8..pos + 12]));
+        pos = pos.checked_add(12).and_then(|x| x.checked_add(len)).ok_or(UpdateError::ApkLayout)?;
     }
     if pos != footer {
         return Err(UpdateError::ApkLayout);
     }
-    Ok(Layout { length, cd_offset, cd_size, block_s: s, block_start, pairs })
+    Ok(ids)
 }
 
-/// Steps 9c–9d: E, the zero padding and the core bytes (EOCD cd-offset field rewritten to E).
-fn core(file: &[u8], l: &Layout, unsigned_length: u64) -> Result<Vec<u8>, UpdateError> {
-    let e = unsigned_length
-        .checked_sub(l.cd_size)
-        .and_then(|x| x.checked_sub(EOCD_LEN as u64))
-        .ok_or(UpdateError::ApkLayout)?;
-    let b = l
-        .cd_offset
-        .checked_sub(l.block_s)
-        .and_then(|x| x.checked_sub(8))
-        .ok_or(UpdateError::ApkLayout)?;
-    if !(0 < e && e <= b) || b != e + ((PAGE - e % PAGE) % PAGE) {
+/// Step 9e: the signer the platform uses at this SDK — v3.1 whose [minSdk, maxSdk] contains
+/// the SDK, else v3's, else v2's — and the SHA-256 of its first certificate. `block` is the
+/// raw signing block: [size u64][pairs][size u64][magic(16)].
+fn signer_digest(block: &[u8], sdk: u8) -> Result<[u8; 32], UpdateError> {
+    if block.len() < 8 + 24 + 16 {
         return Err(UpdateError::ApkLayout);
     }
-    if file[e as usize..b as usize].iter().any(|&x| x != 0) {
+    let s = le64(&block[..8]);
+    // The block is [size u64][pairs][size u64][magic]: `s` counts everything after the
+    // first size field, so the total is s + 8.
+    if block.len() as u64 != s + 8 || &block[block.len() - 16..] != SIG_MAGIC {
         return Err(UpdateError::ApkLayout);
     }
-    let mut out = Vec::with_capacity(e as usize + (l.length - l.cd_offset) as usize);
-    out.extend_from_slice(&file[..e as usize]);
-    out.extend_from_slice(&file[l.cd_offset as usize..]);
-    let eocd_at = out.len() - EOCD_LEN;
-    out[eocd_at + 16..eocd_at + 20].copy_from_slice(&(e as u32).to_le_bytes());
-    Ok(out)
+    let s2 = le64(&block[block.len() - 24..block.len() - 16]);
+    if s != s2 {
+        return Err(UpdateError::ApkLayout);
+    }
+    let pairs_region = &block[8..block.len() - 24];
+    let mut pairs: Vec<(u32, &[u8])> = Vec::new();
+    let mut pos = 0usize;
+    while pos + 12 <= pairs_region.len() {
+        let len = le64(&pairs_region[pos..pos + 8]) as usize;
+        let id = le32(&pairs_region[pos + 8..pos + 12]);
+        let start = pos + 12;
+        let end = start.checked_add(len).ok_or(UpdateError::ApkLayout)?;
+        if end > pairs_region.len() {
+            return Err(UpdateError::ApkLayout);
+        }
+        pairs.push((id, &pairs_region[start..end]));
+        pos = end;
+    }
+    if pos != pairs_region.len() {
+        return Err(UpdateError::ApkLayout);
+    }
+    let sdk = u32::from(sdk);
+    let find = |id: u32, v3_layout: bool| -> Option<Signer> {
+        pairs
+            .iter()
+            .find(|(pid, _)| *pid == id)
+            .and_then(|(_, value)| first_signer(value, v3_layout).ok())
+    };
+    for id in [ID_V31, ID_V3] {
+        if let Some(s) = find(id, true) {
+            if s.min_sdk <= sdk && sdk <= s.max_sdk {
+                return Ok(sha256(&s.cert));
+            }
+        }
+    }
+    if let Some(s) = find(ID_V2, false) {
+        return Ok(sha256(&s.cert));
+    }
+    Err(UpdateError::ApkSigner)
 }
 
 /// A bounds-checked little-endian u32-length-prefixed reader over one signing-block value.
@@ -193,78 +439,4 @@ fn first_signer(value: &[u8], v3_layout: bool) -> Result<Signer, UpdateError> {
     let mut cc = Cursor::new(certs);
     let cert = cc.lp32()?.to_vec();
     Ok(Signer { min_sdk, max_sdk, cert })
-}
-
-/// Step 9e: the signer the platform uses at this SDK — v3.1 whose [minSdk, maxSdk] contains
-/// the SDK, else v3's, else v2's — and the SHA-256 of its first certificate.
-fn signer_digest(file: &[u8], l: &Layout, sdk: u8) -> Result<[u8; 32], UpdateError> {
-    let sdk = u32::from(sdk);
-    let find = |id: u32| -> Option<Signer> {
-        l.pairs
-            .iter()
-            .find(|(pid, _, _)| *pid == id)
-            .and_then(|(_, s, e)| first_signer(&file[*s as usize..*e as usize], true).ok())
-    };
-    for id in [ID_V31, ID_V3] {
-        if let Some(s) = find(id) {
-            if s.min_sdk <= sdk && sdk <= s.max_sdk {
-                return Ok(sha256(&s.cert));
-            }
-        }
-    }
-    if let Some((_, s, e)) = l.pairs.iter().find(|(pid, _, _)| *pid == ID_V2) {
-        let signer = first_signer(&file[*s as usize..*e as usize], false)?;
-        return Ok(sha256(&signer.cert));
-    }
-    Err(UpdateError::ApkSigner)
-}
-
-/// Steps 9–10: check a downloaded or staged APK against the offered release and the trusted
-/// root. `release_index` is the release's index in `manifest` (its attestation block is part
-/// of the binding).
-pub fn check_apk(
-    file: &[u8],
-    manifest: &GHRM,
-    release_index: usize,
-    r: &GHRT,
-    sdk: u8,
-) -> Result<(), UpdateError> {
-    let release = manifest
-        .body
-        .releases
-        .get(release_index)
-        .ok_or(UpdateError::Malformed)?;
-    let l = layout(file)?;
-    if l.length != release.apk_length {
-        return Err(UpdateError::ApkLength);
-    }
-    if sha256(file) != release.apk_sha256 {
-        return Err(UpdateError::ApkHash);
-    }
-    let core = core(file, &l, release.unsigned_length)?;
-    if core.len() as u64 != release.unsigned_length || sha256(&core) != release.unsigned_sha256 {
-        return Err(UpdateError::ApkCore);
-    }
-    if !r.body.apk_signers.contains(&signer_digest(file, &l, sdk)?) {
-        return Err(UpdateError::ApkSigner);
-    }
-    let at = manifest
-        .attestations
-        .get(release_index)
-        .ok_or(UpdateError::AttestationQuorum)?;
-    at.meets(
-        &r.body.attest.keys,
-        r.body.attest.threshold,
-        &ghost_client_release::statement_bytes(
-            ghost_client_release::StatementType::BuildAttestation,
-            manifest.body.network,
-            &release.attestation(manifest.body.network).to_bytes(),
-        ),
-    )
-    .map_err(|_| UpdateError::AttestationQuorum)
-}
-
-/// The block ids present in a signed APK (the `blocks=` vocabulary), for tests and reports.
-pub fn block_ids(file: &[u8]) -> Result<Vec<u32>, UpdateError> {
-    Ok(layout(file)?.pairs.iter().map(|(id, _, _)| *id).collect())
 }

@@ -692,11 +692,12 @@ fn apk_check_happy_path_and_refusals() {
         ghost_client_update::apk::check_apk(&bad, &f.manifest, 0, &f.root, 29),
         Err(UpdateError::ApkHash)
     );
-    // A different-length but self-consistent APK: APK_LENGTH (checked before the hash).
+    // A self-consistent APK of a different length: APK_LENGTH (checked before the hash).
+    // A longer certificate grows the signing block: B is unchanged, the total length is not.
     let (other_unsigned, other_signed) = build_apk(
-        5000,
+        900,
         b"fake-central-directory",
-        &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))],
+        &[(0xf053_68c0, signer_v3(&[0x11u8; 300], 1, 0x7fff_ffff))],
         0,
     );
     let _ = other_unsigned;
@@ -772,4 +773,44 @@ fn apk_layout_refusals() {
         ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 29),
         Err(UpdateError::ApkLayout)
     );
+}
+
+#[test]
+fn apk_streaming_check() {
+    use ghost_client_update::apk::{ApkCheck, Need};
+    let cert = [0x11u8; 64];
+    let f = apk_fixture(&[sha256(&cert)], &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))], 0);
+    let n = f.signed.len();
+    let body = &f.signed[..n - 22];
+
+    let begin = || {
+        let tail: [u8; 22] = f.signed[n - 22..].try_into().unwrap();
+        ApkCheck::begin(0, &f.manifest.body.releases[0], &f.manifest, &f.root, 29, n as u64, &tail)
+            .unwrap()
+    };
+    // The named footer range is the 24 bytes before cd_offset.
+    let (mut chk, need) = begin();
+    let Need::Footer { offset } = need;
+    let cd_offset = u32::from_le_bytes(f.signed[n - 6..n - 2].try_into().unwrap()) as u64;
+    assert_eq!(offset, cd_offset - 24);
+    chk.footer(f.signed[offset as usize..offset as usize + 24].try_into().unwrap())
+        .unwrap();
+    // Feed the body in 7-byte chunks, in order: OK.
+    for (i, chunk) in body.chunks(7).enumerate() {
+        chk.update((i * 7) as u64, chunk).unwrap();
+    }
+    chk.finish().unwrap();
+
+    // A chunk out of order: OUT_OF_ORDER.
+    let (mut chk2, need2) = begin();
+    let Need::Footer { offset: o2 } = need2;
+    chk2.footer(f.signed[o2 as usize..o2 as usize + 24].try_into().unwrap())
+        .unwrap();
+    assert_eq!(
+        chk2.update(7, &body[7..14]),
+        Err(UpdateError::OutOfOrder)
+    );
+    // update before footer: OUT_OF_ORDER.
+    let (mut chk3, _) = begin();
+    assert_eq!(chk3.update(0, &body[..1]), Err(UpdateError::OutOfOrder));
 }
