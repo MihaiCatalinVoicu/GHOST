@@ -207,9 +207,9 @@ class Migration8Test {
         assertEquals(4, before.getValue("dm_outbound_item").size)
         assertEquals(3, before.getValue("dm_outbound_op").size)
         for (table in MediaSchema.v1Tables) assertEquals("$table is empty before the migration", emptyList<String>(), before.getValue(table))
-        assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+        assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
         MigrationRunner(db).verifyIntegrity()
-        assertEquals(10, db.userVersion)
+        assertEquals(11, db.userVersion)
         val after = db.dump()
         // Every table that v7 has and v8 keeps holds exactly the rows it held, byte for byte (the five rebuilt ones included) ...
         for ((table, rows) in before) {
@@ -220,7 +220,7 @@ class Migration8Test {
         // ... the two v1 media tables are gone with the guard, and the five media tables are there and empty
         // (v9's transport_bridge arrives in the same run: one additive table, no rows).
         assertEquals(MediaSchema.v1Tables, before.keys - after.keys)
-        assertEquals(MediaSchema.tables + setOf("transport_bridge", "ui_settings", "ui_lock", "ui_crash"), after.keys - before.keys)
+        assertEquals(MediaSchema.tables + setOf("transport_bridge", "ui_settings", "ui_lock", "ui_crash", "upd_state", "upd_staged"), after.keys - before.keys)
         assertEquals(emptyList<String>(), after.getValue("transport_bridge"))
         for (table in MediaSchema.tables) assertEquals("$table starts empty", emptyList<String>(), after.getValue(table))
         for (leftover in listOf("v8_migration_guard", "v8_alter_guard", "v8_fk_guard")) assertFalse(leftover in after.keys)
@@ -361,7 +361,7 @@ class Migration8Test {
             val added = now.keys - v7.first.keys
             // v9 (Phase 12 transports §6.3) lands in the same run and adds exactly the one table.
             assertEquals(
-                MediaSchema.tables + MediaSchema.indexes + MediaSchema.rules + MediaSchema.guards + setOf("transport_bridge", "ui_settings", "ui_lock", "ui_crash"),
+                MediaSchema.tables + MediaSchema.indexes + MediaSchema.rules + MediaSchema.guards + setOf("transport_bridge", "ui_settings", "ui_lock", "ui_crash", "upd_state", "upd_staged", "upd_state_write_once", "upd_state_monotonic", "upd_state_no_delete", "upd_staged_one_row"),
                 added.map { it.substringAfter(' ') }.filter { !it.startsWith("sqlite_autoindex") }.toSet(),
             )
             assertEquals(setOf("index sqlite_autoindex_media_outbound_op_2"), added.filter { it.contains("sqlite_autoindex") }.toSet())
@@ -496,7 +496,7 @@ class Migration8Test {
                 // Once the tables are emptied the same runner finishes (media_blobs first: the child).
                 db.exec("DELETE FROM media_blobs")
                 db.exec("DELETE FROM media")
-                assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+                assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
             }
         }
@@ -513,7 +513,7 @@ class Migration8Test {
         assertEquals(schema, db.schemaSnapshot())
         assertEquals(rows, db.dump())
         db.exec("PRAGMA legacy_alter_table = OFF")
-        assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+        assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
     }
 
     /**
@@ -532,7 +532,7 @@ class Migration8Test {
         assertEquals(schema, db.schemaSnapshot())
         assertEquals(rows, db.dump())
         db.exec("DELETE FROM dm_reaction WHERE target_id = ?", listOf(bytes(16, 0xEE)))
-        assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+        assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
     }
 
     /**
@@ -558,7 +558,7 @@ class Migration8Test {
         assertEquals(rows, db.dump())
         assertFalse(db.inTransaction)
         db.exec("DELETE FROM namespace_relay WHERE namespace_id = ?", listOf(bytes(32, 0xEE)))
-        assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+        assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
         assertNull(db.queryLong("PRAGMA foreign_key_check"))
     }
 
@@ -593,7 +593,7 @@ class Migration8Test {
                 assertFalse(db.inTransaction)
                 // A half-migrated database is refused, never used; then the same runner finishes the job.
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
-                assertEquals("statement $i", listOf(8, 9, 10), MigrationRunner(db).migrate())
+                assertEquals("statement $i", listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertEquals("statement $i", expected.first, db.schemaSnapshot())
                 assertEquals("statement $i", expected.second, db.dump())
@@ -606,7 +606,7 @@ class Migration8Test {
             assertEquals(7, db.userVersion)
             assertEquals(schema, db.schemaSnapshot())
             assertEquals(rows, db.dump())
-            assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+            assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
             assertEquals(expected.second, db.dump())
         }
     }
@@ -638,7 +638,7 @@ class Migration8Test {
                 assertEquals(rows, db.dump())
                 assertFalse("dm_message_v8" in db.queryNames("table"))
                 assertFalse("media_object" in db.queryNames("table"))
-                assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+                assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertEquals(1L, db.queryLong("SELECT count(*) FROM dm_reaction"))
             }
@@ -656,7 +656,7 @@ class Migration8Test {
             applied
         }
         populatedV7().use { db ->
-            assertEquals(listOf(8, 9, 10), helperOpen(db))
+            assertEquals(listOf(8, 9, 10, 11), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertEquals(MediaSchema.tables, db.queryNames("table").filter { it.startsWith("media_") }.toSet())
         }
@@ -695,7 +695,7 @@ class Migration8Test {
         assertThrows(MigrationRunner.DowngradeException::class.java) {
             db.transaction { MigrationRunner(db, upToV7).migrateWithinTransaction(db.userVersion) }
         }
-        assertEquals(10, db.userVersion)
+        assertEquals(11, db.userVersion)
         assertEquals(schema, db.schemaSnapshot())
         assertEquals(rows, db.dump())
     }

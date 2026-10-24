@@ -337,7 +337,7 @@ private fun replaceGuardSql(table: String, conflict: String): String =
  * path of a timer change could be folded into the `dm_outbound_item` rebuild this way).
  */
 object Schema {
-    const val CURRENT_VERSION = 10
+    const val CURRENT_VERSION = 11
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -978,6 +978,10 @@ object Schema {
         Migration(
             version = 10,
             statements = migration10(),
+        ),
+        Migration(
+            version = 11,
+            statements = migration11Tables() + migration11Triggers(),
         ),
     )
 
@@ -2560,6 +2564,94 @@ object Schema {
                 ) WITHOUT ROWID""",
     )
 
+    /**
+     * Migration 11 — schema U (Phase 14 design §9.6): the update channel's two tables. One
+     * transaction, append-only, fail-closed, and no time column of activity (T33's rule): the
+     * only day the channel ever exposes is the stored manifest's own `issued_day`, inside the
+     * manifest document, and `NO_CHANNEL` counts update runs in `failed_runs` — a counter, not
+     * a time. The singleton `upd_state` keeps its rowid on purpose: it is one row (CHECK
+     * `id = 1`), and its key is not random.
+     */
+    private fun migration11Tables(): List<String> = listOf(
+        """CREATE TABLE upd_state (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    network            INTEGER NOT NULL CHECK (typeof(network) = 'integer' AND network IN (1, 2)),
+                    epoch              BLOB    NOT NULL CHECK (length(epoch) = 32),
+                    epoch_version_code INTEGER NOT NULL CHECK (typeof(epoch_version_code) = 'integer' AND epoch_version_code > 0),
+                    root_version       INTEGER NOT NULL CHECK (typeof(root_version) = 'integer' AND root_version >= 1),
+                    root_chain         BLOB    NOT NULL CHECK (length(root_chain) BETWEEN 64 AND 1048576),
+                    manifest_seq       INTEGER NOT NULL CHECK (typeof(manifest_seq) = 'integer' AND manifest_seq >= 0),
+                    manifest_root      INTEGER NOT NULL CHECK (typeof(manifest_root) = 'integer' AND manifest_root >= 0),
+                    manifest_sha256    BLOB    CHECK (manifest_sha256 IS NULL OR length(manifest_sha256) = 32),
+                    manifest_file      BLOB    CHECK (manifest_file IS NULL OR length(manifest_file) <= 65536),
+                    proof_file         BLOB    CHECK (proof_file IS NULL OR length(proof_file) <= 16384),
+                    floor_version_code INTEGER NOT NULL CHECK (typeof(floor_version_code) = 'integer'
+                                                                 AND floor_version_code BETWEEN 0 AND 2147483647),
+                    floor_root         INTEGER NOT NULL CHECK (typeof(floor_root) = 'integer' AND floor_root >= 0),
+                    conflict_root      INTEGER CHECK (conflict_root IS NULL OR (typeof(conflict_root) = 'integer' AND conflict_root >= 1)),
+                    root_conflict      INTEGER NOT NULL CHECK (root_conflict IN (0, 1)),
+                    failed_runs        INTEGER NOT NULL CHECK (typeof(failed_runs) = 'integer' AND failed_runs >= 0),
+                    rollout_key        BLOB    NOT NULL CHECK (length(rollout_key) = 32),
+                    CHECK ((manifest_seq = 0) = (manifest_file IS NULL)),
+                    CHECK ((manifest_file IS NULL) = (manifest_sha256 IS NULL) AND (manifest_file IS NULL) = (proof_file IS NULL))
+                )""",
+        """CREATE TABLE upd_staged (
+                    apk_sha256   BLOB    PRIMARY KEY NOT NULL CHECK (length(apk_sha256) = 32),
+                    version_code INTEGER NOT NULL CHECK (typeof(version_code) = 'integer' AND version_code > 0),
+                    apk_length   INTEGER NOT NULL CHECK (typeof(apk_length) = 'integer' AND apk_length > 0),
+                    received     INTEGER NOT NULL CHECK (typeof(received) = 'integer' AND received BETWEEN 0 AND apk_length),
+                    state        TEXT    NOT NULL CHECK (state IN ('partial', 'verified', 'committed'))
+                ) WITHOUT ROWID""",
+    )
+
+    /**
+     * The rules of §9.6's note: network and rollout_key write-once, no DELETE; within one
+     * epoch the root version and the `(root, seq)` pair are append-only (an equal pair keeps
+     * its hash), the floor is append-only within its root version, `conflict_root` is set or
+     * raised and clears only when the root version rises, and `root_conflict` never returns to
+     * 0. An epoch change is allowed only together with a new installed version.
+     */
+    private fun migration11Triggers(): List<String> = listOf(
+        """CREATE TRIGGER upd_state_write_once BEFORE UPDATE ON upd_state
+                BEGIN
+                  SELECT CASE
+                    WHEN NEW.network != OLD.network THEN RAISE(ABORT, 'upd_state.network is write-once')
+                    WHEN NEW.rollout_key != OLD.rollout_key THEN RAISE(ABORT, 'upd_state.rollout_key is write-once')
+                    WHEN NEW.epoch != OLD.epoch AND NEW.epoch_version_code = OLD.epoch_version_code
+                      THEN RAISE(ABORT, 'an epoch change comes only with a new installed version')
+                  END;
+                END""",
+        """CREATE TRIGGER upd_state_monotonic BEFORE UPDATE ON upd_state
+                WHEN NEW.epoch = OLD.epoch
+                BEGIN
+                  SELECT CASE
+                    WHEN NEW.root_version < OLD.root_version THEN RAISE(ABORT, 'root_version never decreases')
+                    WHEN NEW.manifest_root < OLD.manifest_root
+                         OR (NEW.manifest_root = OLD.manifest_root AND NEW.manifest_seq < OLD.manifest_seq)
+                      THEN RAISE(ABORT, 'the pair never decreases')
+                    WHEN NEW.manifest_root = OLD.manifest_root AND NEW.manifest_seq = OLD.manifest_seq
+                         AND IFNULL(NEW.manifest_sha256, X'') != IFNULL(OLD.manifest_sha256, X'')
+                      THEN RAISE(ABORT, 'an equal pair keeps its manifest_sha256')
+                    WHEN NEW.floor_root < OLD.floor_root THEN RAISE(ABORT, 'floor_root never decreases')
+                    WHEN NEW.floor_root = OLD.floor_root AND NEW.floor_version_code < OLD.floor_version_code
+                      THEN RAISE(ABORT, 'the floor never decreases within its root')
+                    WHEN NEW.conflict_root IS NOT NULL AND OLD.conflict_root IS NOT NULL
+                         AND NEW.conflict_root < OLD.conflict_root
+                      THEN RAISE(ABORT, 'conflict_root is set or raised')
+                    WHEN OLD.conflict_root IS NOT NULL AND NEW.conflict_root IS NULL
+                         AND NEW.root_version <= OLD.root_version
+                      THEN RAISE(ABORT, 'conflict_root clears only when the root version rises')
+                    WHEN OLD.root_conflict = 1 AND NEW.root_conflict = 0
+                      THEN RAISE(ABORT, 'root_conflict never returns to 0')
+                  END;
+                END""",
+        """CREATE TRIGGER upd_state_no_delete BEFORE DELETE ON upd_state
+                BEGIN SELECT RAISE(ABORT, 'upd_state rows are never deleted'); END""",
+        """CREATE TRIGGER upd_staged_one_row BEFORE INSERT ON upd_staged
+                WHEN (SELECT count(*) FROM upd_staged) >= 1
+                BEGIN SELECT RAISE(ABORT, 'at most one staged update'); END""",
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
@@ -2598,6 +2690,9 @@ object Schema {
         // v10 (Phase 13 UX §10): the UI's own state — settings, the PIN record and the local
         // crash reports; nothing else of the UI is persisted (T54).
         "ui_settings", "ui_lock", "ui_crash",
+        // v11 (Phase 14 §9.6 "Schema migration U"): the update channel's singleton facts and the
+        // one staged download.
+        "upd_state", "upd_staged",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -2613,6 +2708,9 @@ object Schema {
         "ent_key_no_replace", "ent_schedule_fact_no_replace", "ent_purchase_no_replace", "ent_token_no_replace",
         "ent_invite_no_replace", "ent_claim_no_replace", "ent_drop_target_no_replace",
         "outbox_op_no_replace", "outbox_op_rowid",
+        // v11 (Phase 14 §9.6): write-once, epoch and append-only rules of upd_state, its
+        // no-DELETE rule, and the one-row rule of upd_staged.
+        "upd_state_write_once", "upd_state_monotonic", "upd_state_no_delete", "upd_staged_one_row",
         // v4 (Phase 9 §13.6 steps 2-4)
         "inbox_blob_relay_expiry_insert", "inbox_blob_relay_expiry_update",
         "sync_namespace_dm_delay", "sync_namespace_dm_delay_insert",

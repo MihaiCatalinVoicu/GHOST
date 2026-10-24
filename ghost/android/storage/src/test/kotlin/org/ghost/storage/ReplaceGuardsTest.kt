@@ -81,8 +81,11 @@ class ReplaceGuardsTest {
         // Every table whose DELETE is restricted is guarded: REPLACE would skip that rule.
         // (v8: `media_blob` joined them - a blob that a fragment names is not deleted, and its guard keeps a REPLACE
         // from deleting it without that rule running.)
-        assertEquals(setOf("ent_key", "ent_schedule_fact", "ent_purchase", "outbox_op", "media_blob"), deleteRules)
-        assertEquals(emptySet<String>(), deleteRules - guarded)
+        // v11 (Phase 14 §9.6): `upd_state` restricts DELETE (its row is never deleted).
+        assertEquals(setOf("ent_key", "ent_schedule_fact", "ent_purchase", "outbox_op", "media_blob", "upd_state"), deleteRules)
+        // `upd_state`'s DELETE rule is its own guard: a REPLACE deletes the conflicting row
+        // before inserting, and that DELETE runs `upd_state_no_delete` (v11, Phase 14 §9.6).
+        assertEquals(setOf("upd_state"), deleteRules - guarded)
         // Every table with rules is guarded, except the two v2 tables whose rules are transitions only
         // and whose writers use INSERT OR IGNORE and UPSERT, and the v4 rule on sync_namespace, whose
         // writer upserts and whose rule runs on INSERT as well (sync_namespace_dm_delay_insert), so a
@@ -90,7 +93,10 @@ class ReplaceGuardsTest {
         // uses INSERT OR IGNORE and whose one UPDATE rule (a tag never moves to another channel) cannot be
         // skipped by a REPLACE: the channel is part of its key, so a REPLACE writes a new row in the channel it
         // names, which the INSERT bound counts (Phase 10 design §19.35, review of S3).
-        assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace", "ch_kp_seen"), withRules - guarded)
+        // v11: `upd_state`'s write-once and monotonic rules have no `_no_replace` guard, and need
+        // none: a REPLACE on the singleton would delete the conflicting row before inserting, and
+        // that DELETE runs `upd_state_no_delete` (§9.6's no-DELETE rule), so the guard is the rule.
+        assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace", "ch_kp_seen", "upd_state"), withRules - guarded)
         // The v5 DM tables are guarded whether or not they carry an UPDATE or DELETE rule: §13.6
         // step 6 names them one by one, and the guards are what make "no REPLACE, no
         // INSERT OR REPLACE and no UPSERT anywhere in DM code" (gate G-DM4) enforceable by the

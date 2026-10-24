@@ -227,9 +227,9 @@ class DmSchemaIntrospectionTest {
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
         val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
-            timeColumnsOfMigration9 + timeColumnsOfMigration10 + timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns
+            timeColumnsOfMigration9 + timeColumnsOfMigration10 + timeColumnsBeforeV4 + ChannelSchema.timeColumns + MediaSchema.timeColumns + UpdateSchema.timeColumns
         val indices = periodIndices + ChannelSchema.epochColumns
-        val exempt = notTimes + ChannelSchema.notTimes + MediaSchema.notTimes
+        val exempt = notTimes + ChannelSchema.notTimes + MediaSchema.notTimes + UpdateSchema.notTimes
         val foundTimes = HashSet<String>()
         val foundIndices = HashSet<String>()
         val usedExemptions = HashSet<String>()

@@ -44,7 +44,7 @@ class Migration10Test {
     fun anUpgradeTakesMigration10() {
         JdbcSqlExecutor().use { db ->
             MigrationRunner(db, upToV9).migrate()
-            assertEquals(listOf(10), MigrationRunner(db).migrate())
+            assertEquals(listOf(10, 11), MigrationRunner(db).migrate())
             assertEquals(1L, db.queryLong("SELECT count(*) FROM ui_settings"))
         }
     }
