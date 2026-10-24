@@ -255,6 +255,76 @@ while read -r name; do
   fail "MediaNative does not declare 'external fun $name', which §13.2's list marks shipped"
 done < <(comm -13 "$work/media-kotlin" "$work/media-declared")
 
+# -------------------------------------------------------------------------------------------
+# G-D5: the update surface (Phase 14 design §9.3; G-R6 extended) — `UpdateNative`'s and
+# `TorMirrorTransport`'s closed lists, the gate's third closed-list family. The lists are the
+# Rust constants `CLOSED_UPDATE` / `CLOSED_MIRROR` of `client-core/net/src/update.rs`, so the
+# gate and the code cannot drift, exactly as the DM and media halves. The two classes live on
+# the network tree (like `TorRelayTransport`), so their Kotlin declarations are `private
+# external fun` — the internal/@JvmName rule of §2.6 is `:crypto-bridge`'s facade rule and does
+# not apply to the network classes; the name-set comparison below is still both directions.
+# Self-test hooks: GHOST_DM_JNI_UPDATE_SOURCE, GHOST_DM_JNI_UPDATE_KOTLIN and
+# GHOST_DM_JNI_MIRROR_KOTLIN, the same pattern as the halves above.
+UPDATE_SOURCE="${GHOST_DM_JNI_UPDATE_SOURCE:-$GHOST_ROOT/client-core/net/src/update.rs}"
+UPDATE_KOTLIN="${GHOST_DM_JNI_UPDATE_KOTLIN:-$GHOST_ROOT/android/network/src/main/kotlin/org/ghost/network/UpdateNative.kt}"
+MIRROR_KOTLIN="${GHOST_DM_JNI_MIRROR_KOTLIN:-$GHOST_ROOT/android/network/src/main/kotlin/org/ghost/network/TorMirrorTransport.kt}"
+UPDATE_PREFIX="Java_org_ghost_network_UpdateNative_"
+MIRROR_PREFIX="Java_org_ghost_network_TorMirrorTransport_"
+
+[ -f "$UPDATE_SOURCE" ] || { echo "Update JNI source not found: $UPDATE_SOURCE" >&2; exit 2; }
+[ -f "$UPDATE_KOTLIN" ] || { echo "UpdateNative.kt not found: $UPDATE_KOTLIN" >&2; exit 2; }
+[ -f "$MIRROR_KOTLIN" ] || { echo "TorMirrorTransport.kt not found: $MIRROR_KOTLIN" >&2; exit 2; }
+
+# The lists, from the Rust constants (plain string arrays): `sed` stops at each constant's
+# closing `];`, so the two lists cannot leak into each other.
+sed -n '/pub const CLOSED_UPDATE/,/^]/p' "$UPDATE_SOURCE"   | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u > "$work/update-declared"
+sed -n '/pub const CLOSED_MIRROR/,/^]/p' "$UPDATE_SOURCE"   | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u > "$work/mirror-declared"
+[ -s "$work/update-declared" ] || { fail "no UpdateNative closed-list entries read from $UPDATE_SOURCE"; finish dm-jni-surface; }
+[ -s "$work/mirror-declared" ] || { fail "no TorMirrorTransport closed-list entries read from $UPDATE_SOURCE"; finish dm-jni-surface; }
+
+# Names the workspace really emits, from the same whole-workspace scan as the DM half.
+{ grep -E "^${UPDATE_PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${UPDATE_PREFIX}//"   | sort -u > "$work/update-emitted"
+{ grep -E "^${MIRROR_PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${MIRROR_PREFIX}//"   | sort -u > "$work/mirror-emitted"
+
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "the workspace exports UpdateNative.$name, which is not on §9.3's list ($UPDATE_SOURCE; scanned $SCAN)"
+done < <(comm -23 "$work/update-emitted" "$work/update-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "'$name' is on §9.3's UpdateNative list but the crate emits no entry point for it"
+done < <(comm -23 "$work/update-declared" "$work/update-emitted")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "the workspace exports TorMirrorTransport.$name, which is not on §9.3's list ($UPDATE_SOURCE; scanned $SCAN)"
+done < <(comm -23 "$work/mirror-emitted" "$work/mirror-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "'$name' is on §9.3's TorMirrorTransport list but the crate emits no entry point for it"
+done < <(comm -23 "$work/mirror-declared" "$work/mirror-emitted")
+
+# Kotlin declares exactly the list names, both directions, per class. The network classes use
+# `private external fun` (the JNI symbol pins the class, and visibility does not change the
+# symbol a dynamic lookup finds), so — unlike DmNative/MediaNative — no @JvmName check here.
+grep -oE 'external fun [A-Za-z0-9]+' "$UPDATE_KOTLIN" | sed -E 's/external fun //' | sort -u > "$work/update-kotlin"
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "UpdateNative declares 'external fun $name', which the crate does not export"
+done < <(comm -23 "$work/update-kotlin" "$work/update-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "UpdateNative does not declare 'external fun $name', which §9.3's list ships"
+done < <(comm -13 "$work/update-kotlin" "$work/update-declared")
+grep -oE 'external fun [A-Za-z0-9]+' "$MIRROR_KOTLIN" | sed -E 's/external fun //' | sort -u > "$work/mirror-kotlin"
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "TorMirrorTransport declares 'external fun $name', which the crate does not export"
+done < <(comm -23 "$work/mirror-kotlin" "$work/mirror-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "TorMirrorTransport does not declare 'external fun $name', which §9.3's list ships"
+done < <(comm -13 "$work/mirror-kotlin" "$work/mirror-declared")
+
 # No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
 # `native` method (Java) anywhere but the files of `common.sh`'s GHOST_JNI_NATIVE_FILES (DmNative.kt,
 # MediaNative.kt, MlsNative.kt and the network classes' own files). Without it a second class in
@@ -394,6 +464,26 @@ for LIBRARY in "$@"; do
         fail "$LIBRARY exports the host-only media entry 'MediaNative.$name': a shipped library never carries it (G-M5)"
       done < "$work/media-test-symbols"
     fi
+    # G-D5's update half: exactly §9.3's two lists in every library (there are no host-only
+    # entries on the update surface; a shipped and a test library carry the same set).
+    grep -oE "${UPDATE_PREFIX}[A-Za-z0-9]+" "$work/nm-out"       | sed -E "s/${UPDATE_PREFIX}//" | sort -u > "$work/update-symbols" || true
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY exports 'UpdateNative.$name', which is not on §9.3's list"
+    done < <(comm -23 "$work/update-symbols" "$work/update-declared")
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY does not export 'UpdateNative.$name', which §9.3's list ships"
+    done < <(comm -13 "$work/update-symbols" "$work/update-declared")
+    grep -oE "${MIRROR_PREFIX}[A-Za-z0-9]+" "$work/nm-out"       | sed -E "s/${MIRROR_PREFIX}//" | sort -u > "$work/mirror-symbols" || true
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY exports 'TorMirrorTransport.$name', which is not on §9.3's list"
+    done < <(comm -23 "$work/mirror-symbols" "$work/mirror-declared")
+    while read -r name; do
+      [ -n "$name" ] || continue
+      fail "$LIBRARY does not export 'TorMirrorTransport.$name', which §9.3's list ships"
+    done < <(comm -13 "$work/mirror-symbols" "$work/mirror-declared")
   fi
 done
 [ "$TEST_LIBRARY" = 0 ] || fail "--test names no library"

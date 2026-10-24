@@ -44,6 +44,11 @@ pub const CLOSED_UPDATE: &[&str] = &[
     "nativeMirrorSetClose",
 ];
 
+/// The closed export list of `TorMirrorTransport` (§9.3): one fetch entry point.
+pub const CLOSED_MIRROR: &[&str] = &[
+    "nativeFetch",
+];
+
 /// One streaming APK check in the handle registry.
 struct ApkState {
     check: Option<ApkCheck>,

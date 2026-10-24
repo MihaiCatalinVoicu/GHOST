@@ -1726,6 +1726,12 @@ if [ "$(grep -c '^GATE-FAIL' <<<"$jni_ref_out" || true)" = "2" ] && grep -qF "Sh
 else
   echo "SELF-TEST FAIL: dm-jni-surface does not report exactly the two code references to DmNative" >&2; rc=1
 fi
+# G-D5 (Phase 14 design §9.3): the update surface's two closed lists are checked in both
+# directions in the workspace, in the Kotlin declarations, and in every built library; the
+# fixtures drill the symbol diff and the Kotlin diff, one case each direction.
+expect_fail_msg "dm-jni-surface rejects a library exporting an update symbol outside §9.3's list"   "exports 'UpdateNative.debugDumpState', which is not on §9.3's list"   env GHOST_DM_JNI_NM="$DM_JNI/nm/update-extra-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a library missing an update symbol §9.3's list ships"   "does not export 'UpdateNative.nativeOffer', which §9.3's list ships"   env GHOST_DM_JNI_NM="$DM_JNI/nm/missing-update-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects an UpdateNative declaration the crate does not export"   "UpdateNative declares 'external fun nativeDebugDumpState', which the crate does not export"   env GHOST_DM_JNI_UPDATE_KOTLIN="$DM_JNI/UpdateNativeExtra.kt" bash "$DIR/dm-jni-surface.sh"
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" "$elf" >/dev/null 2>&1
 then
   echo "self-test ok: dm-jni-surface accepts a library whose symbols are the closed list"

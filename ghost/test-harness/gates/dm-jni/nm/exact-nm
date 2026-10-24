@@ -30,5 +30,21 @@ done < <(sed -n '/pub const MEDIA_CLOSED_LIST/,/^]/p' "$media_source" \
   | grep -oE '\([0-9]+, "[A-Za-z0-9]+"\)' | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
 # A library exports more than the two closed surfaces: the network classes' entry points, which the
 # gate allows by class (Phase 9 review GATES-3), and symbols that are not JNI at all, which it ignores.
+# Slice G-D5 (Phase 14 design §9.3): the update surface ships in the same library — the
+# `CLOSED_UPDATE` / `CLOSED_MIRROR` constants of `client-core/net/src/update.rs`, read in the
+# same shape the gate's update half reads them, so the fixtures and the gate cannot drift.
+update_source="$(dirname "$0")/../../../../client-core/net/src/update.rs"
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_network_UpdateNative_%s
+' "$address" "$name"
+  address=$((address + 16))
+done < <(sed -n '/pub const CLOSED_UPDATE/,/^]/p' "$update_source"   | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u)
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_network_TorMirrorTransport_%s
+' "$address" "$name"
+  address=$((address + 16))
+done < <(sed -n '/pub const CLOSED_MIRROR/,/^]/p' "$update_source"   | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u)
 printf '%016x T Java_org_ghost_network_TorRelayTransport_nativeCreate\n' "$((address + 16))"
 printf '%016x T rust_eh_personality\n' "$((address + 32))"

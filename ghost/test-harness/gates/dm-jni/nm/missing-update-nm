@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-D5, negative case: the closed lists minus one UpdateNative
+# symbol, so the gate's "does not export X, which §9.3's list ships" diff is drilled.
+set -euo pipefail
+dir="$(dirname "$0")"
+"$dir/exact-nm" "$@" | grep -v 'UpdateNative_nativeOffer$'

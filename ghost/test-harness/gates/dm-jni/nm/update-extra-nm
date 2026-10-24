@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-D5 (`scripts/gates/dm-jni-surface.sh`), negative case: the closed
+# lists plus one UpdateNative symbol that is not on §9.3's list, so the gate's update half's
+# "exports X, which is not on §9.3's list" diff is drilled without committing a built library.
+# The arguments (`-D --defined-only <library>`) are accepted and ignored.
+set -euo pipefail
+dir="$(dirname "$0")"
+"$dir/exact-nm" "$@"
+printf '%016x T Java_org_ghost_network_UpdateNative_debugDumpState\n' 4096
