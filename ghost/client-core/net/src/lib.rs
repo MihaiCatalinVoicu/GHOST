@@ -100,6 +100,9 @@ pub(crate) mod bridge_line;
 #[cfg(feature = "jni-bridge")]
 pub mod jni_bridge;
 
+#[cfg(feature = "jni-bridge")]
+pub mod update;
+
 #[cfg(feature = "clippy-fixture")]
 mod clippy_fixture;
 

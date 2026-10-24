@@ -24,6 +24,12 @@ ghost-relay-api = { path = "../../relay/crates/api" }
 ghost-entitlement = { path = "../../issuer/crates/entitlement" }
 # Issuer wire types (codegen only, no transport).
 ghost-issuer-api = { path = "../../issuer/crates/api" }
+# Update decision (Phase 14 design §7.4, §9.2): the trust epoch, bundle acceptance, the offer,
+# the streaming APK check and their byte codec; the `UpdateNative` JNI surface of §9.3 is the
+# only caller besides `ghost-verify`.
+ghost-client-update = { path = "../update" }
+# Release formats are reached through ghost-client-update's graph (no new external crate).
+ghost-client-release = { path = "../release" }
 arti-client = { workspace = true }
 tor-rtcompat = { workspace = true }
 # Vanguards-lite (Prop 333) against guard discovery by onion-service operators (ADR-01).

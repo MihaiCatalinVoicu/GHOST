@@ -78,7 +78,7 @@ ghost_client_mls::export_jni!();
 const EXCEPTION: &str = "org/ghost/network/NetworkException";
 const FALLBACK_EXCEPTION: &str = "java/lang/IllegalStateException";
 
-type Outcome<T> = Result<T, &'static str>;
+pub(crate) type Outcome<T> = Result<T, &'static str>;
 
 struct Handle {
     rt: Option<Runtime>,
@@ -187,7 +187,7 @@ fn quiet_panics() {
 }
 
 /// Runs a JNI body: panics become `internal`, errors become a `NetworkException(category)`.
-fn guarded<'l, T>(
+pub(crate) fn guarded<'l, T>(
     env: &mut JNIEnv<'l>,
     default: T,
     body: impl FnOnce(&mut JNIEnv<'l>) -> Outcome<T>,
@@ -206,13 +206,13 @@ fn guarded<'l, T>(
     }
 }
 
-fn bytes(env: &JNIEnv, arr: &JByteArray) -> Outcome<Vec<u8>> {
+pub(crate) fn bytes(env: &JNIEnv, arr: &JByteArray) -> Outcome<Vec<u8>> {
     env.convert_byte_array(arr)
         .map_err(|_| cat::INVALID_ARGUMENT)
 }
 
 /// A byte array of exactly `N` bytes.
-fn fixed<const N: usize>(env: &JNIEnv, arr: &JByteArray) -> Outcome<[u8; N]> {
+pub(crate) fn fixed<const N: usize>(env: &JNIEnv, arr: &JByteArray) -> Outcome<[u8; N]> {
     exact(&bytes(env, arr)?)
 }
 
@@ -226,7 +226,7 @@ fn string(env: &mut JNIEnv, s: &JString) -> Outcome<String> {
         .map_err(|_| cat::INVALID_ARGUMENT)
 }
 
-fn to_java(env: &mut JNIEnv, data: &[u8]) -> Outcome<jbyteArray> {
+pub(crate) fn to_java(env: &mut JNIEnv, data: &[u8]) -> Outcome<jbyteArray> {
     env.byte_array_from_slice(data)
         .map(|a| a.into_raw())
         .map_err(|_| cat::INTERNAL)

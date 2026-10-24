@@ -1,0 +1,316 @@
+//! `UpdateNative` (Phase 14 design §9.3): the closed JNI surface of the update decision. Byte
+//! in, byte out: results are a one-byte `Code` (§9.2, `ghost_client_update::codec::code_byte`)
+//! followed by a fixed big-endian payload Kotlin decodes strictly (a wrong length is
+//! `malformed_response`). The APK checks live in a handle registry of their own (opaque ids,
+//! idempotent abort, `catch_unwind` via `guarded`). The mirror set and the Tor fetch
+//! (`nativeMirrorSet`, `TorMirrorTransport`) land with the transport slice; this file is the
+//! pure half: epoch, acceptance, offer, the streaming APK check.
+//!
+//! G-D5 (G-R6 extended): only the names in `CLOSED_UPDATE` may exist, in this workspace,
+//! under `Java_org_ghost_network_UpdateNative_`.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use ghost_client_update::apk::ApkCheck;
+use ghost_client_update::codec::{code_byte, decode_stored, encode_stored};
+use ghost_client_update::offer::{OfferResult, offer as decide_offer};
+use ghost_client_update::{Time, UpdateError, accept_bundle, start_epoch};
+use jni::objects::{JByteArray, JClass};
+use jni::sys::{jboolean, jint, jlong};
+use jni::JNIEnv;
+
+use crate::categories as cat;
+use crate::jni_bridge::{Outcome, bytes, fixed, guarded, to_java};
+
+/// The embedded root chain of this build's network (the committed document, G-D4: the whole
+/// chain from the lineage's first root; a bundle's GHRC may start later, §4.4).
+const EMBEDDED_CHAIN: &[u8] =
+    include_bytes!("../../../protocol/release/stagenet/embedded-chain.ghrc");
+
+/// The closed export list (mirrored by the gate, exactly as `DmNative`'s in §2.6).
+pub const CLOSED_UPDATE: &[&str] = &[
+    "nativeEmbeddedChain",
+    "nativeStart",
+    "nativeAccept",
+    "nativeOffer",
+    "nativeApkBegin",
+    "nativeApkFooter",
+    "nativeApkUpdate",
+    "nativeApkFinish",
+    "nativeApkAbort",
+];
+
+/// One streaming APK check in the handle registry.
+struct ApkState {
+    check: Option<ApkCheck>,
+    footer_seen: bool,
+}
+
+fn apk_registry() -> &'static Mutex<HashMap<jlong, Arc<Mutex<ApkState>>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<Mutex<ApkState>>>>> = OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
+}
+
+static NEXT_APK_ID: AtomicI64 = AtomicI64::new(1);
+
+fn register_apk(state: ApkState) -> jlong {
+    let id = NEXT_APK_ID.fetch_add(1, Ordering::Relaxed);
+    apk_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, Arc::new(Mutex::new(state)));
+    id
+}
+
+fn lookup_apk(id: jlong) -> Outcome<Arc<Mutex<ApkState>>> {
+    apk_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&id)
+        .cloned()
+        .ok_or(cat::CLOSED)
+}
+
+/// Removes the handle; idempotent. Returns `None` for an unknown id.
+fn remove_apk(id: jlong) -> Option<Arc<Mutex<ApkState>>> {
+    apk_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id)
+}
+
+fn result(code: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + payload.len());
+    out.push(code);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn time_of(trusted: jboolean, day: jint, now: jlong) -> Time {
+    if trusted != 0 {
+        Time::Trusted { day: day as u32, now_secs: now as u64 }
+    } else {
+        Time::Untrusted
+    }
+}
+
+/// The embedded chain document (a `GHRC`), for the first start and `NO_CHANNEL` (§7.8).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeEmbeddedChain(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| to_java(env, EMBEDDED_CHAIN))
+}
+
+/// §7.4 step 0. `stored` is the codec blob of the previous installed version, or empty at the
+/// first start. Returns `[code][new stored blob]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeStart(
+    mut env: JNIEnv,
+    _class: JClass,
+    stored: JByteArray,
+    embedded_chain: JByteArray,
+    installed: jint,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let prev = bytes(env, &stored)?;
+        let embedded = bytes(env, &embedded_chain)?;
+        let chain = ghost_client_release::chain::GHRC::parse(&embedded)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        if chain.roots.is_empty() {
+            return Err(cat::INVALID_ARGUMENT);
+        }
+        let stored_state = if prev.is_empty() {
+            None
+        } else {
+            Some(decode_stored(&prev).map_err(|_| cat::INVALID_ARGUMENT)?)
+        };
+        let state = start_epoch(installed as u32, chain.roots, stored_state);
+        Ok(to_java(env, &result(0, &encode_stored(&state)))?)
+    })
+}
+
+/// §7.4 steps 1–7. Returns `[code][new stored blob]`: `code` 0 (or the step-2 report code)
+/// with a blob to persist, or a refusal code with an unchanged blob.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeAccept(
+    mut env: JNIEnv,
+    _class: JClass,
+    stored: JByteArray,
+    bundle: JByteArray,
+    day_trusted: jboolean,
+    day: jint,
+    now: jlong,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let state = decode_stored(&bytes(env, &stored)?).map_err(|_| cat::INVALID_ARGUMENT)?;
+        let bundle = bytes(env, &bundle)?;
+        let network = state.trusted_root().body.network as u8;
+        let out = match accept_bundle(&bundle, &state, network, time_of(day_trusted, day, now)) {
+            Ok(outcome) => {
+                let code = outcome.refused.as_ref().map_or(0u8, code_byte);
+                result(code, &encode_stored(&outcome.state))
+            }
+            Err(e) => result(code_byte(&e), &[]),
+        };
+        Ok(to_java(env, &out)?)
+    })
+}
+
+/// §7.4 step 8. Returns `[code]`, plus on `OK` `[u32 version_code][u16 name len][name]
+/// [u8 release_index][32 apk_sha256][u64 apk_length]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeOffer(
+    mut env: JNIEnv,
+    _class: JClass,
+    stored: JByteArray,
+    installed: jint,
+    sdk: jint,
+    rollout_key: JByteArray,
+    day_trusted: jboolean,
+    day: jint,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let state = decode_stored(&bytes(env, &stored)?).map_err(|_| cat::INVALID_ARGUMENT)?;
+        let key: [u8; 32] = fixed(env, &rollout_key)?;
+        let out = match decide_offer(&state, time_of(day_trusted, day, 0), installed as u32, sdk as u8, &key) {
+            OfferResult::Update(o) => {
+                let mut payload = Vec::new();
+                payload.extend_from_slice(&o.version_code.to_be_bytes());
+                payload.extend_from_slice(&(o.version_name.len() as u16).to_be_bytes());
+                payload.extend_from_slice(&o.version_name);
+                payload.push(o.release_index as u8);
+                payload.extend_from_slice(&o.release.apk_sha256);
+                payload.extend_from_slice(&o.release.apk_length.to_be_bytes());
+                result(0, &payload)
+            }
+            OfferResult::None(e) => result(code_byte(&e), &[]),
+        };
+        Ok(to_java(env, &out)?)
+    })
+}
+
+/// Step 9(a): begins a streaming APK check over the offered release (`release_index` into the
+/// stored manifest); `tail` is the file's last 22 bytes. Returns the check's handle.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkBegin(
+    mut env: JNIEnv,
+    _class: JClass,
+    stored: JByteArray,
+    release_index: jint,
+    sdk: jint,
+    length: jlong,
+    tail: JByteArray,
+) -> jlong {
+    guarded(&mut env, 0, |env| {
+        let state = decode_stored(&bytes(env, &stored)?).map_err(|_| cat::INVALID_ARGUMENT)?;
+        let tail: [u8; 22] = fixed(env, &tail)?;
+        let manifest = state.manifest.clone().ok_or(cat::INVALID_ARGUMENT)?;
+        let release = manifest
+            .body
+            .releases
+            .get(release_index as usize)
+            .cloned()
+            .ok_or(cat::INVALID_ARGUMENT)?;
+        let (check, _need) = ApkCheck::begin(
+            release_index as usize,
+            release,
+            manifest,
+            state.trusted_root().clone(),
+            sdk as u8,
+            length as u64,
+            &tail,
+        )
+        .map_err(|_| cat::INVALID_ARGUMENT)?;
+        Ok(register_apk(ApkState { check: Some(check), footer_seen: false }))
+    })
+}
+
+/// Steps 9(b), 9(c): the 24 bytes before `cd_offset` (the range `Need::Footer` names).
+/// Returns `[code]` (one byte; non-zero on refusal).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkFooter(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    footer: JByteArray,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let bytes24: [u8; 24] = fixed(env, &footer)?;
+        let state = lookup_apk(handle)?;
+        let mut guard = state.lock().map_err(|_| cat::INTERNAL)?;
+        let already = guard.footer_seen;
+        let check = guard.check.as_mut().ok_or(cat::CLOSED)?;
+        let code = if already {
+            code_byte(&UpdateError::OutOfOrder)
+        } else {
+            match check.footer(&bytes24) {
+                Ok(()) => {
+                    guard.footer_seen = true;
+                    0
+                }
+                Err(e) => code_byte(&e),
+            }
+        };
+        Ok(to_java(env, &[code])?)
+    })
+}
+
+/// Steps 9(d), 9(e): body bytes, strictly in order. Returns `[code]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkUpdate(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    offset: jlong,
+    chunk: JByteArray,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let chunk = bytes(env, &chunk)?;
+        let state = lookup_apk(handle)?;
+        let mut guard = state.lock().map_err(|_| cat::INTERNAL)?;
+        let check = guard.check.as_mut().ok_or(cat::CLOSED)?;
+        let code = match check.update(offset as u64, &chunk) {
+            Ok(()) => 0,
+            Err(e) => code_byte(&e),
+        };
+        Ok(to_java(env, &[code])?)
+    })
+}
+
+/// Step 10: finishes the check and closes the handle. Returns `[code]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkFinish(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(state) = remove_apk(handle) else {
+            return Ok(to_java(env, &[code_byte(&UpdateError::OutOfOrder)])?);
+        };
+        let mut guard = state.lock().map_err(|_| cat::INTERNAL)?;
+        let Some(check) = guard.check.take() else {
+            return Ok(to_java(env, &[code_byte(&UpdateError::OutOfOrder)])?);
+        };
+        let code = match check.finish() {
+            Ok(()) => 0u8,
+            Err(e) => code_byte(&e),
+        };
+        Ok(to_java(env, &[code])?)
+    })
+}
+
+/// Idempotent abort; unknown ids are ignored.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkAbort(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let _ = &mut env;
+    remove_apk(handle);
+}

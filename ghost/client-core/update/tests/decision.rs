@@ -785,7 +785,15 @@ fn apk_streaming_check() {
 
     let begin = || {
         let tail: [u8; 22] = f.signed[n - 22..].try_into().unwrap();
-        ApkCheck::begin(0, &f.manifest.body.releases[0], &f.manifest, &f.root, 29, n as u64, &tail)
+        ApkCheck::begin(
+            0,
+            f.manifest.body.releases[0].clone(),
+            f.manifest.clone(),
+            f.root.clone(),
+            29,
+            n as u64,
+            &tail,
+        )
             .unwrap()
     };
     // The named footer range is the 24 bytes before cd_offset.
@@ -813,4 +821,40 @@ fn apk_streaming_check() {
     // update before footer: OUT_OF_ORDER.
     let (mut chk3, _) = begin();
     assert_eq!(chk3.update(0, &body[..1]), Err(UpdateError::OutOfOrder));
+}
+
+#[test]
+fn stored_codec_roundtrip() {
+    use ghost_client_update::codec::{decode_stored, encode_stored};
+    let w = World::new(2);
+    let state = fresh_state(&w, 1);
+    let bytes = encode_stored(&state);
+    assert_eq!(decode_stored(&bytes).unwrap(), state);
+
+    // With an accepted manifest and an extended chain (exercises every codec branch).
+    let m = w.manifest(2, 1, 1, false);
+    let out = accept_bundle(&w.bundle(&m), &state, 2, trusted()).unwrap();
+    let bytes = encode_stored(&out.state);
+    assert_eq!(decode_stored(&bytes).unwrap(), out.state);
+
+    // A tampered blob and a truncated one are MALFORMED, never a partial read. (Byte 0 is the
+    // codec version; the epoch id is opaque and not re-derived here, so flipping an id byte
+    // would legitimately decode.)
+    let mut bad = bytes.clone();
+    bad[0] ^= 0x01;
+    assert_eq!(decode_stored(&bad), Err(UpdateError::Malformed));
+    assert_eq!(
+        decode_stored(&bytes[..bytes.len() - 1]),
+        Err(UpdateError::Malformed)
+    );
+    // The manifest hash inside the blob is checked against the document: locate the GHRM
+    // document and flip a byte of the 32-byte hash that follows it.
+    let doc = out.state.manifest.as_ref().unwrap().body_bytes_with_block();
+    let doc_at = bytes
+        .windows(doc.len())
+        .position(|w| w == doc.as_slice())
+        .expect("manifest doc in blob");
+    let mut bad_hash = bytes.clone();
+    bad_hash[doc_at + doc.len() + 3] ^= 0x01;
+    assert_eq!(decode_stored(&bad_hash), Err(UpdateError::Malformed));
 }

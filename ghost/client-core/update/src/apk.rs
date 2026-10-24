@@ -48,11 +48,13 @@ pub enum Need {
 }
 
 /// The streaming APK check (§9.2 `ApkCheck`). Feeding bytes out of order is `OUT_OF_ORDER`.
-pub struct ApkCheck<'a> {
+/// Owns the release, manifest and root (small documents, ≤ ~64 KiB each) so a check can live
+/// in a JNI handle registry without lifetimes.
+pub struct ApkCheck {
     release_index: usize,
-    release: &'a Release,
-    manifest: &'a GHRM,
-    root: &'a GHRT,
+    release: Release,
+    manifest: GHRM,
+    root: GHRT,
     sdk: u8,
     length: u64,
     cd_offset: u64,
@@ -67,16 +69,16 @@ pub struct ApkCheck<'a> {
     footer_seen: bool,
 }
 
-impl<'a> ApkCheck<'a> {
+impl ApkCheck {
     /// Step 9(a): read the end-of-central-directory record from the file's last 22 bytes.
     /// `length` is the file's length (Kotlin knows it from the download/staging row), and
     /// `release_index` the offered release's index in `manifest` (its attestation block is
     /// part of the step-10 binding).
     pub fn begin(
         release_index: usize,
-        release: &'a Release,
-        manifest: &'a GHRM,
-        root: &'a GHRT,
+        release: Release,
+        manifest: GHRM,
+        root: GHRT,
         sdk: u8,
         length: u64,
         tail: &[u8; EOCD_LEN],
@@ -276,7 +278,15 @@ pub fn check_apk(
     }
     let n = file.len();
     let tail: [u8; EOCD_LEN] = file[n - EOCD_LEN..].try_into().expect("22 bytes");
-    let (mut check, need) = ApkCheck::begin(release_index, release, manifest, r, sdk, n as u64, &tail)?;
+    let (mut check, need) = ApkCheck::begin(
+        release_index,
+        release.clone(),
+        manifest.clone(),
+        r.clone(),
+        sdk,
+        n as u64,
+        &tail,
+    )?;
     let Need::Footer { offset } = need;
     let footer: [u8; 24] = file[offset as usize..offset as usize + 24]
         .try_into()

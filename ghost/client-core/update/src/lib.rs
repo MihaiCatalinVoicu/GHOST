@@ -14,6 +14,7 @@ pub mod decision;
 pub mod offer;
 pub mod draw;
 pub mod apk;
+pub mod codec;
 
 pub use state::{StoredState, TrustEpoch, Pair, Floor, Time, ChannelStatus, PersistedChange};
 pub use decision::{accept_bundle, start_epoch, AcceptOutcome};
