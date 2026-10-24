@@ -20,6 +20,13 @@ enum class JobFate {
     /** A quiet run: the transport READY for the participant's one issuer call and no relay session; then the consumer tail. */
     QUIET_RUN,
 
+    /**
+     * An update run (Phase 14 design §7.3): the transport READY for the updater's mirror fetches
+     * only — no relay session, no issuer call — for the fixed duration `D_U`; then the job ends.
+     * One job in `1 / (7/8 × 1/24)` ≈ 27.4 is an update run when every job runs.
+     */
+    UPDATE_RUN,
+
     /** A background relay session; then the consumer tail. */
     BACKGROUND_SESSION,
     ;
@@ -31,9 +38,23 @@ enum class JobFate {
          * whatever becomes of it; [participant], whether a session participant is installed — a run is
          * quiet only for one (Phase 8 design §11.6).
          */
-        fun of(occupied: Boolean, quietDraw: Boolean, participant: Boolean): JobFate = when {
+        fun of(occupied: Boolean, quietDraw: Boolean, participant: Boolean): JobFate =
+            of(occupied, quietDraw, updateDraw = false, participant, updater = false)
+
+        /**
+         * The fate with the update draw (Phase 14 design §7.3), in this precedence: [RETURN]
+         * (unchanged), then a quiet run (the quiet draw holds and a participant is installed),
+         * then an update run (the update draw is `< 1/24` **among the jobs that are not quiet**
+         * and an updater is installed), then a background relay session. The draw — which jobs
+         * are update runs — is independent of the client's state; app visibility decides, as for
+         * quiet runs, whether a job that fires runs at all. Update runs are not held by the
+         * payment hold: the hold keeps relay sessions away from payment times, and an update run
+         * has no issuer call in it.
+         */
+        fun of(occupied: Boolean, quietDraw: Boolean, updateDraw: Boolean, participant: Boolean, updater: Boolean): JobFate = when {
             occupied -> RETURN
             quietDraw && participant -> QUIET_RUN
+            updateDraw && updater -> UPDATE_RUN
             else -> BACKGROUND_SESSION
         }
     }

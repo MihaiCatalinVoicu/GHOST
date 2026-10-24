@@ -38,8 +38,56 @@ interface SessionParticipant {
     fun onQuietRun(session: ParticipantSession)
 }
 
+/**
+ * The update engine's participant slot (Phase 14 design §7.3, §9.4 item 3): one slot, like the
+ * [SessionParticipant]; `SyncController.setUpdater` sets it at wiring. The runtime grants it an
+ * [UpdateSession] only in update runs — never in a relay session, a quiet run or at app start
+ * (nothing else ever fetches from a mirror, T51).
+ */
+interface UpdateParticipant {
+    /**
+     * An update run started: the transport is READY, no relay session runs and no issuer call is
+     * made; the run lasts its fixed duration whatever the engine does. Must return before the
+     * deadline; at the deadline the lease closes and the job ends whether or not it has returned.
+     */
+    fun onUpdateRun(session: UpdateSession)
+}
+
+/**
+ * The update engine's lease on the one transport for one update run. It grants [mirror] access
+ * only; the engine reads the bundle from the run's two mirrors, accepts it, and downloads the
+ * offered APK's chunks in order until the run's fixed end (`D_U` after READY). The LeasedSession
+ * contract holds: never inside a sync transaction, never feeding breakers or budgets, and the
+ * run's length never depends on the offer or the download (§7.3).
+ */
+interface UpdateSession {
+    /** The run's draw on the process's random key (Phase 14 design §7.8: the mirror draw). */
+    fun updateDraw(): ByteArray
+
+    /** The engine trusts the device wall clock (a READY in this process, no step since), and the lease is open. */
+    fun clockTrusted(): Boolean
+
+    /** Monotonic time (the sync clock) at which the lease closes; the run ends there whatever the engine does. */
+    val deadlineMonotonicMillis: Long
+
+    /** The lease is closed (the run ended, or its deadline passed): every call fails `closed`. */
+    val closed: Boolean
+
+    /** The one access of an update run: a mirror fetch, on the `Update` isolation scope. */
+    val mirror: MirrorAccess
+}
+
+/** A mirror fetch of one update run (Phase 14 design §7.2, §9.3). */
+interface MirrorAccess {
+    /** The bundle (`current.ghrb`): 200, at most 1 MiB. */
+    fun fetchBundle(slot: Int, deadlineMillis: Int): ByteArray
+
+    /** One 4 MiB chunk of the offered APK (206 with the matching `content-range`). */
+    fun fetchApkChunk(slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray
+}
+
 /** What a [ParticipantSession] stands for; it decides which access it grants. */
-enum class SessionKind { FOREGROUND, BACKGROUND, QUIET, USER_ISSUER_CALL }
+enum class SessionKind { FOREGROUND, BACKGROUND, QUIET, USER_ISSUER_CALL, UPDATE_RUN }
 
 /**
  * A participant's lease on the one transport for one session, quiet run or user issuer call.

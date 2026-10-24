@@ -22,4 +22,43 @@ class JobFateTest {
         assertEquals(JobFate.BACKGROUND_SESSION, JobFate.of(occupied = false, quietDraw = false, participant = true))
         assertEquals(JobFate.BACKGROUND_SESSION, JobFate.of(occupied = false, quietDraw = false, participant = false))
     }
+
+    /**
+     * The update draw (Phase 14 design §7.3) and its precedence: RETURN first, the quiet run
+     * before the update run (a quiet draw is never also an update run — the update draw is taken
+     * among the jobs that are not quiet), the update run only while an updater is installed, and
+     * a background relay session otherwise. The old three-argument decision is the same function
+     * with no updater: no behavior of the existing worlds changes until they pass one (Q39).
+     */
+    @Test
+    fun theUpdateDrawDecidesOnlyAmongTheNonQuietJobs() {
+        for (occupied in listOf(true, false)) for (quiet in listOf(true, false)) {
+            for (update in listOf(true, false)) for (updater in listOf(true, false)) {
+                val fate = JobFate.of(occupied, quiet, update, participant = true, updater = updater)
+                val expected = when {
+                    occupied -> JobFate.RETURN
+                    quiet -> JobFate.QUIET_RUN
+                    update && updater -> JobFate.UPDATE_RUN
+                    else -> JobFate.BACKGROUND_SESSION
+                }
+                assertEquals("occupied=$occupied quiet=$quiet update=$update updater=$updater", expected, fate)
+            }
+        }
+        // The quiet run wins over the update run: the update draw is taken only among the
+        // non-quiet jobs (1 / (7/8 × 1/24), not 1/24 of every job).
+        assertEquals(
+            JobFate.QUIET_RUN,
+            JobFate.of(occupied = false, quietDraw = true, updateDraw = true, participant = true, updater = true),
+        )
+        // Without an updater installed the draw means nothing.
+        assertEquals(
+            JobFate.BACKGROUND_SESSION,
+            JobFate.of(occupied = false, quietDraw = false, updateDraw = true, participant = true, updater = false),
+        )
+        // The three-argument decision is the no-updater decision.
+        assertEquals(
+            JobFate.of(occupied = false, quietDraw = true, participant = true),
+            JobFate.of(occupied = false, quietDraw = true, updateDraw = true, participant = true, updater = false),
+        )
+    }
 }

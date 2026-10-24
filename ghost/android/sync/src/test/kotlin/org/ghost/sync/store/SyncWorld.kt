@@ -57,6 +57,8 @@ class FixedRandom(var sendDelayValue: Double = 0.5, var selectionValue: Double =
 
     override fun quietRun(index: Long): Double = 0.5
 
+    override fun updateRun(index: Long): Double = 0.99 // no update runs until the S6b re-baseline (Q39)
+
     override fun paymentHold(index: Long): Double = 0.5
 
     /** Distinct per draw, so two registrations never share a request id. */

@@ -46,6 +46,8 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
 
     override fun paymentHold(index: Long): Double = unit(DOMAIN_PAYMENT_HOLD, 0, 0, EMPTY, index)
 
+    override fun updateRun(index: Long): Double = unit(DOMAIN_UPDATE_RUN, 0, 0, EMPTY, index)
+
     override fun requestId(): ByteArray = mac(DOMAIN_REQUEST_ID, 0, 0, EMPTY, requestIdCounter.getAndIncrement()).copyOf(REQUEST_ID_SIZE)
 
     private fun unit(domain: Byte, purpose: Byte, relay: Long, namespace: ByteArray, index: Long): Double {
@@ -75,6 +77,9 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
         private const val DOMAIN_QUIET_RUN: Byte = 5
         private const val DOMAIN_PAYMENT_HOLD: Byte = 6
         private const val DOMAIN_REQUEST_ID: Byte = 7
+
+        /** Phase 14 design §7.3: the update-run draw is its own domain, never shared (T19). */
+        private const val DOMAIN_UPDATE_RUN: Byte = 8
 
         /** Request ids of `RegisterKey` are 16 bytes (Phase 9 design §4.2). */
         private const val REQUEST_ID_SIZE: Int = 16

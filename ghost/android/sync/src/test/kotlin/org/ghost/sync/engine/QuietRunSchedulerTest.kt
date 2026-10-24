@@ -112,9 +112,12 @@ class QuietRunSchedulerTest {
         for (kind in ParticipantKind.entries) {
             val s = session(kind, RecordingLease())
             val relay = kind == ParticipantKind.FOREGROUND || kind == ParticipantKind.BACKGROUND
+            // Phase 14 §9.4: an update run grants neither — its access lives on UpdateSession's
+            // MirrorAccess, and the runtime never builds a ParticipantSession of this kind.
+            val issuer = kind == ParticipantKind.QUIET || kind == ParticipantKind.USER_ISSUER_CALL
             assertEquals(kind, s.kind)
             assertEquals("$kind redemption", relay, s.relayRedeem != null)
-            assertEquals("$kind issuer", !relay, s.issuer != null)
+            assertEquals("$kind issuer", issuer, s.issuer != null)
             assertFalse(s.closed)
             assertTrue(s.clockTrusted())
         }

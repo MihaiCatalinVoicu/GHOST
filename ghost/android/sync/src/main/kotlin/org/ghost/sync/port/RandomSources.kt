@@ -35,6 +35,14 @@ interface RandomSources {
     fun paymentHold(index: Long): Double
 
     /**
+     * Uniform in [0,1) for the [index]-th periodic job run's update draw (Phase 14 design §7.3):
+     * a run is an update run when the draw is `< 1/24` among the jobs that are not quiet. A pure
+     * function of the key and [index] — nothing else is an input (no update state, no pending
+     * work), so which jobs are update runs is independent of the client's activity (P-D1).
+     */
+    fun updateRun(index: Long): Double
+
+    /**
      * 16 bytes for the request id of one key registration (Phase 9 design §4.2): a fresh id per
      * registration, stored in its row so every retry of that registration sends the same one. Its
      * own stream, drawn on the work lane only (T19).

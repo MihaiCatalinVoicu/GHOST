@@ -373,6 +373,8 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
 
         override fun quietRun(index: Long): Double = 0.5
 
+        override fun updateRun(index: Long): Double = 0.5
+
         override fun paymentHold(index: Long): Double = 0.5
 
         override fun requestId(): ByteArray = ByteArray(16).also(SecureRandom()::nextBytes)
