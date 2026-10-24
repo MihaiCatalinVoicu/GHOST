@@ -63,6 +63,12 @@ struct World {
 
 impl World {
     fn new(n_roots: u32) -> Self {
+        Self::new_signers(n_roots, &[[0x77u8; 32]])
+    }
+
+    /// `apk_digests` are the SHA-256 certificate digests of the root's `apk_signers` (§7.4
+    /// step 10), so an APK fixture can carry a matching synthetic certificate.
+    fn new_signers(n_roots: u32, apk_digests: &[[u8; 32]]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let keys = dir.path().join("keys");
         ghost_release_ops::build::keygen(&keys, "root:2,release:1,attest:1,apk:1,log:1,witness:2")
@@ -70,6 +76,12 @@ impl World {
         let oa = onion("anchor-a");
         let ob = onion("anchor-b");
         let (first, second) = if oa < ob { (oa, ob) } else { (ob, oa) };
+        let digests: Vec<String> = apk_digests.iter().map(hex::encode).collect();
+        let digests_toml = digests
+            .iter()
+            .map(|d| format!("\"{d}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut roots = Vec::new();
         for v in 1..=n_roots {
             let cfg = dir.path().join(format!("root-{v}.toml"));
@@ -78,7 +90,7 @@ impl World {
                 format!(
                     r#"network = 2
 version = {v}
-apk_signers = ["apk-1"]
+apk_signers = [{digests_toml}]
 witnesses = ["witness-1", "witness-2"]
 quorum = 1
 [root]
@@ -121,18 +133,46 @@ operator = "{}"
     /// Writes the release files and a manifest source for `version_code`/`seq` under
     /// `root_idx`, builds and signs it. `stale` makes it already expired.
     fn manifest(&self, version_code: u32, seq: u64, root_idx: usize, stale: bool) -> PathBuf {
-        let rel = self.dir.path().join(format!("rel-{version_code}-{seq}"));
+        let name = format!("rel-{version_code}-{seq}");
+        let rel = self.dir.path().join(&name);
         std::fs::create_dir_all(&rel).unwrap();
         write(&rel.join("app.apk"), format!("signed-apk-v{version_code}-{seq}"));
         write(&rel.join("app-unsigned.apk"), format!("unsigned-core-v{version_code}-{seq}"));
         write(&rel.join("escrow.tar.gz"), format!("escrow-v{version_code}-{seq}"));
         write(&rel.join("es.json"), format!("es-v{version_code}-{seq}"));
+        self.manifest_for(
+            version_code,
+            seq,
+            root_idx,
+            stale,
+            &rel.join("app.apk"),
+            &rel.join("app-unsigned.apk"),
+            &rel.join("escrow.tar.gz"),
+            &rel.join("es.json"),
+            &name,
+        )
+    }
+
+    /// Builds a manifest whose release binds the given APK/unsigned files.
+    #[allow(clippy::too_many_arguments)]
+    fn manifest_for(
+        &self,
+        version_code: u32,
+        seq: u64,
+        root_idx: usize,
+        stale: bool,
+        apk: &Path,
+        unsigned: &Path,
+        escrow: &Path,
+        es: &Path,
+        name: &str,
+    ) -> PathBuf {
         let (issued, not_after) = if stale {
             (DAY - 40, DAY - 10)
         } else {
             (DAY, DAY + 30)
         };
-        let src = self.dir.path().join(format!("m-{version_code}-{seq}.toml"));
+        let src = self.dir.path().join(format!("m-{name}.toml"));
         write(
             &src,
             format!(
@@ -157,15 +197,15 @@ es_file = "{es}"
 kind = 16
 file = "{escrow}"
 "#,
-                apk = rel.join("app.apk").display(),
-                unsigned = rel.join("app-unsigned.apk").display(),
+                apk = apk.display(),
+                unsigned = unsigned.display(),
                 salt = hex16(0x33),
                 commit = "ab".repeat(20),
-                es = rel.join("es.json").display(),
-                escrow = rel.join("escrow.tar.gz").display(),
+                es = es.display(),
+                escrow = escrow.display(),
             ),
         );
-        let m = self.dir.path().join(format!("m-{version_code}-{seq}.ghrm"));
+        let m = self.dir.path().join(format!("m-{name}.ghrm"));
         ghost_release_ops::build::manifest_build(
             &src,
             &self.roots[root_idx],
@@ -366,7 +406,7 @@ fn clock_network_floor_and_malformed() {
         doc.body.anchor_mirrors.iter().map(|a| a.onion.clone()).collect()
     };
     let src2 = w.dir.path().join("m-mirror.toml");
-    let mut text = std::fs::read_to_string(w.dir.path().join("m-2-1.toml")).unwrap();
+    let mut text = std::fs::read_to_string(w.dir.path().join("m-rel-2-1.toml")).unwrap();
     text.push_str(&format!(
         "[[mirror]]\nonion = \"{}\"\noperator = \"{}\"\n",
         String::from_utf8(anchors[0].clone()).unwrap(),
@@ -506,4 +546,230 @@ file = "{escrow}"
     assert_eq!(pick.first, anchors[0]);
     assert_ne!(pick.second.1, pick.first.1);
     assert_eq!(pick, ghost_client_update::draw::draw_mirrors(&anchors, &extras, 0, 0).unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The APK check (§7.4 steps 9–10) over synthetic signed APKs
+// ---------------------------------------------------------------------------
+
+fn le16(v: u16) -> [u8; 2] {
+    v.to_le_bytes()
+}
+fn le32(v: u32) -> [u8; 4] {
+    v.to_le_bytes()
+}
+fn le64(v: u64) -> [u8; 8] {
+    v.to_le_bytes()
+}
+
+fn lp32(data: &[u8]) -> Vec<u8> {
+    let mut out = le32(data.len() as u32).to_vec();
+    out.extend_from_slice(data);
+    out
+}
+
+fn eocd(cd_offset: u32, cd_size: u32) -> Vec<u8> {
+    let mut out = b"PK\x05\x06".to_vec();
+    out.extend_from_slice(&le16(0)); // disk
+    out.extend_from_slice(&le16(0)); // cd start disk
+    out.extend_from_slice(&le16(1)); // entries this disk
+    out.extend_from_slice(&le16(1)); // entries total
+    out.extend_from_slice(&le32(cd_size));
+    out.extend_from_slice(&le32(cd_offset));
+    out.extend_from_slice(&le16(0)); // comment length 0
+    out
+}
+
+/// One v3-layout signer value (min/max SDK present) with the given first certificate.
+fn signer_v3(cert: &[u8], min_sdk: u32, max_sdk: u32) -> Vec<u8> {
+    let mut signed = lp32(&lp32(b"digests"));
+    signed.extend_from_slice(&lp32(&lp32(cert))); // certificates: one cert
+    signed.extend_from_slice(&le32(min_sdk));
+    signed.extend_from_slice(&le32(max_sdk));
+    signed.extend_from_slice(&lp32(b"")); // additional attributes
+    let mut signer = lp32(&signed);
+    signer.extend_from_slice(&lp32(b"signatures"));
+    signer.extend_from_slice(&lp32(b"public-key"));
+    lp32(&signer)
+}
+
+/// A v2-layout signer (no SDK range).
+fn signer_v2(cert: &[u8]) -> Vec<u8> {
+    let mut signed = lp32(&lp32(b"digests"));
+    signed.extend_from_slice(&lp32(&lp32(cert)));
+    signed.extend_from_slice(&lp32(b""));
+    let mut signer = lp32(&signed);
+    signer.extend_from_slice(&lp32(b"signatures"));
+    signer.extend_from_slice(&lp32(b"public-key"));
+    lp32(&signer)
+}
+
+/// Builds a synthetic signed APK: `content_e` content bytes, a fake central directory, the
+/// §6.5 zero padding and the signing block with the given id/value pairs. `pad_byte` taints
+/// the padding. Returns (unsigned, signed).
+fn build_apk(content_e: usize, cd: &[u8], pairs: &[(u32, Vec<u8>)], pad_byte: u8) -> (Vec<u8>, Vec<u8>) {
+    let e = content_e;
+    let mut unsigned = vec![0xA5u8; e];
+    unsigned.extend_from_slice(cd);
+    unsigned.extend_from_slice(&eocd(e as u32, cd.len() as u32));
+
+    let pad = (4096 - (e % 4096)) % 4096;
+    let b = (e + pad) as u64;
+    let mut pairs_bytes = Vec::new();
+    for (id, value) in pairs {
+        pairs_bytes.extend_from_slice(&le64(value.len() as u64));
+        pairs_bytes.extend_from_slice(&le32(*id));
+        pairs_bytes.extend_from_slice(value);
+    }
+    let s = pairs_bytes.len() as u64 + 8 + 16;
+    let mut signed = vec![0xA5u8; e];
+    signed.extend(std::iter::repeat(pad_byte).take(pad));
+    signed.extend_from_slice(&le64(s));
+    signed.extend_from_slice(&pairs_bytes);
+    signed.extend_from_slice(&le64(s));
+    signed.extend_from_slice(b"APK Sig Block 42");
+    assert_eq!(signed.len() as u64, b + 8 + s);
+    signed.extend_from_slice(cd);
+    signed.extend_from_slice(&eocd((b + 8 + s) as u32, cd.len() as u32));
+    (unsigned, signed)
+}
+
+fn sha256(b: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(b).into()
+}
+
+struct ApkFixture {
+    signed: Vec<u8>,
+    manifest: ghost_client_release::manifest::GHRM,
+    root: ghost_client_release::root::GHRT,
+    #[allow(dead_code)]
+    unsigned: Vec<u8>,
+}
+
+/// A world whose root lists `apk_digests` as apk_signers, plus a manifest bound to the
+/// synthetic APK built from `pairs`.
+fn apk_fixture(apk_digests: &[[u8; 32]], pairs: &[(u32, Vec<u8>)], pad_byte: u8) -> ApkFixture {
+    let w = World::new_signers(1, apk_digests);
+    let (unsigned, signed) = build_apk(900, b"fake-central-directory", pairs, pad_byte);
+    let rel = w.dir.path().join("rel-apk");
+    std::fs::create_dir_all(&rel).unwrap();
+    write(&rel.join("app.apk"), &signed);
+    write(&rel.join("app-unsigned.apk"), &unsigned);
+    write(&rel.join("escrow.tar.gz"), "escrow");
+    write(&rel.join("es.json"), "es");
+    let m = w.manifest_for(
+        2,
+        1,
+        0,
+        false,
+        &rel.join("app.apk"),
+        &rel.join("app-unsigned.apk"),
+        &rel.join("escrow.tar.gz"),
+        &rel.join("es.json"),
+        "apk",
+    );
+    ApkFixture {
+        signed,
+        manifest: ghost_client_release::manifest::GHRM::parse(&std::fs::read(&m).unwrap()).unwrap(),
+        root: ghost_client_release::root::GHRT::parse(&std::fs::read(&w.roots[0]).unwrap()).unwrap(),
+        unsigned,
+    }
+}
+
+#[test]
+fn apk_check_happy_path_and_refusals() {
+    let cert = [0x11u8; 64];
+    let f = apk_fixture(&[sha256(&cert)], &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))], 0);
+    ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 29).unwrap();
+    ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 33).unwrap();
+
+    // A content byte changed: APK_HASH (the layout still parses).
+    let mut bad = f.signed.clone();
+    bad[10] ^= 0x01;
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&bad, &f.manifest, 0, &f.root, 29),
+        Err(UpdateError::ApkHash)
+    );
+    // A different-length but self-consistent APK: APK_LENGTH (checked before the hash).
+    let (other_unsigned, other_signed) = build_apk(
+        5000,
+        b"fake-central-directory",
+        &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))],
+        0,
+    );
+    let _ = other_unsigned;
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&other_signed, &f.manifest, 0, &f.root, 29),
+        Err(UpdateError::ApkLength)
+    );
+    // A truncated file fails the layout rule first (the EOCD is no longer at length − 22).
+    let short = &f.signed[..f.signed.len() - 1];
+    assert_eq!(
+        ghost_client_update::apk::check_apk(short, &f.manifest, 0, &f.root, 29),
+        Err(UpdateError::ApkLayout)
+    );
+    // An unknown certificate: APK_SIGNER — the file binds correctly (length, hash, layout),
+    // but this fixture's root does not list the certificate's digest.
+    let cert_f = [0x11u8; 64];
+    let other = apk_fixture(&[sha256(&cert_f)], &[(0xf053_68c0, signer_v3(&[0xEEu8; 64], 1, 0x7fff_ffff))], 0);
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&other.signed, &other.manifest, 0, &other.root, 29),
+        Err(UpdateError::ApkSigner)
+    );
+}
+
+#[test]
+fn apk_signer_selection_by_sdk() {
+    // v3.1 cert distinct from the v3 cert; v3.1 covers SDK 33+ only.
+    let cert_v3 = [0x11u8; 64];
+    let cert_v31 = [0x22u8; 64];
+    let f = apk_fixture(
+        &[sha256(&cert_v3)],
+        &[
+            (0xf053_68c0, signer_v3(&cert_v3, 1, 0x7fff_ffff)),
+            (0x1b93_ad61, signer_v3(&cert_v31, 33, 0x7fff_ffff)),
+        ],
+        0,
+    );
+    // SDK 29: v3.1's range does not contain it → the v3 signer.
+    ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 29).unwrap();
+    // SDK 33: v3.1 wins — its digest is not listed → APK_SIGNER.
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 33),
+        Err(UpdateError::ApkSigner)
+    );
+
+    // v2-only signer and a v3 range that excludes the SDK: the v2 signer is selected.
+    let cert_v2 = [0x33u8; 64];
+    let f2 = apk_fixture(
+        &[sha256(&cert_v2)],
+        &[
+            (0x7109_871a, signer_v2(&cert_v2)),
+            (0xf053_68c0, signer_v3(&[0x44u8; 64], 28, 32)),
+        ],
+        0,
+    );
+    // SDK 33 is outside [28,32] → v2 signer, listed → OK; SDK 29 is inside → the unknown v3 cert.
+    ghost_client_update::apk::check_apk(&f2.signed, &f2.manifest, 0, &f2.root, 33).unwrap();
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&f2.signed, &f2.manifest, 0, &f2.root, 29),
+        Err(UpdateError::ApkSigner)
+    );
+}
+
+#[test]
+fn apk_layout_refusals() {
+    let cert = [0x55u8; 64];
+    // The manifest binds this exact file, so the layout rule (not the hash) is what refuses.
+    let f = apk_fixture(
+        &[sha256(&cert)],
+        &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))],
+        0x01, // non-zero padding byte
+    );
+    assert_eq!(
+        ghost_client_update::apk::check_apk(&f.signed, &f.manifest, 0, &f.root, 29),
+        Err(UpdateError::ApkLayout)
+    );
 }

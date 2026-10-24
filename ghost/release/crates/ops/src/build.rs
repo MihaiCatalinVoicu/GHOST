@@ -188,10 +188,13 @@ pub fn root_build(config_path: &Path, keys_dir: &Path, out: &Path) -> Outcome {
     let (release_ks, _) = keyset_from(keys_dir, &cfg.release)?;
     let (attest_ks, _) = keyset_from(keys_dir, &cfg.attest)?;
 
-    let apk_sks = load_secret_keys(keys_dir, &cfg.apk_signers)?;
-    let apk_refs: Vec<&SigningKey> = apk_sks.iter().collect();
-    let mut apk_signers = sorted_pubs(&apk_refs);
-    apk_signers.sort(); // §4.3: ascending by raw key bytes
+    // `apk_signers` holds the SHA-256 digests of the signing certificates the platform may
+    // select (§7.4 step 10), not public keys: the config names hex digests.
+    let mut apk_signers: Vec<[u8; 32]> = Vec::new();
+    for d in &cfg.apk_signers {
+        apk_signers.push(hex32(d, "apk_signer digest")?);
+    }
+    apk_signers.sort(); // §4.3: ascending by raw bytes
     apk_signers.dedup();
 
     let mut logs = Vec::new();

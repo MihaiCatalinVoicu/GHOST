@@ -63,7 +63,7 @@ fn root_config(version: u32, onion_a: &str, onion_b: &str) -> String {
     format!(
         r#"network = 2
 version = {version}
-apk_signers = ["apk-1"]
+apk_signers = ["7777777777777777777777777777777777777777777777777777777777777777"]
 witnesses = ["witness-1"]
 quorum = 1
 [root]

@@ -13,6 +13,7 @@ pub mod state;
 pub mod decision;
 pub mod offer;
 pub mod draw;
+pub mod apk;
 
 pub use state::{StoredState, TrustEpoch, Pair, Floor, Time, ChannelStatus, PersistedChange};
 pub use decision::{accept_bundle, start_epoch, AcceptOutcome};
@@ -62,6 +63,18 @@ pub enum UpdateError {
     Unsupported,
     #[error("UP_TO_DATE")]
     UpToDate,
+    #[error("APK_LAYOUT")]
+    ApkLayout,
+    #[error("APK_LENGTH")]
+    ApkLength,
+    #[error("APK_HASH")]
+    ApkHash,
+    #[error("APK_CORE")]
+    ApkCore,
+    #[error("APK_SIGNER")]
+    ApkSigner,
+    #[error("ATTESTATION_QUORUM")]
+    AttestationQuorum,
 }
 
 impl From<FormatError> for UpdateError {

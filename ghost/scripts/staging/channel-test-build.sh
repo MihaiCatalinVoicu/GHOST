@@ -19,7 +19,7 @@ MIRROR_A=tfhsac26mfhbq6dm5rctfkjnll74xag6p7ehumcr7keqsnkqhp7no4id.onion:443
 cat > "$CH/cfg/root-1.toml" <<EOF
 network = 2
 version = 1
-apk_signers = ["apk-1"]
+apk_signers = ["7777777777777777777777777777777777777777777777777777777777777777"]
 witnesses = ["witness-1", "witness-2"]
 quorum = 1
 [root]
