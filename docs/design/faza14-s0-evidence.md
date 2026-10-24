@@ -71,7 +71,8 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 ## V-D1 (parțial) — determinism la aceeași cale, APK-ul unsigned de release (2026-10-24)
 
 - **Rulat pe ghost-runner (WSL):** două build-uri independente `:app:assembleRelease` (cu `./gradlew clean` între ele) pe același mediu și aceeași cale de checkout → `app-release-unsigned.apk` (artefactul cerut de D12 — proiectul nu are încă config de semnare, corect: semnarea e tooling-ul de release cu K-APK) **byte-identic**: SHA-256 `a67fee34902aba59c9ad35bc3711c4e6a72ee21f58260c4d04dc0135ea837c18`, 8 268 175 B, ambele rulări.
-- **Nuanțe pentru recipe:** (1) ambele build-uri au folosit **Gradle build cache** (141/185 task-uri din cache la a doua rulare) — matricea A/B trebuie să repete cu `--no-build-cache`; (2) ambele au folosit cache-ul de dependențe — recipe-ul pin-ește arhivele prin SHA-256; (3) identitatea între medii A și B (al doilea mediu, N=2) rămâne partea principală a lui V-D1, pe runner-ul self-hosted.
+- **Nuanța cache-ului rezolvată (aceeași zi):** un al treilea build **proaspăt, cu `--no-build-cache`** (326 de task-uri executate de la zero) produce **același hash** `a67fee34…` — determinism robust între modurile cu și fără build cache, la aceeași cale.
+- **Rămâne pentru V-D1 complet:** identitatea între mediile A și B (al doilea mediu, N=2, arhivele pin-uite prin SHA-256, matricea de variație) — pe runner-ul self-hosted, cu bugetul din OA-5.
 
 ## Restul verificărilor S0a — de rulat
 
