@@ -12,6 +12,10 @@ ghost-client-release = { path = "../../../client-core/release" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+sha3 = { workspace = true }

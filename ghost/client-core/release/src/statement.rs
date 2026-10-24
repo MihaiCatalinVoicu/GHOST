@@ -1,6 +1,6 @@
 //! Signed statements and signature blocks, §4.2.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use crate::FormatError;

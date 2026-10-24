@@ -1,7 +1,7 @@
 //! Log proof `GHRP`, §4.7 — the Sigsum v1 components in a GHOST container, with the RFC 6962
 //! inclusion check and the C2SP checkpoint tree head.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use crate::FormatError;
