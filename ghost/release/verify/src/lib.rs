@@ -7,6 +7,9 @@
 //! What the verifier deliberately is not: it does not check the rollout bucket (a per-device
 //! draw, not a property of the APK), and it does not fetch anything (`fetch` lands later).
 
+pub mod zip;
+
+use ghost_client_release::manifest::ArtifactKind;
 use ghost_client_release::root::GHRT;
 use ghost_client_update::UpdateError;
 use ghost_client_update::apk::check_apk;
@@ -155,4 +158,61 @@ pub fn apk_line(v: &ApkVerdict) -> String {
         ),
         ApkVerdict::Refused(code) => format!("REFUSED {code}"),
     }
+}
+
+/// One native library of the APK, verified against the release's artifacts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibLine {
+    pub abi: String,
+    pub name: String,
+    pub sha256: [u8; 32],
+    /// `VERIFIED` (the digest is the release's artifact of the ABI's kind), `MISMATCH` (an
+    /// artifact of that kind exists but with another digest), `UNKNOWN` (the release lists no
+    /// artifact for the ABI).
+    pub status: &'static str,
+}
+
+/// `libs --apk`: the native libraries with their decompressed hashes against the release the APK
+/// claims (found by its whole-file hash in the manifest, as in [apk]).
+pub fn libs(bundle: &[u8], apk_file: &[u8], anchor: &GHRT, day: u32, now: u64) -> Result<Vec<LibLine>, UpdateError> {
+    let accepted = match accept_bundle(bundle, &ghost_client_update::start_epoch(1, vec![anchor.clone()], None), anchor.body.network as u8, Time::Trusted { day, now_secs: now }) {
+        Ok(outcome) if outcome.refused.is_none() => outcome.state,
+        Ok(outcome) => return Err(outcome.refused.unwrap_or(UpdateError::Malformed)),
+        Err(e) => return Err(e),
+    };
+    let manifest = accepted.manifest.ok_or(UpdateError::NoManifest)?;
+    let claim = sha256(apk_file);
+    let index = manifest.body.releases.iter().position(|r| r.apk_sha256 == claim).ok_or(UpdateError::ApkHash)?;
+    let release = &manifest.body.releases[index];
+    let entries = zip::entries(apk_file).map_err(|_| UpdateError::ApkLayout)?;
+    let mut out = Vec::new();
+    for e in &entries {
+        if !e.name.starts_with(b"lib/") || !e.name.ends_with(b".so") {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&e.name).to_string();
+        let abi = name.split('/').nth(1).unwrap_or("").to_string();
+        let kind = match abi.as_str() {
+            "arm64-v8a" => Some(ArtifactKind::NativeArm64),
+            "x86_64" => Some(ArtifactKind::NativeX86_64),
+            _ => None,
+        };
+        let data = zip::inflate(e).map_err(|_| UpdateError::ApkLayout)?;
+        let digest = sha256(&data);
+        let status = match kind {
+            None => "UNKNOWN",
+            Some(k) => match release.artifacts.iter().find(|(ak, _, _)| *ak == k) {
+                None => "UNKNOWN",
+                Some((_, sha, _)) if *sha == digest => "VERIFIED",
+                Some(_) => "MISMATCH",
+            },
+        };
+        out.push(LibLine { abi, name, sha256: digest, status });
+    }
+    Ok(out)
+}
+
+/// The `libs` vocabulary line.
+pub fn libs_line(l: &LibLine) -> String {
+    format!("LIB {} sha256={} status={}", l.name, hex::encode(l.sha256), l.status)
 }
