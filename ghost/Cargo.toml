@@ -19,6 +19,10 @@ members = [
     # encode/parse/verify, pure and JNI-free; the client verifies updates with it, ghost-release-ops
     # writes with it.
     "client-core/release",
+    # Update decision (Phase 14 design §7.4, §7.8): the trust-epoch rule, bundle acceptance, the
+    # offer and rollout bucket, the mirror draw; pure (no I/O, clock, logging, async), linked into
+    # ghost-client-net by the S2 JNI slice.
+    "client-core/update",
     # Release operations (Phase 14 design §3, §6): ghost-release-ops builds roots,
     # manifests and bundles and checks the apk-core rule; one cargo invocation per binary (V-D19).
     "release/crates/*",

@@ -487,3 +487,11 @@ tls_codec_derive
 # external crate: every package of its graph is already listed above (the DM stack's AEAD, HKDF,
 # SHA-2 and zeroize crates).
 ghost-client-media
+
+# Phase 14 release distribution (design faza14-distribution.md §9.1, ADR-49; slices S1-S2).
+# ghost-client-release (the §4 formats, pure, JNI-free) and ghost-client-update (the §7.4 client
+# decision, the rollout bucket, the mirror draw; pure: no I/O, clock, logging or async runtime).
+# Both are workspace crates (proprietary); ghost-client-update's graph adds no external crate beyond
+# what the client already links (sha2, ed25519-dalek, hmac through ghost-client-release's graph).
+ghost-client-release
+ghost-client-update

@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use ghost_client_release::bundle::GHRB;
 use ghost_client_release::chain::GHRC;
 use ghost_client_release::manifest::{ArtifactKind, GHRM, ManifestBody, Release};
-use ghost_client_release::proof::{Cosignature, GHRP, SIGSUM_LEAF_DOMAIN, leaf_checksum, leaf_hash};
+use ghost_client_release::proof::{Cosignature, GHRP, SIGSUM_LEAF_DOMAIN, leaf_hash};
 use ghost_client_release::root::{AnchorMirror, KeySet, LogEntry, Network, RootBody, GHRT};
 use ghost_client_release::statement::{SigBlock, SigEntry, StatementType, key_id, sign_entry};
 use sha2::{Digest, Sha256};
@@ -349,7 +349,10 @@ pub fn proof_build(
 ) -> Outcome {
     let file_bytes =
         std::fs::read(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
-    let checksum = leaf_checksum(&file_bytes);
+    // §7.4 step 4: the logged message is the file's SHA-256; the leaf checksum the log stores
+    // is SHA-256 of the message (so equal to leaf_checksum(file), which the tree uses).
+    let message = sha256(&file_bytes);
+    let checksum = sha256(&message);
     let log_sk = load_signing_key(keys_dir, log_key)?;
     let submit_sk = load_signing_key(keys_dir, submit_key)?;
     let time = time.unwrap_or_else(now_secs);
@@ -368,7 +371,7 @@ pub fn proof_build(
     let root_hash = leaf_hash(&leaf);
 
     let proof = GHRP {
-        message: checksum,
+        message,
         log: log_index,
         leaf_signature,
         leaf_key_id,
@@ -402,7 +405,7 @@ pub fn proof_build(
     let bytes = proof.to_bytes();
     let parsed = GHRP::parse(&bytes).map_err(|e| format!("self-parse: {e}"))?;
     // Component self-checks, exactly what a client verifies.
-    if parsed.message != checksum {
+    if parsed.message != message {
         return Err("self-check: message".into());
     }
     ghost_client_release::proof::check_inclusion(
@@ -810,8 +813,8 @@ pub fn bundle(
         let proof = GHRP::parse(&doc).map_err(|e| format!("root proof {i}: {e}"))?;
         let root = &chain.roots[i + 1];
         let root_bytes = root.to_bytes();
-        if proof.message != leaf_checksum(&root_bytes) {
-            return Err(format!("root proof {i}: message is not the root's leaf checksum"));
+        if proof.message != sha256(&root_bytes) {
+            return Err(format!("root proof {i}: message is not the root's SHA-256"));
         }
         ghost_client_release::check_inclusion(
             leaf_hash(&proof.leaf(&root_bytes)),
@@ -823,8 +826,8 @@ pub fn bundle(
         root_proof_docs.push(proof);
     }
 
-    if manifest_proof.message != leaf_checksum(&manifest_doc) {
-        return Err("manifest proof: message is not the manifest's leaf checksum".into());
+    if manifest_proof.message != sha256(&manifest_doc) {
+        return Err("manifest proof: message is not the manifest's SHA-256".into());
     }
     ghost_client_release::check_inclusion(
         leaf_hash(&manifest_proof.leaf(&manifest_doc)),
@@ -930,7 +933,7 @@ pub fn inspect(bundle_path: &Path, today: Option<u32>) -> Outcome {
 }
 
 fn check_proof(p: &GHRP, file: &[u8], quorum: usize, idx: usize) -> Result<(), String> {
-    if p.message != leaf_checksum(file) {
+    if p.message != sha256(file) {
         return Err(format!("proof {idx}: message mismatch"));
     }
     ghost_client_release::check_inclusion(

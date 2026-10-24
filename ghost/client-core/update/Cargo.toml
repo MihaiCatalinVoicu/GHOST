@@ -1,0 +1,32 @@
+[package]
+publish = false
+name = "ghost-client-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST update decision (Phase 14 design §7.4, §7.8): the trust-epoch and bundle acceptance rule, the offer and rollout bucket, the mirror draw; pure — no I/O, no clock, no logging, no async runtime, #![forbid(unsafe_code)]. The APK parse and core hash land with the next slice."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# No default feature. `mutants` exists for the mutation-testing host library only (the
+# test-vectors/pq-spy pattern, §11.3); G-R2's check keeps it out of every shipped graph.
+default = []
+mutants = []
+
+[dependencies]
+ghost-client-release = { path = "../release" }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+hmac = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ghost-release-ops = { path = "../../release/crates/ops" }
+tempfile = { workspace = true }
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
