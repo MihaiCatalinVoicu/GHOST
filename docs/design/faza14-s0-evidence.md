@@ -46,6 +46,18 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **AGP** = 9.4.0, pin-uit în `gradle/libs.versions.toml` ✓. **aapt2** = 2.20-15087165 (V-D23). **JDK** pe mașina de build: JetBrains Runtime 17.0.20.1 (de înlocuit în pin-ul unificat cu JDK-ul recipe-ului A/B, care fixează patch level-ul — D23).
 - **R8:** `isMinifyEnabled = true` pe release, deci R8 rulează — dar artefactul `com.android.tools:r8` **nu apare ca modul în cache-ul Gradle** nici pe Windows, nici în WSL, iar POM-ul AGP 9.4.0 nu expune o dependență `com.android.tools:r8` directă (AGP 9 o livrează prin mecanism propriu de classpath). **Consecință pentru D23:** pin-ul unificat trebuie să fixeze „R8 = build-ul livrat cu AGP 9.4.0", identitatea exactă fiind verificată prin ieșirile byte-identice ale build-urilor reproductibile A/B (nu prin rezolvare de dependență); extragerea versiunii directe se face în matricea recipe-ului (V-D1…V-D5), nu aici.
 
+## V-D14 + coroborare V-D11a — validarea politicii cu toolingul de referință (2026-10-24)
+
+- **Mediu:** Go 1.22.2 (apt), `sigsum-verify` **v0.13.1** (`go install sigsum.org/sigsum-go/cmd/sigsum-verify@v0.13.1`).
+- **Rezultat:** politica transcrisă (`ghost/protocol/test-vectors/sigsum-generic-2025-1.policy`), instalată ca fișier de politică numit (`SIGSUM_POLICY_DIR`, sufix `.sigsum-policy`), verifică **offline o dovadă reală publicată** — `guile-gnutls-5.0.2.tar.gz` + `.proof` de la ftp.gnu.org, cheia ed25519 publicată în anunț: `sigsum-verify -k gnutls-sigsum-key.pub -P s0a-transcribed …` → **exit 0** (semnătura checksum-ului, includerea în log, cvorumul de cosignature 2-of-3 — toate offline). Transcrierea din V-D11a e confirmată ca funcțională de toolingul de referință, nu doar ca bytes.
+- **Notă de utilizare:** `-P` la v0.13.1 acceptă doar *nume* (built-in sau din directorul de politici), nu căi — de reținut pentru `ghost-verify` (D21) și documentație.
+
+## V-D20 — valabilitatea certificatului de semnare (2026-10-24)
+
+- **Măsurat:** `keytool -genkeypair` implicit → certificat **valabil 90 de zile** (24 oct 2026 → 22 ian 2027, fix 90). Certificatul semnat intră în blocul v2/v3 al fiecărui APK.
+- **Constatare pentru recipe:** platforma verifică valabilitatea certificatului **la instalare și la fiecare update** — un certificat de 90 de zile ar refuza update-urile după expirare. Recipe-ul de release (RK1) trebuie să impună explicit o valabilitate lungă (`-validity`, ex. 30+ ani, practica cheilor de publicare) sau să documenteze deliberat alegerea; valoarea implicită a toolului e o capcană.
+- **Efect asupra planului:** de adăugat ca punct explicit în recipe-ul A/B (V-D1…V-D5) și în checklist-ul RK1 din §3.
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
