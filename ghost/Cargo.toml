@@ -19,6 +19,9 @@ members = [
     # encode/parse/verify, pure and JNI-free; the client verifies updates with it, ghost-release-ops
     # writes with it.
     "client-core/release",
+    # Release operations (Phase 14 design §3, §6): ghost-release-ops builds roots,
+    # manifests and bundles and checks the apk-core rule; one cargo invocation per binary (V-D19).
+    "release/crates/*",
     # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
     # gates cover it, never built for Android and never in the shipped graph.
     "client-core/dm-host",

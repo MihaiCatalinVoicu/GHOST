@@ -1,0 +1,17 @@
+[package]
+publish = false
+name = "ghost-release-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST release operations (Phase 14): apk-core (the §6.5 core rule), later root-build, manifest-build, bundle and the Sigsum add-leaf request. The hardware-token signer paths (PKCS#11) arrive with RK1/RK2 tooling; stagenet uses software keys."
+
+[dependencies]
+ghost-client-release = { path = "../../../client-core/release" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
