@@ -12,6 +12,7 @@ DataDirectory /var/lib/tor
 SOCKSPort 127.0.0.1:9050
 HiddenServiceDir $HS_DIR
 HiddenServicePort 80 127.0.0.1:8080
+HiddenServicePort 443 127.0.0.1:8081
 EOF
 
 # Tor as the tor user; wait for the hostname file (generated from the persisted key set).
@@ -40,6 +41,18 @@ http {
     root /www;
     autoindex off;
     # Static mirrors answer GET/HEAD only; no server tokens, no directory listing beyond index.
+    server_tokens off;
+    add_header Cache-Control "no-cache" always;
+    location / { try_files $uri $uri/ =404; }
+  }
+  # The app fetches over HTTP/2 with prior knowledge (h2c) inside the onion stream
+  # (D14: the client's hyper http2 stack, SETTINGS pinned and golden-tested); browsers and
+  # ghost-verify use the HTTP/1.1 listener on port 80 of the same onion.
+  server {
+    listen 127.0.0.1:8081;
+    http2 on;
+    root /www;
+    autoindex off;
     server_tokens off;
     add_header Cache-Control "no-cache" always;
     location / { try_files $uri $uri/ =404; }

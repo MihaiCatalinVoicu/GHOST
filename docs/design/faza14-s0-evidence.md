@@ -25,6 +25,12 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **Efect asupra planului:** relația exactă core(p) pentru două build-uri reale (A/B) se verifică în matricea recipe-ului (V-D1…V-D5) — proba sintetică confirmă determinismul, alinierea fixă a blocului și absența perechii explicite de padding; nu înlocuiește matricea A/B.
 - **V-D23 (pin-uri, constatări):** aapt2 = **2.20-15087165** (build-tools 37.0.0) — versiunea exactă de notat în pin-ul unificat; AGP = **9.4.0** (`gradle/libs.versions.toml`); aapt2 jars sunt deja în `verification-metadata.xml` (de verificat că pin-ul acoperă și versiunea 2.20-15087165 efectiv descărcată).
 
+## V-D12 + V-D22 — ambii listeneri ai oglinzii (2026-10-24)
+
+- **Ce s-a făcut:** imaginea `ghost/infra/mirror/` a crescut al doilea listener: nginx `http2 on;` pe `127.0.0.1:8081` (h2c prior-knowledge), expus de Tor ca portul **443** al aceluiași onion; portul 80 rămâne HTTP/1.1 pentru browsere și `ghost-verify` (D14). Cheile onion persistă — hostnames neschimbate.
+- **Rezultat măsurat peste Tor** (curl prin SOCKS5, ambele oglinzi): `:80` → HTTP/1.1 200 cu manifestul JSON; `:443` cu `--http2-prior-knowledge` → **HTTP/2 200, 409 B** pe mirror-a și mirror-b. Amândoi listeneri funcționali pe același onion, decizia D14 de a păstra nginx e confirmată de V-D22 (un `ghost-mirror` propriu nu mai e justificat de această verificare; rămâne opțiunea din D14 dacă S0 mai găsește altceva).
+- **Efect asupra planului:** nimic de replanat; listenerul h2c din rândul V-D12 e bifat. Poarta G-D10 (configuration gate + container test) rămâne de construit în S1+.
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
@@ -32,7 +38,7 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 | V-D1…V-D5, V-D9, V-D10 | builder recipe A/B, N=2 pin, arhive SHA-256, matricea de variație, AGP/`vcsInfo`, CPU pin | de rulat (necesită runner-ul self-hosted; dependență de CI-L pentru buget) |
 | §6.5 core/padding | regula de core și padding apksigner pe cheie software (p=0, p>0, două semnături) | **RULAT 2026-10-24** (determinism ✓, bloc capăt-4096-fix, fără pereche de padding explicită; matricea A/B rămâne la V-D1…V-D5) |
 | V-D6, V-D7 | căile PKCS#11, CKM_ED25519 pe token-urile cumpărate | de rulat (necesită token-urile YubiKey — acțiune proprietar) |
-| V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge pentru aplicație + HTTP/1.1 pentru browsere/ghost-verify); nginx confirmă sau `ghost-mirror` | PARȚIAL: staging-ul Fazei 13 are doar HTTP/1.1 (`ghost/infra/mirror/`); listenerul h2c e de adăugat la imagine înainte de S1 (D14) |
+| V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge + HTTP/1.1); nginx confirmă sau `ghost-mirror` | **RULAT 2026-10-24**: ambele oglinzi servesc HTTP/2 pe :443 (h2c, 200) și HTTP/1.1 pe :80 peste Tor; nginx confirmat (V-D22) |
 | V-D11b | depunerea reală la logul public | așteaptă domeniul (OA-4); stagenet poate folosi logurile publice (staging, §5 note) |
 | V-D21 | pre-auth token / verificarea dezvoltatorilor Google | de rulat (emulator API 35+) |
 | V-D13…V-D20, V-D23…V-D25 | installer, CycloneDX, R8/JDK pins, binare relay/issuer per invocație, certificate, v2/v3/v3.1 per SDK, vectori sigsum-go, SETTINGS HTTP/2, update runs, ghost-verify | de rulat |

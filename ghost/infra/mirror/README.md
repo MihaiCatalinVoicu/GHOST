@@ -1,10 +1,11 @@
 # Staging update mirrors
 
 The two static onion services of the staging deployment, built for Phase 13's close-out so the
-update channel can be tested end to end. Each mirror is one container: Tor (a v3 onion service on
-port 80, key persisted in `/srv/mirrors/{a,b}/tor`) in front of nginx serving plain HTTP/1.1 on
-loopback — the design's first-install path (browsers do not speak HTTP/2 without TLS; the onion
-transport is the confidentiality layer, `faza14-distribution.md` D1).
+update channel can be tested end to end. Each mirror is one container: Tor (a v3 onion service,
+key persisted in `/srv/mirrors/{a,b}/tor`) in front of nginx with two listeners on loopback: plain
+**HTTP/1.1 on the onion's port 80** (browsers and `ghost-verify`; the design's first-install path —
+browsers do not speak HTTP/2 without TLS, D1) and **h2c with prior knowledge on port 443** (the
+app's fetch path, D14 — the onion transport is the confidentiality layer).
 
 This is **not** the Phase 14 mirror: real root/release keys, the GHRM format, the transparency log
 and the ceremonies are ADR-48…52. Staging serves an equivalent-shaped fixture (versioned directory
