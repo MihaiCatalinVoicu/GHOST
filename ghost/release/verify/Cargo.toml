@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "ghost-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST public verifier (Phase 14 design §9.1): the §7.4 decision offline — apk (the bundle, the offer and the APK check per SDK class), later libs/fetch/operator/monitor. Built from the same ghost-client-update the app links; the public repository exports this crate with its source (Q28)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+ghost-client-update = { path = "../../client-core/update" }
+ghost-client-release = { path = "../../client-core/release" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+ghost-release-ops = { path = "../crates/ops" }
+tempfile = { workspace = true }
+sha3 = { workspace = true }
+hex = { workspace = true }

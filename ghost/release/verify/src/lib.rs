@@ -1,0 +1,158 @@
+//! `ghost-verify` (Phase 14 design §9.1): the public verifier. The `apk` decision is exactly the
+//! client's §7.4 run, offline: the bundle is accepted from the anchor root (the chain and the log
+//! proof are verified, not trusted), the manifest's offer and attestation are checked, and the
+//! APK itself passes the §7.4 steps 9–10 for each SDK class the caller names (29–32 and 33+ by
+//! default). The vocabulary is fixed: `VERIFIED …` or `REFUSED <code>`.
+//!
+//! What the verifier deliberately is not: it does not check the rollout bucket (a per-device
+//! draw, not a property of the APK), and it does not fetch anything (`fetch` lands later).
+
+use ghost_client_release::root::GHRT;
+use ghost_client_update::UpdateError;
+use ghost_client_update::apk::check_apk;
+use ghost_client_update::{Time, accept_bundle};
+use sha2::{Digest, Sha256};
+
+pub const SDK_CLASSES: [u8; 2] = [29, 33];
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
+/// The answer of one `apk` verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApkVerdict {
+    /// The bundle accepted from the anchor, and the APK is the attested one for its release on
+    /// every named SDK class.
+    Verified {
+        version_name: Vec<u8>,
+        version_code: u32,
+        manifest_seq: u64,
+        log_origin: Vec<u8>,
+        cosigned: usize,
+        witnesses: usize,
+        attested: usize,
+        attest_threshold: usize,
+        signer: [u8; 32],
+        sdks: Vec<u8>,
+    },
+    /// The exact §7.4 code that refused it.
+    Refused(UpdateError),
+}
+
+/// §7.4 offline against the anchor root. `day`/`now` pin the verification moment (an auditor
+/// passes the manifest's own window). `sdks` empty = both classes (29 for the 29–32 class, 33
+/// for 33+).
+pub fn apk(
+    bundle: &[u8],
+    apk_file: &[u8],
+    anchor: &GHRT,
+    day: u32,
+    now: u64,
+    sdks: &[u8],
+) -> ApkVerdict {
+    let network = anchor.body.network as u8;
+    // The verifier starts a fresh trust epoch at the anchor: stored chain = [anchor], no
+    // manifest, pair (anchor.version, 0) — exactly a client's first start on this lineage.
+    let state = ghost_client_update::start_epoch(
+        1,
+        vec![anchor.clone()],
+        None,
+    );
+    let accepted = match accept_bundle(bundle, &state, network, Time::Trusted { day, now_secs: now }) {
+        Ok(outcome) if outcome.refused.is_none() => outcome.state,
+        Ok(outcome) => return ApkVerdict::Refused(outcome.refused.unwrap_or(UpdateError::Malformed)),
+        Err(e) => return ApkVerdict::Refused(e),
+    };
+    let manifest = match &accepted.manifest {
+        Some(m) => m.clone(),
+        None => return ApkVerdict::Refused(UpdateError::NoManifest),
+    };
+    // The release this APK claims: its whole-file SHA-256 must name a release of the manifest.
+    let claim = sha256(apk_file);
+    let index = match manifest
+        .body
+        .releases
+        .iter()
+        .position(|r| r.apk_sha256 == claim)
+    {
+        Some(i) => i,
+        None => return ApkVerdict::Refused(UpdateError::ApkHash),
+    };
+    let release = &manifest.body.releases[index];
+    let trusted_root = accepted.trusted_root();
+    let classes: Vec<u8> = if sdks.is_empty() { SDK_CLASSES.to_vec() } else { sdks.to_vec() };
+    for sdk in &classes {
+        if let Err(e) = check_apk(apk_file, &manifest, index, trusted_root, *sdk) {
+            return ApkVerdict::Refused(e);
+        }
+    }
+    let proof = match &accepted.manifest_proof {
+        Some(p) => p,
+        None => return ApkVerdict::Refused(UpdateError::LogProofInvalid),
+    };
+    let log_origin = trusted_root
+        .body
+        .logs
+        .get(proof.log as usize)
+        .map(|l| l.origin.clone())
+        .unwrap_or_default();
+    // The signer the platform uses on the newest class: the digest the client would pin.
+    let signer = match ghost_client_update::apk::signer_digest_of(apk_file, *classes.last().unwrap_or(&33)) {
+        Ok(d) => d,
+        Err(e) => return ApkVerdict::Refused(e),
+    };
+    let attested = manifest
+        .attestations
+        .get(index)
+        .map(|at| {
+            at.entries
+                .iter()
+                .filter(|e| trusted_root.body.attest.keys.iter().any(|k| ghost_client_release::key_id(k) == e.key_id))
+                .count()
+        })
+        .unwrap_or(0);
+    ApkVerdict::Verified {
+        version_name: release.version_name.clone(),
+        version_code: release.version_code,
+        manifest_seq: manifest.body.manifest_seq,
+        log_origin,
+        cosigned: proof.cosignatures.len(),
+        witnesses: trusted_root.body.witnesses.len(),
+        attested,
+        attest_threshold: trusted_root.body.attest.threshold,
+        signer,
+        sdks: classes,
+    }
+}
+
+/// The fixed vocabulary line (§9.1).
+pub fn apk_line(v: &ApkVerdict) -> String {
+    match v {
+        ApkVerdict::Verified {
+            version_name,
+            version_code,
+            manifest_seq,
+            log_origin,
+            cosigned,
+            witnesses,
+            attested,
+            attest_threshold,
+            signer,
+            sdks,
+        } => format!(
+            "VERIFIED version={} version_code={} manifest_seq={} log={} cosigned={}/{} attested={}/{} signer={} sdk={}",
+            String::from_utf8_lossy(version_name),
+            version_code,
+            manifest_seq,
+            String::from_utf8_lossy(log_origin),
+            cosigned,
+            witnesses,
+            attested,
+            attest_threshold,
+            hex::encode(signer),
+            sdks.iter().map(u8::to_string).collect::<Vec<_>>().join(","),
+        ),
+        ApkVerdict::Refused(code) => format!("REFUSED {code}"),
+    }
+}

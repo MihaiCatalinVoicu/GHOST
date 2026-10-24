@@ -296,6 +296,33 @@ pub fn check_apk(
     check.finish()
 }
 
+/// The one-shot signer digest of a whole in-memory file (`ghost-verify`'s `signer=` line): the
+/// SHA-256 of the certificate the platform would select at `sdk`, per the §9(e) rule.
+pub fn signer_digest_of(file: &[u8], sdk: u8) -> Result<[u8; 32], UpdateError> {
+    if file.len() < EOCD_LEN + 24 {
+        return Err(UpdateError::ApkLayout);
+    }
+    let n = file.len();
+    let tail = &file[n - EOCD_LEN..];
+    if &tail[..4] != b"PK" {
+        return Err(UpdateError::ApkLayout);
+    }
+    let cd_offset = le32(&tail[16..20]) as usize;
+    if cd_offset < 24 || cd_offset > n - EOCD_LEN {
+        return Err(UpdateError::ApkLayout);
+    }
+    let footer = cd_offset - 24;
+    if &file[footer + 8..footer + 24] != SIG_MAGIC {
+        return Err(UpdateError::ApkLayout);
+    }
+    let s = le64(&file[footer..footer + 8]);
+    let block_start = cd_offset
+        .checked_sub(8)
+        .and_then(|x| x.checked_sub(s as usize))
+        .ok_or(UpdateError::ApkLayout)?;
+    signer_digest(&file[block_start..cd_offset], sdk)
+}
+
 /// The block ids present in a signed APK (the `blocks=` vocabulary), for tests and reports.
 pub fn block_ids(file: &[u8]) -> Result<Vec<u32>, UpdateError> {
     if file.len() < EOCD_LEN + 24 {
