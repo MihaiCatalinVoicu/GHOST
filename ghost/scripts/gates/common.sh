@@ -74,14 +74,14 @@ gradle_files() {
 #     `EntitlementCrypto`).
 # A JNI entry point of any other class, in the workspace's sources or in a built library, fails both
 # gates; a new class is a change to this list, which is what makes it arrive deliberately.
-GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MediaNative org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto org_ghost_network_UpdateNative"
+GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MediaNative org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto org_ghost_network_UpdateNative org_ghost_network_TorMirrorTransport"
 # The production source files allowed to declare a native method (paths under android/): the two
 # closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
 # live in test source sets, which no production half reads. `MediaNative`'s declarations are
 # production (the surface ships); its two test entries (`testVectors`, `testSealBeginWithKey`)
 # have no Kotlin declarations until the JVM tests of the later slices, exactly as `MlsVectors`
 # had none before its replay landed.
-GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MediaNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt network/src/main/kotlin/org/ghost/network/UpdateNative.kt"
+GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MediaNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt network/src/main/kotlin/org/ghost/network/UpdateNative.kt network/src/main/kotlin/org/ghost/network/TorMirrorTransport.kt"
 # The Rust files the surface gates read under $1 (a directory, or one file): build outputs pruned —
 # a `target` or `build` directory **outside every `src/`**, so a module directory of either name is
 # code and is read (Phase 10 review of S2a F4, review of S2b) — and `.gradle`; the gates' own

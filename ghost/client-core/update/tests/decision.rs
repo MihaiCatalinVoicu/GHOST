@@ -858,3 +858,39 @@ fn stored_codec_roundtrip() {
     bad_hash[doc_at + doc.len() + 3] ^= 0x01;
     assert_eq!(decode_stored(&bad_hash), Err(UpdateError::Malformed));
 }
+
+#[test]
+fn draw_for_run_rules() {
+    use ghost_client_update::draw::draw_for_run;
+    let w = World::new(1);
+    let state = fresh_state(&w, 1);
+    let embedded = ghost_client_release::chain::GHRC::parse(&std::fs::read(&w.chain).unwrap()).unwrap();
+    let draw = [9u8; 32];
+
+    // No manifest: the draw names two anchors of the trusted root.
+    let pick = draw_for_run(&state, &embedded, false, DAY, &draw).unwrap();
+    let anchors: Vec<Vec<u8>> = state
+        .trusted_root()
+        .body
+        .anchor_mirrors
+        .iter()
+        .map(|a| a.onion.clone())
+        .collect();
+    assert!(anchors.contains(&pick.first.0));
+    assert!(anchors.contains(&pick.second.0));
+    assert_ne!(pick.first.0, pick.second.0);
+
+    // A stale manifest contributes no extra mirrors, even with no_channel false.
+    let stale = w.manifest(2, 1, 0, true);
+    let out = accept_bundle(&w.bundle(&stale), &state, 2, trusted()).unwrap();
+    let pick2 = draw_for_run(&out.state, &embedded, false, DAY, &draw).unwrap();
+    assert!(anchors.contains(&pick2.first.0));
+    assert!(anchors.contains(&pick2.second.0));
+
+    // NO_CHANNEL: the embedded root's anchors join the draw — with the same anchors here the
+    // pick stays within the set; determinism holds.
+    assert_eq!(
+        draw_for_run(&out.state, &embedded, true, DAY, &draw),
+        draw_for_run(&out.state, &embedded, true, DAY, &draw)
+    );
+}

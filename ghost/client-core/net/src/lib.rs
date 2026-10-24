@@ -91,6 +91,7 @@ pub mod isolation;
 pub mod issuer_client;
 pub mod issuer_flow;
 pub mod namespace_client;
+pub mod mirror;
 pub mod onion;
 pub mod relay_client;
 pub mod transport;

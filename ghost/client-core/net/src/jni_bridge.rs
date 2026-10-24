@@ -80,19 +80,19 @@ const FALLBACK_EXCEPTION: &str = "java/lang/IllegalStateException";
 
 pub(crate) type Outcome<T> = Result<T, &'static str>;
 
-struct Handle {
+pub(crate) struct Handle {
     rt: Option<Runtime>,
     transport: Option<Arc<TorTransport>>,
     cancel: watch::Sender<bool>,
 }
 
 impl Handle {
-    fn transport(&self) -> Outcome<&Arc<TorTransport>> {
+    pub(crate) fn transport(&self) -> Outcome<&Arc<TorTransport>> {
         self.transport.as_ref().ok_or(cat::CLOSED)
     }
 
     /// Runs `fut` on this handle's runtime; returns `closed` as soon as the handle is stopped.
-    fn run<T>(&self, fut: impl Future<Output = Outcome<T>>) -> Outcome<T> {
+    pub(crate) fn run<T>(&self, fut: impl Future<Output = Outcome<T>>) -> Outcome<T> {
         let rt = self.rt.as_ref().ok_or(cat::CLOSED)?;
         let mut cancelled = self.cancel.subscribe();
         rt.block_on(async move {
@@ -149,7 +149,7 @@ fn stop(id: jlong) {
     }
 }
 
-fn lookup(id: jlong) -> Outcome<Arc<Handle>> {
+pub(crate) fn lookup(id: jlong) -> Outcome<Arc<Handle>> {
     registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())

@@ -231,7 +231,7 @@ pub(crate) fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-async fn with_deadline<T>(
+pub(crate) async fn with_deadline<T>(
     deadline: Duration,
     fut: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
 ) -> Result<T, RelayError> {

@@ -36,3 +36,43 @@ pub fn draw_mirrors(anchors: &[Mirror], extras: &[Mirror], r0: u64, r1: u64) -> 
     let second = (*candidates.get((r1 % candidates.len() as u64) as usize)?).clone();
     Some(MirrorPick { first, second })
 }
+
+/// The whole §7.8 draw as one call: anchors from the trusted root, extras from the stored
+/// manifest when it is fresh and current, and — on `NO_CHANNEL` — the embedded chain's anchor
+/// mirrors join the draw. `draw` is the run's 32 bytes from `RandomSources.updateRun`.
+pub fn draw_for_run(
+    state: &crate::state::StoredState,
+    embedded: &ghost_client_release::chain::GHRC,
+    no_channel: bool,
+    today: u32,
+    draw: &[u8; 32],
+) -> Option<MirrorPick> {
+    let r0 = u64::from_be_bytes(draw[..8].try_into().ok()?);
+    let r1 = u64::from_be_bytes(draw[8..16].try_into().ok()?);
+    let anchors: Vec<Mirror> = state
+        .trusted_root()
+        .body
+        .anchor_mirrors
+        .iter()
+        .map(|a| (a.onion.clone(), a.operator_id))
+        .collect();
+    let mut extras: Vec<Mirror> = Vec::new();
+    if let Some(m) = &state.manifest {
+        let fresh_and_current = m.body.root_version == state.trusted_root().body.root_version
+            && today <= m.body.not_after_day;
+        if fresh_and_current {
+            extras.extend(m.body.extra_mirrors.iter().map(|(o, op)| (o.clone(), *op)));
+        }
+    }
+    if no_channel {
+        let newest = embedded.roots.last()?;
+        extras.extend(
+            newest
+                .body
+                .anchor_mirrors
+                .iter()
+                .map(|a| (a.onion.clone(), a.operator_id)),
+        );
+    }
+    draw_mirrors(&anchors, &extras, r0, r1)
+}

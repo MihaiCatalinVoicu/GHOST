@@ -132,6 +132,35 @@ object UpdateNative {
         nativeApkAbort(handle)
     }
 
+    /** §7.8: builds the run's mirror set (two canonical onions + the offered APK's hash and
+     * length) from the stored state, the embedded chain, the day and the run's 32-byte draw.
+     * `offerSha256`/`offerLength` are ignored when `hasOffer` is false. */
+    fun mirrorSet(
+        stored: ByteArray,
+        embeddedChain: ByteArray,
+        noChannel: Boolean,
+        dayTrusted: Boolean,
+        day: Int,
+        draw: ByteArray,
+        hasOffer: Boolean,
+        offerSha256: ByteArray,
+        offerLength: Long,
+    ): Long {
+        NativeLibrary.ensureLoaded()
+        if (draw.size != 32 || (hasOffer && offerSha256.size != 32)) {
+            throw NetworkException(MALFORMED_RESPONSE)
+        }
+        return nativeMirrorSet(
+            stored, embeddedChain, noChannel, dayTrusted, day, draw, hasOffer, offerSha256, offerLength,
+        )
+    }
+
+    /** Closes a mirror set. Idempotent. */
+    fun mirrorSetClose(handle: Long) {
+        NativeLibrary.ensureLoaded()
+        nativeMirrorSetClose(handle)
+    }
+
     private fun decodeCode(raw: ByteArray): Int {
         val r = Reader(raw)
         val code = r.u8()
@@ -228,4 +257,16 @@ object UpdateNative {
     @JvmStatic private external fun nativeApkUpdate(handle: Long, offset: Long, chunk: ByteArray): ByteArray
     @JvmStatic private external fun nativeApkFinish(handle: Long): ByteArray
     @JvmStatic private external fun nativeApkAbort(handle: Long)
+    @JvmStatic private external fun nativeMirrorSet(
+        stored: ByteArray,
+        embeddedChain: ByteArray,
+        noChannel: Boolean,
+        dayTrusted: Boolean,
+        day: Int,
+        draw: ByteArray,
+        hasOffer: Boolean,
+        offerSha256: ByteArray,
+        offerLength: Long,
+    ): Long
+    @JvmStatic private external fun nativeMirrorSetClose(handle: Long)
 }

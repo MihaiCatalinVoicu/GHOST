@@ -22,7 +22,7 @@ use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 
 use crate::categories as cat;
-use crate::jni_bridge::{Outcome, bytes, fixed, guarded, to_java};
+use crate::jni_bridge::{Outcome, bytes, fixed, guarded, lookup, to_java};
 
 /// The embedded root chain of this build's network (the committed document, G-D4: the whole
 /// chain from the lineage's first root; a bundle's GHRC may start later, §4.4).
@@ -40,6 +40,8 @@ pub const CLOSED_UPDATE: &[&str] = &[
     "nativeApkUpdate",
     "nativeApkFinish",
     "nativeApkAbort",
+    "nativeMirrorSet",
+    "nativeMirrorSetClose",
 ];
 
 /// One streaming APK check in the handle registry.
@@ -313,4 +315,131 @@ pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkAbort(
 ) {
     let _ = &mut env;
     remove_apk(handle);
+}
+
+// ---------------------------------------------------------------------------
+// The mirror set and the fetch (§9.3): nativeMirrorSet builds the set from the
+// stored state, the embedded chain, the day and the run's draw; TorMirrorTransport
+// fetches from it. Kotlin can name neither an onion nor a path nor an offset.
+// ---------------------------------------------------------------------------
+
+use ghost_client_update::draw::draw_for_run;
+
+use crate::mirror::MirrorSet;
+
+fn mirror_registry() -> &'static Mutex<HashMap<jlong, Arc<MirrorSet>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<MirrorSet>>>> = OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
+}
+
+static NEXT_MIRROR_ID: AtomicI64 = AtomicI64::new(1);
+
+fn register_mirror(set: MirrorSet) -> jlong {
+    let id = NEXT_MIRROR_ID.fetch_add(1, Ordering::Relaxed);
+    mirror_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, Arc::new(set));
+    id
+}
+
+fn lookup_mirror(id: jlong) -> Outcome<Arc<MirrorSet>> {
+    mirror_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&id)
+        .cloned()
+        .ok_or(cat::CLOSED)
+}
+
+fn remove_mirror(id: jlong) {
+    mirror_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
+}
+
+/// Builds the run's mirror set (§7.8): two canonical onions from the stored state, the embedded
+/// chain, the day (a stale manifest contributes no extra mirror) and the run's 32-byte draw; the
+/// offered APK's hash and length travel with the set so the native side alone builds the chunk
+/// paths and ranges. `day_trusted == 0` contributes no extras either (a draw is not a
+/// time-dependent step, but an expired manifest must not name mirrors).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeMirrorSet(
+    mut env: JNIEnv,
+    _class: JClass,
+    stored: JByteArray,
+    embedded_chain: JByteArray,
+    no_channel: jboolean,
+    day_trusted: jboolean,
+    day: jint,
+    draw: JByteArray,
+    has_offer: jboolean,
+    offer_sha256: JByteArray,
+    offer_length: jlong,
+) -> jlong {
+    guarded(&mut env, 0, |env| {
+        let state = decode_stored(&bytes(env, &stored)?).map_err(|_| cat::INVALID_ARGUMENT)?;
+        let embedded = bytes(env, &embedded_chain)?;
+        let chain = ghost_client_release::chain::GHRC::parse(&embedded)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        let draw: [u8; 32] = fixed(env, &draw)?;
+        let today = if day_trusted != 0 { day as u32 } else { 0 };
+        let pick = draw_for_run(&state, &chain, no_channel != 0, today, &draw)
+            .ok_or(cat::INVALID_ARGUMENT)?;
+        let (apk_sha256, apk_length) = if has_offer != 0 {
+            (Some(fixed::<32>(env, &offer_sha256)?), offer_length as u64)
+        } else {
+            (None, 0)
+        };
+        Ok(register_mirror(MirrorSet {
+            first: pick.first.0,
+            second: pick.second.0,
+            network: state.trusted_root().body.network as u8,
+            apk_sha256,
+            apk_length,
+        }))
+    })
+}
+
+/// Closes a mirror set. Idempotent.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeMirrorSetClose(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let _ = &mut env;
+    remove_mirror(handle);
+}
+
+/// `TorMirrorTransport.nativeFetch`: one fetch of the run — the bundle (`kind` 0, 200, ≤ 1 MiB)
+/// or an APK chunk (`kind` 1, 206 with the matching `content-range`, ≤ 4 MiB), over the mirror
+/// `slot` (0 or 1) of the set, on the `Update` isolation scope, under `deadline_ms`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorMirrorTransport_nativeFetch(
+    mut env: JNIEnv,
+    _class: JClass,
+    transport: jlong,
+    mirror_set: jlong,
+    slot: jint,
+    kind: jint,
+    chunk_index: jlong,
+    deadline_ms: jlong,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let handle = lookup(transport)?;
+        let tor = handle.transport()?.clone();
+        let set = lookup_mirror(mirror_set)?;
+        let deadline = std::time::Duration::from_millis(deadline_ms as u64);
+        let bytes_out = handle.run(crate::mirror::fetch(
+            &tor,
+            &set,
+            slot as u8,
+            kind as u8,
+            chunk_index as u64,
+            deadline,
+        ))?;
+        Ok(to_java(env, &bytes_out)?)
+    })
 }
