@@ -15,6 +15,10 @@ members = [
     # and the Rust gates cover it. (The S0' spike, client-core/dm-spike, outside the workspace, was
     # deleted by the S0' gate slice, design §22.33, once its three tools had replacements.)
     "client-core/dm",
+    # Release distribution formats (Phase 14 design §4, ADR-49): GHRT/GHRM/GHRA/GHRP/GHRC/GHRB
+    # encode/parse/verify, pure and JNI-free; the client verifies updates with it, ghost-release-ops
+    # writes with it.
+    "client-core/release",
     # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
     # gates cover it, never built for Android and never in the shipped graph.
     "client-core/dm-host",

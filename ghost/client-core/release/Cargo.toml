@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "ghost-client-release"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST release distribution formats (Phase 14 design §4, ADR-49): GHRT root, GHRM manifest, GHRA attestation statement, GHRP log proof, GHRC root chain, GHRB bundle. Pure encode/parse/verify, no I/O."
+
+[dependencies]
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+rand = { workspace = true }
