@@ -58,6 +58,16 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **Constatare pentru recipe:** platforma verifică valabilitatea certificatului **la instalare și la fiecare update** — un certificat de 90 de zile ar refuza update-urile după expirare. Recipe-ul de release (RK1) trebuie să impună explicit o valabilitate lungă (`-validity`, ex. 30+ ani, practica cheilor de publicare) sau să documenteze deliberat alegerea; valoarea implicită a toolului e o capcană.
 - **Efect asupra planului:** de adăugat ca punct explicit în recipe-ul A/B (V-D1…V-D5) și în checklist-ul RK1 din §3.
 
+## V-D23 (completare) — cele două artefacte aapt2 (2026-10-24)
+
+- **aapt2 din Gradle** (cel care compilează resursele APK-ului): `com.android.tools.build:aapt2:9.4.0-15978811` — **deja pin-uit cu checksum-uri în `verification-metadata.xml`** (jar-ul windows, pom-ul, proto). ✓
+- **aapt2 din build-tools** (2.20-15087165, cel rulat direct din SDK în probe): vine cu instalarea SDK-ului, în afara verificării Gradle — D23 îl pin-ește prin SHA-256 al arhivei build-tools în recipe. Cele două versiuni sunt artefacte distincte (gradle-resolved vs SDK), de consemnat separat în pin-ul unificat.
+
+## V-D17 — CycloneDX / SBOM (2026-10-24, constatare)
+
+- **Măsurat:** niciun plugin CycloneDX sau task SBOM nu există astăzi în `build.gradle.kts`/`settings.gradle.kts`/`libs.versions.toml` — cerința D12 (SBOM-uri CycloneDX 1.7 deterministe per release) **nu e încă cablată** în build.
+- **Efect asupra planului:** alegerea plugin-ului (`org.cyclonedx.bom`, versiune pin-uită) și proba de determinism (două generări consecutive byte-identice) intră în recipe-ul A/B (V-D1…V-D5); nu are sens proba de determinism înainte de cablare. Consemnat, nu blocant pentru S1 (SBOM-ul e produs de release tooling, nu de client).
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
@@ -68,7 +78,7 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 | V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge + HTTP/1.1); nginx confirmă sau `ghost-mirror` | **RULAT 2026-10-24**: ambele oglinzi servesc HTTP/2 pe :443 (h2c, 200) și HTTP/1.1 pe :80 peste Tor; nginx confirmat (V-D22) |
 | V-D11b | depunerea reală la logul public | așteaptă domeniul (OA-4); stagenet poate folosi logurile publice (staging, §5 note) |
 | V-D21 | pre-auth token / verificarea dezvoltatorilor Google | de rulat (emulator API 35+) |
-| V-D13…V-D20, V-D23…V-D25 | installer, CycloneDX, R8/JDK pins, binare relay/issuer per invocație, certificate, v2/v3/v3.1 per SDK, vectori sigsum-go, SETTINGS HTTP/2, update runs, ghost-verify | parțial: **V-D19 ✓** (binare per invocație), **V-D18 parțial** (AGP/aapt2/JDK consemnate; R8 nu e adresabil separat — pin prin AGP + verificare A/B), **V-D15 ✓** (parse per SDK) |
+| V-D13…V-D20, V-D23…V-D25 | installer, CycloneDX, R8/JDK pins, binare relay/issuer per invocație, certificate, v2/v3/v3.1 per SDK, vectori sigsum-go, SETTINGS HTTP/2, update runs, ghost-verify | parțial: **V-D19 ✓, V-D15 ✓, V-D20 ✓** (90-zile keytool = capcană), **V-D23 ✓** (aapt2 gradle pin-uit 9.4.0-15978811; build-tools prin recipe), **V-D17 constatare** (fără plugin SBOM — intră în recipe A/B), **V-D18 parțial** (R8 prin AGP) |
 
 **Următorul pas S0a:** matricea core/padding apksigner (extensie a Appendix C.3) și pin-urile
 aapt2/JDK/R8 (V-D23), ambele locale; apoi listenerul h2c al oglinzii de staging (V-D12).
