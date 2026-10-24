@@ -27,6 +27,7 @@ android {
 dependencies {
     implementation(project(":storage"))
     implementation(project(":network"))
+    implementation(project(":sync"))
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
 }
