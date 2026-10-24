@@ -559,7 +559,7 @@ object DmDaoQueries {
         Query(
             name = "theConversationPage",
             sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "ORDER BY sort_minute DESC, minute_index DESC, message_id DESC LIMIT ?",
             args = listOf(conversation, NOW, 50L),
@@ -567,7 +567,7 @@ object DmDaoQueries {
         Query(
             name = "theConversationPageBeforeACursor",
             sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
                 "AND (sort_minute < ? OR (sort_minute = ? AND minute_index < ?) " +
                 "OR (sort_minute = ? AND minute_index = ? AND message_id < ?)) " +
@@ -582,7 +582,7 @@ object DmDaoQueries {
         Query(
             name = "oneMessageById",
             sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "minute_index, timer_code, body_env, state, expire_at_minute FROM dm_message " +
                 "WHERE message_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
             // A **live** id: an expired one would return nothing in either world, which the lint
             // refuses as broken rather than accepting as compliant.
@@ -603,6 +603,23 @@ object DmDaoQueries {
             // the fixture answers `NOW - 60` instead of `NOW + 3600`, and with `>=` it answers
             // `NOW`, so both near misses are caught by a value.
             args = listOf(NOW),
+        ),
+        // Phase 13 S4 (§3.6 `conversationSummaries`): without the filter the unswept world counts
+        // `EXPIRED_UNREAD_IN` into the unread sum, and `max(author_minute)` names the expired row.
+        Query(
+            name = "theConversationSummary",
+            sql = "SELECT sum(CASE WHEN state = 'unread' THEN 1 ELSE 0 END), max(author_minute) " +
+                "FROM dm_message WHERE conversation_id = ? AND direction = 'in' " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+            args = listOf(conversation, NOW),
+        ),
+        // Phase 13's media-request rule (D28): a live id returns the same row in both worlds; the
+        // filter's presence is what the static half pins, as `oneMessageById` documents.
+        Query(
+            name = "theKindOfALiveMessage",
+            sql = "SELECT kind FROM dm_message WHERE message_id = ? " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+            args = listOf(DmExpiredRowLint.LIVE_IN, NOW),
         ),
         Query(
             name = "theNextMinuteIndex",

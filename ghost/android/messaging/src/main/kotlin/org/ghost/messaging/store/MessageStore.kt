@@ -647,10 +647,11 @@ internal class MessageStore {
          * static half sees the table name (an interpolated one it cannot see, §22.10 item 3) and
          * so `DmDaoQueries` can register the **same** string the DAO runs.
          *
-         * Six are registered in `DmDaoQueries` and judged by the read contract; [EXPIRED_BATCH] is
-         * SWEEP's own and is registered in `DmSweepQueries`, under the mirror of it. The count is
-         * written out because it is the thing that goes stale: S9 added the last two and left this
-         * sentence saying "four".
+         * Eight are registered in `DmDaoQueries` and judged by the read contract (the six below,
+         * the conversation summary of §3.6, and the media-request kind check in `MediaEngineSupport`);
+         * [EXPIRED_BATCH] is SWEEP's own and is registered in `DmSweepQueries`, under the mirror of
+         * it. The count is written out because it is the thing that goes stale: S9 added the last
+         * two and left this sentence saying "four".
          */
         /** §13.2 `conversation`, newest first; R-O1's order, reversed for paging. */
         const val CONVERSATION_PAGE: String =
