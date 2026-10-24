@@ -33,6 +33,8 @@ pub fn encode_stored(s: &StoredState) -> Vec<u8> {
     let chain_bytes = chain.to_bytes();
     out.extend_from_slice(&(chain_bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(&chain_bytes);
+    // The trusted root's own version (the last root of the chain): the `root_version` column.
+    out.extend_from_slice(&s.trusted_root().body.root_version.to_be_bytes());
     out.extend_from_slice(&s.pair.root_version.to_be_bytes());
     out.extend_from_slice(&s.pair.manifest_seq.to_be_bytes());
     match (&s.manifest, &s.manifest_sha256, &s.manifest_proof) {
@@ -110,6 +112,10 @@ pub fn decode_stored(buf: &[u8]) -> Result<StoredState, UpdateError> {
     let chain_doc = r.lp32()?;
     let chain = GHRC::parse(chain_doc).map_err(|_| UpdateError::Malformed)?;
     if chain.roots.is_empty() {
+        return Err(UpdateError::Malformed);
+    }
+    let root_version = r.u32()?;
+    if root_version != chain.roots.last().expect("checked").body.root_version {
         return Err(UpdateError::Malformed);
     }
     let pair = Pair {

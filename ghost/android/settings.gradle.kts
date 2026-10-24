@@ -43,5 +43,8 @@ include(":ui")
 include(":app-uitest")
 // Phase 13 Appendix B.2 (T4): the backup control application, test-only, never shipped.
 include(":backupctl")
+// Phase 14 design §9.1 (slice S2): the update engine. The updater lives in its own Gradle module
+// so the store flavor is a dependency switch (§8.2 entry condition (c)).
+include(":update")
 // Phase 13 Appendix B.2 (T6 twin, J3-J5 real sessions): the staging harness, test-only.
 include(":tools:staging-harness")
