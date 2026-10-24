@@ -37,6 +37,15 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **Nuanță consemnată:** *acceptarea* pe SDK e comportament de platformă (v2 = API 24+, v3 = API 28+, v3.1 = API 33+ pentru rotația cheii), pe care apksigner nu-l emulează — verificarea de instalare rămâne la V-D13 (emulator/dispozitiv, în drill).
 - **Consecință pentru decizii:** `minSdk = 29` al aplicației (`gradle/libs.versions.toml`) înseamnă că **v3 e disponibil pe fiecare dispozitiv suportat**; v3.1 (rotire la instalare) nu e necesar decât dacă designul cere citirea semnatarului pe SDK (§7.4 pasul 9) — consemnat, nu blocant.
 
+## V-D19 — binarele relay/issuer, câte o invocație cargo (2026-10-24)
+
+- **Rulat pe ghost-runner** (WSL, target cald): `cargo build --release -p ghost-relay-node` (27,6 s), `-p ghost-issuer` (22,6 s), `-p ghost-issuer-ops` (1,6 s) — fiecare **independent, o singură invocație per binar**, toate trei reușite; artefactele `target/release/{ghost-relay, ghost-issuer, ghost-issuer-ops}` (4,3 / 5,4 / 2,9 MB). Cerința D12 („each built in its own `cargo` invocation") e confirmată ca practică de build.
+
+## V-D18 — pin-urile R8 și JDK (2026-10-24, parțial)
+
+- **AGP** = 9.4.0, pin-uit în `gradle/libs.versions.toml` ✓. **aapt2** = 2.20-15087165 (V-D23). **JDK** pe mașina de build: JetBrains Runtime 17.0.20.1 (de înlocuit în pin-ul unificat cu JDK-ul recipe-ului A/B, care fixează patch level-ul — D23).
+- **R8:** `isMinifyEnabled = true` pe release, deci R8 rulează — dar artefactul `com.android.tools:r8` **nu apare ca modul în cache-ul Gradle** nici pe Windows, nici în WSL, iar POM-ul AGP 9.4.0 nu expune o dependență `com.android.tools:r8` directă (AGP 9 o livrează prin mecanism propriu de classpath). **Consecință pentru D23:** pin-ul unificat trebuie să fixeze „R8 = build-ul livrat cu AGP 9.4.0", identitatea exactă fiind verificată prin ieșirile byte-identice ale build-urilor reproductibile A/B (nu prin rezolvare de dependență); extragerea versiunii directe se face în matricea recipe-ului (V-D1…V-D5), nu aici.
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
@@ -47,7 +56,7 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 | V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge + HTTP/1.1); nginx confirmă sau `ghost-mirror` | **RULAT 2026-10-24**: ambele oglinzi servesc HTTP/2 pe :443 (h2c, 200) și HTTP/1.1 pe :80 peste Tor; nginx confirmat (V-D22) |
 | V-D11b | depunerea reală la logul public | așteaptă domeniul (OA-4); stagenet poate folosi logurile publice (staging, §5 note) |
 | V-D21 | pre-auth token / verificarea dezvoltatorilor Google | de rulat (emulator API 35+) |
-| V-D13…V-D20, V-D23…V-D25 | installer, CycloneDX, R8/JDK pins, binare relay/issuer per invocație, certificate, v2/v3/v3.1 per SDK, vectori sigsum-go, SETTINGS HTTP/2, update runs, ghost-verify | de rulat |
+| V-D13…V-D20, V-D23…V-D25 | installer, CycloneDX, R8/JDK pins, binare relay/issuer per invocație, certificate, v2/v3/v3.1 per SDK, vectori sigsum-go, SETTINGS HTTP/2, update runs, ghost-verify | parțial: **V-D19 ✓** (binare per invocație), **V-D18 parțial** (AGP/aapt2/JDK consemnate; R8 nu e adresabil separat — pin prin AGP + verificare A/B), **V-D15 ✓** (parse per SDK) |
 
 **Următorul pas S0a:** matricea core/padding apksigner (extensie a Appendix C.3) și pin-urile
 aapt2/JDK/R8 (V-D23), ambele locale; apoi listenerul h2c al oglinzii de staging (V-D12).
