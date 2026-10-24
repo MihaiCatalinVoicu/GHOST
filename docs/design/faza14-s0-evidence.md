@@ -14,12 +14,23 @@ doar cele rulate.
 - **Conținut:** 2 loguri — `seasalp.glasklar.is` (`0ec7e16843119b120377a73913ac6acbc2d03d82432e2c36b841b09a95841f25`), `ginkgo.tlog.mullvad.net` (`f00c159663d09bbda6131ee1816863b6adcacfe80b0b288000b11aba8fe38314`); 3 witnesses — `witness.glasklar.is` (`b2106d…8536`), `witness.mullvad.net` (`15d6d0…61ad`), `tillitis.se/tillitis-witness-1` (`076be8…770c`); quorum `2 of 3` peste cei trei witnesses (`group quorum-rule 2 …`, `quorum quorum-rule`).
 - **Efect asupra planului:** `GHRT.logs` / `GHRT.witnesses` / `quorum` din D9 se codifică din aceste bytes exacte; quorum-ul flat k-of-m din root trebuie să fie **cel puțin la fel de strict** — politica fiind deja 2-of-3 peste 3 witnesses, rootul GHOST ia exact această regulă (k=2, m=3) cu aceleași chei. Observația din design despre părintele comun al celor doi operatori de witness (glasklarteknik.se) rămâne valabilă și e înregistrată în LIMITE.
 
+## §6.5 core/padding — proba apksigner cu cheie software (extensie a Appendix C.3, 2026-10-24)
+
+Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, cheie throwaway RSA-2048 generată pe loc, intrare = APK minimal real (manifest compilat cu `aapt2 link` pe platforma android-37.2, 683 B). Măsurători:
+
+- **Determinismul apksigner:** aceeași intrare semnată de două ori → ieșiri **byte-identice** (SHA-256 `dbbccce1…e183` ambele). Semnătura v2/v3 nu include timestamp implicit.
+- **Verify:** `apksigner verify --print-certs` verde pe ambele variante; afișează DN și digests SHA-256/SHA-1/MD5 ale certificatului.
+- **Structura blocului de semnătură** (parse manual, magic `APK Sig Block 42`): la ambele variantele blocul ocupă `[4080, 8192)` — **capătul blocului fixat pe graniță 4096** indiferent de padding-ul din intrare; perechi: `0x00000ff8` (stripping protection, gol) + `0x00000566` (APK Signature Scheme v3); **perechea de padding explicită (`0x42726577`) absentă** — padding-ul este implicit, prin dimensionarea blocului.
+- **Relația de core:** apksigner **rescrie arhiva** la semnare (re-aliniază intrările — regiunea pre-bloc a semnatului nu e byte-egală cu intrarea nesemnată; nici cd+EOCD). Regiunea pre-bloc crește de la 683 B (nesemnat) la 4080 B (semnat) tocmai pentru a fixa blocul pe aliniere; un padding de +64 B în intrare (`+60 B` pe cd) **nu mută blocul** — capătul rămâne la 8192. Regula „apksigner paddează înaintea blocului de semnătură" se confirmă la nivel de aliniere: poziția blocului e o funcție de aliniere, nu de conținutul nucleului.
+- **Efect asupra planului:** relația exactă core(p) pentru două build-uri reale (A/B) se verifică în matricea recipe-ului (V-D1…V-D5) — proba sintetică confirmă determinismul, alinierea fixă a blocului și absența perechii explicite de padding; nu înlocuiește matricea A/B.
+- **V-D23 (pin-uri, constatări):** aapt2 = **2.20-15087165** (build-tools 37.0.0) — versiunea exactă de notat în pin-ul unificat; AGP = **9.4.0** (`gradle/libs.versions.toml`); aapt2 jars sunt deja în `verification-metadata.xml` (de verificat că pin-ul acoperă și versiunea 2.20-15087165 efectiv descărcată).
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
 |---|---|---|
 | V-D1…V-D5, V-D9, V-D10 | builder recipe A/B, N=2 pin, arhive SHA-256, matricea de variație, AGP/`vcsInfo`, CPU pin | de rulat (necesită runner-ul self-hosted; dependență de CI-L pentru buget) |
-| §6.5 core/padding | regula de core și padding apksigner pe cheie software (p=0, p>0, două semnături) | de rulat (extinde Appendix C.3 la matrice) |
+| §6.5 core/padding | regula de core și padding apksigner pe cheie software (p=0, p>0, două semnături) | **RULAT 2026-10-24** (determinism ✓, bloc capăt-4096-fix, fără pereche de padding explicită; matricea A/B rămâne la V-D1…V-D5) |
 | V-D6, V-D7 | căile PKCS#11, CKM_ED25519 pe token-urile cumpărate | de rulat (necesită token-urile YubiKey — acțiune proprietar) |
 | V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge pentru aplicație + HTTP/1.1 pentru browsere/ghost-verify); nginx confirmă sau `ghost-mirror` | PARȚIAL: staging-ul Fazei 13 are doar HTTP/1.1 (`ghost/infra/mirror/`); listenerul h2c e de adăugat la imagine înainte de S1 (D14) |
 | V-D11b | depunerea reală la logul public | așteaptă domeniul (OA-4); stagenet poate folosi logurile publice (staging, §5 note) |
