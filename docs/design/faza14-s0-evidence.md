@@ -68,11 +68,16 @@ Mediu: `apksigner.jar` din build-tools **37.0.0**, JVM JetBrains 17.0.20.1, chei
 - **Măsurat:** niciun plugin CycloneDX sau task SBOM nu există astăzi în `build.gradle.kts`/`settings.gradle.kts`/`libs.versions.toml` — cerința D12 (SBOM-uri CycloneDX 1.7 deterministe per release) **nu e încă cablată** în build.
 - **Efect asupra planului:** alegerea plugin-ului (`org.cyclonedx.bom`, versiune pin-uită) și proba de determinism (două generări consecutive byte-identice) intră în recipe-ul A/B (V-D1…V-D5); nu are sens proba de determinism înainte de cablare. Consemnat, nu blocant pentru S1 (SBOM-ul e produs de release tooling, nu de client).
 
+## V-D1 (parțial) — determinism la aceeași cale, APK-ul unsigned de release (2026-10-24)
+
+- **Rulat pe ghost-runner (WSL):** două build-uri independente `:app:assembleRelease` (cu `./gradlew clean` între ele) pe același mediu și aceeași cale de checkout → `app-release-unsigned.apk` (artefactul cerut de D12 — proiectul nu are încă config de semnare, corect: semnarea e tooling-ul de release cu K-APK) **byte-identic**: SHA-256 `a67fee34902aba59c9ad35bc3711c4e6a72ee21f58260c4d04dc0135ea837c18`, 8 268 175 B, ambele rulări.
+- **Nuanțe pentru recipe:** (1) ambele build-uri au folosit **Gradle build cache** (141/185 task-uri din cache la a doua rulare) — matricea A/B trebuie să repete cu `--no-build-cache`; (2) ambele au folosit cache-ul de dependențe — recipe-ul pin-ește arhivele prin SHA-256; (3) identitatea între medii A și B (al doilea mediu, N=2) rămâne partea principală a lui V-D1, pe runner-ul self-hosted.
+
 ## Restul verificărilor S0a — de rulat
 
 | Verificare | Ce probează | Stare |
 |---|---|---|
-| V-D1…V-D5, V-D9, V-D10 | builder recipe A/B, N=2 pin, arhive SHA-256, matricea de variație, AGP/`vcsInfo`, CPU pin | de rulat (necesită runner-ul self-hosted; dependență de CI-L pentru buget) |
+| V-D1…V-D5, V-D9, V-D10 | builder recipe A/B, N=2 pin, arhive SHA-256, matricea de variație, AGP/`vcsInfo`, CPU pin | **V-D1 parțial ✓** (determinism la aceeași cale, cu build cache; de repetat cu `--no-build-cache` și pe al doilea mediu A/B) |
 | §6.5 core/padding | regula de core și padding apksigner pe cheie software (p=0, p>0, două semnături) | **RULAT 2026-10-24** (determinism ✓, bloc capăt-4096-fix, fără pereche de padding explicită; matricea A/B rămâne la V-D1…V-D5) |
 | V-D6, V-D7 | căile PKCS#11, CKM_ED25519 pe token-urile cumpărate | de rulat (necesită token-urile YubiKey — acțiune proprietar) |
 | V-D12, V-D22 | ambii listeneri ai oglinzii (h2c prior-knowledge + HTTP/1.1); nginx confirmă sau `ghost-mirror` | **RULAT 2026-10-24**: ambele oglinzi servesc HTTP/2 pe :443 (h2c, 200) și HTTP/1.1 pe :80 peste Tor; nginx confirmat (V-D22) |
