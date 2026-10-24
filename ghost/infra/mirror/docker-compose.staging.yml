@@ -1,0 +1,24 @@
+# The two staging update mirrors (Phase 13 close-out): one static onion service each, serving a
+# directory of signed manifests. Real keys, roots, ceremonies and the GHRM format are Phase 14
+# (ADR-48..52); staging serves an equivalent-shaped fixture signed with a throwaway key so the
+# update CHANNEL (onion HTTP/1.1 static serving) can be tested end to end.
+#
+#   docker compose -f ghost/infra/mirror/docker-compose.staging.yml up -d --build
+#
+# Data lives outside the repository, like the issuer's: /srv/mirrors/{a,b}/www (document root) and
+# /srv/mirrors/{a,b}/tor (onion key). Generate the fixture with make-fixture.sh on the host.
+services:
+  mirror-a:
+    build: .
+    container_name: mirror-a
+    restart: unless-stopped
+    volumes:
+      - /srv/mirrors/a/www:/www:ro
+      - /srv/mirrors/a/tor:/var/lib/tor
+  mirror-b:
+    build: .
+    container_name: mirror-b
+    restart: unless-stopped
+    volumes:
+      - /srv/mirrors/b/www:/www:ro
+      - /srv/mirrors/b/tor:/var/lib/tor
