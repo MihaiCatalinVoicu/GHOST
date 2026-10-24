@@ -25,6 +25,13 @@ interface SyncController {
     fun setParticipant(p: SessionParticipant?)
 
     /**
+     * Installs the one update participant (Phase 14 design §9.4 item 2: the update engine), or
+     * removes it with null. One slot, set once at wiring like the participant; update runs
+     * happen only while an updater is installed, and it takes effect from the next job.
+     */
+    fun setUpdater(u: UpdateParticipant?)
+
+    /**
      * Installs the one consumer tail (Phase 9 design §13.3 item 6: the DM layer's drain), or removes
      * it with null. One slot, set once at wiring like the participant and the inbox listener; it
      * takes effect from the next background session or quiet run.

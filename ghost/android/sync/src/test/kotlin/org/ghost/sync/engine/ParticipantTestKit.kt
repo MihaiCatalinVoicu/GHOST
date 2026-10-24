@@ -105,6 +105,10 @@ internal class RecordingLease(val calls: RecordingCalls = RecordingCalls()) : Tr
         if (!open || !ready) throw NetworkException("closed")
         return block(calls)
     }
+    override fun <T> useMirror(block: (org.ghost.sync.port.MirrorCalls) -> T): T {
+        if (!open || !ready) throw NetworkException("closed")
+        throw UnsupportedOperationException("no mirrors in this test kit")
+    }
 
     override fun newFlow(): ByteArray = ByteBuffer.allocate(16).putLong(FLOWS.incrementAndGet()).putLong(0x5eed).array()
 

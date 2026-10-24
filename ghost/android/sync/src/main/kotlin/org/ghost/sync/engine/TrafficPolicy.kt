@@ -67,6 +67,8 @@ class TrafficPolicy(
     val backgroundSessionMillis: Long = 8 * 60_000,
     /** The JobScheduler budget of one periodic job; what the consumer tail's deadline is cut from. */
     val jobBudgetMillis: Long = 10 * 60_000,
+    /** One update run's fixed duration `D_U` from READY (Phase 14 design §7.3, Q15). */
+    val updateRunMillis: Long = 120_000,
     /** The consumer tail returns this long before the job's budget ends (Phase 9 design §13.3 item 6). */
     val consumerTailReserveMillis: Long = 20_000,
     /** Background: work-lane call time per relay per session. */

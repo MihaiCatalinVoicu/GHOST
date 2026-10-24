@@ -189,6 +189,15 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
     /** Runs one native call with this transport's id (the issuer calls share the handle, §11.7). */
     internal fun withHandle(block: (Long) -> ByteArray): ByteArray = call(block)
 
+    /** One mirror fetch of an update run on this transport (Phase 14 design §7.2, §9.3): the
+     *  path, the range and the onion are built natively from the mirror set; this is only the
+     *  handle and the deadline. */
+    fun fetchMirrorBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
+        withHandle { TorMirrorTransport.nativeFetch(it, mirrorSet, slot, TorMirrorTransport.KIND_BUNDLE, 0, deadlineMillis.toLong()) }
+
+    fun fetchMirrorApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =
+        withHandle { TorMirrorTransport.nativeFetch(it, mirrorSet, slot, TorMirrorTransport.KIND_APK_CHUNK, chunkIndex, deadlineMillis.toLong()) }
+
     override fun close() {
         val id = handle.getAndSet(0L)
         if (id != 0L) nativeStop(id)

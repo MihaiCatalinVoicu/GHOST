@@ -35,7 +35,7 @@ object TorMirrorTransport {
     }
 
     @JvmStatic
-    private external fun nativeFetch(
+    internal external fun nativeFetch(
         transport: Long,
         mirrorSet: Long,
         slot: Int,

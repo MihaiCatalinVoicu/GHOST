@@ -30,6 +30,12 @@ class QuietRunScheduler(private val random: RandomSources, private val clock: Sy
         return random.quietRun(index) < QUIET_PROBABILITY
     }
 
+    /** The update draw of the [index]-th job: taken among the jobs that are not quiet (Phase 14 design §7.3). */
+    fun update(index: Long): Boolean {
+        require(index >= 0) { "run index out of range" }
+        return random.updateRun(index) < UPDATE_PROBABILITY
+    }
+
     /** Hold of relay sessions after the [index]-th hiding of the payment screen, in ms. */
     fun paymentHoldMillis(index: Long): Long {
         require(index >= 0) { "hold index out of range" }
@@ -58,6 +64,9 @@ class QuietRunScheduler(private val random: RandomSources, private val clock: Sy
     companion object {
         /** q = 1/8 (exact: a draw is a multiple of 2^-53). */
         const val QUIET_PROBABILITY: Double = 0.125
+
+        /** Phase 14 design §7.3: one job in 1 / (7/8 × 1/24) ≈ 27.4 is an update run. */
+        const val UPDATE_PROBABILITY: Double = 1.0 / 24.0
 
         const val PAYMENT_HOLD_MIN_MILLIS: Long = 20 * 60_000L
         const val PAYMENT_HOLD_MAX_MILLIS: Long = 60 * 60_000L

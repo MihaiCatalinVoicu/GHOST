@@ -322,6 +322,9 @@ class SessionParticipantTest {
                 if (lock.withLock { !open || !ready }) throw NetworkException("closed")
                 return block(calls)
             }
+            override fun <T> useMirror(block: (org.ghost.sync.port.MirrorCalls) -> T): T =
+                throw org.ghost.network.NetworkException("closed")
+
 
             override fun newFlow(): ByteArray = ByteBuffer.allocate(16).putLong(FLOWS.incrementAndGet()).array()
 

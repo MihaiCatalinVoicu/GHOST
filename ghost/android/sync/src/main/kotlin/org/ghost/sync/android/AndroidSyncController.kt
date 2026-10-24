@@ -7,6 +7,7 @@ import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
+import org.ghost.sync.api.UpdateParticipant
 import org.ghost.sync.api.SyncController
 import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.engine.KeyedRandomSources
@@ -51,6 +52,8 @@ class AndroidSyncController internal constructor(
     }
 
     override fun setParticipant(p: SessionParticipant?) = runtime.setParticipant(p)
+
+    override fun setUpdater(u: UpdateParticipant?) = runtime.setUpdater(u)
 
     override fun setConsumerTail(tail: ConsumerTail?) = runtime.setConsumerTail(tail)
 

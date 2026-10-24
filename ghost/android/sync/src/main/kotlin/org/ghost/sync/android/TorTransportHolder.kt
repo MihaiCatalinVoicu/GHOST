@@ -10,6 +10,7 @@ import org.ghost.sync.engine.ErrorClass
 import org.ghost.sync.engine.ErrorPolicy
 import org.ghost.sync.port.EntitlementCalls
 import org.ghost.sync.port.LeasePort
+import org.ghost.sync.port.MirrorCalls
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.SyncClock
 import org.ghost.sync.port.TransportLease
@@ -62,6 +63,17 @@ internal fun interface RelayTransportFactory {
  *    land on any transport, in particular not on one created for a later session. A lease never
  *    creates or bootstraps a transport.
  */
+private class MirrorCallsOn(transport: RelayTransport) : MirrorCalls {
+    private val tor = transport as? TorRelayTransport
+        ?: throw NetworkException("internal")
+
+    override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
+        tor.fetchMirrorBundle(mirrorSet, slot, deadlineMillis)
+
+    override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =
+        tor.fetchMirrorApkChunk(mirrorSet, slot, chunkIndex, deadlineMillis)
+}
+
 internal class TorTransportHolder(
     private val factory: RelayTransportFactory,
     private val clock: SyncClock,
@@ -263,6 +275,15 @@ internal class TorTransportHolder(
             val slot = enter() ?: throw NetworkException(CLOSED)
             try {
                 return block(slot.calls)
+            } finally {
+                release(slot)
+            }
+        }
+
+        override fun <T> useMirror(block: (MirrorCalls) -> T): T {
+            val slot = enter() ?: throw NetworkException(CLOSED)
+            try {
+                return block(MirrorCallsOn(slot.transport))
             } finally {
                 release(slot)
             }

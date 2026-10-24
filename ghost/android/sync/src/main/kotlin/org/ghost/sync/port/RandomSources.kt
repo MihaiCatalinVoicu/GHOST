@@ -43,6 +43,13 @@ interface RandomSources {
     fun updateRun(index: Long): Double
 
     /**
+     * 32 bytes for the [index]-th update run's mirror draw (Phase 14 design §7.8): the two
+     * mirrors of the run are chosen from this, never from client state other than the root and
+     * the manifest. Its own keyed domain, drawn once per run.
+     */
+    fun updateDrawBytes(index: Long): ByteArray
+
+    /**
      * 16 bytes for the request id of one key registration (Phase 9 design §4.2): a fresh id per
      * registration, stored in its row so every retry of that registration sends the same one. Its
      * own stream, drawn on the work lane only (T19).

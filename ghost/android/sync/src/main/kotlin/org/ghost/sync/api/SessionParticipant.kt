@@ -77,13 +77,15 @@ interface UpdateSession {
     val mirror: MirrorAccess
 }
 
-/** A mirror fetch of one update run (Phase 14 design §7.2, §9.3). */
+/** A mirror fetch of one update run (Phase 14 design §7.2, §9.3). `mirrorSet` is the handle the
+ * engine built with `UpdateNative.mirrorSet` from the stored state and the run's draw; the fetch
+ * itself runs on the `Update` isolation scope of the run's transport. */
 interface MirrorAccess {
     /** The bundle (`current.ghrb`): 200, at most 1 MiB. */
-    fun fetchBundle(slot: Int, deadlineMillis: Int): ByteArray
+    fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray
 
     /** One 4 MiB chunk of the offered APK (206 with the matching `content-range`). */
-    fun fetchApkChunk(slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray
+    fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray
 }
 
 /** What a [ParticipantSession] stands for; it decides which access it grants. */

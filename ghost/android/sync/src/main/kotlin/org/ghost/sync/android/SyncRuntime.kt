@@ -9,7 +9,10 @@ import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.SyncCounts
 import org.ghost.sync.api.SyncDatabase
+import org.ghost.sync.api.MirrorAccess
 import org.ghost.sync.api.SyncStatus
+import org.ghost.sync.api.UpdateParticipant
+import org.ghost.sync.api.UpdateSession
 import org.ghost.sync.api.TransportStatus
 import org.ghost.sync.engine.JobFate
 import org.ghost.sync.engine.QuietRunScheduler
@@ -74,6 +77,9 @@ internal object ClosedLeases : LeasePort {
         override fun awaitReady(deadlineMonotonicMillis: Long): Boolean = false
 
         override fun close() = Unit
+
+        override fun <T> useMirror(block: (org.ghost.sync.port.MirrorCalls) -> T): T =
+            throw NetworkException("closed")
 
         override fun <T> use(block: (EntitlementCalls) -> T): T = throw NetworkException("closed")
 
@@ -179,6 +185,20 @@ internal class SyncRuntime(
         val done = CountDownLatch(1)
     }
 
+    /** An update run (Phase 14 design §7.3): the transport READY for the updater's mirror fetches
+     * alone — no relay session, no issuer call — for the fixed duration `D_U`. */
+    private class Update(
+        val engine: SyncEngine,
+        val ticket: JobTicket,
+        val lease: TransportLease,
+        val startedAt: Long,
+        val deadline: Long,
+        val drawIndex: Long,
+    ) {
+        /** The updater returned, or was never called. */
+        val done = CountDownLatch(1)
+    }
+
     /** User issuer calls while no session runs; they make the transport READY themselves. */
     private class UserRun(val engine: SyncEngine) {
         val leases = ArrayList<TransportLease>()
@@ -207,6 +227,7 @@ internal class SyncRuntime(
 
     @Volatile
     private var participant: SessionParticipant? = null
+    private var updater: UpdateParticipant? = null
 
     @Volatile
     private var consumerTail: ConsumerTail? = null
@@ -230,6 +251,7 @@ internal class SyncRuntime(
 
     @Volatile
     private var quiet: Quiet? = null
+    private var update: Update? = null
 
     @Volatile
     private var userRun: UserRun? = null
@@ -325,12 +347,20 @@ internal class SyncRuntime(
     /** A quiet run is in progress. */
     val quietRunning: Boolean get() = quiet != null
 
+    /** An update run is in progress (Phase 14 design §7.3). */
+    val updateRunning: Boolean get() = update != null
+
     /** A background session's lanes have ended and its redeem hold keeps it open (Q29). */
     val redeemHeld: Boolean get() = running?.holding == true
 
     /** The one session participant; it takes effect from the next session, quiet run or user call. */
     fun setParticipant(p: SessionParticipant?) {
         participant = p
+    }
+
+    /** The one update participant; it takes effect from the next job (Phase 14 design §9.4 item 2). */
+    fun setUpdater(u: UpdateParticipant?) {
+        updater = u
     }
 
     /** The one consumer tail; it takes effect from the next background session or quiet run. */
@@ -438,7 +468,7 @@ internal class SyncRuntime(
 
     // ------------------------------------------------------------------ runtime thread
 
-    private fun busy(): Boolean = running != null || quiet != null || userRun != null
+    private fun busy(): Boolean = running != null || quiet != null || update != null || userRun != null
 
     /**
      * Starts [body] on a thread of its own that [awaitIdle] waits for: a participant's callback or a
@@ -464,11 +494,20 @@ internal class SyncRuntime(
 
     private fun runJob(ticket: JobTicket) {
         // Every job draws, whatever becomes of it: the n-th job of the process gets the n-th draw.
-        val quietDraw = schedule.quiet(jobIndex++)
+        val index = jobIndex++
+        val quietDraw = schedule.quiet(index)
+        val updateDraw = schedule.update(index)
         if (ticket.stopped) return
         // The job's fate is one pure decision (JobFate), which the Phase 9 privacy world makes too.
         val p = participant
-        val fate = JobFate.of(occupied = wantForeground || busy() || wiped || halted, quietDraw = quietDraw, participant = p != null)
+        val u = updater
+        val fate = JobFate.of(
+            occupied = wantForeground || busy() || wiped || halted,
+            quietDraw = quietDraw,
+            updateDraw = updateDraw,
+            participant = p != null,
+            updater = u != null,
+        )
         if (fate == JobFate.RETURN) {
             ticket.finish()
             return
@@ -480,6 +519,13 @@ internal class SyncRuntime(
         }
         if (fate == JobFate.QUIET_RUN && p != null) {
             startQuiet(e, ticket, p)
+            return
+        }
+        // The update fate is decided before the payment-hold check: the hold keeps relay sessions
+        // away from payment times, and an update run has no relay session and no issuer call
+        // (Phase 14 design §7.3).
+        if (fate == JobFate.UPDATE_RUN && u != null) {
+            startUpdate(e, ticket, u, index)
             return
         }
         if (relayHeld()) {
@@ -513,6 +559,12 @@ internal class SyncRuntime(
             // Foreground sessions are never quiet, and never wait for one: the quiet run ends now.
             if (!wantForeground) return
             closeQuiet(q)
+        }
+        val upd = update
+        if (upd != null) {
+            // Same rule for an update run: the foreground never waits for one, and ends it now.
+            if (!wantForeground) return
+            closeUpdate(upd)
         }
         val due = wantForeground && !wiped && !halted && !relayHeld()
         // User calls on a transport of their own are foreground actions, and no session start waits
@@ -730,6 +782,87 @@ internal class SyncRuntime(
                 if (q.done.await(minOf(left, WATCHDOG_STEP_MILLIS), TimeUnit.MILLISECONDS)) break
             }
         }.start()
+    }
+
+    private fun startUpdate(e: SyncEngine, ticket: JobTicket, u: UpdateParticipant, drawIndex: Long) {
+        val startedAt = clock.monotonicMillis()
+        val run = Update(e, ticket, leases.openLease(), startedAt, startedAt + policy.updateRunMillis, drawIndex)
+        setActivity { update = run }
+        val session = RuntimeUpdateSession(run) { e.clockTrusted() }
+        startCallbackThread {
+            try {
+                if (!run.lease.closed) {
+                    e.setTransportStatus(TransportStatus.STARTING)
+                    val state = transport.ensureReady(minOf(startedAt + policy.bootstrapMillis, run.deadline - policy.deadlineReserveMillis))
+                    if (!run.lease.closed) {
+                        noteTransport(e, state)
+                        if (state == TransportState.READY) u.onUpdateRun(session)
+                    }
+                }
+            } finally {
+                run.done.countDown()
+                post { updateEnded(run) }
+            }
+        }
+        // At the deadline the run ends whether or not the updater has returned (the run's length
+        // never depends on the offer or the download); the deadline is on the sync clock, re-read
+        // every second, exactly as a quiet run's.
+        threads.newThread {
+            while (true) {
+                val left = run.deadline - clock.monotonicMillis()
+                if (left <= 0) {
+                    post { updateEnded(run) }
+                    break
+                }
+                if (run.done.await(minOf(left, WATCHDOG_STEP_MILLIS), TimeUnit.MILLISECONDS)) break
+            }
+        }.start()
+    }
+
+    private fun updateEnded(u: Update) {
+        if (update !== u) {
+            abortIfUnowned()
+            return
+        }
+        closeUpdate(u)
+        reconcile()
+    }
+
+    private fun closeUpdate(u: Update) {
+        u.lease.close()
+        transport.abort()
+        setActivity { update = null }
+        if (!u.engine.disabled) u.engine.setTransportStatus(TransportStatus.OFF)
+        runConsumerTail(ParticipantKind.UPDATE_RUN, u.ticket, u.startedAt + policy.jobBudgetMillis)
+    }
+
+    /** The [UpdateSession] of one update run: the run's draw and mirror access on its lease. */
+    private inner class RuntimeUpdateSession(
+        private val run: Update,
+        private val trusted: () -> Boolean,
+    ) : UpdateSession {
+        override fun updateDraw(): ByteArray = random.updateDrawBytes(run.drawIndex)
+
+        override fun clockTrusted(): Boolean = !closed && trusted()
+
+        override val deadlineMonotonicMillis: Long get() = run.deadline
+
+        override val closed: Boolean get() = run.lease.closed || clock.monotonicMillis() >= run.deadline
+
+        override val mirror: MirrorAccess = object : MirrorAccess {
+            override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
+                run.lease.useMirror { it.fetchBundle(mirrorSet, slot, callDeadline(deadlineMillis)) }
+
+            override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =
+                run.lease.useMirror { it.fetchApkChunk(mirrorSet, slot, chunkIndex, callDeadline(deadlineMillis)) }
+        }
+
+        /** The deadline of a fetch asking for [requested] ms: at most what is left of the run. */
+        private fun callDeadline(requested: Int): Int {
+            val left = run.deadline - clock.monotonicMillis()
+            if (run.lease.closed || left < QuietRunScheduler.MIN_CALL_MILLIS) throw NetworkException("closed")
+            return minOf(requested.toLong(), left).toInt()
+        }
     }
 
     /** The transport state a quiet run or a standalone user call reached, as the session would record it. */

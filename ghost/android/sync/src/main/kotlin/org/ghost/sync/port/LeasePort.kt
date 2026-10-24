@@ -34,6 +34,9 @@ interface TransportLease {
     /** Runs one call on the READY transport; `NetworkException("closed")` when closed or not READY. */
     fun <T> use(block: (EntitlementCalls) -> T): T
 
+    /** Runs one mirror fetch on the READY transport of an update run (Phase 14 design §7.2). */
+    fun <T> useMirror(block: (MirrorCalls) -> T): T
+
     /** A fresh 16-byte issuer flow id from a CSPRNG (one per call, never reused). */
     fun newFlow(): ByteArray
 
@@ -46,6 +49,13 @@ interface TransportLease {
  * flow of every issuer call named by the caller. Production: `TorRelayTransport.redeem` and
  * [TorIssuerTransport] on the same handle. Failures as [TorIssuerTransport] documents.
  */
+/** The mirror fetches of one update run (Phase 14 design §7.2, §9.3), on one native transport. */
+interface MirrorCalls {
+    fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray
+
+    fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray
+}
+
 interface EntitlementCalls {
     fun redeem(relay: OnionAddress, namespace: ByteArray, token: ByteArray, requestId: ByteArray, deadlineMillis: Int): TorRelayTransport.RedeemAnswer
 

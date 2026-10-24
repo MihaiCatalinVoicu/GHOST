@@ -868,6 +868,10 @@ internal class HarnessLease(private val owner: EntClient, private val ended: () 
         if (closed) throw NetworkException("closed")
         return block(owner.calls)
     }
+    override fun <T> useMirror(block: (org.ghost.sync.port.MirrorCalls) -> T): T {
+        if (closed) throw NetworkException("closed")
+        throw UnsupportedOperationException("no mirrors in this harness")
+    }
 
     override fun newFlow(): ByteArray = owner.newFlow()
 
