@@ -206,6 +206,8 @@ internal class SyncRuntime(
 
     private class UserCall(val block: (ParticipantSession) -> Unit, val deadline: Long)
 
+    private class UserUpdateCall(val block: (UpdateSession) -> Unit, val deadline: Long)
+
     /** Global privacy mode, read by the stores and the engine at each use (default STANDARD, §11.1). */
     @Volatile
     var privacyMode: PrivacyMode = PrivacyMode.STANDARD
@@ -255,6 +257,7 @@ internal class SyncRuntime(
 
     @Volatile
     private var userRun: UserRun? = null
+    private val pendingUserUpdateCalls = ArrayList<UserUpdateCall>()
 
     init {
         threads.newThread(::loop).start()
@@ -372,6 +375,80 @@ internal class SyncRuntime(
     fun runUserIssuerCall(block: (ParticipantSession) -> Unit) {
         val call = UserCall(block, clock.monotonicMillis() + userCallMillis)
         post { startUserCall(call) }
+    }
+
+    /**
+     * Runs [block] exactly once on its own thread with an [UpdateSession] (Phase 14 design §7.3,
+     * §9.4 item 4): a user-requested check or download at the user's moment, while the app is
+     * visible, on the `Update` scope. It may run beside a foreground relay session (a declared
+     * L10-D20 sample: an operator of both a relay and a mirror can line the two up). While the
+     * app is hidden, or sync cannot run, the session is closed from the start and every fetch
+     * fails `closed`.
+     */
+    fun runUserUpdateCall(block: (UpdateSession) -> Unit) {
+        val call = UserUpdateCall(block, clock.monotonicMillis() + userUpdateCallMillis)
+        post { startUserUpdateCall(call) }
+    }
+
+    private val userUpdateCallMillis: Long get() = policy.bootstrapMillis + policy.updateRunMillis
+
+    /** Pending user update calls are decided again at every change, like the issuer calls. */
+    private fun dispatchUserUpdateCalls() {
+        if (pendingUserUpdateCalls.isEmpty()) return
+        val calls = pendingUserUpdateCalls.toList()
+        pendingUserUpdateCalls.clear()
+        calls.forEach(::startUserUpdateCall)
+    }
+
+    private fun startUserUpdateCall(call: UserUpdateCall) {
+        when {
+            wiped || halted || !wantForeground ->
+                runUserUpdateCallNow(call, null, ClosedLeases.openLease(), ensure = false)
+            running != null || quiet != null || update != null -> pendingUserUpdateCalls += call
+            else -> {
+                val e = engineFor(DatabaseOpener.Purpose.FOREGROUND)
+                if (e == null || e.disabled) {
+                    runUserUpdateCallNow(call, null, ClosedLeases.openLease(), ensure = false)
+                    return
+                }
+                runUserUpdateCallNow(call, e, leases.openLease(), ensure = true)
+            }
+        }
+    }
+
+    /**
+     * [call]'s thread: READY (made by the call itself when [ensure]), then the block with an
+     * [UpdateSession] whose deadline is the call's; the lease closes and the transport is aborted
+     * when no other activity owns it.
+     */
+    private fun runUserUpdateCallNow(call: UserUpdateCall, e: SyncEngine?, lease: TransportLease, ensure: Boolean) {
+        val startedAt = clock.monotonicMillis()
+        val session = RuntimeUpdateSession(
+            lease, minOf(call.deadline, startedAt + policy.updateRunMillis), 0, userInitiated = true,
+        ) {
+            e?.clockTrusted() == true
+        }
+        startCallbackThread {
+            try {
+                if (!lease.closed) {
+                    if (ensure) {
+                        e?.setTransportStatus(TransportStatus.STARTING)
+                        val state = transport.ensureReady(minOf(startedAt + policy.bootstrapMillis, session.deadlineMonotonicMillis - policy.deadlineReserveMillis))
+                        if (!lease.closed) noteTransport(e!!, state)
+                        if (state != TransportState.READY) return@startCallbackThread
+                    } else if (!lease.awaitReady(session.deadlineMonotonicMillis)) {
+                        return@startCallbackThread
+                    }
+                    call.block(session)
+                }
+            } finally {
+                post {
+                    lease.close()
+                    abortIfUnowned()
+                    e?.setTransportStatus(TransportStatus.OFF)
+                }
+            }
+        }
     }
 
     /** The payment screen is shown: a running relay session is closed at once (§19.11). */
@@ -538,6 +615,7 @@ internal class SyncRuntime(
     private fun reconcile() {
         reconcileActivity()
         dispatchUserCalls()
+        dispatchUserUpdateCalls()
     }
 
     private fun reconcileActivity() {
@@ -788,7 +866,7 @@ internal class SyncRuntime(
         val startedAt = clock.monotonicMillis()
         val run = Update(e, ticket, leases.openLease(), startedAt, startedAt + policy.updateRunMillis, drawIndex)
         setActivity { update = run }
-        val session = RuntimeUpdateSession(run) { e.clockTrusted() }
+        val session = RuntimeUpdateSession(run.lease, run.deadline, run.drawIndex, userInitiated = false) { e.clockTrusted() }
         startCallbackThread {
             try {
                 if (!run.lease.closed) {
@@ -836,31 +914,33 @@ internal class SyncRuntime(
         runConsumerTail(ParticipantKind.UPDATE_RUN, u.ticket, u.startedAt + policy.jobBudgetMillis)
     }
 
-    /** The [UpdateSession] of one update run: the run's draw and mirror access on its lease. */
+    /** The [UpdateSession] of one update run or user update call: the run's draw and the mirror
+     *  access on its lease. */
     private inner class RuntimeUpdateSession(
-        private val run: Update,
+        private val lease: TransportLease,
+        override val deadlineMonotonicMillis: Long,
+        private val drawIndex: Long,
+        override val userInitiated: Boolean,
         private val trusted: () -> Boolean,
     ) : UpdateSession {
-        override fun updateDraw(): ByteArray = random.updateDrawBytes(run.drawIndex)
+        override fun updateDraw(): ByteArray = random.updateDrawBytes(drawIndex)
 
         override fun clockTrusted(): Boolean = !closed && trusted()
 
-        override val deadlineMonotonicMillis: Long get() = run.deadline
-
-        override val closed: Boolean get() = run.lease.closed || clock.monotonicMillis() >= run.deadline
+        override val closed: Boolean get() = lease.closed || clock.monotonicMillis() >= deadlineMonotonicMillis
 
         override val mirror: MirrorAccess = object : MirrorAccess {
             override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
-                run.lease.useMirror { it.fetchBundle(mirrorSet, slot, callDeadline(deadlineMillis)) }
+                lease.useMirror { it.fetchBundle(mirrorSet, slot, callDeadline(deadlineMillis)) }
 
             override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =
-                run.lease.useMirror { it.fetchApkChunk(mirrorSet, slot, chunkIndex, callDeadline(deadlineMillis)) }
+                lease.useMirror { it.fetchApkChunk(mirrorSet, slot, chunkIndex, callDeadline(deadlineMillis)) }
         }
 
         /** The deadline of a fetch asking for [requested] ms: at most what is left of the run. */
         private fun callDeadline(requested: Int): Int {
-            val left = run.deadline - clock.monotonicMillis()
-            if (run.lease.closed || left < QuietRunScheduler.MIN_CALL_MILLIS) throw NetworkException("closed")
+            val left = deadlineMonotonicMillis - clock.monotonicMillis()
+            if (lease.closed || left < QuietRunScheduler.MIN_CALL_MILLIS) throw NetworkException("closed")
             return minOf(requested.toLong(), left).toInt()
         }
     }

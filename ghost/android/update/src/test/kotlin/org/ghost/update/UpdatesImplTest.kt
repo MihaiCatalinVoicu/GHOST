@@ -97,7 +97,7 @@ class UpdatesImplTest {
             native = native,
             installedVersionCode = { 1 },
             sdk = 29,
-            time = { Triple(true, day, 1_900_000_000L) },
+            dayNow = { day to 1_900_000_000L },
         )
         return UpdatesImpl(
             db = { db },
@@ -105,7 +105,8 @@ class UpdatesImplTest {
             engine = engine,
             installedVersionCode = { 1 },
             sdk = 29,
-            time = { Triple(true, day, 1_900_000_000L) },
+            clockTrusted = { true },
+            dayNow = { day to 1_900_000_000L },
             userCall = userCall,
         )
     }
@@ -115,6 +116,7 @@ class UpdatesImplTest {
         override fun clockTrusted(): Boolean = true
         override val deadlineMonotonicMillis: Long = Long.MAX_VALUE
         override val closed: Boolean = false
+        override val userInitiated: Boolean = false
         override val mirror: org.ghost.sync.api.MirrorAccess = object : org.ghost.sync.api.MirrorAccess {
             override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray = ByteArray(10) { slot.toByte() }
             override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =

@@ -31,14 +31,17 @@ import java.security.SecureRandom
  * changes in the same ACCEPT transaction through `:sync`'s store.
  */
 class UpdateEngine(
-    private val db: () -> SqlExecutor,
+    /** The database, by purpose: a user call opens with the foreground purpose, a job with the
+     *  background one (the opener's mayOpen rule, exactly as the sync runtime's engineFor). */
+    private val db: (org.ghost.sync.android.DatabaseOpener.Purpose) -> SqlExecutor,
     /** `noBackupFilesDir/update`: the module's only file directory (§7.7, X-D10). */
     private val files: File,
     private val native: UpdateNativeBridge = RealUpdateNativeBridge,
     private val installedVersionCode: () -> Int,
     private val sdk: Int,
-    /** The clock: trusted?, day (epoch days), now (unix seconds). */
-    private val time: () -> Triple<Boolean, Int, Long>,
+    /** The clock: day (epoch days) and now (unix seconds). The *trusted* flag is the session's
+     * own (§7.4: from `:sync`'s clock trust), not a wall-clock guess. */
+    private val dayNow: () -> Pair<Int, Long>,
     private val directory: (SqlExecutor) -> Unit = {},
 ) : UpdateParticipant {
 
@@ -46,9 +49,12 @@ class UpdateEngine(
 
     override fun onUpdateRun(session: UpdateSession) {
         var answered = false
-        val store = UpdateStateStore(db())
+        val store = UpdateStateStore(
+            db(if (session.userInitiated) org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND else org.ghost.sync.android.DatabaseOpener.Purpose.BACKGROUND),
+        )
         try {
-            val (trusted, day, now) = time()
+            val trusted = session.clockTrusted()
+            val (day, now) = dayNow()
             var loaded = store.load() ?: start(store)
             val offer = native.offer(loaded.blob, installedVersionCode(), sdk, loaded.rolloutKey, trusted, day)
             val mirrorSet = native.mirrorSet(

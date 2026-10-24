@@ -51,6 +51,16 @@ interface SyncController {
     fun runUserIssuerCall(block: (ParticipantSession) -> Unit)
 
     /**
+     * Runs [block] exactly once, on its own thread, with an [UpdateSession] (Phase 14 design §7.3:
+     * the user's own check or download). For user actions only, while the app is visible: READY on
+     * the one transport's `Update` scope, made READY for the call when nothing runs; it may run
+     * beside the foreground relay session (declared L10-D20). While the app is hidden, and when
+     * sync cannot run (wiped, stopped, another activity closing), the session is already closed
+     * and every fetch fails `closed`.
+     */
+    fun runUserUpdateCall(block: (UpdateSession) -> Unit)
+
+    /**
      * The payment screen is shown (Phase 8 design §19.11): any running relay session is closed at
      * once, and none starts while it is shown.
      */

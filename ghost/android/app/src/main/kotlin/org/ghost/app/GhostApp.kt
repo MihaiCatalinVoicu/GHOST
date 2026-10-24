@@ -130,6 +130,48 @@ class GhostApp : Application(), SyncHost {
         }
     }
 
+    /** The update engine, the runtime's one updater (Phase 14 design §9.4 item 2). */
+    private val updateEngine: org.ghost.update.UpdateEngine by lazy {
+        org.ghost.update.UpdateEngine(
+            db = { purpose -> database.open(purpose) ?: error("the update engine needs the database") },
+            files = java.io.File(noBackupFilesDir, "update"),
+            installedVersionCode = { installedVersionCode() },
+            sdk = android.os.Build.VERSION.SDK_INT,
+            dayNow = {
+                val now = System.currentTimeMillis()
+                (now / 86_400_000L).toInt() to (now / 1_000L)
+            },
+            // §7.8's relay-directory application in the ACCEPT transaction lands with the
+            // manifest-relay parsing helper (the hook is the store's, :sync owns the table).
+            directory = {},
+        )
+    }
+
+    /** The facade Phase 13's screens build on (§9.5). */
+    val updates: org.ghost.update.Updates by lazy {
+        org.ghost.update.UpdatesImpl(
+            db = { purpose -> database.open(purpose) ?: error("the update facade needs the database") },
+            native = org.ghost.update.RealUpdateNativeBridge,
+            engine = updateEngine,
+            installedVersionCode = { installedVersionCode() },
+            sdk = android.os.Build.VERSION.SDK_INT,
+            // The facade reads the clock trust the sync runtime exposes; until that plumbing
+            // lands, a check on the UI thread treats the clock as trusted (§7.4's σ bound is a
+            // native-side check in any case).
+            clockTrusted = { true },
+            dayNow = {
+                val now = System.currentTimeMillis()
+                (now / 86_400_000L).toInt() to (now / 1_000L)
+            },
+            userCall = syncController::runUserUpdateCall,
+        )
+    }
+
+    private fun installedVersionCode(): Int {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else info.versionCode
+    }
+
     private val wiring: SyncWiring by lazy {
         SyncWiring(
             keyExists = { keys.exists() },
@@ -139,6 +181,7 @@ class GhostApp : Application(), SyncHost {
             // The entitlement engine stays the one participant (Phase 8 design §11.6); the DM layer
             // adds its relay-session-start time trigger in front of it (Phase 9 design §21.9 rule 1).
             participant = messagingWiring.sessionHooks(entitlementWiring.participant),
+            updater = updateEngine,
             // Read on the sync runtime thread before any session can start (§19.11): the database
             // opened there is the one the runtime keeps using for the process.
             paymentShownAt = { database.open(DatabaseOpener.Purpose.FOREGROUND)?.let(EntitlementWiring::paymentShownEpochSeconds) },

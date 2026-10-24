@@ -114,6 +114,7 @@ class UpdateEngineTest {
         var fetchedBundles = 0
         var fetchedChunks = 0
         override var closed: Boolean = false
+        override val userInitiated: Boolean = false
 
         override fun updateDraw(): ByteArray = ByteArray(32) { 0xD7.toByte() }
 
@@ -161,7 +162,7 @@ class UpdateEngineTest {
         native = native,
         installedVersionCode = { 1 },
         sdk = 29,
-        time = { Triple(true, 20_990, 1_900_000_000L) },
+        dayNow = { 20_990 to 1_900_000_000L },
     )
 
     @Test

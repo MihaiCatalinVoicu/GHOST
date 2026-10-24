@@ -17,24 +17,28 @@ import org.ghost.sync.api.UpdateSession
  * UI wiring slice — the handle type is fixed here so the facade is complete.
  */
 class UpdatesImpl(
-    private val db: () -> SqlExecutor,
+    private val db: (org.ghost.sync.android.DatabaseOpener.Purpose) -> SqlExecutor,
     private val native: UpdateNativeBridge,
     private val engine: UpdateEngine,
     private val installedVersionCode: () -> Int,
     private val sdk: Int,
-    private val time: () -> Triple<Boolean, Int, Long>,
+    /** The clock: day and now; the trusted flag is the provider's (§7.4's trust is the sync
+     *  clock's, which the wiring reads). */
+    private val clockTrusted: () -> Boolean,
+    private val dayNow: () -> Pair<Int, Long>,
     /** The runtime's user-update-call runner: READY on the `Update` scope, the user's thread. */
     private val userCall: ((UpdateSession) -> Unit) -> Unit,
 ) : Updates {
 
-    private val store get() = UpdateStateStore(db())
+    private val store get() = UpdateStateStore(db(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND))
 
     override val status: UpdateStatus
         get() {
             val loaded = store.load() ?: return UpdateStatus.NoManifest
             if (loaded.facts.rootConflict) return UpdateStatus.RootConflict
             if (loaded.facts.conflict) return UpdateStatus.Conflict
-            val (trusted, day, _) = time()
+            val trusted = clockTrusted()
+            val (day, _) = dayNow()
             val staged = stagedRow(loaded)
             if (staged != null && (staged.state == "verified" || staged.state == "committed")) {
                 return UpdateStatus.Ready(nameOf(loaded.blob), staged.versionCode)
@@ -95,7 +99,7 @@ class UpdatesImpl(
         // The staged row names its APK by hash; the offer's hash is not parsed here, so the row
         // is whatever the engine staged (at most one exists, §9.6).
         var row: UpdateStateStore.Staged? = null
-        db().query("SELECT apk_sha256, version_code, apk_length, received, state FROM upd_staged") { r ->
+        db(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND).query("SELECT apk_sha256, version_code, apk_length, received, state FROM upd_staged") { r ->
             row = UpdateStateStore.Staged(r.long(1).toInt(), r.long(2), r.long(3), r.string(4))
         }
         return row

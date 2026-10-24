@@ -323,6 +323,8 @@ dependencies {
     implementation(project(":messaging"))
     implementation(project(":storage"))
     implementation(project(":sync"))
+    // Phase 14 design §9.1: the update engine and facade (S2).
+    implementation(project(":update"))
     implementation(project(":network"))
     implementation(project(":entitlement"))
     implementation(project(":media"))

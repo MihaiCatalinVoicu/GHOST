@@ -64,6 +64,9 @@ interface UpdateSession {
     /** The run's draw on the process's random key (Phase 14 design §7.8: the mirror draw). */
     fun updateDraw(): ByteArray
 
+    /** True in a user-requested call (§7.3): the database opens with the foreground purpose. */
+    val userInitiated: Boolean
+
     /** The engine trusts the device wall clock (a READY in this process, no step since), and the lease is open. */
     fun clockTrusted(): Boolean
 

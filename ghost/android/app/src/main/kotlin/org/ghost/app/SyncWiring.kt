@@ -2,6 +2,7 @@ package org.ghost.app
 
 import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.SyncController
+import org.ghost.sync.api.UpdateParticipant
 
 /**
  * The app's sync decisions (design §5.4, §5.6, §11.2 #17, #18; Phase 8 design §11.6, §19.11;
@@ -29,6 +30,8 @@ internal class SyncWiring(
     private val ensurePeriodic: () -> Unit,
     private val databaseAvailable: () -> Unit,
     private val participant: SessionParticipant,
+    /** The update engine, installed as the runtime's one updater (Phase 14 design §9.4 item 2). */
+    private val updater: UpdateParticipant,
     private val paymentShownAt: () -> Long?,
     private val restorePaymentHold: (() -> Long?) -> Unit,
     private val visible: () -> Unit,
@@ -37,6 +40,7 @@ internal class SyncWiring(
 ) {
     fun onProcessStart() {
         controller.setParticipant(participant)
+        controller.setUpdater(updater)
         if (!keyExists()) return
         // Read by the runtime thread (it opens the database), before any job or foreground command.
         restorePaymentHold(paymentShownAt)
