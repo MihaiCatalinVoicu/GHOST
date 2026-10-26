@@ -49,7 +49,7 @@ class UpdateEngineTest {
         var tail: ByteArray? = null
 
         override fun embeddedChain(): ByteArray = byteArrayOf(
-            'G'.code.toByte(), 'H'.code.toByte(), 'R'.code.toByte(), 'C'.code.toByte(), 1, 0, 2, 0,
+            'G'.code.toByte(), 'H'.code.toByte(), 'R'.code.toByte(), 'C'.code.toByte(), 1, 2, 0, 0,
         ) + ByteArray(121)
 
         override fun start(stored: ByteArray, embeddedChain: ByteArray, installed: Int): ByteArray {
@@ -286,5 +286,31 @@ class UpdateEngineTest {
     private fun ByteArray.toHexTest(): String {
         val alphabet = "0123456789abcdef"
         return joinToString("") { b -> "${alphabet[(b.toInt() shr 4) and 15]}${alphabet[b.toInt() and 15]}" }
+    }
+
+    @Test
+    fun networkOfReadsTheNetworkByteAtOffsetFive() {
+        // GHRC v1 (§4.4): "GHRC" ‖ version ‖ network ‖ first_version u32 ‖ count u16. Offset 6 is
+        // the first byte of first_version — reading it inserts network = 0 and fails the schema's
+        // CHECK on the device (caught by the emulator drill's direct-engine probe).
+        val db = JdbcSqlExecutor().also { MigrationRunner(it).migrate() }
+        val engine = UpdateEngine(
+            db = { db },
+            files = temp.newFolder("upd-net"),
+            native = FakeNative(ByteArray(0)),
+            installedVersionCode = { 1 },
+            sdk = 29,
+            dayNow = { 20_970 to 1_900_000_000L },
+        )
+        assertEquals(
+            2,
+            engine.networkOf(byteArrayOf(71, 72, 82, 67, 1, 2, 0, 0, 0, 1)),
+        )
+        try {
+            engine.networkOf(byteArrayOf(71, 72, 82, 67, 1))
+            throw AssertionError("short document must refuse")
+        } catch (e: org.ghost.network.NetworkException) {
+            // expected: below the 6-byte header
+        }
     }
 }

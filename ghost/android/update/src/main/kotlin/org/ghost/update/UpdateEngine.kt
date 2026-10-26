@@ -105,14 +105,17 @@ class UpdateEngine(
         return store.load()!!
     }
 
-    /** The network byte of the embedded chain (a GHRC document: `GHRC` ‖ version ‖ network). */
-    private fun networkOf(embedded: ByteArray): Int {
-        if (embedded.size < 7 || embedded[0] != 'G'.code.toByte() || embedded[1] != 'H'.code.toByte() ||
-            embedded[2] != 'R'.code.toByte() || embedded[3] != 'C'.code.toByte()
+    /** The network byte of the embedded chain (a GHRC document: `GHRC` ‖ version ‖ network —
+     *  network at offset 5, per §4.4's grammar; offset 6 is the first byte of first_version, which
+     *  made every first start insert network = 0 and fail the schema's CHECK — caught by the
+     *  emulator drill's direct-engine probe). */
+    internal fun networkOf(embedded: ByteArray): Int {
+        if (embedded.size < 6 || embedded[0] != 'G'.code.toByte() || embedded[1] != 'H'.code.toByte() ||
+            embedded[2] != 'R'.code.toByte() || embedded[3] != 'C'.code.toByte() || embedded[4] != 1.toByte()
         ) {
             throw NetworkException("malformed_response")
         }
-        return embedded[6].toInt() and 0xff
+        return embedded[5].toInt() and 0xff
     }
 
 
