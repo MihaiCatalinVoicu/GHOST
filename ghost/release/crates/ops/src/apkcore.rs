@@ -180,12 +180,36 @@ pub fn extract_core(file: &[u8], unsigned_length: u64) -> Result<Vec<u8>, CoreEr
     if file[e as usize..b as usize].iter().any(|&x| x != 0) {
         return Err(CoreError::Padding);
     }
+    Ok(build_core(file, &l, e))
+}
+
+fn build_core(file: &[u8], l: &Layout, e: u64) -> Vec<u8> {
     let mut core = Vec::with_capacity(e as usize + (l.length - l.cd_offset) as usize);
     core.extend_from_slice(&file[..e as usize]);
     core.extend_from_slice(&file[l.cd_offset as usize..]);
     let eocd_at = core.len() - EOCD_LEN;
     core[eocd_at + 16..eocd_at + 20].copy_from_slice(&(e as u32).to_le_bytes());
-    Ok(core)
+    core
+}
+
+/// Extract the core inferring the unsigned length: `E` is where the zero padding before the
+/// signing block starts (the zero run ending at `B`). AGP's debug signing pads to 4 bytes, not
+/// the design's 4 096 (that rule is the release pipeline's `apksigner` relation, checked by
+/// `check_core`), so fixture APKs — gate builds signed by AGP — cannot name a length up front.
+/// The pair (core, length) stays self-consistent: the client derives `E` from the length the
+/// same way, so hashing and verification agree.
+pub fn extract_core_inferred(file: &[u8]) -> Result<(Vec<u8>, u64), CoreError> {
+    let l = layout(file)?;
+    let b = l.cd_offset - l.block_s - 8;
+    let mut e = b;
+    while e > 0 && file[(e - 1) as usize] == 0 {
+        e -= 1;
+    }
+    if e == b || e == 0 {
+        return Err(CoreError::Rule);
+    }
+    let unsigned_length = e + l.cd_size + EOCD_LEN as u64;
+    Ok((build_core(file, &l, e), unsigned_length))
 }
 
 /// `apk-core --apk signed.apk --unsigned-length <n> --expect <sha256>`: extract the core with the

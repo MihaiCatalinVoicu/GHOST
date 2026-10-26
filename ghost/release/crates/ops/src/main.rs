@@ -140,18 +140,30 @@ fn run_apk_core(a: &Args) -> Result<String, String> {
     let apk_path = a.get("apk").unwrap_or_else(|| usage());
     let file = std::fs::read(apk_path)
         .map_err(|e| format!("cannot read {apk_path}: {e}"))?;
-    match (a.get("unsigned"), a.get("unsigned-length"), a.get("expect")) {
-        (Some(u), None, None) => {
+    match (a.get("unsigned"), a.get("unsigned-length"), a.get("expect"), a.get("extract")) {
+        (Some(u), None, None, None) => {
             let ufile = std::fs::read(u).map_err(|e| format!("cannot read {u}: {e}"))?;
             apkcore::check_core(&file, &ufile)
         }
-        (None, Some(n), Some(h)) => {
+        (None, Some(n), Some(h), None) => {
             let len: u64 = n.parse().map_err(|_| "unsigned-length not a number")?;
             let arr: [u8; 32] = hex::decode(h)
                 .ok()
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| "--expect must be 32 hex bytes".to_string())?;
             apkcore::check_core_sha256(&file, len, &arr)
+        }
+        (None, None, None, Some(out)) => {
+            // Extract the unsigned core deriving the length from the zero padding before the
+            // signing block (AGP's debug signing pads to 4 bytes, not the release pipeline's
+            // 4096; see extract_core_inferred). For fixtures and attestation tooling the
+            // unsigned build was not retained; the (core, length) pair stays self-consistent
+            // for the client's own extraction.
+            let (core, unsigned_length) =
+                apkcore::extract_core_inferred(&file).map_err(|e| e.to_string())?;
+            let sha = sha256_hex(&core);
+            std::fs::write(&out, &core).map_err(|e| format!("cannot write {out}: {e}"))?;
+            return Ok(format!("CORE_EXTRACTED path={out} unsigned_length={unsigned_length} sha256={sha}"));
         }
         _ => usage(),
     }
@@ -160,4 +172,11 @@ fn run_apk_core(a: &Args) -> Result<String, String> {
         format!("CORE_EQUAL padding={padding} blocks={}", ids.join(","))
     })
     .map_err(|e| e.to_string())
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b);
+    hex::encode(h.finalize())
 }
