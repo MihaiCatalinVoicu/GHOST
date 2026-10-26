@@ -33,6 +33,7 @@ mkdir -p "$OUT/bin"
 # (3) Native libraries for the shipped ABIs, with the checksum record the gates verify.
 bash scripts/build-native.sh "$WORK/jniLibs"
 install -m 0644 native-libs.sha256 "$OUT/bin/native-libs.sha256"
+cp -r "$WORK/jniLibs/." "$OUT/bin/"
 # build-native.sh writes to its own out dir; the app consumes the libraries from the
 # module tree (mirroring CI's android-native -> reproducible hand-off).
 JNI="$WORK/ghost/android/network/src/main/jniLibs"
