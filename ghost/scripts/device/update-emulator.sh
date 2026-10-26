@@ -50,11 +50,19 @@ done
 cd "$GHOST"
 cargo build --release --locked -p ghost-release-ops 2>&1 | tail -1
 
-rm -rf "$E"
-mkdir -p "$E/keys" "$E/out/roots" "$E/mirror/v1/stagenet/apk"
+# Keys and chain are reused when they already exist: an APK built earlier embeds THIS chain
+# (the native library compiles it in), so a fixture world around a pre-built APK must not
+# regenerate them. Delete ~/ghost-emulator to force a fresh world.
+if [ -f "$E/keys/root-1.hex" ] && [ -f "$E/out/chain.ghrc" ]; then
+  echo "REUSING existing keys and chain ($E)"
+else
+  rm -rf "$E"
+  mkdir -p "$E/keys" "$E/out/roots" "$E/mirror/v1/stagenet/apk"
+  "$OPS" keygen --out "$E/keys" --spec root:1,release:1,attest:1,apk:1,log:1,witness:1
+fi
+mkdir -p "$E/out" "$E/mirror/v1/stagenet/apk"
 
-"$OPS" keygen --out "$E/keys" --spec root:1,release:1,attest:1,apk:1,log:1,witness:1
-
+if [ ! -f "$E/out/root-1.ghrt" ]; then
 cat > "$E/cfg-root.toml" <<EOF
 network = 2
 version = 1
@@ -83,6 +91,7 @@ EOF
 "$OPS" root-build --config "$E/cfg-root.toml" --keys "$E/keys" --out "$E/out/root-1.ghrt"
 cp "$E/out/root-1.ghrt" "$E/out/roots/"
 "$OPS" chain-build --network 2 --roots "$E/out/roots" --out "$E/out/chain.ghrc"
+fi
 
 # The unsigned core of the gate APK (AGP-signed, so the length is inferred from the zero
 # padding — see apk-core --extract); the pair is self-consistent for the client's own check.
