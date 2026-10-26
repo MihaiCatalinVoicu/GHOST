@@ -29,9 +29,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Processor-count pin (D11): every JVM, cargo and Gradle sees 2 processors. ---
+# HOME=/home/builder: a real, unique path. The leak check in scripts/build-native.sh greps
+# the .so for $HOME's spellings; the distroless container default (/, or /tmp via tmpfs)
+# is a substring of legitimate embedded strings (e.g. temp-dir constants) and trips it.
 ENV JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2" \
     GRADLE_OPTS="-Dorg.gradle.workers.max=2" \
-    CARGO_BUILD_JOBS=2
+    CARGO_BUILD_JOBS=2 \
+    HOME=/home/builder
+# AGP writes under $HOME (.android, caches); the runtime user (image consumers run as
+# arbitrary uids) must be able to create it.
+RUN mkdir -p /home/builder && chmod 1777 /home/builder
 
 # --- JDK (Temurin 17, official SHA-256 from the Adoptium API) ---
 ARG JDK_URL=https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz
@@ -120,5 +127,28 @@ RUN cd /tmp \
 ENV ANDROID_HOME=/opt/android-sdk \
     ANDROID_SDK_ROOT=/opt/android-sdk \
     ANDROID_NDK_HOME=/opt/android-sdk/ndk/30.0.16248370
+
+# License markers: with a manual-install SDK there is no sdkmanager --licenses step; AGP
+# refuses to build without these. The values are the public accepted-marker hashes every
+# sdkmanager --licenses writes; baking them into the builder = the owner accepting the
+# SDK license terms for builds run inside this image.
+RUN mkdir -p /opt/android-sdk/licenses \
+    && echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > /opt/android-sdk/licenses/android-sdk-license \
+    && echo "84831b9409646a918e30573bab4c9c91346d8abd" > /opt/android-sdk/licenses/android-sdk-preview-license \
+    && echo "d975f751698a77b662f1254ddbeed3901e976f5a" > /opt/android-sdk/licenses/intel-android-extra-license
+
+# package.xml install metadata: AGP's SDK loader only registers components that carry it,
+# and sdkmanager normally writes it at install time. These files are generated from the
+# SAME pinned repository2 manifests the archive sha1 values above come from (the generator
+# is infra/builder/gen-package-xml.py; outputs validated field-by-field against
+# sdkmanager-installed samples), so a manual-install SDK is indistinguishable from a
+# managed one — without ever running sdkmanager.
+COPY package-xml/platforms_android-37.0.xml /opt/android-sdk/platforms/android-37.0/package.xml
+COPY package-xml/platforms_android-37.2.xml /opt/android-sdk/platforms/android-37.2/package.xml
+COPY package-xml/build-tools_37.0.0.xml /opt/android-sdk/build-tools/37.0.0/package.xml
+COPY package-xml/build-tools_36.0.0.xml /opt/android-sdk/build-tools/36.0.0/package.xml
+COPY package-xml/platform-tools.xml /opt/android-sdk/platform-tools/package.xml
+COPY package-xml/cmdline-tools_12.0.xml /opt/android-sdk/cmdline-tools/latest/package.xml
+COPY package-xml/ndk_30.0.16248370.xml /opt/android-sdk/ndk/30.0.16248370/package.xml
 
 WORKDIR /src
