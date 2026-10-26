@@ -2056,6 +2056,8 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "ghost-client-dm",
  "ghost-client-mls",
+ "ghost-client-release",
+ "ghost-client-update",
  "ghost-entitlement",
  "ghost-issuer-api",
  "ghost-relay-api",
@@ -2063,6 +2065,7 @@ dependencies = [
  "ghost-relay-node",
  "hex",
  "http",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "jni",
@@ -2082,6 +2085,33 @@ dependencies = [
  "tor-rtcompat",
  "tower",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ghost-client-release"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.10.2",
+ "sha2 0.11.0",
+ "sha3 0.10.9",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "ghost-client-update"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "ghost-client-release",
+ "ghost-release-ops",
+ "hex",
+ "hmac 0.13.0",
+ "sha2 0.11.0",
+ "sha3 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2256,6 +2286,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-release-ops"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "ghost-client-release",
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+ "sha3 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "ghost-t2-join"
 version = "0.1.0"
 dependencies = [
@@ -2276,6 +2321,21 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "ghost-verify"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "ghost-client-release",
+ "ghost-client-update",
+ "ghost-release-ops",
+ "hex",
+ "sha2 0.11.0",
+ "sha3 0.10.9",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -7168,6 +7228,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
+name = "ureq"
+version = "3.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a7ac20be9b7726e0bbdbf974c059676d9acb1cd414961f570a4e8231cacd7fc"
+dependencies = [
+ "base64 0.23.1",
+ "log",
+ "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
+ "ureq-proto",
+ "utf8-zero",
+ "webpki-roots",
+]
+
+[[package]]
+name = "ureq-proto"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
+dependencies = [
+ "base64 0.23.1",
+ "http",
+ "httparse",
+ "log",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7178,6 +7266,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf8-zero"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
 
 [[package]]
 name = "utf8_iter"
@@ -7427,6 +7521,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6ab47578e1cd38415489592da29326341e272bd281f4ddbc0c10b654a425ad7"
 dependencies = [
  "web-time",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
