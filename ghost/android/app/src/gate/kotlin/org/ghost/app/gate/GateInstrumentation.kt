@@ -151,35 +151,43 @@ class GateInstrumentation : Instrumentation() {
             // against the drill root's bundles on the real staging mirrors. Answers are status
             // names and codes in the result bundle — never content.
             "update-probe" -> {
-                // The drill's persistence probe: starts one update run (async on the runtime's
-                // user-call thread — foreground, exactly like `update-check`), then polls the
-                // update tables IN THIS PROCESS until the run records its state or the deadline —
-                // separating "never written" from "written but invisible across processes".
-                app.syncController.onAppForeground()
-                try {
-                    app.updates.requestCheck()
-                    val deadline = SystemClock.elapsedRealtime() + 240_000L
-                    var report = "db-null"
-                    while (SystemClock.elapsedRealtime() < deadline) {
-                        val sql = app.openDatabaseDirectly()
-                        if (sql == null) {
-                            report = "db-null"
-                            break
-                        }
-                        var stateRows = 0
-                        sql.query("SELECT count(*) FROM upd_state") { r -> stateRows = r.long(0).toInt() }
-                        var staged = 0
-                        sql.query("SELECT count(*) FROM upd_staged") { r -> staged = r.long(0).toInt() }
-                        var failedRuns = -1
-                        sql.query("SELECT failed_runs FROM upd_state WHERE id = 1") { r -> failedRuns = r.long(0).toInt() }
-                        val dir = java.io.File(app.noBackupFilesDir, "update")
-                        report = "state=$stateRows staged=$staged failed=$failedRuns files=${dir.list()?.toList() ?: emptyList()}"
-                        if (stateRows > 0 && (staged > 0 || failedRuns > 0)) break
-                        SystemClock.sleep(1_000L)
+                // The drill's decisive probe: runs the update ENGINE directly on this thread with a
+                // hand-built session (trusted clock, the loopback mirror) — bypassing the sync
+                // runtime's dispatch entirely. Tests exactly engine + native seam + persistence;
+                // the runtime-plumbed path is `update-check`'s own coverage.
+                val mirror = UpdateLoopback.mirror(app)
+                if (mirror == null) {
+                    out.putString("update.probe", "no-loopback")
+                } else {
+                    val engine = app.updateEngineForProbe()
+                    val session = object : org.ghost.sync.api.UpdateSession {
+                        override fun updateDraw(): ByteArray = ByteArray(32)
+                        override val userInitiated: Boolean = true
+                        override fun clockTrusted(): Boolean = true
+                        override val deadlineMonotonicMillis: Long =
+                            SystemClock.elapsedRealtime() + 240_000L
+                        override val closed: Boolean get() = false
+                        override val mirror: org.ghost.sync.api.MirrorAccess = mirror
                     }
-                    out.putString("update.probe", report)
-                } finally {
-                    app.syncController.onAppBackground()
+                    val error = try {
+                        engine.onUpdateRun(session)
+                        null
+                    } catch (e: RuntimeException) {
+                        val at = e.stackTrace.firstOrNull { it.className.startsWith("org.ghost") }
+                        "${e.javaClass.simpleName}:${e.message?.take(100)}@${at?.className?.substringAfterLast('.')}.${at?.methodName}:${at?.lineNumber}"
+                    }
+                    val sql = app.openDatabaseDirectly()
+                    var stateRows = 0
+                    var staged = 0
+                    if (sql != null) {
+                        sql.query("SELECT count(*) FROM upd_state") { r -> stateRows = r.long(0).toInt() }
+                        sql.query("SELECT count(*) FROM upd_staged") { r -> staged = r.long(0).toInt() }
+                    }
+                    val dir = java.io.File(app.noBackupFilesDir, "update")
+                    out.putString(
+                        "update.probe",
+                        "error=${error ?: "none"} state=$stateRows staged=$staged files=${dir.list()?.toList() ?: emptyList()}",
+                    )
                 }
             }
             "update-status" -> {
@@ -243,9 +251,17 @@ class GateInstrumentation : Instrumentation() {
             "update-install" -> {
                 // commit() streams the native-verified APK into a PackageInstaller session and
                 // asks the platform for its confirmation; the orchestrator confirms the platform
-                // dialog over UI Automator while this command is still on the wire.
-                app.updates.install().commit()
-                out.putString("update.install", "COMMITTED")
+                // dialog over UI Automator while this command holds the app foreground (the
+                // dialog surfaces for a foreground app; the hold keeps the process alive so the
+                // committed session isn't abandoned).
+                app.syncController.onAppForeground()
+                try {
+                    app.updates.install().commit()
+                    out.putString("update.install", "COMMITTED")
+                    SystemClock.sleep(45_000L)
+                } finally {
+                    app.syncController.onAppBackground()
+                }
             }
             "update-loopback" -> {
                 // §11.4's emulator seam: "off" restores the Tor mirror; anything else is the

@@ -37,6 +37,10 @@ class ModelMirror(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0].split("#", 1)[0]
         parts = [p for p in path.split("/") if p]
+        # The fixed paths of §7.2 carry the /ghost prefix the real mirrors serve under; the
+        # layout under --root is the same tree (v1/<net>/...), so strip the prefix.
+        if parts and parts[0] == "ghost":
+            parts = parts[1:]
         # Normalise: /v1/<net>/current.ghrb or /v1/<net>/apk/<sha>
         if len(parts) == 3 and parts[0] == "v1" and NET.match(parts[1]) and parts[2] == "current.ghrb":
             rel = os.path.join("v1", parts[1], "current.ghrb")

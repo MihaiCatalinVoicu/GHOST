@@ -227,8 +227,7 @@ class GhostApp : Application(), SyncHost {
      *  commit asks the platform for its own confirmation — never a silent update — and the
      *  status broadcast reaches [UpdateInstallReceiver] (T15m, X-D8). */
     private val updateInstaller = org.ghost.update.Updates.Installer { apk ->
-        val pm = getSystemService("packageinstaller")
-            as android.content.pm.PackageInstaller
+        val pm = packageManager.packageInstaller
         val params = android.content.pm.PackageInstaller.SessionParams(
             android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
         )
@@ -392,6 +391,9 @@ class GhostApp : Application(), SyncHost {
     fun ensureDatabaseKey() {
         if (!keys.exists()) createDatabaseKey()
     }
+
+    /** The gate instrumentation's direct engine access (the drill's probe drives a session by hand). */
+    fun updateEngineForProbe(): org.ghost.update.UpdateEngine = updateEngine
 
     /** The gate instrumentation's read-only access to the open database (the drill's probe). */
     fun openDatabaseDirectly(): org.ghost.storage.SqlExecutor? =

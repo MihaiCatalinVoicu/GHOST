@@ -173,22 +173,26 @@ class UpdateEngine(
         val bytes = file.readBytes()
         if (bytes.size.toLong() != offer.apkLength) return false
         if (bytes.size < 22 + 24) return false
+        // The native ApkCheck's streaming contract: begin(tail) → footer(the 24 bytes before the
+        // central directory) → the body in order → finish. The footer comes FIRST (its check
+        // arms before any body byte); streaming the body first made the native refuse the first
+        // chunk with OUT_OF_ORDER (caught by the emulator drill).
+        val cdOffset = readCdOffset(bytes)
+        if (cdOffset < 24) return false
         val handle = native.apkBegin(loaded.blob, offer.releaseIndex, sdk, offer.apkLength, bytes.copyOfRange(bytes.size - 22, bytes.size))
         try {
+            if (native.apkFooter(handle, bytes.copyOfRange(cdOffset - 24, cdOffset)) != UpdateNative.OK) {
+                native.apkAbort(handle)
+                return false
+            }
             var offset = 0L
             while (offset < bytes.size - 22) {
                 val end = minOf(offset + STREAM_CHUNK, (bytes.size - 22).toLong()).toInt()
-                val code = native.apkUpdate(handle, offset, bytes.copyOfRange(offset.toInt(), end))
-                if (code != UpdateNative.OK) {
+                if (native.apkUpdate(handle, offset, bytes.copyOfRange(offset.toInt(), end)) != UpdateNative.OK) {
                     native.apkAbort(handle)
                     return false
                 }
                 offset = end.toLong()
-            }
-            val cdOffset = readCdOffset(bytes)
-            if (cdOffset < 24 || native.apkFooter(handle, bytes.copyOfRange(cdOffset - 24, cdOffset)) != UpdateNative.OK) {
-                native.apkAbort(handle)
-                return false
             }
             if (native.apkFinish(handle) != UpdateNative.OK) return false
         } catch (e: Throwable) {
@@ -198,7 +202,7 @@ class UpdateEngine(
         val target = File(files, offer.apkSha256.toHex() + ".apk")
         if (!file.renameTo(target)) {
             store.stageClear(offer.apkSha256)
-            return false
+            return refuse("rename")
         }
         // The rename is the file half; the row follows in the same step.
         store.stageVerified(offer.apkSha256)
