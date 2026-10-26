@@ -1,0 +1,19 @@
+# ghost-builder pins (gate G-D2, docs/design/faza14-distribution.md §6.3)
+#
+# One line per pin: <name> <value> <where-enforced>
+# Verify with:  docker buildx imagetools inspect $(docker inspect ghost-builder:24.04-1 | ...)
+#               docker image inspect ghost-builder:24.04-1 --format '{{.RepoDigests}}'
+# A ceremony starts only if every line below matches the image it is about to use.
+
+image        ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac  Dockerfile FROM
+build-essential  12.10ubuntu1        apt pin (Dockerfile)
+ca-certificates  20260816ubuntu0.24.04.1  apt pin (Dockerfile)
+curl             8.5.0-2ubuntu10.16  apt pin (Dockerfile)
+git              1:2.43.0-1ubuntu7.4 apt pin (Dockerfile)
+pkg-config       1.8.1-2build1       apt pin (Dockerfile)
+protobuf-compiler 3.21.12-8.2ubuntu0.4 apt pin (Dockerfile, prost-build needs protoc)
+rustup           1.28.2 (or sh.rustup.rs HEAD at image build; record the image ID below)  Dockerfile rustup install
+rust_channel     1.98.1              ghost/rust-toolchain.toml (mounted checkout — the tag's own pin)
+
+# Instance built for the Faza 14 S4 verification (this line is appended by the build run):
+image_id     sha256:56f9d949f4804afafbf12eebeec5ed9a2c188013233f11bb79a9523d87ecf0ff  # ghost-builder:24.04-1, selfcheck PASS (2x recipe-A, SHA256SUMS identical, b_digest d92aa5decd049b35, 2026-10-26)
