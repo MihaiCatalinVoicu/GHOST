@@ -584,8 +584,9 @@ pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeBootstrapRelays
     })
 }
 
-/// §7.8's half of the directory hook: the GHRM's relay list (raw onions → host labels, the
-/// relay port the manifest does not carry is the canonical 443, `relay-directory.txt:14`).
+/// §7.8's half of the directory hook: the GHRM's relay list, in the document's canonical
+/// `"<56 base32>.onion:<port>"` spelling (the parser's canonical_onion rule; the port rides in
+/// the text, unlike the raw manifest mirrors' connection spelling decided per entry).
 /// `[code][entries]`; a malformed document is `INVALID_ARGUMENT` (a signed manifest the codec
 /// verified cannot be malformed, so this is a defence-in-depth arm).
 #[no_mangle]
@@ -599,10 +600,10 @@ pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeManifestRelays(
         let ghrm = ghost_client_release::manifest::GHRM::parse(&doc)
             .map_err(|_| cat::INVALID_ARGUMENT)?;
         let mut relays = Vec::with_capacity(ghrm.body.relays.len());
-        for (raw, operator) in &ghrm.body.relays {
-            let host = ghost_client_release::onion::raw_to_host(raw)
+        for (text, operator) in &ghrm.body.relays {
+            let (host, port) = ghost_client_release::onion::split_host_port(text)
                 .map_err(|_| cat::INVALID_ARGUMENT)?;
-            relays.push(NativeRelay { host, port: 443, operator: *operator });
+            relays.push(NativeRelay { host, port, operator: *operator });
         }
         Ok(to_java(env, &encode_relays(0, &relays))?)
     })
