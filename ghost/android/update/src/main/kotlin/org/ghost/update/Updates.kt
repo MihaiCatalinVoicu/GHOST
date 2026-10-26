@@ -36,4 +36,13 @@ interface Updates {
         fun commit()
         fun abandon()
     }
+
+    /** §7.7's platform install session opener; the app wiring supplies the PackageInstaller one.
+     *  Kept as an interface so the facade's JVM tests drive a fake (no android.jar shadows). */
+    fun interface Installer {
+        /** Streams [apk] (the staged, native-verified file) into a fresh platform install session
+         *  and commits it. The platform shows its own confirmation (no silent update, D18); the
+         *  status broadcast reaches the app's non-exported receiver (T15m, X-D8). */
+        fun install(apk: java.io.File)
+    }
 }

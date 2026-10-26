@@ -28,6 +28,10 @@ class UpdatesImpl(
     private val dayNow: () -> Pair<Int, Long>,
     /** The runtime's user-update-call runner: READY on the `Update` scope, the user's thread. */
     private val userCall: ((UpdateSession) -> Unit) -> Unit,
+    /** `noBackupFilesDir/update`, the same directory [UpdateEngine] stages into (§7.7, X-D10). */
+    private val files: java.io.File,
+    /** §7.7's platform session opener (the PackageInstaller one in the app wiring). */
+    private val installer: Updates.Installer,
 ) : Updates {
 
     private val store get() = UpdateStateStore(db(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND))
@@ -39,7 +43,7 @@ class UpdatesImpl(
             if (loaded.facts.conflict) return UpdateStatus.Conflict
             val trusted = clockTrusted()
             val (day, _) = dayNow()
-            val staged = stagedRow(loaded)
+            val staged = store.staged()
             if (staged != null && (staged.state == "verified" || staged.state == "committed")) {
                 return UpdateStatus.Ready(nameOf(loaded.blob), staged.versionCode)
             }
@@ -87,23 +91,29 @@ class UpdatesImpl(
     }
 
     override fun install(): Updates.InstallHandle = object : Updates.InstallHandle {
-        // §7.7's PackageInstaller session (stream with the native check, commit after apkFinish =
-        // OK) lands with the Phase 13 wiring slice; the handle shape is fixed here.
-        override fun commit() = throw UnsupportedOperationException("install lands with the UI wiring slice")
+        // §7.7: the platform session. commit() runs on the user's action (the gateway's
+        // @UserAction), after the engine's native check staged the APK as `verified`.
+        private var used = false
+
+        override fun commit() {
+            check(!used) { "an install handle commits once" }
+            used = true
+            store.load() ?: throw IllegalStateException("no update state to install from")
+            val row = store.staged() ?: throw IllegalStateException("nothing staged")
+            check(row.state == "verified" || row.state == "committed") {
+                "the staged APK is not verified"
+            }
+            val apk = java.io.File(files, row.sha256.toHex() + ".apk")
+            if (!apk.isFile || apk.length() != row.apkLength) {
+                throw IllegalStateException("the staged APK file is gone or truncated")
+            }
+            installer.install(apk)
+        }
+
         override fun abandon() = Unit
     }
 
     // ------------------------------------------------------------------ the derivations
-
-    private fun stagedRow(loaded: UpdateStateStore.Loaded): UpdateStateStore.Staged? {
-        // The staged row names its APK by hash; the offer's hash is not parsed here, so the row
-        // is whatever the engine staged (at most one exists, §9.6).
-        var row: UpdateStateStore.Staged? = null
-        db(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND).query("SELECT apk_sha256, version_code, apk_length, received, state FROM upd_staged") { r ->
-            row = UpdateStateStore.Staged(r.long(1).toInt(), r.long(2), r.long(3), r.string(4))
-        }
-        return row
-    }
 
     /** The manifest's `issued_day` and `not_after_day` live at fixed offsets of the GHRM body
      * (§4.5: magic 4 ‖ version 1 ‖ network 1 ‖ seq 8 ‖ root_version 4 ‖ root_sha 32 ‖ issued 4 ‖
@@ -130,6 +140,8 @@ class UpdatesImpl(
         if (len < 1 || 64 + len > manifest.size) return "update"
         return manifest.copyOfRange(64, 64 + len).toString(Charsets.US_ASCII)
     }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private companion object {
         const val NO_CHANNEL_RUNS = 12

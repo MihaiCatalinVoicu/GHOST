@@ -89,11 +89,13 @@ class UpdatesImplTest {
         db: JdbcSqlExecutor,
         native: FakeNative,
         day: Int = 20_970,
+        files: java.io.File = temp.newFolder("upd-${System.nanoTime()}"),
+        installer: Updates.Installer = Updates.Installer { throw AssertionError("unexpected install") },
         userCall: ((UpdateSession) -> Unit) -> Unit = { it(FakeSession()) },
     ): UpdatesImpl {
         val engine = UpdateEngine(
             db = { db },
-            files = temp.newFolder("upd-${System.nanoTime()}"),
+            files = files,
             native = native,
             installedVersionCode = { 1 },
             sdk = 29,
@@ -108,6 +110,8 @@ class UpdatesImplTest {
             clockTrusted = { true },
             dayNow = { day to 1_900_000_000L },
             userCall = userCall,
+            files = files,
+            installer = installer,
         )
     }
 
@@ -204,5 +208,81 @@ class UpdatesImplTest {
         // No offer: the download finds nothing to start.
         assertEquals(Updates.DownloadOutcome.NothingToDownload, updates.requestDownload())
         assertEquals(2, sessions)
+    }
+
+    @Test
+    fun installCommitsTheStagedVerifiedApkThroughTheInstaller() {
+        val db = db()
+        seed(db, facts(manifest()))
+        val sha = ByteArray(32) { it.toByte() }
+        val store = UpdateStateStore(db)
+        store.stageBegin(sha, 2, 4)
+        store.stageVerified(sha)
+        val files = temp.newFolder("upd-install")
+        val apk = java.io.File(files, sha.joinToString("") { "%02x".format(it) } + ".apk")
+        apk.writeBytes(ByteArray(4) { 0x51 })
+        var installed: java.io.File? = null
+        val updates = facade(
+            db, FakeNative(UpdateNative.Offer.None(UpdateNative.UP_TO_DATE)), files = files,
+            installer = Updates.Installer { f -> installed = f },
+        )
+        updates.install().commit()
+        assertEquals(apk.absolutePath, installed?.absolutePath)
+        // The status already showed Ready for the verified row.
+        assertEquals(UpdateStatus.Ready("0.9.0-stg2", 2), updates.status)
+    }
+
+    @Test
+    fun installRefusesWithoutAStagedVerifiedApk() {
+        val db = db()
+        seed(db, facts(manifest()))
+        val updates = facade(db, FakeNative(UpdateNative.Offer.None(UpdateNative.UP_TO_DATE)))
+        try {
+            updates.install().commit()
+            throw AssertionError("commit without a staged APK must refuse")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("nothing staged"))
+        }
+    }
+
+    @Test
+    fun installRefusesAPartialDownload() {
+        val db = db()
+        seed(db, facts(manifest()))
+        val sha = ByteArray(32) { 7 }
+        val store = UpdateStateStore(db)
+        store.stageBegin(sha, 2, 4)
+        val updates = facade(db, FakeNative(UpdateNative.Offer.None(UpdateNative.UP_TO_DATE)))
+        try {
+            updates.install().commit()
+            throw AssertionError("commit on a partial row must refuse")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("not verified"))
+        }
+    }
+
+    @Test
+    fun anInstallHandleCommitsOnce() {
+        val db = db()
+        seed(db, facts(manifest()))
+        val sha = ByteArray(32) { 3 }
+        val store = UpdateStateStore(db)
+        store.stageBegin(sha, 2, 4)
+        store.stageVerified(sha)
+        val files = temp.newFolder("upd-once")
+        java.io.File(files, sha.joinToString("") { "%02x".format(it) } + ".apk").writeBytes(ByteArray(4))
+        var installs = 0
+        val updates = facade(
+            db, FakeNative(UpdateNative.Offer.None(UpdateNative.UP_TO_DATE)), files = files,
+            installer = Updates.Installer { installs++ },
+        )
+        val handle = updates.install()
+        handle.commit()
+        try {
+            handle.commit()
+            throw AssertionError("a handle commits once")
+        } catch (e: IllegalStateException) {
+            assertEquals(1, installs)
+        }
     }
 }

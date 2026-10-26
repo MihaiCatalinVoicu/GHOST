@@ -125,15 +125,24 @@ class UpdateStateStore(private val db: SqlExecutor) {
 
     // ---------------------------------------------------------- the staged row (§7.7, §9.6.1)
 
-    class Staged(val versionCode: Int, val apkLength: Long, val received: Long, val state: String)
+    class Staged(val sha256: ByteArray, val versionCode: Int, val apkLength: Long, val received: Long, val state: String)
 
     fun staged(sha: ByteArray): Staged? {
         var out: Staged? = null
         db.query(
-            "SELECT version_code, apk_length, received, state FROM upd_staged WHERE apk_sha256 = ?",
+            "SELECT apk_sha256, version_code, apk_length, received, state FROM upd_staged WHERE apk_sha256 = ?",
             listOf(sha),
         ) { r ->
-            out = Staged(r.long(0).toInt(), r.long(1), r.long(2), r.string(3))
+            out = Staged(r.blob(0), r.long(1).toInt(), r.long(2), r.long(3), r.string(4))
+        }
+        return out
+    }
+
+    /** The single staged row (§9.6's at-most-one invariant), whatever its state. */
+    fun staged(): Staged? {
+        var out: Staged? = null
+        db.query("SELECT apk_sha256, version_code, apk_length, received, state FROM upd_staged") { r ->
+            out = Staged(r.blob(0), r.long(1).toInt(), r.long(2), r.long(3), r.string(4))
         }
         return out
     }

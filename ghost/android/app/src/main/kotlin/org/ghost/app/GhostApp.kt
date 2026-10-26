@@ -164,7 +164,40 @@ class GhostApp : Application(), SyncHost {
                 (now / 86_400_000L).toInt() to (now / 1_000L)
             },
             userCall = syncController::runUserUpdateCall,
+            files = java.io.File(noBackupFilesDir, "update"),
+            installer = updateInstaller,
         )
+    }
+
+    /** §7.7's session (D18): the verified bytes stream into a PackageInstaller session, the
+     *  commit asks the platform for its own confirmation — never a silent update — and the
+     *  status broadcast reaches [UpdateInstallReceiver] (T15m, X-D8). */
+    private val updateInstaller = org.ghost.update.Updates.Installer { apk ->
+        val pm = getSystemService("packageinstaller")
+            as android.content.pm.PackageInstaller
+        val params = android.content.pm.PackageInstaller.SessionParams(
+            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+        )
+        val session = pm.openSession(pm.createSession(params))
+        try {
+            apk.inputStream().use { input ->
+                session.openWrite("ghost-update", 0, apk.length()).use { out ->
+                    input.copyTo(out)
+                    out.flush()
+                    session.fsync(out)
+                }
+            }
+            val intent = android.content.Intent(this, UpdateInstallReceiver::class.java)
+            val flags = if (android.os.Build.VERSION.SDK_INT >= 23) {
+                android.app.PendingIntent.FLAG_MUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            session.commit(android.app.PendingIntent.getBroadcast(this, 0, intent, flags).intentSender)
+        } catch (t: Throwable) {
+            session.abandon()
+            throw t
+        }
     }
 
     private fun installedVersionCode(): Int {

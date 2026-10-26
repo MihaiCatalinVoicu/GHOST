@@ -71,6 +71,13 @@
             android:name="org.ghost.messaging.android.ExpiryAlarmReceiver"
             android:exported="false" />
 
+        <!-- Faza 14 §7.7 (X-D8, T15m): the install-session status receiver. Not exported and
+             without an intent filter: only the app's own explicit PendingIntent (the
+             PackageInstaller commit's) reaches it. -->
+        <receiver
+            android:name="org.ghost.app.UpdateInstallReceiver"
+            android:exported="false" />
+
         <!-- Phase 11 design §9.2 (slice S5): the isolated image-decoding service. One process
              instance per request (a fresh random instance name per bind); no permissions of its
              own, not exported, no intent filter; GhostApp returns before any wiring in it. -->
