@@ -113,6 +113,7 @@ fn main() {
             let today = a.get("today").and_then(|s| s.parse().ok());
             build::inspect(&path(&a, "bundle"), today)
         }
+        "sums-compare" => build::sums_compare(&path(&a, "a-local"), &path(&a, "a-job"), &path(&a, "b-job")),
         "bundle" => {
             let proofs: Vec<PathBuf> = a.all("root-proof").iter().map(PathBuf::from).collect();
             build::bundle(

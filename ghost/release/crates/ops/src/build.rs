@@ -955,3 +955,81 @@ fn check_proof(p: &GHRP, file: &[u8], quorum: usize, idx: usize) -> Result<(), S
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// sums-compare (RK1 step 2, CR-M5)
+// ---------------------------------------------------------------------------
+
+/// One parsed SHA256SUMS entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SumsEntry {
+    name: String,
+    sha256: [u8; 32],
+}
+
+fn parse_sums(text: &str, what: &str) -> Result<Vec<SumsEntry>, String> {
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        // "<64 hex>  <name>" (two spaces, the `*`-marker form refused: names only, no binaries).
+        let (hex_part, name) = line
+            .split_once("  ")
+            .ok_or_else(|| format!("{what}: line {} does not parse", i + 1))?;
+        let sha: [u8; 32] = hex::decode(hex_part.trim())
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| format!("{what}: line {} is not a sha256", i + 1))?;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(format!("{what}: line {} has no name", i + 1));
+        }
+        if name.starts_with('*') {
+            return Err(format!("{what}: line {} uses the binary marker", i + 1));
+        }
+        out.push(SumsEntry { name, sha256: sha });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    for w in out.windows(2) {
+        if w[0].name == w[1].name {
+            return Err(format!("{what}: duplicate name {}", w[0].name));
+        }
+    }
+    Ok(out)
+}
+
+/// `sums-compare --a-local <f> --a-job <f> --b-job <f>` (RK1 step 2): the three SHA256SUMS of
+/// the release must agree entry for entry; on agreement prints `SUMS_EQUAL files=<n>
+/// b_digest=<first 16 hex of SHA-256(SHA256SUMS-B)>`. `b_digest` is what the owner compares on
+/// an independent device (CR-M5: a workstation that forged B's sums is caught there, never
+/// through the workstation). `SUMS_DIFFER <which> <name>` on any disagreement.
+pub fn sums_compare(a_local: &Path, a_job: &Path, b_job: &Path) -> Outcome {
+    let read = |p: &Path, what: &str| -> Result<(Vec<SumsEntry>, Vec<u8>), String> {
+        let raw = std::fs::read(p).map_err(|e| format!("{what}: cannot read {}: {e}", p.display()))?;
+        let text = String::from_utf8(raw.clone()).map_err(|_| format!("{what}: not UTF-8"))?;
+        Ok((parse_sums(&text, what)?, raw))
+    };
+    let (local, _) = read(a_local, "a-local")?;
+    let (ajob, _) = read(a_job, "a-job")?;
+    let (bjob, braw) = read(b_job, "b-job")?;
+    if local.is_empty() {
+        return Err("a-local has no entries".into());
+    }
+    for (which, other) in [("a-job", &ajob), ("b-job", &bjob)] {
+        for (x, y) in local.iter().zip(other.iter()) {
+            if x.name != y.name || x.sha256 != y.sha256 {
+                return Err(format!("SUMS_DIFFER {which} {}", x.name));
+            }
+        }
+        if other.len() != local.len() {
+            return Err(format!("SUMS_DIFFER {which} <file count>"));
+        }
+    }
+    let b_digest = sha256(&braw);
+    Ok(format!(
+        "SUMS_EQUAL files={} b_digest={}",
+        local.len(),
+        hex::encode(b_digest)[..16].to_string()
+    ))
+}
