@@ -14,16 +14,17 @@ TAG="${1:?usage: run-in-image.sh <tag> [--out <dir>]}"
 OUT="$(pwd)/build-out-image"
 [ "${2:-}" = "--out" ] && OUT="${3:?--out needs a directory}"
 
-IMG="ghost-builder:24.04-1"
+IMG="ghost-builder:24.04-2"
 REPO="$(git rev-parse --show-toplevel)"
 mkdir -p "$OUT"
 
+# --tmpfs /src: the build unpacks the tag's sources on tmpfs (design §6, D11).
 exec docker run --rm \
   --user "$(id -u):$(id -g)" \
+  --tmpfs /tmp:exec \
   -v "$REPO:/repo:ro" \
   -v "$OUT:/out" \
   -v "$HOME/.cargo/registry:/opt/cargo/registry" \
-  -e RUSTUP_HOME=/opt/rustup \
   -e CARGO_HOME=/opt/cargo \
   -w /repo/ghost \
   "$IMG" \

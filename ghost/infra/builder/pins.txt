@@ -1,9 +1,12 @@
-# ghost-builder pins (gate G-D2, docs/design/faza14-distribution.md §6.3)
+# ghost-builder pins (gate G-D2, docs/design/faza14-distribution.md §6.3, decision D11)
 #
 # One line per pin: <name> <value> <where-enforced>
-# Verify with:  docker buildx imagetools inspect $(docker inspect ghost-builder:24.04-1 | ...)
-#               docker image inspect ghost-builder:24.04-1 --format '{{.RepoDigests}}'
-# A ceremony starts only if every line below matches the image it is about to use.
+# A ceremony starts only if every line below matches the image it is about to use
+# (docker image inspect ghost-builder:24.04-2).
+# Toolchain inputs are fetched directly (no sdkmanager/rustup) and verified in the
+# Dockerfile against these digests; Android SHA-1 values are the official ones from
+# dl.google.com's repository2-1.xml / repository2-3.xml; SHA-256 values for Rust/Temurin
+# are official (static.rust-lang.org / Adoptium API).
 
 image        ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac  Dockerfile FROM
 build-essential  12.10ubuntu1        apt pin (Dockerfile)
@@ -12,8 +15,27 @@ curl             8.5.0-2ubuntu10.16  apt pin (Dockerfile)
 git              1:2.43.0-1ubuntu7.4 apt pin (Dockerfile)
 pkg-config       1.8.1-2build1       apt pin (Dockerfile)
 protobuf-compiler 3.21.12-8.2ubuntu0.4 apt pin (Dockerfile, prost-build needs protoc)
-rustup           1.28.2 (or sh.rustup.rs HEAD at image build; record the image ID below)  Dockerfile rustup install
-rust_channel     1.98.1              ghost/rust-toolchain.toml (mounted checkout — the tag's own pin)
+unzip            6.0-28ubuntu4.1     apt pin (Dockerfile)
+zip              3.0-13ubuntu0.2     apt pin (Dockerfile)
 
-# Instance built for the Faza 14 S4 verification (this line is appended by the build run):
-image_id     sha256:56f9d949f4804afafbf12eebeec5ed9a2c188013233f11bb79a9523d87ecf0ff  # ghost-builder:24.04-1, selfcheck PASS (2x recipe-A, SHA256SUMS identical, b_digest d92aa5decd049b35, 2026-10-26)
+jdk            temurin 17.0.21+9, sha256 8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711  Dockerfile ARG JDK_SHA256
+rust           1.98.1-x86_64-unknown-linux-gnu, sha256 24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea  Dockerfile ARG RUST_SHA256
+rust-std       1.98.1-aarch64-linux-android, sha256 ba22ece6e6c2051bc20c05b2d7e809ec9fe1e656b02033424db30deca084c4a9  Dockerfile ARG
+rust-std       1.98.1-x86_64-linux-android, sha256 8bb372f26cc9813d3685a1bbd73ff04de8e3d4aeb6f3779c354436c594d3f013  Dockerfile ARG
+cargo-ndk      4.1.2 (cargo install --locked), same pin as scripts/build-native.sh  Dockerfile
+gradle         9.7.1 via wrapper, distributionSha256Sum acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a  ghost/android/gradle/wrapper/gradle-wrapper.properties
+java_deps      ghost/android/gradle/verification-metadata.xml (Gradle dependency verification, sha256 per module)
+
+android_sdk_cmdline-tools 12.0  commandlinetools-linux-11076708_latest.zip  sha1 d313adb7aedccf6cf0cfca51ec180f0059f5f8f8
+android_sdk_platform-tools r37.0.1  platform-tools_r37.0.1-linux.zip  sha1 477254aa5f903c15cf51001717bdf347fb6b53e0
+android_sdk_platform android-37.0  platform-37.0_r02.zip  sha1 ed8ebf7f8822a4de5686d427f237d2fa30ff7410  (repository2-3.xml)
+android_sdk_platform android-37.2  platform-37.2_r01.zip  sha1 4bec12a02162ff6852df50b5fcf8ee762b050966  (repository2-3.xml)
+android_sdk_build-tools 37.0.0  build-tools_r37_linux.zip  sha1 70954e99f4c3d9d46ee70fa32624672fe7cd6ebe
+android_sdk_build-tools 36.0.0  build-tools_r36_linux.zip  sha1 b0b6376977657e8ad9b969bacf4093601da2c6fb
+android_ndk    r30 (30.0.16248370)  android-ndk-r30-linux.zip  sha1 5107f898313790e449e87eee2183d9a20602dee9
+
+processor_count 2  JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2, GRADLE_OPTS=-Dorg.gradle.workers.max=2, CARGO_BUILD_JOBS=2  Dockerfile ENV
+
+# Instances (appended at build time; each line = one verification record):
+# 24.04-1  sha256:56f9d949f4804afafbf12eebeec5ed9a2c188013233f11bb79a9523d87ecf0ff  rustup-based, selfcheck PASS 2026-10-26 (b_digest d92aa5decd049b35) — superseded by 24.04-2 (D11: direct archives + Android half)
+# 24.04-2  <filled after build + selfcheck>
