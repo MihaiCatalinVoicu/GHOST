@@ -582,6 +582,8 @@ fn eocd(cd_offset: u32, cd_size: u32) -> Vec<u8> {
 }
 
 /// One v3-layout signer value (min/max SDK present) with the given first certificate.
+/// The block value carries BOTH length levels: [lp32 signers][lp32 signer][fields] (apksigner's
+/// real layout, confirmed against apksigner 37.0.0 output by the emulator drill).
 fn signer_v3(cert: &[u8], min_sdk: u32, max_sdk: u32) -> Vec<u8> {
     let mut signed = lp32(&lp32(b"digests"));
     signed.extend_from_slice(&lp32(&lp32(cert))); // certificates: one cert
@@ -591,7 +593,7 @@ fn signer_v3(cert: &[u8], min_sdk: u32, max_sdk: u32) -> Vec<u8> {
     let mut signer = lp32(&signed);
     signer.extend_from_slice(&lp32(b"signatures"));
     signer.extend_from_slice(&lp32(b"public-key"));
-    lp32(&signer)
+    lp32(&lp32(&signer))
 }
 
 /// A v2-layout signer (no SDK range).
@@ -602,7 +604,7 @@ fn signer_v2(cert: &[u8]) -> Vec<u8> {
     let mut signer = lp32(&signed);
     signer.extend_from_slice(&lp32(b"signatures"));
     signer.extend_from_slice(&lp32(b"public-key"));
-    lp32(&signer)
+    lp32(&lp32(&signer))
 }
 
 /// Builds a synthetic signed APK: `content_e` content bytes, a fake central directory, the
@@ -618,7 +620,9 @@ fn build_apk(content_e: usize, cd: &[u8], pairs: &[(u32, Vec<u8>)], pad_byte: u8
     let b = (e + pad) as u64;
     let mut pairs_bytes = Vec::new();
     for (id, value) in pairs {
-        pairs_bytes.extend_from_slice(&le64(value.len() as u64));
+        // The pair size counts the id AND the value (the spec excludes only the size field) —
+        // apksigner 37's real blocks do this, and the client walks it so.
+        pairs_bytes.extend_from_slice(&le64(value.len() as u64 + 4));
         pairs_bytes.extend_from_slice(&le32(*id));
         pairs_bytes.extend_from_slice(value);
     }

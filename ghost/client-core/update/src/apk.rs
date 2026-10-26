@@ -380,15 +380,20 @@ fn signer_digest(block: &[u8], sdk: u8) -> Result<[u8; 32], UpdateError> {
     let mut pairs: Vec<(u32, &[u8])> = Vec::new();
     let mut pos = 0usize;
     while pos + 12 <= pairs_region.len() {
+        // The pair size counts the id AND the value (the spec excludes only the size field);
+        // apksigner 37 also prepends a verity padding pair (0x7109871a), which a value-only
+        // reading desynchronizes on — the emulator drill caught this against real apksigner
+        // output (ghost-release-ops' apkcore walks the same region correctly, pos += 8 + len).
         let len = le64(&pairs_region[pos..pos + 8]) as usize;
         let id = le32(&pairs_region[pos + 8..pos + 12]);
+        let value_len = len.checked_sub(4).ok_or(UpdateError::ApkLayout)?;
         let start = pos + 12;
-        let end = start.checked_add(len).ok_or(UpdateError::ApkLayout)?;
+        let end = start.checked_add(value_len).ok_or(UpdateError::ApkLayout)?;
         if end > pairs_region.len() {
             return Err(UpdateError::ApkLayout);
         }
         pairs.push((id, &pairs_region[start..end]));
-        pos = end;
+        pos += 8 + len;
     }
     if pos != pairs_region.len() {
         return Err(UpdateError::ApkLayout);
@@ -455,20 +460,25 @@ struct Signer {
 /// Parse the first signer of a block value. `v3_layout` selects the signed-data grammar
 /// (v3/v3.1 carry min/max SDK; v2 does not).
 fn first_signer(value: &[u8], v3_layout: bool) -> Result<Signer, UpdateError> {
-    // value = [u32 len][signer]… (the signers sequence is length-prefixed)
+    // value = [lp32 signers]; signers = [lp32 signer]… (the signers sequence is length-prefixed,
+    // and each signer inside it is too — apksigner's real output carries BOTH levels; missing
+    // the inner one misreads the signer length as the signed-data length and dies at the
+    // signatures field — caught by the emulator drill against apksigner 37.0.0 output).
     let mut top = Cursor::new(value);
-    let signer = top.lp32()?;
+    let signers = top.lp32()?;
     top.done().map_err(|_| UpdateError::ApkSigner)?;
-    let mut c = Cursor::new(signer);
-    let signed = c.lp32()?;
-    c.lp32()?; // signatures (not checked: the platform verifies them)
-    c.lp32()?; // public key
-    c.done().map_err(|_| UpdateError::ApkSigner)?;
-    let mut s = Cursor::new(signed);
-    s.lp32()?; // digests
-    let certs = s.lp32()?;
+    let mut c = Cursor::new(signers);
+    let signer = c.lp32()?;
+    let mut s = Cursor::new(signer);
+    let signed = s.lp32()?;
+    s.lp32()?; // signatures (not checked: the platform verifies them)
+    s.lp32()?; // public key
+    s.done().map_err(|_| UpdateError::ApkSigner)?;
+    let mut d = Cursor::new(signed);
+    d.lp32()?; // digests
+    let certs = d.lp32()?;
     let (min_sdk, max_sdk) = if v3_layout {
-        (le32(s.take(4)?), le32(s.take(4)?))
+        (le32(d.take(4)?), le32(d.take(4)?))
     } else {
         (0, SDK_MAX)
     };
