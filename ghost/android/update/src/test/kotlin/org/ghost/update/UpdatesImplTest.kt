@@ -65,6 +65,8 @@ class UpdatesImplTest {
         override fun apkUpdate(handle: Long, offset: Long, chunk: ByteArray): Int = UpdateNative.OK
         override fun apkFinish(handle: Long): Int = UpdateNative.OK
         override fun apkAbort(handle: Long) = Unit
+        override fun bootstrapRelays(): List<UpdateNative.NativeRelay> = emptyList()
+        override fun manifestRelays(manifest: ByteArray): List<UpdateNative.NativeRelay> = emptyList()
     }
 
     private fun facts(manifest: ByteArray? = null, conflict: Boolean = false, rootConflict: Boolean = false): UpdateCodec.Facts =

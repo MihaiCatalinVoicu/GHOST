@@ -161,6 +161,45 @@ object UpdateNative {
         nativeMirrorSetClose(handle)
     }
 
+    /** D19's bootstrap: the committed, gate-checked relay directory compiled into the native
+     *  library. Each entry: the 56-char host label (no `.onion`), the port, the 16-byte operator
+     *  id. */
+    fun bootstrapRelays(): List<NativeRelay> {
+        NativeLibrary.ensureLoaded()
+        return decodeRelays(nativeBootstrapRelays())
+    }
+
+    /** §7.8: the relay list of a verified GHRM (the manifest relays carry no port; the native
+     *  side answers the canonical 443). */
+    fun manifestRelays(manifest: ByteArray): List<NativeRelay> {
+        NativeLibrary.ensureLoaded()
+        return decodeRelays(nativeManifestRelays(manifest))
+    }
+
+    /** One relay directory entry, both relay-list entry points' shape. */
+    class NativeRelay(val host: String, val port: Int, val operatorId: ByteArray) {
+        init {
+            if (operatorId.size != 16) throw NetworkException(MALFORMED_RESPONSE)
+        }
+    }
+
+    private fun decodeRelays(raw: ByteArray): List<NativeRelay> {
+        val r = Reader(raw)
+        if (r.u8() != OK) throw NetworkException(MALFORMED_RESPONSE)
+        val n = r.u16()
+        val out = ArrayList<NativeRelay>(n)
+        repeat(n) {
+            val len = r.u8()
+            if (len != 56) throw NetworkException(MALFORMED_RESPONSE)
+            val host = r.bytes(len).toString(Charsets.US_ASCII)
+            val port = r.u16()
+            if (port == 0) throw NetworkException(MALFORMED_RESPONSE)
+            out.add(NativeRelay(host, port, r.bytes(16)))
+        }
+        r.end()
+        return out
+    }
+
     private fun decodeCode(raw: ByteArray): Int {
         val r = Reader(raw)
         val code = r.u8()
@@ -269,4 +308,6 @@ object UpdateNative {
         offerLength: Long,
     ): Long
     @JvmStatic private external fun nativeMirrorSetClose(handle: Long)
+    @JvmStatic private external fun nativeBootstrapRelays(): ByteArray
+    @JvmStatic private external fun nativeManifestRelays(manifest: ByteArray): ByteArray
 }

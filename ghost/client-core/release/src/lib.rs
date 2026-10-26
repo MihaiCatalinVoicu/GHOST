@@ -50,6 +50,8 @@ pub enum FormatError {
     Range,
     #[error("non-canonical onion spelling")]
     Onion,
+    #[error("malformed relay-directory line")]
+    Syntax,
     #[error("document larger than its fixed bound")]
     TooLarge,
     #[error("ext bytes must be zero in version 1")]

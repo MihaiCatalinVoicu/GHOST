@@ -32,10 +32,10 @@ pub fn canonical_onion(s: &[u8]) -> Result<(), FormatError> {
     if port == 0 {
         return Err(FormatError::Onion);
     }
-    decode_check(host).map(|_| ())
+    decode_host(host).map(|_| ())
 }
 
-fn decode_check(host: &str) -> Result<(), FormatError> {
+fn decode_host(host: &str) -> Result<Vec<u8>, FormatError> {
     // RFC 4648 lowercase base32 decode of 56 chars -> 35 bytes (pubkey 32 + checksum 2 + version 1).
     let mut acc: u32 = 0;
     let mut nbits = 0u32;
@@ -69,7 +69,63 @@ fn decode_check(host: &str) -> Result<(), FormatError> {
     if sum[0] != out[32] || sum[1] != out[33] {
         return Err(FormatError::Onion);
     }
+    Ok(out)
+}
+
+/// Decode a canonical `"<56 base32>.onion:<port>"` into (host label, port): the relay-directory
+/// bootstrap (D19) is text, while the manifest carries raw onions — this is the one direction the
+/// wire formats need. `host` is the 56-char label WITHOUT the `.onion` suffix.
+pub fn split_host_port(s: &[u8]) -> Result<(Vec<u8>, u16), FormatError> {
+    let text = std::str::from_utf8(s).map_err(|_| FormatError::Onion)?;
+    let (host, port) = text.rsplit_once(".onion:").ok_or(FormatError::Onion)?;
+    let port: u16 = port.parse().map_err(|_| FormatError::Onion)?;
+    if port == 0 {
+        return Err(FormatError::Onion);
+    }
+    let raw = decode_host(host)?;
+    Ok((host.as_bytes().to_vec(), port))
+}
+
+fn check_raw(out: &[u8]) -> Result<(), FormatError> {
+    if out.len() != 35 {
+        return Err(FormatError::Onion);
+    }
+    if out[34] != 3 {
+        return Err(FormatError::Onion);
+    }
+    // Tor rend-spec-v3: checksum = SHA3-256(".onion checksum" || pubkey || version)[0..2].
+    let mut h = Sha3_256::new();
+    h.update(b".onion checksum");
+    h.update(&out[..32]);
+    h.update([3u8]);
+    let sum = h.finalize();
+    if sum[0] != out[32] || sum[1] != out[33] {
+        return Err(FormatError::Onion);
+    }
     Ok(())
+}
+
+/// Encode a raw 35-byte v3 onion (the manifest's relay form) into its 56-char lowercase base32
+/// host label, validating length, version and checksum first.
+pub fn raw_to_host(raw: &[u8]) -> Result<Vec<u8>, FormatError> {
+    check_raw(raw)?;
+    const B32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut out = Vec::with_capacity(56);
+    let mut acc: u32 = 0;
+    let mut nbits = 0u32;
+    for &b in raw {
+        acc = (acc << 8) | u32::from(b);
+        nbits += 8;
+        while nbits >= 5 {
+            nbits -= 5;
+            out.push(B32[((acc >> nbits) & 0x1f) as usize]);
+            acc &= (1u32 << nbits) - 1;
+        }
+    }
+    if nbits > 0 {
+        out.push(B32[((acc << (5 - nbits)) & 0x1f) as usize]);
+    }
+    Ok(out)
 }
 
 /// A parsed canonical onion, owned. Ordering/compare is on the canonical bytes (§4.1).
@@ -120,6 +176,24 @@ mod tests {
     #[test]
     fn good_onion_accepts() {
         canonical_onion(GOOD.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn raw_and_host_roundtrip() {
+        let host_label = GOOD.strip_suffix(":443").unwrap().strip_suffix(".onion").unwrap();
+        let raw = decode_host(host_label).unwrap();
+        assert_eq!(raw_to_host(&raw).unwrap(), host_label.as_bytes());
+        let (host, port) = split_host_port(GOOD.as_bytes()).unwrap();
+        assert_eq!(host, host_label.as_bytes());
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn raw_to_host_rejects_bad_checksum() {
+        let host_label = GOOD.strip_suffix(":443").unwrap().strip_suffix(".onion").unwrap();
+        let mut raw = decode_host(host_label).unwrap();
+        raw[32] ^= 1;
+        assert_eq!(raw_to_host(&raw), Err(FormatError::Onion));
     }
 
     #[test]

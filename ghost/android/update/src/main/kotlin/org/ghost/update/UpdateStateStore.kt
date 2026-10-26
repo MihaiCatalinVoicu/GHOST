@@ -91,10 +91,10 @@ class UpdateStateStore(private val db: SqlExecutor) {
      * manifest, proof, floor, flags) and, for a fresh current manifest only, the directory
      * hook. A crash leaves the previous facts, and the next update run fetches again.
      */
-    fun accept(facts: UpdateCodec.Facts, directory: (SqlExecutor) -> Unit = {}) {
+    fun accept(facts: UpdateCodec.Facts, directory: (SqlExecutor, ByteArray?) -> Unit = { _, _ -> }) {
         db.execUpdate("BEGIN IMMEDIATE")
         try {
-            directory(db)
+            directory(db, facts.manifestFile)
             db.execUpdate(
                 "UPDATE upd_state SET epoch = ?, epoch_version_code = ?, root_version = ?, root_chain = ?, " +
                     "manifest_seq = ?, manifest_root = ?, manifest_sha256 = ?, manifest_file = ?, proof_file = ?, " +

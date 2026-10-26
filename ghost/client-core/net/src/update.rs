@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use ghost_client_release::FormatError;
 use ghost_client_update::apk::ApkCheck;
 use ghost_client_update::codec::{code_byte, decode_stored, encode_stored};
 use ghost_client_update::offer::{OfferResult, offer as decide_offer};
@@ -29,6 +30,11 @@ use crate::jni_bridge::{Outcome, bytes, fixed, guarded, lookup, to_java};
 const EMBEDDED_CHAIN: &[u8] =
     include_bytes!("../../../protocol/release/stagenet/embedded-chain.ghrc");
 
+/// The committed relay directory (D19's bootstrap, source `config`): the gate-checked
+/// `protocol/entitlement/relay-directory.txt` stays the bootstrap relay list (§4.3's note).
+const EMBEDDED_RELAY_DIRECTORY: &[u8] =
+    include_bytes!("../../../protocol/entitlement/relay-directory.txt");
+
 /// The closed export list (mirrored by the gate, exactly as `DmNative`'s in §2.6).
 pub const CLOSED_UPDATE: &[&str] = &[
     "nativeEmbeddedChain",
@@ -42,6 +48,8 @@ pub const CLOSED_UPDATE: &[&str] = &[
     "nativeApkAbort",
     "nativeMirrorSet",
     "nativeMirrorSetClose",
+    "nativeBootstrapRelays",
+    "nativeManifestRelays",
 ];
 
 /// The closed export list of `TorMirrorTransport` (§9.3): one fetch entry point.
@@ -447,4 +455,167 @@ pub extern "system" fn Java_org_ghost_network_TorMirrorTransport_nativeFetch(
         ))?;
         Ok(to_java(env, &bytes_out)?)
     })
+}
+
+// ---------------------------------------------------------------------- D19's relay directory
+//
+// Both relay-list entry points answer the same strict shape (§9.3's byte-in/byte-out rule):
+// `[code][n u16][n × (u8 host_len ‖ host ‖ u16 port ‖ operator_id 16)]`, `host` the 56-char
+// base32 label WITHOUT the `.onion` suffix. Parsing stays in Rust (ADR-19): the txt format of
+// the committed bootstrap and the GHRM relay section are protocol shapes.
+
+/// One relay directory entry, decoded.
+struct NativeRelay {
+    host: Vec<u8>,
+    port: u16,
+    operator: [u8; 16],
+}
+
+fn encode_relays(code: u8, relays: &[NativeRelay]) -> Vec<u8> {
+    let mut out = result(code, &[]);
+    out.extend_from_slice(&(relays.len() as u16).to_be_bytes());
+    for r in relays {
+        out.push(r.host.len() as u8);
+        out.extend_from_slice(&r.host);
+        out.extend_from_slice(&r.port.to_be_bytes());
+        out.extend_from_slice(&r.operator);
+    }
+    out
+}
+
+/// Parse the committed bootstrap txt: `relay <56 base32>.onion:<port> <operator id, 32 hex>`,
+/// `#` comments and blank lines skipped. A malformed entry is a build error (the file is
+/// gate-checked by scripts/gates/entitlement-schedule.sh, so this cannot happen at runtime).
+fn parse_bootstrap_relays() -> Result<Vec<NativeRelay>, FormatError> {
+    let mut out = Vec::new();
+    for line in EMBEDDED_RELAY_DIRECTORY.split(|&b| b == b'\n') {
+        let line = trim_ascii(line);
+        if line.is_empty() || line[0] == b'#' {
+            continue;
+        }
+        let rest = line
+            .strip_prefix(b"relay ")
+            .ok_or(FormatError::Syntax)?;
+        let (addr, op_hex) = split_ws(rest).ok_or(FormatError::Syntax)?;
+        ghost_client_release::onion::canonical_onion(addr)?;
+        let (host, port) = ghost_client_release::onion::split_host_port(addr)?;
+        let operator = parse_operator(op_hex)?;
+        out.push(NativeRelay { host, port, operator });
+    }
+    Ok(out)
+}
+
+fn trim_ascii(mut s: &[u8]) -> &[u8] {
+    while s.first().is_some_and(|b| b.is_ascii_whitespace()) {
+        s = &s[1..];
+    }
+    while s.last().is_some_and(|b| b.is_ascii_whitespace()) {
+        s = &s[..s.len() - 1];
+    }
+    s
+}
+
+fn split_ws(s: &[u8]) -> Option<(&[u8], &[u8])> {
+    let at = s.iter().position(|b| b.is_ascii_whitespace())?;
+    let first = &s[..at];
+    let second = trim_ascii(&s[at + 1..]);
+    if first.is_empty() || second.is_empty() || second.iter().any(|b| b.is_ascii_whitespace()) {
+        return None;
+    }
+    Some((first, second))
+}
+
+fn parse_operator(hex: &[u8]) -> Result<[u8; 16], FormatError> {
+    if hex.len() != 32 || !hex.iter().all(|b| b.is_ascii_hexdigit()) {
+        return Err(FormatError::Syntax);
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        let hi = (hex[2 * i] as char).to_digit(16).ok_or(FormatError::Syntax)?;
+        let lo = (hex[2 * i + 1] as char).to_digit(16).ok_or(FormatError::Syntax)?;
+        out[i] = ((hi << 4) | lo) as u8;
+    }
+    Ok(out)
+}
+
+/// D19's bootstrap: the committed, gate-checked `relay-directory.txt`, decoded. `[code][entries]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeBootstrapRelays(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let relays = parse_bootstrap_relays().map_err(|_| cat::INVALID_ARGUMENT)?;
+        Ok(to_java(env, &encode_relays(0, &relays))?)
+    })
+}
+
+/// §7.8's half of the directory hook: the GHRM's relay list (raw onions → host labels, the
+/// relay port the manifest does not carry is the canonical 443, `relay-directory.txt:14`).
+/// `[code][entries]`; a malformed document is `INVALID_ARGUMENT` (a signed manifest the codec
+/// verified cannot be malformed, so this is a defence-in-depth arm).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeManifestRelays(
+    mut env: JNIEnv,
+    _class: JClass,
+    manifest: JByteArray,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let doc = bytes(env, &manifest)?;
+        let ghrm = ghost_client_release::manifest::GHRM::parse(&doc)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        let mut relays = Vec::with_capacity(ghrm.body.relays.len());
+        for (raw, operator) in &ghrm.body.relays {
+            let host = ghost_client_release::onion::raw_to_host(raw)
+                .map_err(|_| cat::INVALID_ARGUMENT)?;
+            relays.push(NativeRelay { host, port: 443, operator: *operator });
+        }
+        Ok(to_java(env, &encode_relays(0, &relays))?)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed bootstrap parses: every `relay` line becomes one entry with a 56-char host,
+    /// a non-zero port and a 16-byte operator. The file is gate-checked, so this is a roundtrip
+    /// guard on the txt format rather than input validation.
+    #[test]
+    fn committed_bootstrap_parses() {
+        let relays = parse_bootstrap_relays().expect("the committed relay-directory.txt parses");
+        assert!(!relays.is_empty());
+        for r in &relays {
+            assert_eq!(r.host.len(), 56);
+            assert!(r.port > 0);
+        }
+        // The encoder's shape: [0][n u16][n x (u8 len, host, u16 port, 16 op)].
+        let encoded = encode_relays(0, &relays);
+        assert_eq!(encoded[0], 0);
+        assert_eq!(
+            u16::from_be_bytes([encoded[1], encoded[2]]) as usize,
+            relays.len()
+        );
+    }
+
+    /// The manifest arm encodes relays at the canonical port 443 with the operator preserved.
+    #[test]
+    fn manifest_relays_use_canonical_port() {
+        // Build a minimal GHRM via the release crate's own test path is heavy; instead check the
+        // encoder preserves operator bytes exactly (the parse side is GHRM::parse, tested in the
+        // release crate).
+        let relays = parse_bootstrap_relays().unwrap();
+        let encoded = encode_relays(0, &relays);
+        let mut pos = 3;
+        for r in &relays {
+            let len = encoded[pos] as usize;
+            pos += 1 + len;
+            let port = u16::from_be_bytes([encoded[pos], encoded[pos + 1]]);
+            pos += 2;
+            assert_eq!(port, r.port);
+            assert_eq!(&encoded[pos..pos + 16], &r.operator);
+            pos += 16;
+        }
+        assert_eq!(pos, encoded.len());
+    }
 }

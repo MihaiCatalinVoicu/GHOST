@@ -147,15 +147,20 @@ class UpdateStateStoreTest {
         val store = UpdateStateStore(db)
         store.insertFirst(facts(), ByteArray(32) { 0x31 })
         var hooked = 0
-        store.accept(facts(withManifest = true, manifestSeq = 1, manifestRoot = 1)) { hooked++ }
+        var seenManifest: ByteArray? = null
+        store.accept(facts(withManifest = true, manifestSeq = 1, manifestRoot = 1)) { _, m ->
+            hooked++
+            seenManifest = m
+        }
         assertEquals(1, hooked)
+        assertEquals(16, seenManifest!!.size)
         val loaded = store.load()!!
         assertEquals(1L, loaded.facts.manifestSeq)
         assertEquals(16, loaded.facts.manifestFile!!.size)
 
         // The crash rule: a failing hook leaves the previous facts, transaction rolled back.
         try {
-            store.accept(facts(withManifest = true, manifestSeq = 2, manifestRoot = 1)) {
+            store.accept(facts(withManifest = true, manifestSeq = 2, manifestRoot = 1)) { _, _ ->
                 throw IllegalStateException("injected crash mid-ACCEPT")
             }
         } catch (e: IllegalStateException) {

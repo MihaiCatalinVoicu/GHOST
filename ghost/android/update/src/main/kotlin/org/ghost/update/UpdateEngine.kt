@@ -28,7 +28,8 @@ import java.security.SecureRandom
  *
  * The engine never parses a ZIP, a manifest or a proof: the native side decides everything, the
  * engine moves bytes and rows. The `directory` hook is how the wiring applies the §7.8 relay
- * changes in the same ACCEPT transaction through `:sync`'s store.
+ * changes in the same ACCEPT transaction through `:sync`'s store; it receives the transaction's
+ * SqlExecutor and the ACCEPTed manifest's bytes (null when the accept carries no manifest).
  */
 class UpdateEngine(
     /** The database, by purpose: a user call opens with the foreground purpose, a job with the
@@ -42,7 +43,7 @@ class UpdateEngine(
     /** The clock: day (epoch days) and now (unix seconds). The *trusted* flag is the session's
      * own (§7.4: from `:sync`'s clock trust), not a wall-clock guess. */
     private val dayNow: () -> Pair<Int, Long>,
-    private val directory: (SqlExecutor) -> Unit = {},
+    private val directory: (SqlExecutor, ByteArray?) -> Unit = { _, _ -> },
 ) : UpdateParticipant {
 
     private val random = SecureRandom()

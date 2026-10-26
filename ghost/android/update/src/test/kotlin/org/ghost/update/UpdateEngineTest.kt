@@ -102,6 +102,8 @@ class UpdateEngineTest {
         }
 
         override fun apkAbort(handle: Long) = Unit
+        override fun bootstrapRelays(): List<UpdateNative.NativeRelay> = emptyList()
+        override fun manifestRelays(manifest: ByteArray): List<UpdateNative.NativeRelay> = emptyList()
     }
 
     /** The fake session: canned bundles and chunks, a closed flag, a recording of fetches. */

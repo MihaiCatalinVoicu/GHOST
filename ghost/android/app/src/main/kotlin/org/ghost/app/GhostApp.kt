@@ -141,9 +141,20 @@ class GhostApp : Application(), SyncHost {
                 val now = System.currentTimeMillis()
                 (now / 86_400_000L).toInt() to (now / 1_000L)
             },
-            // §7.8's relay-directory application in the ACCEPT transaction lands with the
-            // manifest-relay parsing helper (the hook is the store's, :sync owns the table).
-            directory = {},
+            // §7.8's relay-directory application in the ACCEPT transaction (D19): the fresh
+            // verified manifest takes the directory over — upserts, and retirements of every
+            // active relay it does not list — with the write-once operator rule enforced in
+            // `:sync`'s ManifestDirectory.
+            directory = { sql, manifest ->
+                if (manifest != null) {
+                    org.ghost.sync.store.ManifestDirectory.apply(
+                        sql,
+                        relayEntriesOf(org.ghost.network.UpdateNative.manifestRelays(manifest), org.ghost.sync.api.RelayEntry.Source.MANIFEST),
+                        System.currentTimeMillis() / 1_000L,
+                        retireOthers = true,
+                    )
+                }
+            },
         )
     }
 
@@ -168,6 +179,40 @@ class GhostApp : Application(), SyncHost {
             installer = updateInstaller,
         )
     }
+
+    /** D19 (S5a): fills an empty relay directory from the native bootstrap list; idempotent. */
+    private fun bootstrapRelayDirectory() {
+        val sql = database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) ?: return
+        var count = 0L
+        sql.query("SELECT count(*) FROM relay_directory") { r -> count = r.long(0) }
+        if (count > 0) return
+        val entries = relayEntriesOf(
+            org.ghost.network.UpdateNative.bootstrapRelays(),
+            org.ghost.sync.api.RelayEntry.Source.CONFIG,
+        )
+        sql.execUpdate("BEGIN IMMEDIATE")
+        try {
+            org.ghost.sync.store.ManifestDirectory.apply(
+                sql, entries, System.currentTimeMillis() / 1_000L, retireOthers = false,
+            )
+            sql.execUpdate("COMMIT")
+        } catch (t: Throwable) {
+            sql.execUpdate("ROLLBACK")
+            throw t
+        }
+    }
+
+    private fun relayEntriesOf(
+        relays: List<org.ghost.network.UpdateNative.NativeRelay>,
+        source: org.ghost.sync.api.RelayEntry.Source,
+    ): List<org.ghost.sync.api.RelayEntry> =
+        relays.map {
+            org.ghost.sync.api.RelayEntry(
+                org.ghost.network.OnionAddress.parse("${it.host}.onion:${it.port}"),
+                it.operatorId,
+                source,
+            )
+        }
 
     /** §7.7's session (D18): the verified bytes stream into a PackageInstaller session, the
      *  commit asks the platform for its own confirmation — never a silent update — and the
@@ -288,6 +333,10 @@ class GhostApp : Application(), SyncHost {
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()
         messagingWiring.onProcessStart(keyExists = keys.exists())
+        // D19 (S5a): an empty relay directory takes the bootstrap list compiled into the native
+        // library (the committed, gate-checked relay-directory.txt, source config). Cheap and
+        // idempotent; the first verified manifest takes the directory over (§7.8).
+        bootstrapRelayDirectory()
         // Phase 13 §3.6, §4.6: the UI's hint listener (content-free kinds into the ChangeHub) and
         // the one constant notification, both held by the wiring across database reopens. The
         // notifier cancels at lock; the listener's hints ride the actor thread's hand-off rule.

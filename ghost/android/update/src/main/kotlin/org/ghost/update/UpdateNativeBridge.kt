@@ -40,6 +40,12 @@ interface UpdateNativeBridge {
     fun apkUpdate(handle: Long, offset: Long, chunk: ByteArray): Int
     fun apkFinish(handle: Long): Int
     fun apkAbort(handle: Long)
+
+    /** D19's bootstrap relay list (compiled into the native library). */
+    fun bootstrapRelays(): List<UpdateNative.NativeRelay>
+
+    /** §7.8: the relay list of a verified manifest document. */
+    fun manifestRelays(manifest: ByteArray): List<UpdateNative.NativeRelay>
 }
 
 /** The production bridge: one line per call, nothing else (the surface stays closed). */
@@ -76,4 +82,8 @@ object RealUpdateNativeBridge : UpdateNativeBridge {
     override fun apkUpdate(handle: Long, offset: Long, chunk: ByteArray): Int = UpdateNative.apkUpdate(handle, offset, chunk)
     override fun apkFinish(handle: Long): Int = UpdateNative.apkFinish(handle)
     override fun apkAbort(handle: Long) = UpdateNative.apkAbort(handle)
+
+    /** D19/§7.8: the native relay lists (bootstrap and per-manifest). */
+    override fun bootstrapRelays(): List<UpdateNative.NativeRelay> = UpdateNative.bootstrapRelays()
+    override fun manifestRelays(manifest: ByteArray): List<UpdateNative.NativeRelay> = UpdateNative.manifestRelays(manifest)
 }
