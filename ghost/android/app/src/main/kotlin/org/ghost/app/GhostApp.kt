@@ -393,6 +393,10 @@ class GhostApp : Application(), SyncHost {
         if (!keys.exists()) createDatabaseKey()
     }
 
+    /** The gate instrumentation's read-only access to the open database (the drill's probe). */
+    fun openDatabaseDirectly(): org.ghost.storage.SqlExecutor? =
+        database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND)
+
     /** The gate instrumentation's diagnostic: whether the key exists, the database opens, and
      *  what the data directories hold — one line, no secrets. */
     fun gateProbe(): String {

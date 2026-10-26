@@ -150,6 +150,33 @@ class GateInstrumentation : Instrumentation() {
             // D26's updater half (faza14 design §11.4): the gate build drives the real updater
             // against the drill root's bundles on the real staging mirrors. Answers are status
             // names and codes in the result bundle — never content.
+            "update-probe" -> {
+                // The drill's persistence probe: starts one update run (async on the runtime's
+                // user-call thread), then polls the update tables IN THIS PROCESS until the run
+                // records its state or the deadline — separating "never written" from "written
+                // but invisible across processes".
+                app.updates.requestCheck()
+                val deadline = SystemClock.elapsedRealtime() + 120_000L
+                var report = "db-null"
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    val sql = app.openDatabaseDirectly()
+                    if (sql == null) {
+                        report = "db-null"
+                        break
+                    }
+                    var stateRows = 0
+                    sql.query("SELECT count(*) FROM upd_state") { r -> stateRows = r.long(0).toInt() }
+                    var staged = 0
+                    sql.query("SELECT count(*) FROM upd_staged") { r -> staged = r.long(0).toInt() }
+                    var failedRuns = -1
+                    sql.query("SELECT failed_runs FROM upd_state WHERE id = 1") { r -> failedRuns = r.long(0).toInt() }
+                    val dir = java.io.File(app.noBackupFilesDir, "update")
+                    report = "state=$stateRows staged=$staged failed=$failedRuns files=${dir.list()?.toList() ?: emptyList()}"
+                    if (stateRows > 0 && (staged > 0 || failedRuns > 0)) break
+                    SystemClock.sleep(1_000L)
+                }
+                out.putString("update.probe", report)
+            }
             "update-status" -> {
                 val status = app.updates.status
                 out.putString("update.status", updateStatusName(status))
@@ -172,22 +199,42 @@ class GateInstrumentation : Instrumentation() {
                     else -> Unit
                 }
             }
-            "update-check" -> out.putString(
-                "update.check",
-                when (val r = app.updates.requestCheck()) {
-                    is Updates.CheckOutcome.Ok -> "OK"
-                    is Updates.CheckOutcome.Refused -> "REFUSED:${r.code}"
-                    is Updates.CheckOutcome.Unchanged -> "UNCHANGED:${r.code}"
-                },
-            )
-            "update-download" -> out.putString(
-                "update.download",
-                when (val r = app.updates.requestDownload()) {
-                    is Updates.DownloadOutcome.Started -> "STARTED"
-                    Updates.DownloadOutcome.NothingToDownload -> "NOTHING"
-                    is Updates.DownloadOutcome.Refused -> "REFUSED:${r.code}"
-                },
-            )
+            // §7.3: user update calls run in the foreground only — a process started for an
+            // instrumentation has no activity, so the gate marks the app foreground explicitly
+            // (what `pass` does for relay sessions) and waits for the runtime to go idle before
+            // returning, exactly like ON_START/ON_STOP.
+            "update-check" -> {
+                app.syncController.onAppForeground()
+                try {
+                    out.putString(
+                        "update.check",
+                        when (val r = app.updates.requestCheck()) {
+                            is Updates.CheckOutcome.Ok -> "OK"
+                            is Updates.CheckOutcome.Refused -> "REFUSED:${r.code}"
+                            is Updates.CheckOutcome.Unchanged -> "UNCHANGED:${r.code}"
+                        },
+                    )
+                    app.syncController.awaitIdle(UPDATE_IDLE_WAIT_MILLIS)
+                } finally {
+                    app.syncController.onAppBackground()
+                }
+            }
+            "update-download" -> {
+                app.syncController.onAppForeground()
+                try {
+                    out.putString(
+                        "update.download",
+                        when (val r = app.updates.requestDownload()) {
+                            is Updates.DownloadOutcome.Started -> "STARTED"
+                            Updates.DownloadOutcome.NothingToDownload -> "NOTHING"
+                            is Updates.DownloadOutcome.Refused -> "REFUSED:${r.code}"
+                        },
+                    )
+                    app.syncController.awaitIdle(UPDATE_IDLE_WAIT_MILLIS)
+                } finally {
+                    app.syncController.onAppBackground()
+                }
+            }
             "update-install" -> {
                 // commit() streams the native-verified APK into a PackageInstaller session and
                 // asks the platform for its confirmation; the orchestrator confirms the platform
@@ -382,5 +429,8 @@ class GateInstrumentation : Instrumentation() {
 
         /** How long `pass` waits for the session to close after ON_STOP. */
         const val IDLE_WAIT_MILLIS = 60_000L
+
+        /** The update run's idle wait: Tor bootstrap (up to ~180 s) plus the fixed run duration. */
+        const val UPDATE_IDLE_WAIT_MILLIS = 300_000L
     }
 }
