@@ -9,6 +9,7 @@
 
 pub mod fetch;
 pub mod monitor;
+pub mod sigsum;
 pub mod zip;
 
 use ghost_client_release::manifest::ArtifactKind;

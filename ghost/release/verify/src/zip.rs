@@ -25,7 +25,6 @@ pub fn entries(apk: &[u8]) -> Result<Vec<Entry>, String> {
     }
     let le16 = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]);
     let le32 = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    let le64 = |b: &[u8]| u64::from_le_bytes(b.try_into().expect("8 bytes"));
     let count = le16(&tail[10..12]) as usize;
     let cd_size = le32(&tail[12..16]) as usize;
     let cd_offset = le32(&tail[16..20]) as usize;

@@ -16,6 +16,7 @@ ghost-client-release = { path = "../../client-core/release" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 flate2 = "1.1.0"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 ghost-release-ops = { path = "../crates/ops" }
