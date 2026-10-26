@@ -216,3 +216,68 @@ pub fn libs(bundle: &[u8], apk_file: &[u8], anchor: &GHRT, day: u32, now: u64) -
 pub fn libs_line(l: &LibLine) -> String {
     format!("LIB {} sha256={} status={}", l.name, hex::encode(l.sha256), l.status)
 }
+
+/// The `operator` verdict: an operator binary against the newest verified manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorVerdict {
+    /// The binary's SHA-256 is the manifest's artifact of the named kind.
+    Verified { kind: &'static str, sha256: [u8; 32] },
+    /// The manifest lists the kind with another digest.
+    Mismatch { kind: &'static str, sha256: [u8; 32] },
+    /// The manifest lists no artifact of the kind.
+    Unknown { kind: &'static str, sha256: [u8; 32] },
+    /// The bundle did not verify: the exact code.
+    Refused(UpdateError),
+}
+
+/// `operator --binary <file> --kind relay|issuer`: the binary's hash against the manifest's
+/// artifact kinds 5 (`relay`) and 6 (`issuer`). The manifest comes from the verified bundle,
+/// so the answer rides the same chain and log proof as everything else.
+pub fn operator(bundle: &[u8], binary: &[u8], anchor: &GHRT, kind: &str, day: u32, now: u64) -> OperatorVerdict {
+    let accepted = match accept_bundle(
+        bundle,
+        &ghost_client_update::start_epoch(1, vec![anchor.clone()], None),
+        anchor.body.network as u8,
+        Time::Trusted { day, now_secs: now },
+    ) {
+        Ok(outcome) if outcome.refused.is_none() => outcome.state,
+        Ok(outcome) => return OperatorVerdict::Refused(outcome.refused.unwrap_or(UpdateError::Malformed)),
+        Err(e) => return OperatorVerdict::Refused(e),
+    };
+    let manifest = match accepted.manifest {
+        Some(m) => m,
+        None => return OperatorVerdict::Refused(UpdateError::NoManifest),
+    };
+    let artifact = match kind {
+        "relay" => Some(ArtifactKind::Relay),
+        "issuer" => Some(ArtifactKind::Issuer),
+        _ => None,
+    };
+    let digest = sha256(binary);
+    let label: &'static str = match kind {
+        "relay" => "relay",
+        "issuer" => "issuer",
+        _ => "unknown",
+    };
+    match artifact.and_then(|k| {
+        manifest
+            .body
+            .releases
+            .iter()
+            .flat_map(|r| r.artifacts.iter())
+            .find(|(ak, _, _)| *ak == k)
+    }) {
+        Some((_, sha, _)) if *sha == digest => OperatorVerdict::Verified { kind: label, sha256: digest },
+        Some(_) => OperatorVerdict::Mismatch { kind: label, sha256: digest },
+        None => OperatorVerdict::Unknown { kind: label, sha256: digest },
+    }
+}
+
+pub fn operator_line(v: &OperatorVerdict) -> String {
+    match v {
+        OperatorVerdict::Verified { kind, sha256 } => format!("OPERATOR {kind} sha256={} VERIFIED", hex::encode(sha256)),
+        OperatorVerdict::Mismatch { kind, sha256 } => format!("OPERATOR {kind} sha256={} MISMATCH", hex::encode(sha256)),
+        OperatorVerdict::Unknown { kind, sha256 } => format!("OPERATOR {kind} sha256={} UNKNOWN", hex::encode(sha256)),
+        OperatorVerdict::Refused(code) => format!("REFUSED {code}"),
+    }
+}

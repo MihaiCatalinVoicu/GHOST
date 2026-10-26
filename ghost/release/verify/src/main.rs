@@ -11,6 +11,7 @@ fn main() {
     match args.first().map(|s| s.as_str()) {
         Some("apk") => run_apk(&args[1..]),
         Some("libs") => run_libs(&args[1..]),
+        Some("operator") => run_operator(&args[1..]),
         _ => {
             eprintln!(
                 "usage:\n  ghost-verify apk --bundle <current.ghrb> --apk <signed.apk> --root <anchor.ghrt> --day <epoch day> --now <unix seconds> [--sdk <n>...]"
@@ -145,5 +146,60 @@ fn run_libs(args: &[String]) {
             println!("REFUSED {e}");
             exit(1);
         }
+    }
+}
+
+fn run_operator(args: &[String]) {
+    let mut bundle: Option<PathBuf> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut binary: Option<PathBuf> = None;
+    let mut kind: Option<String> = None;
+    let mut day: Option<u32> = None;
+    let mut now: Option<u64> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let take = |i: &mut usize| -> String {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| {
+                eprintln!("missing value for {}", args[*i - 1]);
+                exit(2);
+            })
+        };
+        match args[i].as_str() {
+            "--bundle" => bundle = Some(PathBuf::from(take(&mut i))),
+            "--root" => root = Some(PathBuf::from(take(&mut i))),
+            "--binary" => binary = Some(PathBuf::from(take(&mut i))),
+            "--kind" => kind = Some(take(&mut i)),
+            "--day" => day = Some(take(&mut i).parse().unwrap_or_else(|_| exit(2))),
+            "--now" => now = Some(take(&mut i).parse().unwrap_or_else(|_| exit(2))),
+            other => {
+                eprintln!("unknown argument {other}");
+                exit(2);
+            }
+        }
+        i += 1;
+    }
+    let (bundle, root, binary, kind, day, now) = match (bundle, root, binary, kind, day, now) {
+        (Some(b), Some(r), Some(f), Some(k), Some(d), Some(n)) => (b, r, f, k, d, n),
+        _ => {
+            eprintln!("operator needs --bundle, --root, --binary, --kind relay|issuer, --day and --now");
+            exit(2);
+        }
+    };
+    let bundle = std::fs::read(&bundle).unwrap_or_else(|e| { eprintln!("cannot read bundle: {e}"); exit(2); });
+    let binary = std::fs::read(&binary).unwrap_or_else(|e| { eprintln!("cannot read binary: {e}"); exit(2); });
+    let root = std::fs::read(&root).unwrap_or_else(|e| { eprintln!("cannot read root: {e}"); exit(2); });
+    let anchor = match GHRT::parse(&root) {
+        Ok(r) => r,
+        Err(_) => {
+            println!("REFUSED MALFORMED");
+            exit(1);
+        }
+    };
+    let verdict = ghost_verify::operator(&bundle, &binary, &anchor, &kind, day, now);
+    println!("{}", ghost_verify::operator_line(&verdict));
+    match verdict {
+        ghost_verify::OperatorVerdict::Verified { .. } => exit(0),
+        _ => exit(1),
     }
 }

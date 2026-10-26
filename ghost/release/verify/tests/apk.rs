@@ -467,3 +467,32 @@ fn libs_hashes_native_libraries_against_the_release_artifacts() {
         Err(ghost_client_update::UpdateError::ApkHash)
     );
 }
+
+#[test]
+fn operator_checks_a_binary_against_the_manifest_artifacts() {
+    let cert = [0x11u8; 64];
+    let (unsigned, signed) = build_apk(900, b"fake-central-directory", &[(0xf053_68c0, signer_v3(&cert, 1, 0x7fff_ffff))], 0);
+    let world = World::new(&[sha256(&cert)]);
+    let relay = vec![0x77u8; 2048];
+    let other = vec![0x78u8; 2048];
+    let relay_path = world.dir.path().join("ghost-relay");
+    write(&relay_path, &relay);
+    let other_path = world.dir.path().join("ghost-other");
+    write(&other_path, &other);
+    let m = world.manifest_for_with(2, &signed, &unsigned, &[(5, relay_path)]);
+    let bundle = world.bundle(&m);
+    let anchor = GHRT::parse(&std::fs::read(&world.roots[0]).unwrap()).unwrap();
+
+    assert_eq!(
+        ghost_verify::operator(&bundle, &relay, &anchor, "relay", DAY, NOW),
+        ghost_verify::OperatorVerdict::Verified { kind: "relay", sha256: sha256(&relay) },
+    );
+    assert!(matches!(
+        ghost_verify::operator(&bundle, &other, &anchor, "relay", DAY, NOW),
+        ghost_verify::OperatorVerdict::Mismatch { .. }
+    ));
+    assert!(matches!(
+        ghost_verify::operator(&bundle, &relay, &anchor, "issuer", DAY, NOW),
+        ghost_verify::OperatorVerdict::Unknown { .. }
+    ));
+}
