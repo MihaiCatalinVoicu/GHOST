@@ -50,6 +50,8 @@ pub const CLOSED_UPDATE: &[&str] = &[
     "nativeMirrorSetClose",
     "nativeBootstrapRelays",
     "nativeManifestRelays",
+    "nativeMirrorPath",
+    "nativeApkChunkStep",
 ];
 
 /// The closed export list of `TorMirrorTransport` (§9.3): one fetch entry point.
@@ -536,6 +538,38 @@ fn parse_operator(hex: &[u8]) -> Result<[u8; 16], FormatError> {
         out[i] = ((hi << 4) | lo) as u8;
     }
     Ok(out)
+}
+
+/// §11.4's emulator seam, the chunk step half: the fixed 4 MiB step of §7.2 as a u64, so even
+/// the gate-only loopback transport slices without naming a protocol constant in Kotlin (PM-D10).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeApkChunkStep(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    let _ = &mut env;
+    crate::mirror::CHUNK as jlong
+}
+
+/// §11.4's emulator seam (G-DM5's rules): the path of one fetch, built natively exactly as the
+/// Tor fetch builds it — a gate-only loopback transport fetches this path over plain HTTP from a
+/// model mirror, so no protocol constant (network segment, file name, chunk bounds) is named in
+/// Kotlin. `[code][path]`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateNative_nativeMirrorPath(
+    mut env: JNIEnv,
+    _class: JClass,
+    mirror_set: jlong,
+    kind: jint,
+    chunk_index: jlong,
+) -> jni::sys::jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let set = lookup_mirror(mirror_set)?;
+        let path = set
+            .path(kind as u8, chunk_index as u64)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        Ok(to_java(env, &result(0, path.as_bytes()))?)
+    })
 }
 
 /// D19's bootstrap: the committed, gate-checked `relay-directory.txt`, decoded. `[code][entries]`.

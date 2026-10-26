@@ -41,7 +41,11 @@ class GhostApp : Application(), SyncHost {
 
     private val database: AppDatabase by lazy { AppDatabase(this, keys, DatabaseAccess.AUTH_BOUND) }
 
-    override val syncController: AndroidSyncController by lazy { AndroidSyncController.create(this, database) }
+    override val syncController: AndroidSyncController by lazy {
+        // §11.4's emulator seam (G-DM5): only the gate twin can return a loopback mirror; release
+        // and debug pass null through the same call.
+        AndroidSyncController.create(this, database) { UpdateLoopback.mirror(this) }
+    }
 
     private val identity: IdentityManager by lazy { IdentityManager(AndroidKeystoreWrapper(), NoBackupFileSecretStore(this)) }
 

@@ -19,7 +19,7 @@ use crate::transport::TorTransport;
 use crate::isolation::IsolationScope;
 
 /// The fixed 4 MiB range step of an APK download (§7.2).
-const CHUNK: u64 = 4 * 1024 * 1024;
+pub(crate) const CHUNK: u64 = 4 * 1024 * 1024;
 /// What one fetch may return, fixed before reading (§4.8 / §7.2): the bundle bound, a chunk.
 const BUNDLE_MAX: usize = 1_048_576;
 
@@ -66,7 +66,7 @@ impl MirrorSet {
     }
 
     /// The path of one fetch, built from verified state only.
-    fn path(&self, kind: u8, chunk_index: u64) -> Result<String, &'static str> {
+    pub(crate) fn path(&self, kind: u8, chunk_index: u64) -> Result<String, &'static str> {
         let net = network_path(self.network).ok_or(cat::INVALID_ARGUMENT)?;
         match kind {
             0 => Ok(format!("/ghost/v1/{net}/current.ghrb")),

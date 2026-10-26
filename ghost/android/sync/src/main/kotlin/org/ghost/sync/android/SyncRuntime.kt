@@ -157,6 +157,13 @@ internal class SyncRuntime(
     private val threads: ThreadFactory,
     private val steps: Steps = Steps.default(),
     private val leases: LeasePort = ClosedLeases,
+    /**
+     * The emulator seam (Phase 14 design §11.4, G-DM5's rules): a provider of the `Update`
+     * session's [MirrorAccess], consulted at every session creation. The release and debug
+     * providers answer `null` (the lease's Tor mirror, as shipped); only the `gate` build type's
+     * twin supplies a loopback model-mirror access, and only after the emulator suite enabled it.
+     */
+    private val updateMirrorOverride: () -> MirrorAccess? = { null },
 ) {
     private class Run(val kind: SessionKind, val session: Session, val ticket: JobTicket?, val lease: TransportLease, val hold: RedeemHold) {
         lateinit var runner: ThreadedLaneRunner
@@ -929,7 +936,7 @@ internal class SyncRuntime(
 
         override val closed: Boolean get() = lease.closed || clock.monotonicMillis() >= deadlineMonotonicMillis
 
-        override val mirror: MirrorAccess = object : MirrorAccess {
+        override val mirror: MirrorAccess = updateMirrorOverride() ?: object : MirrorAccess {
             override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
                 lease.useMirror { it.fetchBundle(mirrorSet, slot, callDeadline(deadlineMillis)) }
 

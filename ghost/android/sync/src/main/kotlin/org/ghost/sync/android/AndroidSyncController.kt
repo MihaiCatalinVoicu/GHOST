@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import org.ghost.storage.TransportBridgeRepository
 import org.ghost.sync.api.ConsumerTail
+import org.ghost.sync.api.MirrorAccess
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
@@ -120,7 +121,13 @@ class AndroidSyncController internal constructor(
          * key from SecureRandom (never persisted), the default traffic policy and the JobScheduler
          * wake-up. Call once, from the `Application`.
          */
-        fun create(context: Context, opener: DatabaseOpener): AndroidSyncController {
+        fun create(
+            context: Context,
+            opener: DatabaseOpener,
+            /** Phase 14 §11.4's emulator seam (G-DM5): the `Update` session's mirror override;
+             *  the release and debug builds pass the default (no override, the Tor mirror). */
+            updateMirrorOverride: () -> MirrorAccess? = { null },
+        ): AndroidSyncController {
             val threads = SyncThreads()
             // Phase 12 §6.5: the auto mode's bridge lines, read lazily at attempt-claim time from
             // the wrapped table (via :network's repository in production; here the DAO directly —
@@ -136,7 +143,7 @@ class AndroidSyncController internal constructor(
                 }
             }
             val holder = TorTransportHolder.forApp(context, AndroidSyncClock, threads, bridgeLines = bridgeLines)
-            val runtime = SyncRuntime(opener, holder, AndroidSyncClock, KeyedRandomSources(), TrafficPolicy.DEFAULT, threads, leases = holder)
+            val runtime = SyncRuntime(opener, holder, AndroidSyncClock, KeyedRandomSources(), TrafficPolicy.DEFAULT, threads, leases = holder, updateMirrorOverride = updateMirrorOverride)
             return AndroidSyncController(runtime, JobSchedulerWake(context), opener)
         }
     }

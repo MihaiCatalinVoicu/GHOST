@@ -200,6 +200,24 @@ object UpdateNative {
         return out
     }
 
+    /** §11.4's emulator seam: the fetch path built natively (the loopback transport of the gate
+     *  build type fetches it from a model mirror; no path constant is named in Kotlin). */
+    fun mirrorPath(mirrorSet: Long, kind: Int, chunkIndex: Long): String {
+        NativeLibrary.ensureLoaded()
+        val r = Reader(nativeMirrorPath(mirrorSet, kind, chunkIndex))
+        if (r.u8() != OK) throw NetworkException(MALFORMED_RESPONSE)
+        val out = r.rest().toString(Charsets.US_ASCII)
+        r.end()
+        return out
+    }
+
+    /** §11.4's emulator seam: the fixed APK chunk step (§7.2), kept native so the gate-only
+     *  loopback transport names no protocol constant. */
+    fun apkChunkStep(): Long {
+        NativeLibrary.ensureLoaded()
+        return nativeApkChunkStep()
+    }
+
     private fun decodeCode(raw: ByteArray): Int {
         val r = Reader(raw)
         val code = r.u8()
@@ -310,4 +328,6 @@ object UpdateNative {
     @JvmStatic private external fun nativeMirrorSetClose(handle: Long)
     @JvmStatic private external fun nativeBootstrapRelays(): ByteArray
     @JvmStatic private external fun nativeManifestRelays(manifest: ByteArray): ByteArray
+    @JvmStatic private external fun nativeMirrorPath(mirrorSet: Long, kind: Int, chunkIndex: Long): ByteArray
+    @JvmStatic private external fun nativeApkChunkStep(): Long
 }

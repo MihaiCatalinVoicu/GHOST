@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import org.ghost.app.DmBranch
 import org.ghost.app.GhostApp
+import org.ghost.app.UpdateLoopback
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
 import org.ghost.messaging.api.Messaging
@@ -189,6 +190,13 @@ class GateInstrumentation : Instrumentation() {
                 // dialog over UI Automator while this command is still on the wire.
                 app.updates.install().commit()
                 out.putString("update.install", "COMMITTED")
+            }
+            "update-loopback" -> {
+                // §11.4's emulator seam: "off" restores the Tor mirror; anything else is the
+                // model mirror's "host:port" (10.0.2.2 with adb forward, from the emulator).
+                val endpoint = arguments.getString("endpoint") ?: require("endpoint")
+                UpdateLoopback.set(app, if (endpoint == "off") null else endpoint)
+                out.putString("update.loopback", endpoint)
             }
             "ack-key-change" -> out.putBoolean("result", messaging(app).acknowledgeKeyChange(contact()))
             "key-change" -> {
