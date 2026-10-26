@@ -11,6 +11,8 @@ import org.ghost.messaging.api.ContactId
 import org.ghost.messaging.api.Messaging
 import org.ghost.messaging.api.Timer
 import org.ghost.sync.api.PrivacyMode
+import org.ghost.update.UpdateStatus
+import org.ghost.update.Updates
 
 /**
  * **The gate variant's instrumentation** (Phase 9 design §15.10, §21.13 point 4; slice S12): the one
@@ -140,6 +142,54 @@ class GateInstrumentation : Instrumentation() {
                 out.putString("safety", view?.let { OrderDigests.safetyDigest(it.digits) } ?: "none")
             }
             "verify-manually" -> out.putString("result", messaging(app).markVerifiedManually(contact()).name)
+            // D26's updater half (faza14 design §11.4): the gate build drives the real updater
+            // against the drill root's bundles on the real staging mirrors. Answers are status
+            // names and codes in the result bundle — never content.
+            "update-status" -> {
+                val status = app.updates.status
+                out.putString("update.status", updateStatusName(status))
+                when (status) {
+                    is org.ghost.update.UpdateStatus.Available -> {
+                        out.putString("update.name", status.name)
+                        out.putInt("update.versionCode", status.versionCode)
+                    }
+                    is org.ghost.update.UpdateStatus.Ready -> {
+                        out.putString("update.name", status.name)
+                        out.putInt("update.versionCode", status.versionCode)
+                    }
+                    is org.ghost.update.UpdateStatus.Downloading -> {
+                        out.putLong("update.received", status.received)
+                        out.putLong("update.total", status.total)
+                    }
+                    is org.ghost.update.UpdateStatus.Failed -> out.putInt("update.code", status.code)
+                    is org.ghost.update.UpdateStatus.Stale -> out.putInt("update.day", status.day)
+                    is org.ghost.update.UpdateStatus.Unsupported -> out.putInt("update.floor", status.floor)
+                    else -> Unit
+                }
+            }
+            "update-check" -> out.putString(
+                "update.check",
+                when (val r = app.updates.requestCheck()) {
+                    is Updates.CheckOutcome.Ok -> "OK"
+                    is Updates.CheckOutcome.Refused -> "REFUSED:${r.code}"
+                    is Updates.CheckOutcome.Unchanged -> "UNCHANGED:${r.code}"
+                },
+            )
+            "update-download" -> out.putString(
+                "update.download",
+                when (val r = app.updates.requestDownload()) {
+                    is Updates.DownloadOutcome.Started -> "STARTED"
+                    Updates.DownloadOutcome.NothingToDownload -> "NOTHING"
+                    is Updates.DownloadOutcome.Refused -> "REFUSED:${r.code}"
+                },
+            )
+            "update-install" -> {
+                // commit() streams the native-verified APK into a PackageInstaller session and
+                // asks the platform for its confirmation; the orchestrator confirms the platform
+                // dialog over UI Automator while this command is still on the wire.
+                app.updates.install().commit()
+                out.putString("update.install", "COMMITTED")
+            }
             "ack-key-change" -> out.putBoolean("result", messaging(app).acknowledgeKeyChange(contact()))
             "key-change" -> {
                 // §15.10 step 5: switch to the bound alternate Olm identity (or back) and run the
@@ -248,6 +298,24 @@ class GateInstrumentation : Instrumentation() {
     private fun unhex(text: String): ByteArray {
         require(text.length % 2 == 0 && text.all { it in '0'..'9' || it in 'a'..'f' }) { "not lowercase hex" }
         return ByteArray(text.length / 2) { i -> text.substring(2 * i, 2 * i + 2).toInt(16).toByte() }
+    }
+
+    /** The status wire name the orchestrator compares against the drill's expectations. */
+    private fun updateStatusName(s: UpdateStatus): String = when (s) {
+        UpdateStatus.UpToDate -> "UP_TO_DATE"
+        is UpdateStatus.Available -> "AVAILABLE"
+        is UpdateStatus.Downloading -> "DOWNLOADING"
+        is UpdateStatus.Ready -> "READY"
+        UpdateStatus.Installing -> "INSTALLING"
+        is UpdateStatus.Installed -> "INSTALLED"
+        is UpdateStatus.Stale -> "STALE"
+        is UpdateStatus.Unsupported -> "UNSUPPORTED"
+        UpdateStatus.SdkUnsupported -> "SDK_UNSUPPORTED"
+        UpdateStatus.NoManifest -> "NO_MANIFEST"
+        UpdateStatus.Conflict -> "CONFLICT"
+        UpdateStatus.RootConflict -> "ROOT_CONFLICT"
+        UpdateStatus.NoChannel -> "NO_CHANNEL"
+        is UpdateStatus.Failed -> "FAILED"
     }
 
     private companion object {
