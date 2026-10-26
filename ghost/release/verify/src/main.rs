@@ -12,9 +12,10 @@ fn main() {
         Some("apk") => run_apk(&args[1..]),
         Some("libs") => run_libs(&args[1..]),
         Some("operator") => run_operator(&args[1..]),
+        Some("fetch") => run_fetch(&args[1..]),
         _ => {
             eprintln!(
-                "usage:\n  ghost-verify apk --bundle <current.ghrb> --apk <signed.apk> --root <anchor.ghrt> --day <epoch day> --now <unix seconds> [--sdk <n>...]"
+                "usage:\n  ghost-verify apk --bundle <current.ghrb> --apk <signed.apk> --root <anchor.ghrt> --day <epoch day> --now <unix seconds> [--sdk <n>...]\n  ghost-verify libs --bundle <b> --apk <a> --root <r> --day <n> --now <n>\n  ghost-verify operator --bundle <b> --root <r> --binary <f> --kind relay|issuer --day <n> --now <n>\n  ghost-verify fetch --socks 127.0.0.1:9050 --mirror <onion:port> --path <p> --out <f> [--bound <bytes>] [--range a-b]"
             );
             exit(2);
         }
@@ -201,5 +202,66 @@ fn run_operator(args: &[String]) {
     match verdict {
         ghost_verify::OperatorVerdict::Verified { .. } => exit(0),
         _ => exit(1),
+    }
+}
+
+fn run_fetch(args: &[String]) {
+    let mut socks = "127.0.0.1:9050".to_string();
+    let mut mirror: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut bound = ghost_verify::fetch::DEFAULT_BOUND;
+    let mut range: Option<(u64, u64)> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let take = |i: &mut usize| -> String {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| {
+                eprintln!("missing value for {}", args[*i - 1]);
+                exit(2);
+            })
+        };
+        match args[i].as_str() {
+            "--socks" => socks = take(&mut i),
+            "--mirror" => mirror = Some(take(&mut i)),
+            "--path" => path = Some(take(&mut i)),
+            "--out" => out = Some(PathBuf::from(take(&mut i))),
+            "--bound" => bound = take(&mut i).parse().unwrap_or_else(|_| exit(2)),
+            "--range" => {
+                let v = take(&mut i);
+                let (a, b) = v.split_once('-').unwrap_or_else(|| exit(2));
+                range = Some((a.parse().unwrap_or_else(|_| exit(2)), b.parse().unwrap_or_else(|_| exit(2))));
+            }
+            other => {
+                eprintln!("unknown argument {other}");
+                exit(2);
+            }
+        }
+        i += 1;
+    }
+    let (mirror, path, out) = match (mirror, path, out) {
+        (Some(m), Some(p), Some(o)) => (m, p, o),
+        _ => {
+            eprintln!("fetch needs --mirror, --path and --out");
+            exit(2);
+        }
+    };
+    let (host, port) = match mirror.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse().unwrap_or_else(|_| exit(2))),
+        None => (mirror, 80u16),
+    };
+    match ghost_verify::fetch::socks_fetch(&socks, &host, port, &path, range, bound) {
+        Ok(body) => {
+            if let Err(e) = std::fs::write(&out, &body) {
+                eprintln!("cannot write {}: {e}", out.display());
+                exit(2);
+            }
+            println!("FETCHED bytes={}", body.len());
+            exit(0);
+        }
+        Err(e) => {
+            println!("REFUSED FETCH_FAILED {e}");
+            exit(1);
+        }
     }
 }

@@ -7,6 +7,7 @@
 //! What the verifier deliberately is not: it does not check the rollout bucket (a per-device
 //! draw, not a property of the APK), and it does not fetch anything (`fetch` lands later).
 
+pub mod fetch;
 pub mod zip;
 
 use ghost_client_release::manifest::ArtifactKind;
