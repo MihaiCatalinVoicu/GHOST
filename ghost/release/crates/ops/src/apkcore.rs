@@ -205,7 +205,9 @@ pub fn extract_core_inferred(file: &[u8]) -> Result<(Vec<u8>, u64), CoreError> {
     while e > 0 && file[(e - 1) as usize] == 0 {
         e -= 1;
     }
-    if e == b || e == 0 {
+    // e == b is valid: the block can begin exactly where the unsigned file ends (no padding —
+    // AGP signs that way); only an empty file (e == 0) is impossible.
+    if e == 0 {
         return Err(CoreError::Rule);
     }
     let unsigned_length = e + l.cd_size + EOCD_LEN as u64;
