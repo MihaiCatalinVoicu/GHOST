@@ -8,6 +8,7 @@
 //! draw, not a property of the APK), and it does not fetch anything (`fetch` lands later).
 
 pub mod fetch;
+pub mod monitor;
 pub mod zip;
 
 use ghost_client_release::manifest::ArtifactKind;
