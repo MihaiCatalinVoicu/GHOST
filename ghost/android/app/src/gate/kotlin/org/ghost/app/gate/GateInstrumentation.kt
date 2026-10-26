@@ -152,30 +152,35 @@ class GateInstrumentation : Instrumentation() {
             // names and codes in the result bundle — never content.
             "update-probe" -> {
                 // The drill's persistence probe: starts one update run (async on the runtime's
-                // user-call thread), then polls the update tables IN THIS PROCESS until the run
-                // records its state or the deadline — separating "never written" from "written
-                // but invisible across processes".
-                app.updates.requestCheck()
-                val deadline = SystemClock.elapsedRealtime() + 120_000L
-                var report = "db-null"
-                while (SystemClock.elapsedRealtime() < deadline) {
-                    val sql = app.openDatabaseDirectly()
-                    if (sql == null) {
-                        report = "db-null"
-                        break
+                // user-call thread — foreground, exactly like `update-check`), then polls the
+                // update tables IN THIS PROCESS until the run records its state or the deadline —
+                // separating "never written" from "written but invisible across processes".
+                app.syncController.onAppForeground()
+                try {
+                    app.updates.requestCheck()
+                    val deadline = SystemClock.elapsedRealtime() + 240_000L
+                    var report = "db-null"
+                    while (SystemClock.elapsedRealtime() < deadline) {
+                        val sql = app.openDatabaseDirectly()
+                        if (sql == null) {
+                            report = "db-null"
+                            break
+                        }
+                        var stateRows = 0
+                        sql.query("SELECT count(*) FROM upd_state") { r -> stateRows = r.long(0).toInt() }
+                        var staged = 0
+                        sql.query("SELECT count(*) FROM upd_staged") { r -> staged = r.long(0).toInt() }
+                        var failedRuns = -1
+                        sql.query("SELECT failed_runs FROM upd_state WHERE id = 1") { r -> failedRuns = r.long(0).toInt() }
+                        val dir = java.io.File(app.noBackupFilesDir, "update")
+                        report = "state=$stateRows staged=$staged failed=$failedRuns files=${dir.list()?.toList() ?: emptyList()}"
+                        if (stateRows > 0 && (staged > 0 || failedRuns > 0)) break
+                        SystemClock.sleep(1_000L)
                     }
-                    var stateRows = 0
-                    sql.query("SELECT count(*) FROM upd_state") { r -> stateRows = r.long(0).toInt() }
-                    var staged = 0
-                    sql.query("SELECT count(*) FROM upd_staged") { r -> staged = r.long(0).toInt() }
-                    var failedRuns = -1
-                    sql.query("SELECT failed_runs FROM upd_state WHERE id = 1") { r -> failedRuns = r.long(0).toInt() }
-                    val dir = java.io.File(app.noBackupFilesDir, "update")
-                    report = "state=$stateRows staged=$staged failed=$failedRuns files=${dir.list()?.toList() ?: emptyList()}"
-                    if (stateRows > 0 && (staged > 0 || failedRuns > 0)) break
-                    SystemClock.sleep(1_000L)
+                    out.putString("update.probe", report)
+                } finally {
+                    app.syncController.onAppBackground()
                 }
-                out.putString("update.probe", report)
             }
             "update-status" -> {
                 val status = app.updates.status

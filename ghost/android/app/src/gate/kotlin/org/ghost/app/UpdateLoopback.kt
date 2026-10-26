@@ -61,17 +61,32 @@ internal object UpdateLoopback {
             deadlineMillis: Int,
         ): ByteArray {
             val path = UpdateNative.mirrorPath(mirrorSet, kind, chunkIndex)
-            val connection = URL("http://$endpoint$path").openConnection() as HttpURLConnection
-            connection.connectTimeout = deadlineMillis
-            connection.readTimeout = deadlineMillis
-            if (range != null) connection.setRequestProperty("Range", "bytes=${range.first}-${range.last}")
-            val code = connection.responseCode
+            val connection = try {
+                (URL("http://$endpoint$path").openConnection() as HttpURLConnection).also {
+                    it.connectTimeout = deadlineMillis
+                    it.readTimeout = deadlineMillis
+                    if (range != null) it.setRequestProperty("Range", "bytes=${range.first}-${range.last}")
+                }
+            } catch (e: java.io.IOException) {
+                throw NetworkException("transport")
+            }
+            val code = try {
+                connection.responseCode
+            } catch (e: java.io.IOException) {
+                connection.disconnect()
+                throw NetworkException("transport")
+            }
             val expected = if (expectPartial) 206 else 200
             if (code != expected) {
                 connection.disconnect()
                 throw NetworkException("malformed_response")
             }
-            val body = connection.inputStream.use { it.readBytes() }
+            val body = try {
+                connection.inputStream.use { it.readBytes() }
+            } catch (e: java.io.IOException) {
+                connection.disconnect()
+                throw NetworkException("transport")
+            }
             connection.disconnect()
             if (body.isEmpty()) throw NetworkException("malformed_response")
             return body
