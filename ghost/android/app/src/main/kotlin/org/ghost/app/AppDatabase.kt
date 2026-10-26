@@ -45,6 +45,11 @@ internal class AppDatabase(
 
     override fun keyExists(): Boolean = keys.exists()
 
+    // Synchronized: the check-then-open is otherwise racy between threads (the sync runtime's
+    // thread and a facade caller observed racing the first open on the emulator drill — two
+    // concurrent GhostDatabase creations deadlock SQLCipher's helper: "database is locked" /
+    // "table schema_meta already exists").
+    @Synchronized
     override fun open(purpose: DatabaseOpener.Purpose): SqlExecutor? {
         if (!DatabaseAccess.mayOpen(purpose, keys.exists(), authBound)) return null
         database?.let { return it.executor }

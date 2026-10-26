@@ -184,8 +184,13 @@ class GhostApp : Application(), SyncHost {
         )
     }
 
-    /** D19 (S5a): fills an empty relay directory from the native bootstrap list; idempotent. */
-    private fun bootstrapRelayDirectory() {
+    /** D19 (S5a): fills an empty relay directory from the native bootstrap list; idempotent.
+     *  Runs after the database key exists and after the database has been opened elsewhere in
+     *  the process (it must not be a concurrent first opener: two uncoordinated first opens
+     *  race the helper's creation callback — measured on the emulator drill as
+     *  "table schema_meta already exists"). The gate instrumentation's onboarding command
+     *  calls this; the production wiring point is the §7.8 follow-up slice. */
+    fun bootstrapRelayDirectory() {
         val sql = database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) ?: return
         var count = 0L
         sql.query("SELECT count(*) FROM relay_directory") { r -> count = r.long(0) }
@@ -337,10 +342,6 @@ class GhostApp : Application(), SyncHost {
         entitlementWiring.activationHook = messagingWiring.activationHook
         wiring.onProcessStart()
         messagingWiring.onProcessStart(keyExists = keys.exists())
-        // D19 (S5a): an empty relay directory takes the bootstrap list compiled into the native
-        // library (the committed, gate-checked relay-directory.txt, source config). Cheap and
-        // idempotent; the first verified manifest takes the directory over (§7.8).
-        bootstrapRelayDirectory()
         // Phase 13 §3.6, §4.6: the UI's hint listener (content-free kinds into the ChangeHub) and
         // the one constant notification, both held by the wiring across database reopens. The
         // notifier cancels at lock; the listener's hints ride the actor thread's hand-off rule.
@@ -380,6 +381,30 @@ class GhostApp : Application(), SyncHost {
     fun onDatabaseKeyCreated() {
         wiring.onKeyCreated()
         messagingWiring.onKeyCreated()
+    }
+
+    /**
+     * Idempotent ensure of the database key: a no-op once the key exists; otherwise the same
+     * creation onboarding runs (§3.6's gateway step). The gate instrumentation's onboarding
+     * command uses this to bring a fresh install to the point where the database opens; the UI
+     * flow keeps using [createDatabaseKey] through the gateway.
+     */
+    fun ensureDatabaseKey() {
+        if (!keys.exists()) createDatabaseKey()
+    }
+
+    /** The gate instrumentation's diagnostic: whether the key exists, the database opens, and
+     *  what the data directories hold — one line, no secrets. */
+    fun gateProbe(): String {
+        val key = keys.exists()
+        val db = try {
+            database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) != null
+        } catch (e: RuntimeException) {
+            false
+        }
+        val secrets = java.io.File(noBackupFilesDir, "secrets").list()?.toList() ?: emptyList()
+        val dbs = java.io.File(filesDir.parentFile, "databases").list()?.toList() ?: emptyList()
+        return "key=$key db=$db secrets=${secrets.joinToString(",")} databases=${dbs.joinToString(",")}"
     }
 
     /**

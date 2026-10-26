@@ -57,10 +57,14 @@ class GateInstrumentation : Instrumentation() {
             run(arguments.getString(ARG_CMD) ?: "", out)
             Activity.RESULT_OK
         } catch (e: IllegalArgumentException) {
-            out.putString(KEY_ERROR, "bad-argument")
+            out.putString(KEY_ERROR, "bad-argument:${e.message?.take(120)}")
             Activity.RESULT_CANCELED
         } catch (e: IllegalStateException) {
-            out.putString(KEY_ERROR, "unavailable")
+            out.putString(KEY_ERROR, "unavailable:${e.message?.take(120)}")
+            Activity.RESULT_CANCELED
+        } catch (e: RuntimeException) {
+            // Never a crash from a gate command: the drill records the failure class instead.
+            out.putString(KEY_ERROR, "${e.javaClass.simpleName}:${e.message?.take(120)}")
             Activity.RESULT_CANCELED
         }
         finish(code, out)
@@ -197,6 +201,41 @@ class GateInstrumentation : Instrumentation() {
                 val endpoint = arguments.getString("endpoint") ?: require("endpoint")
                 UpdateLoopback.set(app, if (endpoint == "off") null else endpoint)
                 out.putString("update.loopback", endpoint)
+            }
+            "probe" -> {
+                // One-shot diagnostic for the drill's onboarding prerequisite: the state before
+                // and, with activate=true, after ensureDatabaseKey + activate, in the same process.
+                out.putString("probe.before", app.gateProbe())
+                if (arguments.getString("activate") == "true") {
+                    app.ensureDatabaseKey()
+                    // D19's bootstrap after the key exists, before the directory's first read.
+                    app.bootstrapRelayDirectory()
+                    val restored = arguments.getString("restored") == "true"
+                    val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
+                    var result: String? = null
+                    while (SystemClock.elapsedRealtime() < deadline) {
+                        result = app.messagingWiring.activate(restored)?.name
+                        if (result != null) break
+                        SystemClock.sleep(POLL_MILLIS)
+                    }
+                    out.putString("probe.activate", result ?: "UNAVAILABLE")
+                }
+                out.putString("probe.after", app.gateProbe())
+            }
+            "activate" -> {                // The drill's onboarding equivalent: creates the database key if the install is
+                // fresh (the update facade opens the database only once a key exists), then the
+                // identity + the K20 activation hook. Polls: the database opens on the sync
+                // runtime's thread, which the first open's pass may still be migrating.
+                app.ensureDatabaseKey()
+                val restored = arguments.getString("restored") == "true"
+                val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
+                var result: String? = null
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    result = app.messagingWiring.activate(restored)?.name
+                    if (result != null) break
+                    SystemClock.sleep(POLL_MILLIS)
+                }
+                out.putString("result", result ?: "UNAVAILABLE")
             }
             "ack-key-change" -> out.putBoolean("result", messaging(app).acknowledgeKeyChange(contact()))
             "key-change" -> {
