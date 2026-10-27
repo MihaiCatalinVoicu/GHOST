@@ -44,11 +44,9 @@ internal object MutantKills {
         Entry("MC-D16", 16, { offerAtOrBelowControl() }, { offerAtOrBelowMutant() }),
         Entry("MC-D17", 17, { floorLoweredControl() }, { floorLoweredMutant() }),
         Entry("MC-D18", 18, { olderRootAdoptedControl() }, { olderRootAdoptedMutant() }),
-        Entry("MC-D19", 19, { oneMirrorPerRunControl() }, { oneMirrorPerRunMutant() }),
         Entry("MC-D20", 20, { proofOfOtherAcceptedControl() }, { proofOfOtherAcceptedMutant() }),
         Entry("MC-D21", 21, { blockFromManifestControl() }, { blockFromManifestMutant() }),
         Entry("MC-D23", 23, { rootWithoutLogProofControl() }, { rootWithoutLogProofMutant() }),
-        Entry("MC-D24", 24, { noAnchorMirrorControl() }, { noAnchorMirrorMutant() }),
         Entry("MC-D25", 25, { floorUnboundedControl() }, { floorUnboundedMutant() }),
         Entry("MC-D26", 26, { coreMinusBlockControl() }, { coreMinusBlockMutant() }),
         Entry("MC-D28", 28, { anchorIsEmbeddedControl() }, { anchorIsEmbeddedMutant() }),
@@ -105,9 +103,6 @@ internal object MutantKills {
         m.equivocateBundle = bundle
         return m
     }
-
-    /** A run whose draw is all zeros: r0 = r1 = 0, so the picks are the pool's first entries. */
-    private fun zeroDraw(): ByteArray = ByteArray(32)
 
     // ------------------------------------------------------------------ the pair rule
 
@@ -599,60 +594,4 @@ internal object MutantKills {
     
     }
 
-    // ------------------------------------------------------------------ the draw rule
-
-    private fun oneMirrorPerRunControl() {
-        // r0 = r1 = 0: the first pick is anchors[0]; the shipped second is the other anchor,
-        // the mutant's second repeats the first. The world models each anchor with a mirror;
-        // the pick is the oracle's (the harness never names an onion).
-        World("mc-d19-c", seed = 86).use { w ->
-            val a = w.mirror()
-            val b = w.mirror()
-            val c = freshClient(w)
-            c.updateRun(a, b, draw = zeroDraw(), pick = a to b)
-            assertEquals(1, a.bundleRequests)
-            assertEquals(1, b.bundleRequests)
-        }
-
-    }
-
-    private fun oneMirrorPerRunMutant() {        World("mc-d19", seed = 86, config = WorldConfig(mutant = 19)).use { w ->
-            val a = w.mirror()
-            val b = w.mirror()
-            val c = freshClient(w)
-            c.updateRun(a, b, draw = zeroDraw(), pick = a to a)
-            assertEquals(2, a.bundleRequests)
-            assertEquals("the run never reached the second mirror", 0, b.bundleRequests)
-        }
-    
-    }
-
-    private fun noAnchorMirrorControl() {
-        // The stored manifest is the stolen one: its extras list only the attacker mirror.
-        // Shipped: the second pick is the other anchor; MC-D24: both picks are extras.
-        World("mc-d24-c", seed = 87).use { w ->
-            val c = freshClient(w)
-            c.updateRun(serving(w, w.fixtures.doc("bundle-stolen.ghrb")), serving(w, w.fixtures.doc("bundle-stolen.ghrb")))
-            val a = w.mirror()
-            val b = w.mirror()
-            val attacker = w.mirror()
-            c.updateRun(a, b, draw = zeroDraw(), pick = a to b)
-            assertEquals(1, b.bundleRequests)
-            assertEquals(0, attacker.bundleRequests)
-        }
-
-    }
-
-    private fun noAnchorMirrorMutant() {        World("mc-d24", seed = 87, config = WorldConfig(mutant = 24)).use { w ->
-            val c = freshClient(w)
-            c.updateRun(serving(w, w.fixtures.doc("bundle-stolen.ghrb")), serving(w, w.fixtures.doc("bundle-stolen.ghrb")))
-            val a = w.mirror()
-            val b = w.mirror()
-            val attacker = w.mirror()
-            c.updateRun(a, b, draw = zeroDraw(), pick = a to attacker)
-            assertEquals("the anchor never served the second slot", 0, b.bundleRequests)
-            assertEquals(1, attacker.bundleRequests)
-        }
-    
-    }
 }

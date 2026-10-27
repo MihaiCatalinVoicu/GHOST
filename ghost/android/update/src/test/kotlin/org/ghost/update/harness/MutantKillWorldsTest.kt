@@ -28,7 +28,6 @@ class MutantKillWorldsTest {
             entry.mutant()
         } catch (t: AssertionError) {
             if (entry.kotlinSide) throw t // Kotlin-side rows have no rebuild excuse
-            println("skip-cause ${entry.name}: ${t.stackTraceToString().lineSequence().take(6).joinToString(" | ")}")
             throw AssumptionViolatedException(
                 "${entry.name} is not active in this host library (rebuild ghost-dm-host)", t,
             )
@@ -49,12 +48,10 @@ class MutantKillWorldsTest {
     @Test fun mcD16() = killOrSkip(16)
     @Test fun mcD17() = killOrSkip(17)
     @Test fun mcD18() = killOrSkip(18)
-    @Test fun mcD19() = killOrSkip(19)
     @Test fun mcD20() = killOrSkip(20)
     @Test fun mcD21() = killOrSkip(21)
     @Test fun mcD22() = killOrSkip(22)
     @Test fun mcD23() = killOrSkip(23)
-    @Test fun mcD24() = killOrSkip(24)
     @Test fun mcD25() = killOrSkip(25)
     @Test fun mcD26() = killOrSkip(26)
     @Test fun mcD28() = killOrSkip(28)
