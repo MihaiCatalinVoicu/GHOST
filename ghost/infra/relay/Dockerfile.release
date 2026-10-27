@@ -1,0 +1,34 @@
+# GHOST relay image from a RELEASE, not from source (Phase 14 design S8; DS-17): operators who
+# do not build from source run the exact released binary, so a compromised or drifted build
+# environment cannot change what the relay runs. The operator verifies the release out of band
+# first — `ghost-verify operator` checks the signed manifest against the archive (L10-D15) before
+# every start of a new version — and this image re-checks the binary against the archive's
+# SHA256SUMS (§6.1) at build time: a corrupted or substituted download fails the build, not the
+# start. The check is fail-closed — a SHA256SUMS without the binary's line stops the build.
+#
+# Build from the repository root (same context as the source-built image, so torrc and the
+# entrypoint come from the tree), with the verified release archive unpacked at
+# $GHOST_RELEASE_DIR (git-ignored; default release-verify/):
+#   GHOST_RELEASE_DIR=release-verify docker build \
+#     -f ghost/infra/relay/Dockerfile.release -t ghost-relay:RELEASE ghost
+
+ARG GHOST_RELEASE_DIR=release-verify
+
+FROM debian:bookworm-slim AS verify
+ARG GHOST_RELEASE_DIR
+WORKDIR /release
+COPY ${GHOST_RELEASE_DIR}/SHA256SUMS ${GHOST_RELEASE_DIR}/ghost-relay ./
+RUN grep -E "  \./?ghost-relay$" SHA256SUMS | sha256sum -c -
+
+# Runtime: identical to the source-built image (infra/relay/Dockerfile) — the relay listens on
+# loopback only; the only way in is the onion address printed at first start (ADR-01).
+FROM debian:bookworm-slim
+RUN apt-get update -q && apt-get install -y -q --no-install-recommends tor ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --home /var/lib/ghost --create-home ghost
+COPY --from=verify /release/ghost-relay /usr/local/bin/ghost-relay
+COPY infra/relay/torrc /etc/tor/torrc
+COPY infra/relay/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /var/lib/tor/ghost-relay && chown -R debian-tor:debian-tor /var/lib/tor
+VOLUME ["/var/lib/ghost", "/var/lib/tor/ghost-relay"]
+USER root
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

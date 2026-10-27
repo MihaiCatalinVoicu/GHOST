@@ -1,0 +1,56 @@
+# GHOST issuer image from a RELEASE, not from source (Phase 14 design S8): owner-operated, and
+# consistent with the log — the running issuer is byte-identical to what the release record
+# attests. The release is verified out of band first (`ghost-verify` against the signed manifest
+# and SHA256SUMS, §6.1), and this image re-checks the binary against the archive's SHA256SUMS at
+# build time: the check is fail-closed — a SHA256SUMS without the binary's line stops the build.
+# The Monero pinned release keeps its own gate-checked download + hash verification
+# (infra/issuer/monero-release.pin, scripts/gates/monero-pin.sh), unchanged from the source-built
+# image.
+#
+# Build from the repository root (same context as infra/issuer/Dockerfile), with the verified
+# release archive unpacked at $GHOST_RELEASE_DIR (git-ignored; default release-verify/):
+#   GHOST_RELEASE_DIR=release-verify docker build \
+#     -f ghost/infra/issuer/Dockerfile.release -t ghost-issuer:RELEASE ghost
+# The operator tools (runbooks B1 and R2) remain the source image's separate `ops` target; this
+# file builds the runtime image only.
+
+ARG GHOST_RELEASE_DIR=release-verify
+
+FROM debian:bookworm-slim AS verify
+ARG GHOST_RELEASE_DIR
+WORKDIR /release
+COPY ${GHOST_RELEASE_DIR}/SHA256SUMS ${GHOST_RELEASE_DIR}/ghost-issuer ./
+RUN grep -E "  \./?ghost-issuer$" SHA256SUMS | sha256sum -c -
+
+# The pinned Monero release: downloaded, hash-checked, only then extracted (monero-pin.sh's gate).
+FROM debian:bookworm-slim AS monero-release
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates curl bzip2 && rm -rf /var/lib/apt/lists/*
+WORKDIR /monero
+COPY infra/issuer/monero-release.pin monero-release.pin
+RUN read -r _ platform file sha dir < <(awk '$1 == "archive" && $2 == "linux-x64"' monero-release.pin) \
+ && url="$(awk '$1 == "url" {print $2}' monero-release.pin)" \
+ && [ "$platform" = linux-x64 ] && [ -n "$file" ] && [ -n "$sha" ] && [ -n "$dir" ] && [ -n "$url" ] \
+ && curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$file" "$url$file" \
+ && echo "$sha  $file" | sha256sum -c - \
+ && mkdir bin \
+ && tar -xjf "$file" -C bin --strip-components=1 "$dir/monerod" "$dir/monero-wallet-rpc" "$dir/monero-wallet-cli" \
+ && rm "$file"
+
+# Runtime: identical to the source-built image's final stage (Phase 8 design §6.7, §7.1; ADR-26):
+# ghost-issuer, the pinned Monero, Tor; docker-compose.stagenet.yml runs this one image as four
+# containers, each started by entrypoint.sh with its role; nothing listens outside loopback.
+FROM debian:bookworm-slim
+RUN apt-get update -q && apt-get install -y -q --no-install-recommends tor && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ghost-issuer \
+    && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin monero
+COPY --from=verify /release/ghost-issuer /usr/local/bin/ghost-issuer
+COPY --from=monero-release /monero/bin/ /usr/local/bin/
+COPY infra/issuer/torrc /etc/tor/torrc
+COPY infra/issuer/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
+    && mkdir -p /var/lib/tor/state /var/lib/tor/ghost-issuer /var/lib/monerod /var/lib/monero-wallet \
+       /var/lib/ghost-issuer/data /var/lib/ghost-issuer/export /var/lib/ghost-issuer/sealed-keys \
+       /etc/ghost /etc/ghost-issuer
+USER root
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
