@@ -37,13 +37,16 @@ class NiUTwinsTest {
             driver.jobs.filter { it.fate == JobFateModel.UPDATE_RUN }
     }
 
-    /** Runs one side: a world, a client, 60 days under the spec. */
+    /** The twin window: 60 days in the world tests, `-Dghost.update.twin.days` in the gate run. */
+    private fun twinDays(): Int = System.getProperty("ghost.update.twin.days")?.toIntOrNull() ?: 60
+
+    /** Runs one side: a world, a client, [twinDays] days under the spec. */
     private fun side(
         name: String,
         seed: Long,
         spec: JobSpec,
         installed: Int = 2,
-        days: Int = 60,
+        days: Int = twinDays(),
         pickFor: ((World, ByteArray) -> Pair<ModelMirror, ModelMirror>)? = null,
         prepare: (World, Client) -> Unit = { _, _ -> },
     ): Side {

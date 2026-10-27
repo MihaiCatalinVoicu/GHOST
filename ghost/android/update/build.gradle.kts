@@ -47,4 +47,14 @@ tasks.withType<Test>().configureEach {
             .withPropertyName("netHostLibrary")
             .withPathSensitivity(PathSensitivity.NAME_ONLY)
     }
+    // The gate-scale knobs are task inputs: a PR-scale run and the G-D7 gate run share the
+    // task and must not reuse each other's results.
+    for (prop in listOf(
+        "ghost.update.gate", "ghost.update.gate.clients", "ghost.update.gate.days",
+        "ghost.update.gate.worlds", "ghost.update.gate.threads", "ghost.update.twin.days",
+    )) {
+        val value = providers.systemProperty(prop).orNull ?: ""
+        inputs.property(prop, value)
+        if (value.isNotEmpty()) systemProperty(prop, value)
+    }
 }

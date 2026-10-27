@@ -25,12 +25,12 @@ internal class WorldRelayDirectory {
     var upsertCalls: Int = 0
         private set
 
-    fun seed(onion: String, operator: ByteArray) {
+    @Synchronized fun seed(onion: String, operator: ByteArray) {
         entries[onion] = Entry(onion, operator, "config")
     }
 
     /** Applies one manifest upsert; false (and recorded) when it relabels a known onion. */
-    fun upsert(onion: String, operator: ByteArray): Boolean {
+    @Synchronized fun upsert(onion: String, operator: ByteArray): Boolean {
         upsertCalls++
         val known = entries[onion]
         if (known != null && !known.operatorId.contentEquals(operator)) {
@@ -41,6 +41,7 @@ internal class WorldRelayDirectory {
         return true
     }
 
+    @Synchronized
     fun recordStaleSuppression() {
         staleSuppressions++
     }

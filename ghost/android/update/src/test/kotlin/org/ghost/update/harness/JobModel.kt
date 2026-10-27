@@ -98,17 +98,26 @@ internal class JobDriver(
     }
 
     /** The keyed draw the production's RandomSources pattern names: key ‖ domain ‖ index. */
-    private fun draw(index: Int, domain: String): Double {
-        val d = sha256Bytes("${world.seed}|${client.name}|job|$domain|$index")
-        var v = 0L
-        for (i in 0 until 8) v = (v shl 8) or (d[i].toLong() and 0xff)
-        return (v ushr 11) * (1.0 / (1L shl 53))
-    }
+    private fun draw(index: Int, domain: String): Double =
+        keyedDraw(world.seed, client.name, index, domain)
 
     private fun flex(index: Int): Long =
         (draw(index, "flex") * FLEX_MILLIS).toLong()
 
     companion object {
+        /** The deterministic draw, shared with the gate-scale driver (the same function a
+         *  per-client [JobDriver] uses, so a world and its gate shard decide identically). */
+        internal fun keyedDraw(seed: Long, clientName: String, index: Int, domain: String): Double {
+            val d = sha256Bytes("${seed}|${clientName}|job|$domain|$index")
+            var v = 0L
+            for (i in 0 until 8) v = (v shl 8) or (d[i].toLong() and 0xff)
+            return (v ushr 11) * (1.0 / (1L shl 53))
+        }
+
+        /** The fire time of the [index]-th job (the [JobDriver.step] rule, for the gate driver). */
+        internal fun fireAt(startAt: Long, index: Int, seed: Long, clientName: String): Long =
+            startAt + index * JOB_PERIOD_MILLIS +
+                (keyedDraw(seed, clientName, index, "flex") * FLEX_MILLIS).toLong()
         /** Phase 7 design: one periodic job, 15 min period with 5 min flex. */
         const val JOB_PERIOD_MILLIS: Long = 15 * 60_000L
         const val FLEX_MILLIS: Long = 5 * 60_000L

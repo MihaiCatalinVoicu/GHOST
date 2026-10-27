@@ -82,10 +82,10 @@ internal class ModelMirror(
 ) {
 
     /** Served requests, the world-side view of what the mirrors saw. */
-    var bundleRequests: Int = 0
-        private set
-    var chunkRequests: Int = 0
-        private set
+    val bundleRequests: Int get() = bundleRequestsN.get()
+    val chunkRequests: Int get() = chunkRequestsN.get()
+    private val bundleRequestsN = java.util.concurrent.atomic.AtomicInteger()
+    private val chunkRequestsN = java.util.concurrent.atomic.AtomicInteger()
     var chunkIndexesServed: MutableList<Long> = mutableListOf()
         private set
 
@@ -105,7 +105,7 @@ internal class ModelMirror(
     var bundleOverride: ByteArray? = null
 
     fun serveBundle(fixtures: WorldFixtures): ByteArray =
-        bundleOverride?.also { bundleRequests++ } ?: serveBundleByMode(fixtures)
+        bundleOverride?.also { bundleRequestsN.incrementAndGet() } ?: serveBundleByMode(fixtures)
 
     private fun serveBundleByMode(fixtures: WorldFixtures): ByteArray = when (mode) {
         MirrorMode.NONE -> fixtures.bundle
@@ -124,7 +124,7 @@ internal class ModelMirror(
         MirrorMode.FLOOR_MAX -> fixtures.doc("bundle-floor.ghrb")
         MirrorMode.RELABEL -> fixtures.doc("bundle-relabel.ghrb")
         MirrorMode.APK_SWAP, MirrorMode.APK_EXTRA, MirrorMode.DROP_MID_RANGE -> fixtures.bundle
-    }.also { bundleRequests++ }
+    }.also { bundleRequestsN.incrementAndGet() }
 
     /** The fixed 4 MiB range of the offered APK (§7.2); the last range is the file's tail. */
     fun serveApkChunk(fixtures: WorldFixtures, chunkIndex: Long): ByteArray {
@@ -145,8 +145,8 @@ internal class ModelMirror(
             throw NetworkException("invalid_argument")
         }
         val end = minOf(start + CHUNK, file.size.toLong())
-        chunkRequests++
-        chunkIndexesServed += chunkIndex
+        chunkRequestsN.incrementAndGet()
+        synchronized(chunkIndexesServed) { chunkIndexesServed += chunkIndex }
         return file.copyOfRange(start.toInt(), end.toInt())
     }
 

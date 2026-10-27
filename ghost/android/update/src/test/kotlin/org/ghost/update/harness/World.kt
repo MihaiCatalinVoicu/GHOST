@@ -39,7 +39,7 @@ internal class World(
 
     /** The mirror view (T51's observatory): every request, in serve order — the twin worlds
      *  compare these transcripts. Format: `time|bundle|slot=n` / `time|chunk|slot=n|index=i`. */
-    val mirrorTranscript = ArrayList<String>()
+    val mirrorTranscript: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
 
     init {
         // §11.3: the world selects its mutant once, before the first native call; [close]
