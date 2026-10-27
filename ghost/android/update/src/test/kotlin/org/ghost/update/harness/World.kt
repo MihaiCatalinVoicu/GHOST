@@ -57,9 +57,14 @@ internal class World(
 
     /** One client: a fresh fixture-chain install of [installed] (versionCode), running the real
      *  engine. The per-device clock offset lands inside ±σ, deterministic from the seed. */
-    fun client(name: String? = null, installed: Int = 1, sdk: Int = 29): Client {
+    fun client(
+        name: String? = null,
+        installed: Int = 1,
+        sdk: Int = 29,
+        wrap: (org.ghost.storage.SqlExecutor) -> org.ghost.storage.SqlExecutor = { it },
+    ): Client {
         check(clients.size < MAX_CLIENTS) { "a world holds at most $MAX_CLIENTS clients" }
-        val c = Client(this, clients.size, name ?: "client-${clients.size}", installed, sdk)
+        val c = Client(this, clients.size, name ?: "client-${clients.size}", installed, sdk, wrap)
         c.skewWithinSigma()
         clients += c
         return c
