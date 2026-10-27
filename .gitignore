@@ -79,3 +79,5 @@ ghost/third_party/lyrebird/.cache/
 # Phase 12 S3: the loopback harness's Tor expert bundle (fetched at test time, hash-verified;
 # see ghost/third_party/tor-expert/FETCH.sh)
 ghost/third_party/tor-expert/.cache/
+!ghost/android/update/src/test/resources/update-world/app-v2.apk
+!ghost/android/update/src/test/resources/update-world/core.apk
