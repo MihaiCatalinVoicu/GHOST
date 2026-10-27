@@ -108,6 +108,31 @@ internal class Client(
     }
 
     /**
+     * The recovery APK's install (Phase 14 design ' + chr(167) + '3.5, CS-D7, L10-D13): installed outside
+     * the updater, so the world models the platform's replace plus the app's next start — ' + chr(167) + '7.4
+     * step 0 over the recovery chain. The engine's private `start()` does exactly this
+     * composition (nativeStart over the stored blob and the new embedded chain, then the
+     * START transaction); the recovery chain stands in for the compiled-in one, the same
+     * discipline as [firstStart]. The stored root not being on the embedded chain starts a
+     * new trust epoch (decision.rs `start_epoch`'s `fresh_epoch` arm).
+     */
+    fun installRecoveryChain(recoveryChain: ByteArray, newInstalled: Int) {
+        val loaded = store.load() ?: throw IllegalStateException("no stored state to recover from")
+        val blob = world.config.native.start(loaded.blob, recoveryChain, newInstalled)
+        val facts = UpdateCodec.decode(blob, networkOf(recoveryChain))
+        store.accept(facts)
+    }
+
+    private fun networkOf(chain: ByteArray): Int {
+        if (chain.size < 6 || chain[0] != 'G'.code.toByte() || chain[1] != 'H'.code.toByte() ||
+            chain[2] != 'R'.code.toByte() || chain[3] != 'C'.code.toByte() || chain[4] != 1.toByte()
+        ) {
+            throw org.ghost.network.NetworkException("malformed_response")
+        }
+        return chain[5].toInt() and 0xff
+    }
+
+    /**
      * MC-D22's port (§11.3, a Kotlin-side row): an install session committed without the
      * native check's OK — the current `.part` file (mid-download, unverified) is streamed into
      * the installer. Only the mutant world calls this; the recording installer is the oracle

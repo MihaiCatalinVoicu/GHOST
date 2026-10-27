@@ -90,6 +90,10 @@ internal class WorldFixtures private constructor(
             "manifest-stolen.ghrm", "manifest-xroot.ghrm", "chain2.ghrc",
             "chain4.ghrc", "chain4x.ghrc", "manifest-4.ghrm", "manifest-4x.ghrm",
             "bundle-4.ghrb", "bundle-4x.ghrb",
+            "chain5.ghrc", "chain6.ghrc", "chain-rc.ghrc", "chain-swap.ghrc",
+            "manifest-5.ghrm", "manifest-6.ghrm", "manifest-rc.ghrm",
+            "bundle-5.ghrb", "bundle-6.ghrb", "bundle-rc.ghrb",
+            "bundle-swap.ghrb", "bundle-3att.ghrb",
             "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
         )
 
