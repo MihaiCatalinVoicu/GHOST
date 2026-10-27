@@ -13,6 +13,6 @@ fixture world the JVM update world serves through its model mirrors:
   GHRB-surgery variants (wrong/withheld proof) and the multi-chunk APK.
 
 Facts of this instance (regenerating changes all of them):
-- fixture APK cert sha256: fbdbc30c3dfa3089cc96966f27e2757a258ff95c77e1f9f57582fcb6d6b4776e
-- fixture APK sha256: 1e15fa447d9ab54d14a7caebbddbcf041690004320c5d7274b89aea1285a0327 (length 8533); big APK sha256: 3402dcab4c742460b428c2d0716e1dbb32dd70848fe2786eb4c5cfddadf2db35
+- fixture APK cert sha256: 8c5e4017a3cd486d9213d280221c1c7fa30e2620006723aa4358040d2a03b698
+- fixture APK sha256: 5273a2a4678b331274e3bf848c676d0f59fc67294c3b88913be87de2dc72980e (length 8533); big APK sha256: 2b09db12c3626ea4b2c06807e390284a53e0c40042923aca4e9e0a843dd3b91a
 - issued_day 20752, not_after_day 20783 (generated 2026-10-27)

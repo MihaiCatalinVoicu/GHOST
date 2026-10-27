@@ -41,7 +41,7 @@ rm -f "$KEYS"/*.hex "$KEYS"/*.pub "$KEYS"/fixture.ks
 # public keys, generated here with RFC 8032 reference arithmetic (self-checked against a
 # library-verified test vector; ops' root-build/manifest-build/inspect verify key correspondence
 # downstream). root-2/release-2/attest-2 serve the hostile and rotation fixtures.
-python3 "$(dirname "$0")/gen-keys.py" "$KEYS" root-1 root-2 root-3 release-1 release-2 attest-1 attest-2 apk-1 log-1 witness-1 witness-2 witness-3
+python3 "$(dirname "$0")/gen-keys.py" "$KEYS" root-1 root-2 root-3 root-rc release-1 release-2 attest-1 attest-2 apk-1 log-1 witness-1 witness-2 witness-3 attacker-log attacker-witness
 
 TODAY=$(python3 -c 'import time; print(int(time.time()/86400))')
 ISSUED=$((TODAY - 1))
@@ -165,6 +165,35 @@ for v in 2 3 4; do
     --witness witness-1 --keys "$KEYS" --out "$OUT/root-$v.ghrp"
 done
 
+# The recovery-epoch world: the attacker keeps publishing roots on the stolen key (v5, v6 -
+# valid by the chain rule, that is the attack), the recovery APK's NEW lineage (root-rc v1 -
+# its own numbering, not because order decides anything, §3.5), and the root-swap world's
+# attacker-log root (correctly signed under the old chain rule, logged under the ATTACKER's
+# log and witnesses - MC-D23's named refusal is ROOT_UNLOGGED).
+root_cfg 5 root-1 release-1 "$OUT/cfg-root5.toml"
+"$OPS" root-build --config "$OUT/cfg-root5.toml" --keys "$KEYS" --out "$OUT/root-5.ghrt"
+root_cfg 6 root-1 release-1 "$OUT/cfg-root6.toml"
+"$OPS" root-build --config "$OUT/cfg-root6.toml" --keys "$KEYS" --out "$OUT/root-6.ghrt"
+for n in 5 6; do
+  rm -rf "$OUT/rootsn" && mkdir -p "$OUT/rootsn" && cp "$OUT"/root-{1,2,3,4,5}.ghrt "$OUT/rootsn/" && cp "$OUT/root-$n.ghrt" "$OUT/rootsn/"
+  "$OPS" chain-build --network 2 --roots "$OUT/rootsn" --out "$OUT/chain$n.ghrc"
+  "$OPS" proof-build --file "$OUT/root-$n.ghrt" --log-index 0 --log-key log-1 --submit-key root-1 \
+    --witness witness-1 --keys "$KEYS" --out "$OUT/root-$n.ghrp"
+done
+# The recovery lineage: a new keyset at its own version 1, same anchors.
+root_cfg 1 root-rc release-2 "$OUT/cfg-rootrc.toml"
+"$OPS" root-build --config "$OUT/cfg-rootrc.toml" --keys "$KEYS" --out "$OUT/root-rc.ghrt"
+rm -rf "$OUT/rootsrc" && mkdir -p "$OUT/rootsrc" && cp "$OUT/root-rc.ghrt" "$OUT/rootsrc/"
+"$OPS" chain-build --network 2 --roots "$OUT/rootsrc" --out "$OUT/chain-rc.ghrc"
+# The root-swap root: signed by the stolen old root key, but listing the attacker's log and
+# witnesses - its block verifies under the old chain rule; its proof fails the old policy's log key.
+root_cfg 2 root-1 release-1 "$OUT/cfg-root-swap.toml"
+sed -i 's/^key = "log-1"$/key = "attacker-log"/; s/^origin = "stg-log-1"$/origin = "attacker-log"/; s/^witnesses = \["witness-1"\]$/witnesses = ["attacker-witness"]/' "$OUT/cfg-root-swap.toml"
+"$OPS" root-build --config "$OUT/cfg-root-swap.toml" --keys "$KEYS" --out "$OUT/root-swap.ghrt"
+rm -rf "$OUT/rootswap" && mkdir -p "$OUT/rootswap" && cp "$OUT/root-1.ghrt" "$OUT/root-swap.ghrt" "$OUT/rootswap/"
+"$OPS" chain-build --network 2 --roots "$OUT/rootswap" --out "$OUT/chain-swap.ghrc"
+"$OPS" proof-build --file "$OUT/root-swap.ghrt" --log-index 0 --log-key attacker-log --submit-key root-1 \
+  --witness attacker-witness --keys "$KEYS" --out "$OUT/root-swap.ghrp"
 # The foreign root (a different keyset at version 1) for MIXED_ROOT.
 root_cfg 1 root-2 release-2 "$OUT/cfg-rootb.toml"
 "$OPS" root-build --config "$OUT/cfg-rootb.toml" --keys "$KEYS" --out "$OUT/root-b.ghrt"
@@ -372,6 +401,13 @@ mkdir -p "$OUT/roots4x" && cp "$OUT/root-1.ghrt" "$OUT/root-2.ghrt" "$OUT/root-3
   --witness witness-1 --keys "$KEYS" --out "$OUT/root-4x.ghrp"
 write_manifest manifest-4x "$OUT/root-4x.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
 proof_and_bundle manifest-4x
+
+write_manifest manifest-5 "$OUT/root-5.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-5
+write_manifest manifest-6 "$OUT/root-6.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-6
+write_manifest manifest-rc "$OUT/root-rc.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-rc release-2
 "$OPS" bundle --chain "$OUT/chain4x.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" \
   --root-proof "$OUT/root-4x.ghrp" \
   --manifest "$OUT/manifest-4x.ghrm" --manifest-proof "$OUT/manifest-4x.ghrp" --out "$OUT/bundle-4x.ghrb"
@@ -397,6 +433,18 @@ bundle1 manifest-big "$OUT/bundle-big.ghrb"
 "$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
   --manifest "$OUT/manifest-2.ghrm" --manifest-proof "$OUT/manifest-2.ghrp" --out "$OUT/bundle-2.ghrb"
 "$OPS" bundle --chain "$OUT/chain4.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" --root-proof "$OUT/root-4.ghrp" --manifest "$OUT/manifest-4.ghrm" --manifest-proof "$OUT/manifest-4.ghrp" --out "$OUT/bundle-4.ghrb"
+"$OPS" bundle --chain "$OUT/chain5.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" \
+  --root-proof "$OUT/root-4.ghrp" --root-proof "$OUT/root-5.ghrp" \
+  --manifest "$OUT/manifest-5.ghrm" --manifest-proof "$OUT/manifest-5.ghrp" --out "$OUT/bundle-5.ghrb"
+"$OPS" bundle --chain "$OUT/chain6.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" \
+  --root-proof "$OUT/root-4.ghrp" --root-proof "$OUT/root-5.ghrp" --root-proof "$OUT/root-6.ghrp" \
+  --manifest "$OUT/manifest-6.ghrm" --manifest-proof "$OUT/manifest-6.ghrp" --out "$OUT/bundle-6.ghrb"
+"$OPS" bundle --chain "$OUT/chain-rc.ghrc" \
+  --manifest "$OUT/manifest-rc.ghrm" --manifest-proof "$OUT/manifest-rc.ghrp" --out "$OUT/bundle-rc.ghrb"
+"$OPS" bundle --chain "$OUT/chain-swap.ghrc" --root-proof "$OUT/root-swap.ghrp" \
+  --manifest "$OUT/manifest-1.ghrm" --manifest-proof "$OUT/manifest-1.ghrp" --out "$OUT/bundle-swap.ghrb"
+"$OPS" bundle --chain "$OUT/chain4.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" --root-proof "$OUT/root-4.ghrp" \
+  --manifest "$OUT/manifest-3.ghrm" --manifest-proof "$OUT/manifest-3.ghrp" --out "$OUT/bundle-3att.ghrb"
 bundle1 manifest-stolen "$OUT/bundle-stolen.ghrb"
 
 # --- the mutant-kill fixtures (§11.3, slice S6c) -----------------------------------------
@@ -713,6 +761,9 @@ cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghr
    "$OUT"/bundle-badrootproof.ghrb \
    "$OUT"/manifest-xroot.ghrm "$OUT"/bundle-xroot.ghrb \
    "$OUT"/manifest-bucket.ghrm "$OUT"/bundle-bucket.ghrb \
+   "$OUT"/chain5.ghrc "$OUT"/chain6.ghrc "$OUT"/chain-rc.ghrc "$OUT"/chain-swap.ghrc \
+   "$OUT"/manifest-5.ghrm "$OUT"/manifest-6.ghrm "$OUT"/manifest-rc.ghrm \
+   "$OUT"/bundle-5.ghrb "$OUT"/bundle-6.ghrb "$OUT"/bundle-rc.ghrb "$OUT"/bundle-swap.ghrb "$OUT"/bundle-3att.ghrb \
    "$OUT"/chain4.ghrc "$OUT"/chain4x.ghrc "$OUT"/manifest-4.ghrm "$OUT"/manifest-4x.ghrm \
    "$OUT"/bundle-4.ghrb "$OUT"/bundle-4x.ghrb \
    "$OUT"/app-v2.apk "$OUT"/app-v2-swap.apk "$OUT"/app-v2-extra.apk "$OUT"/app-v2-big.apk "$OUT"/core.apk \
