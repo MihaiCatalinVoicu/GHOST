@@ -484,10 +484,11 @@ internal object MutantKills {
     // ------------------------------------------------------------------ the crafted suite
 
     /**
-     * MC-D27's kill needs a client whose trusted root lists ONLY the lineage APK's new
-     * certificate: the v3.1 block carries the new cert (SDK 33+), the v3.0 block the original
-     * one, v2 is disabled. Shipped at SDK 33 reads the v3.1 signer (accepted); the mutant's
-     * sdk = 255 misses the [33, 34] window and the disabled v2, so its signer lookup fails.
+     * MC-D27's kill needs a client whose trusted root lists ONLY the ORIGINAL certificate —
+     * the v3.0 block's first signer (verified by dissection: v3.0 carries the original cert,
+     * v3.1 the rotated one; v2 is disabled). At SDK 29 the shipped code reads the v3.0 block
+     * ([24,32] window) and matches; the mutant's sdk = 255 falls into the v3.1 window
+     * [33, INT_MAX] and reads the rotated cert, which the root does not list.
      */
     private fun v31Client(w: World): Client {
         val c = w.client(installed = 1, sdk = 29)  // the v3.0 window [24,32]; the mutant's 255 reads v3.1
