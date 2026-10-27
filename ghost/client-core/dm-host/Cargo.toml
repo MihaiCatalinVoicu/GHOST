@@ -41,4 +41,12 @@ ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors", "p
 # one test-vectors entry point (`MlsVectors.run`, the JDK vector replay of §12.2), which G-M6 checks
 # this library exports and no shipped one does. G-M2 keeps `test-vectors` out of every shipped graph.
 ghost-client-mls = { path = "../mls", features = ["jni-bridge", "test-vectors"] }
+# The update surface (Phase 14 design §9.3, §11.2; slice S6): `UpdateNative`/`TorMirrorTransport`
+# are exported from this library too, so the JVM update world loads one host library and calls
+# exactly the shipped update code (the §9.2 decision core, the bundle/offer/accept path, the
+# streaming APK check). The exports are `client-core/net`'s own, unconditional in the crate — no
+# feature, so the shipped graph (G-R2's allowlist) is untouched: only this never-shipped package
+# links them for tests. Net also invokes the closed DM/media/channel export macros itself, so this
+# crate must NOT invoke them a second time (duplicate symbols); it adds only the test entries.
+ghost-client-net = { path = "../net" }
 jni = { workspace = true }

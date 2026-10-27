@@ -4,9 +4,14 @@
 //! `cdylib` for `x86_64-unknown-linux-gnu` (and the owner's machine for `x86_64-pc-windows-msvc`,
 //! verified in S0′ V-5) and passes `-Dghost.dm.native=<path>`; `DmNative` loads that path in tests
 //! and `ghost_client_net` on Android. The exported symbols are the same ones the shipped library
-//! carries, because both come from the same `export_jni!` invocation over the same crate — that is
-//! what makes the host/Android equivalence test of §15.9 item 7 an equivalence test rather than a
-//! comparison of two implementations.
+//! carries: since slice S6 (Phase 14 design §9.3, §11.2) the closed DM/media/channel surfaces are
+//! this library's copies of `ghost-client-net`'s own macro invocations — this crate links
+//! `ghost-client-net` for its update surface (`UpdateNative`/`TorMirrorTransport`), and net invokes
+//! `ghost_client_dm::export_jni!()`/`export_media_jni!()` and `ghost_client_mls::export_jni!()`
+//! itself, so each export macro runs exactly once per link (a second invocation would be a
+//! duplicate-symbol error). The bodies are still `ghost_client_dm::jni` / `ghost_client_mls::jni`
+//! either way — that is what keeps the host/Android equivalence test of §15.9 item 7 an equivalence
+//! test rather than a comparison of two implementations.
 //!
 //! **The symbols more** (slice S12, §22.8.10 point 6): `DmEquivalence.run`, the deterministic
 //! case runner of `ghost_client_dm::equivalence`, since §22.37 `DmEquivalence.bindingHooks`, the
@@ -43,9 +48,22 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-ghost_client_dm::export_jni!();
 ghost_client_dm::export_equivalence_jni!();
-ghost_client_dm::export_media_jni!();
 ghost_client_dm::export_media_test_jni!();
-ghost_client_mls::export_jni!();
 ghost_client_mls::export_vectors_jni!();
+
+
+/// Keeps `ghost-client-net`'s objects linked into this cdylib (Phase 14 design §9.3, §11.2;
+/// slice S6): its `UpdateNative`/`TorMirrorTransport` exports are plain `#[no_mangle]`
+/// functions of that crate, not an `export_jni!` this crate invokes, and an `extern` reference
+/// alone does not make the linker search the rlib (shared libraries resolve data references
+/// lazily, and this crate forbids unsafe attributes). A call to a real, non-inlinable Rust
+/// function of the crate is a hard link-time edge; the `#[used]` function pointer keeps the
+/// caller alive, and the caller keeps the callee's objects in. The callee names the update
+/// surface's own closed list, so the edge lands in the same CGU as the exports.
+fn update_surface_link() -> usize {
+    ghost_client_net::update::CLOSED_UPDATE.len()
+}
+
+#[used]
+static UPDATE_SURFACE_LINKED: fn() -> usize = update_surface_link;
