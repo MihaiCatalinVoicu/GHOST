@@ -208,11 +208,17 @@ private class WorldSession(
     override fun clockTrusted(): Boolean = world.clock.trusted
 
     override val mirror: MirrorAccess = object : MirrorAccess {
-        override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray =
-            mirror(slot).serveBundle(world.fixtures)
+        override fun fetchBundle(mirrorSet: Long, slot: Int, deadlineMillis: Int): ByteArray {
+            val m = mirror(slot)
+            world.mirrorTranscript += "${world.clock.trueMillis}|bundle|slot=$slot|m${m.index}"
+            return m.serveBundle(world.fixtures)
+        }
 
-        override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray =
-            mirror(slot).serveApkChunk(world.fixtures, chunkIndex)
+        override fun fetchApkChunk(mirrorSet: Long, slot: Int, chunkIndex: Long, deadlineMillis: Int): ByteArray {
+            val m = mirror(slot)
+            world.mirrorTranscript += "${world.clock.trueMillis}|chunk|slot=$slot|m${m.index}|index=$chunkIndex"
+            return m.serveApkChunk(world.fixtures, chunkIndex)
+        }
 
         private fun mirror(slot: Int): ModelMirror {
             if (pick != null) return if (slot == 0) pick.first else pick.second

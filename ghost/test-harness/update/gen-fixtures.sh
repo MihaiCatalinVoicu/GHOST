@@ -152,6 +152,19 @@ mkdir -p "$OUT/roots2" && cp "$OUT/root-1.ghrt" "$OUT/root-2.ghrt" "$OUT/roots2/
 "$OPS" proof-build --file "$OUT/root-2.ghrt" --log-index 0 --log-key log-1 --submit-key root-1 \
   --witness witness-1 --keys "$KEYS" --out "$OUT/root-2.ghrp"
 
+# NI-U4: the four-root chain (same anchors in every root) and a same-set swapped-order anchor
+# variant (L10-D22: where roots change their anchor mirrors, the mirror choice differs by design).
+root_cfg 3 root-1 release-1 "$OUT/cfg-root3.toml"
+"$OPS" root-build --config "$OUT/cfg-root3.toml" --keys "$KEYS" --out "$OUT/root-3.ghrt"
+root_cfg 4 root-1 release-1 "$OUT/cfg-root4.toml"
+"$OPS" root-build --config "$OUT/cfg-root4.toml" --keys "$KEYS" --out "$OUT/root-4.ghrt"
+mkdir -p "$OUT/roots4" && cp "$OUT/root-1.ghrt" "$OUT/root-2.ghrt" "$OUT/root-3.ghrt" "$OUT/root-4.ghrt" "$OUT/roots4/"
+"$OPS" chain-build --network 2 --roots "$OUT/roots4" --out "$OUT/chain4.ghrc"
+for v in 2 3 4; do
+  "$OPS" proof-build --file "$OUT/root-$v.ghrt" --log-index 0 --log-key log-1 --submit-key root-1 \
+    --witness witness-1 --keys "$KEYS" --out "$OUT/root-$v.ghrp"
+done
+
 # The foreign root (a different keyset at version 1) for MIXED_ROOT.
 root_cfg 1 root-2 release-2 "$OUT/cfg-rootb.toml"
 "$OPS" root-build --config "$OUT/cfg-rootb.toml" --keys "$KEYS" --out "$OUT/root-b.ghrt"
@@ -321,6 +334,47 @@ proof_and_bundle manifest-big
 # floor at its bound, only attacker mirrors as extras).
 write_manifest manifest-2 "$OUT/root-2.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
 proof_and_bundle manifest-2 release-2
+
+write_manifest manifest-3 "$OUT/root-3.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-3
+write_manifest manifest-4 "$OUT/root-4.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-4
+# The swapped-order anchors: same onion set, reversed (L10-D22's legitimate divergence).
+{
+  echo "network = 2"
+  echo "version = 4"
+  echo "apk_signers = [\"$CERT_SHA\"]"
+  echo "witnesses = [\"witness-1\"]"
+  echo "quorum = 1"
+  echo "[root]"
+  echo "keys = [\"root-1\"]"
+  echo "threshold = 1"
+  echo "[release]"
+  echo "keys = [\"release-1\"]"
+  echo "threshold = 1"
+  echo "[attest]"
+  echo "keys = [\"attest-1\"]"
+  echo "threshold = 1"
+  echo "[[logs]]"
+  echo "key = \"log-1\""
+  echo "origin = \"stg-log-1\""
+  echo "[[anchor_mirrors]]"
+  echo "onion = \"$MIRROR_B\""
+  echo "operator = \"22222222222222222222222222222222\""
+  echo "[[anchor_mirrors]]"
+  echo "onion = \"$MIRROR_A\""
+  echo "operator = \"11111111111111111111111111111111\""
+} > "$OUT/cfg-root4x.toml"
+"$OPS" root-build --config "$OUT/cfg-root4x.toml" --keys "$KEYS" --out "$OUT/root-4x.ghrt"
+mkdir -p "$OUT/roots4x" && cp "$OUT/root-1.ghrt" "$OUT/root-2.ghrt" "$OUT/root-3.ghrt" "$OUT/root-4x.ghrt" "$OUT/roots4x/"
+"$OPS" chain-build --network 2 --roots "$OUT/roots4x" --out "$OUT/chain4x.ghrc"
+"$OPS" proof-build --file "$OUT/root-4x.ghrt" --log-index 0 --log-key log-1 --submit-key root-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/root-4x.ghrp"
+write_manifest manifest-4x "$OUT/root-4x.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-4x
+"$OPS" bundle --chain "$OUT/chain4x.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" \
+  --root-proof "$OUT/root-4x.ghrp" \
+  --manifest "$OUT/manifest-4x.ghrm" --manifest-proof "$OUT/manifest-4x.ghrp" --out "$OUT/bundle-4x.ghrb"
 write_manifest manifest-stolen "$OUT/root-1.ghrt" 1 "$ISSUED" "$NOT_AFTER" 2 attest-1 "2.0.0-world" "$APK_WIN" "$CORE_WIN" \
   "[[mirror]]" "onion = \"$ATTACKER_ONION\"" "operator = \"$(echo "$ATTACKER_ONION" | sha256sum | cut -c1-32)\""
 proof_and_bundle manifest-stolen
@@ -342,6 +396,7 @@ bundle1 manifest-big "$OUT/bundle-big.ghrb"
 # The rotation bundle: the two-root chain needs its root proof (one per entry after the first).
 "$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
   --manifest "$OUT/manifest-2.ghrm" --manifest-proof "$OUT/manifest-2.ghrp" --out "$OUT/bundle-2.ghrb"
+"$OPS" bundle --chain "$OUT/chain4.ghrc" --root-proof "$OUT/root-2.ghrp" --root-proof "$OUT/root-3.ghrp" --root-proof "$OUT/root-4.ghrp" --manifest "$OUT/manifest-4.ghrm" --manifest-proof "$OUT/manifest-4.ghrp" --out "$OUT/bundle-4.ghrb"
 bundle1 manifest-stolen "$OUT/bundle-stolen.ghrb"
 
 # --- the mutant-kill fixtures (§11.3, slice S6c) -----------------------------------------
@@ -658,6 +713,8 @@ cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghr
    "$OUT"/bundle-badrootproof.ghrb \
    "$OUT"/manifest-xroot.ghrm "$OUT"/bundle-xroot.ghrb \
    "$OUT"/manifest-bucket.ghrm "$OUT"/bundle-bucket.ghrb \
+   "$OUT"/chain4.ghrc "$OUT"/chain4x.ghrc "$OUT"/manifest-4.ghrm "$OUT"/manifest-4x.ghrm \
+   "$OUT"/bundle-4.ghrb "$OUT"/bundle-4x.ghrb \
    "$OUT"/app-v2.apk "$OUT"/app-v2-swap.apk "$OUT"/app-v2-extra.apk "$OUT"/app-v2-big.apk "$OUT"/core.apk \
    "$RES/"
 cp "$RELAY_DIR" "$RES/bootstrap-relays.txt"
