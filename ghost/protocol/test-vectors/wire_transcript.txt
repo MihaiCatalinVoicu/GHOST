@@ -1,0 +1,391 @@
+# GHOST wire transcript — protocol/test-vectors/wire_transcript.txt
+# Generator: client-core/net/examples/wire_transcript.rs
+#   cargo run -p ghost-client-net --example wire_transcript --locked
+# Gate: scripts/gates/wire-transcript.sh regenerates this file and diffs it against the committed
+#   copy (G-D11; the wire half of NI-U5's two-release comparison harness).
+# Determinism: fixed inputs only; each RPC runs against its own in-process tonic/h2 server over
+#   loopback TCP through a tee'd connector; nothing rendered depends on the clock, randomness or
+#   the ephemeral port. Re-running the generator reproduces this file byte for byte.
+# Redaction: DATA payloads (the grpc/protobuf bodies, where every secret lives) render as frame
+#   lengths only; HEADERS render as the request metadata recorded at the mock service (sorted)
+#   plus frame shapes. The generator self-checks: the lowercase hex of every fixed secret constant
+#   must appear in no rendered line, or the run aborts. The APK SHA-256 is the one deliberate
+#   exclusion: it names the mirror path by design, a public identifier like the path itself.
+# The SHA-256 of this file is the generator's last stdout line.
+
+## relay StoreBlob
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/StoreBlob
+# RelayClient::store with the smallest ciphertext bucket (1024 bytes), the
+# 86400-second TTL bucket and one fixed capability. The request id is random but always 16 bytes,
+# so every rendered length is fixed.
+request headers (recorded at the mock service `store_blob`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 1210 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=68
+  data: stream=1 len=1210
+  data: stream=1 len=0 end_stream
+s2c DATA: 47 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=47
+  headers: stream=1 len=12 end_stream
+
+## relay GetBlob
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/GetBlob
+# RelayClient::get of the SHA-256 of the fixed 1024-byte ciphertext.
+request headers (recorded at the mock service `get_blob`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 145 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=67
+  data: stream=1 len=145
+  data: stream=1 len=0 end_stream
+s2c DATA: 1032 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=1032
+  headers: stream=1 len=12 end_stream
+
+## relay ListNamespace
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/ListNamespace
+# RelayClient::list, first page (empty cursor), limit 16.
+request headers (recorded at the mock service `list_namespace`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 129 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=70
+  data: stream=1 len=129
+  data: stream=1 len=0 end_stream
+s2c DATA: 39 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=39
+  headers: stream=1 len=12 end_stream
+
+## relay CheckBlobs
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/CheckBlobs
+# RelayClient::check over two fixed hashes.
+request headers (recorded at the mock service `check_blobs`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 161 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=69
+  data: stream=1 len=161
+  data: stream=1 len=0 end_stream
+s2c DATA: 73 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=73
+  headers: stream=1 len=12 end_stream
+
+## relay RedeemToken
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/RedeemToken
+# Driven at the RedeemRpc seam with the exact request redeem_with
+# (NamespaceClient::redeem) builds and sends. NamespaceClient::redeem itself is not driveable
+# in-process: its pre-I/O binding check needs an issuer-minted token, and that check never changes
+# the bytes sent (tests/redeem.rs pins the guarded path).
+request headers (recorded at the mock service `redeem_token`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 416 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=69
+  data: stream=1 len=416
+  data: stream=1 len=0 end_stream
+s2c DATA: 15 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=15
+  headers: stream=1 len=12 end_stream
+
+## relay RegisterKey
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/RegisterKey
+# Driven at the RegisterRpc seam with the exact request register_with
+# (NamespaceClient::register_key) builds and sends after its capability guard; the guard reads the
+# capability header only and never changes the bytes sent (tests/register.rs pins the guarded
+# path).
+request headers (recorded at the mock service `register_key`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 184 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=69
+  data: stream=1 len=184
+  data: stream=1 len=0 end_stream
+s2c DATA: 15 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=15
+  headers: stream=1 len=12 end_stream
+
+## issuer RequestInvoice
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/RequestInvoice
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `request_invoice`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 405 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=72
+  data: stream=1 len=405
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## issuer BlindSign
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/BlindSign
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `blind_sign`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 318 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=69
+  data: stream=1 len=318
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## issuer InvoiceStatus
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/InvoiceStatus
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `invoice_status`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 59 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=71
+  data: stream=1 len=59
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## issuer RedeemInvite
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/RedeemInvite
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `redeem_invite`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 626 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=71
+  data: stream=1 len=626
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## issuer ClaimPayout
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/ClaimPayout
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `claim_payout`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 836 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=70
+  data: stream=1 len=836
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## issuer RefreshCredit
+:authority: issuer.invalid
+:method: POST
+:path: /ghost.issuer.v1.IssuerService/RefreshCredit
+# IssuerClient's IssuerRpc impl sends the request unvalidated — the
+# issuer_flow checks run above the wire — so a Default-extended fixed request reaches the wire as
+# the client builds it.
+request headers (recorded at the mock service `refresh_credit`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 623 bytes in 2 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=2097152 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +5177345
+  headers: stream=1 len=72
+  data: stream=1 len=623
+  data: stream=1 len=0 end_stream
+s2c DATA: 7 bytes in 1 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=38
+  data: stream=1 len=7
+  headers: stream=1 len=12 end_stream
+
+## mirror bundle fetch
+:authority: pdp7otysol5453kpyinghqcbcok64pshyuxn5ht4flxx3imxfuy7erqd.onion:443
+:method: GET
+:path: /ghost/v1/stagenet/current.ghrb
+# Rendered from mirror.rs's request builder: the GET path routes
+# to no service on the tonic server, which answers 404 and the client refuses at status — the
+# request is complete on the wire. No mock handler sees it.
+request headers: not recorded (no service on this route; the request shape is in
+# the captured c2s HEADERS frame and rendered from the client's builder)
+c2s DATA: 0 bytes in 0 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=65535 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  headers: stream=1 len=130 end_stream
+  goaway: stream=0 len=8
+s2c DATA: 0 bytes in 0 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=55 end_stream
+
+## mirror APK chunk 0
+:authority: pdp7otysol5453kpyinghqcbcok64pshyuxn5ht4flxx3imxfuy7erqd.onion:443
+:method: GET
+:path: /ghost/v1/stagenet/apk/808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f
+# The chunk fetch (kind 1, chunk 0 of a 6000-byte APK): the path
+# names the APK by its SHA-256, a public path component, and the range header carries
+# `bytes 0-4194303/6000` (the length renders in the RANGE value, not in DATA).
+request headers: not recorded (no service on this route; the request shape is in
+# the captured c2s HEADERS frame and rendered from the client's builder)
+c2s DATA: 0 bytes in 0 frame(s)
+c2s frames:
+  settings: enable_push=0 initial_window_size=65535 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  headers: stream=1 len=182 end_stream
+  goaway: stream=0 len=8
+s2c DATA: 0 bytes in 0 frame(s)
+s2c frames:
+  settings: initial_window_size=1048576 max_frame_size=16384 max_header_list_size=16384
+  settings: ack
+  window_update: stream=0 +983041
+  headers: stream=1 len=55 end_stream
+
+## coverage notes
+# GossipSync is a relay-to-relay streaming RPC, not a client RPC: no client ever sends it, and it
+# is not driven here.
+# The six relay RPCs and the six issuer RPCs are all driven. RedeemToken and RegisterKey run at
+# the RedeemRpc/RegisterRpc seams with the exact requests the NamespaceClient paths send; their
+# pre-I/O guards (the ES binding, the capability header check) never change the bytes on the wire.
+# No mock answer is built to pass client-side validation: every answer is fixed bytes and the
+# result of every call is ignored. A request is complete on the wire the moment the client sends
+# it; the transcript records shapes, not outcomes.
+# The mirror fetch's request shape is rendered from mirror.rs's builder rather than from a mock
+# handler: the bare router answers 404 before any handler runs. The c2s HEADERS frame in the
+# capture carries exactly this :method, :path and :authority.

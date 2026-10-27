@@ -84,8 +84,8 @@ fn capability() -> Vec<u8> {
 /// A fixed 354-byte token shape (the ACCESS-token length). The bytes ride in DATA and are never
 /// rendered. A redaction-checked secret.
 fn token() -> Vec<u8> {
-    (0..354u8)
-        .map(|i| i.wrapping_mul(7).wrapping_add(3))
+    (0..354u16)
+        .map(|i| (i as u8).wrapping_mul(7).wrapping_add(3))
         .collect()
 }
 
@@ -211,6 +211,7 @@ impl tower::Service<http::Uri> for CaptureConnector {
 
 /// One HTTP/2 frame of a captured byte stream. The payload is kept only to decode SETTINGS and
 /// WINDOW_UPDATE values; it is never rendered.
+#[derive(Clone)]
 struct Frame {
     kind: &'static str,
     stream: u32,
@@ -275,6 +276,33 @@ fn parse_frames(bytes: &[u8]) -> Vec<Frame> {
     out
 }
 
+/// Canonicalizes a parsed direction's frame list against h2's emission-timing race: the
+/// SETTINGS ACK (a connection-level frame carrying no HPACK state) is flushed by h2 either
+/// with the peer-settings response or with the next write, so its byte position relative to
+/// WINDOW_UPDATE and the first stream frames varies run to run with no wire semantics in the
+/// difference. Every `settings: ack` is pinned immediately after the direction's first
+/// non-ACK SETTINGS frame (its semantic anchor); every other frame keeps its exact wire
+/// order, so HEADERS/DATA sequences per stream are untouched.
+fn canonicalize(frames: &mut Vec<Frame>) {
+    let anchor = frames
+        .iter()
+        .position(|f| f.kind == "settings" && !f.end_stream);
+    let Some(anchor) = anchor else { return };
+    let acks: Vec<Frame> = frames
+        .iter()
+        .filter(|f| f.kind == "settings" && f.end_stream)
+        .cloned()
+        .collect();
+    if acks.is_empty() {
+        return;
+    }
+    frames.retain(|f| !(f.kind == "settings" && f.end_stream));
+    let anchor = anchor.min(frames.len());
+    for (i, ack) in acks.into_iter().enumerate() {
+        frames.insert(anchor + 1 + i, ack);
+    }
+}
+
 /// Renders one captured frame as a line: lengths only, never payload bytes. SETTINGS renders its
 /// values (window sizes and frame bounds, the NI-U5 pin surface); WINDOW_UPDATE renders its
 /// increment; both are settings, not secrets.
@@ -326,12 +354,17 @@ struct Seen {
 fn record(seen: &Arc<Mutex<Option<Seen>>>, name: &str, md: &tonic::metadata::MetadataMap) {
     let mut headers: Vec<(String, String)> = md
         .iter()
-        .map(|(k, v)| {
-            let value = v
-                .to_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|_| format!("{} bytes", v.len()));
-            (k.as_str().to_owned(), value)
+        .map(|kv| match kv {
+            tonic::metadata::KeyAndValueRef::Ascii(k, v) => {
+                let value = v
+                    .to_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|_| format!("{} bytes", v.len()));
+                (k.as_str().to_owned(), value)
+            }
+            tonic::metadata::KeyAndValueRef::Binary(k, v) => {
+                (k.as_str().to_owned(), format!("{} bytes", v.to_bytes().map_or(0, |b| b.len())))
+            }
         })
         .collect();
     headers.sort();
@@ -608,6 +641,10 @@ where
     let client = RelayClient::with_connector(connector);
     call(client).await;
     let seen = relay.seen.lock().unwrap().take();
+    let mut c2s = parse_frames(&c2s.lock().unwrap());
+    let mut s2c = parse_frames(&s2c.lock().unwrap());
+    canonicalize(&mut c2s);
+    canonicalize(&mut s2c);
     Section {
         title: title.to_owned(),
         method: "POST",
@@ -615,8 +652,8 @@ where
         path: path.to_owned(),
         note,
         seen,
-        c2s: parse_frames(&c2s.lock().unwrap()),
-        s2c: parse_frames(&s2c.lock().unwrap()),
+        c2s,
+        s2c,
     }
 }
 
@@ -631,6 +668,10 @@ where
     let client = IssuerClient::with_connector(connector);
     call(client).await;
     let seen = issuer.seen.lock().unwrap().take();
+    let mut c2s = parse_frames(&c2s.lock().unwrap());
+    let mut s2c = parse_frames(&s2c.lock().unwrap());
+    canonicalize(&mut c2s);
+    canonicalize(&mut s2c);
     Section {
         title: title.to_owned(),
         method: "POST",
@@ -638,8 +679,8 @@ where
         path: path.to_owned(),
         note,
         seen,
-        c2s: parse_frames(&c2s.lock().unwrap()),
-        s2c: parse_frames(&s2c.lock().unwrap()),
+        c2s,
+        s2c,
     }
 }
 
@@ -671,6 +712,10 @@ async fn mirror_section(
     // connection task keeps reading while a fixed settle beat lets those frames land, so the
     // captured s2c frame list is the same on every run.
     tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut c2s = parse_frames(&c2s.lock().unwrap());
+    let mut s2c = parse_frames(&s2c.lock().unwrap());
+    canonicalize(&mut c2s);
+    canonicalize(&mut s2c);
     Section {
         title: title.to_owned(),
         method: "GET",
@@ -678,8 +723,8 @@ async fn mirror_section(
         path,
         note,
         seen: None,
-        c2s: parse_frames(&c2s.lock().unwrap()),
-        s2c: parse_frames(&s2c.lock().unwrap()),
+        c2s,
+        s2c,
     }
 }
 
@@ -780,7 +825,9 @@ async fn main() {
     let payout_address = format!("4{}", "A".repeat(94));
     let mut apk_sha256 = [0u8; 32];
     for (i, b) in apk_sha256.iter_mut().enumerate() {
-        *b = i as u8;
+        // Offset so its hex cannot contain any shorter sequential secret's hex
+        // (the redaction self-check greps substrings; request_id is 0..16).
+        *b = (i as u8).wrapping_add(0x80);
     }
     let mirror_first = "pdp7otysol5453kpyinghqcbcok64pshyuxn5ht4flxx3imxfuy7erqd.onion:443";
     let mirror_second = "cu7sle2hf44gz72vwtpck66he42dzyfdfgxsgacwyhb4wlktwwrualyd.onion:443";
