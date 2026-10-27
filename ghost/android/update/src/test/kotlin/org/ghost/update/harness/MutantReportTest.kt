@@ -27,7 +27,15 @@ class MutantReportTest {
         var skipped = 0
         var broken = 0
         for (entry in MutantKills.entries) {
-            entry.control() // the shipped behaviour: a hard failure here is never a skip
+            try {
+                entry.control() // the shipped behaviour: a hard failure here is never a skip
+            } catch (pending: org.junit.AssumptionViolatedException) {
+                // A control-side assumption (the shipped library predates a source fix) skips
+                // the row but never the report.
+                skipped++
+                lines += "${entry.name}: skipped (${pending.message})"
+                continue
+            }
             try {
                 entry.mutant()
                 run++
