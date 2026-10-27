@@ -13,6 +13,10 @@ crate-type = ["rlib"]
 [dependencies]
 ghost-client-update = { path = "../../client-core/update" }
 ghost-client-release = { path = "../../client-core/release" }
+# Rule (d)'s engine input: the verified ES documents (`Schedule`, `ScheduleMemory`) whose
+# append-only rule (ADR-22 rule 5) the monitor checks. Pure public-key verification, already in
+# the shipped client graph through ghost-client-net; no issuer-side code.
+ghost-entitlement = { path = "../../issuer/crates/entitlement" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 flate2 = "1.1.0"
@@ -23,3 +27,6 @@ ghost-release-ops = { path = "../crates/ops" }
 tempfile = { workspace = true }
 sha3 = { workspace = true }
 hex = { workspace = true }
+# Signing the ES fixtures of rule (d)'s tests (the committed test schedule's key is public test
+# material, derived from SHA-256("ghost/test/schedule-key")).
+ed25519-dalek = { workspace = true }
