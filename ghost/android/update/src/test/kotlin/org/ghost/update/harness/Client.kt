@@ -90,8 +90,34 @@ internal class Client(
             return
         }
         for (relay in world.config.native.manifestRelays(manifest)) {
-            world.directory.upsert("${relay.host}.onion:${relay.port}", relay.operatorId)
+            // MC-D31 (§11.3, a Kotlin-side row): the write-once guard is skipped — a manifest
+            // overwrites a known onion's operator id. The world's port of the row.
+            if ("MC-D31" in world.config.kotlinMutants) {
+                world.directory.entries["${relay.host}.onion:${relay.port}"] =
+                    WorldRelayDirectory.Entry("${relay.host}.onion:${relay.port}", relay.operatorId, "manifest")
+            } else {
+                world.directory.upsert("${relay.host}.onion:${relay.port}", relay.operatorId)
+            }
         }
+    }
+
+    /**
+     * MC-D22's port (§11.3, a Kotlin-side row): an install session committed without the
+     * native check's OK — the current `.part` file (mid-download, unverified) is streamed into
+     * the installer. Only the mutant world calls this; the recording installer is the oracle
+     * (its bytes differ from the verified image).
+     */
+    fun installUnverifiedPart() {
+        check("MC-D22" in world.config.kotlinMutants) { "only the MC-D22 world commits unverified bytes" }
+        val row = store.staged() ?: throw IllegalStateException("nothing staged")
+        val part = java.io.File(files, row.sha256.toHex() + ".part")
+        check(part.isFile) { "no partial file to misuse" }
+        installer.install(part)
+    }
+
+    private fun ByteArray.toHex(): String {
+        val alphabet = "0123456789abcdef"
+        return joinToString("") { b -> "${alphabet[(b.toInt() shr 4) and 15]}${alphabet[b.toInt() and 15]}" }
     }
 
     private fun be32(b: ByteArray, at: Int): Int =
@@ -107,8 +133,19 @@ internal class Client(
     }
 
     /** One update run over the two given mirrors (§7.3's run: the fixed draw, the fixed end). */
-    fun updateRun(first: ModelMirror, second: ModelMirror) {
-        engine.onUpdateRun(session(userInitiated = false, runMirrors = listOf(first, second)))
+    /** One update run over the two given mirrors (§7.3's run: the fixed draw, the fixed end).
+     *  [draw] and [pick] override the seeded draw and the slot-to-mirror mapping for the
+     *  draw-mutant worlds (the test computes the pick the native draw makes — the world's
+     *  oracle; the harness never names an onion itself). */
+    fun updateRun(
+        first: ModelMirror,
+        second: ModelMirror,
+        draw: ByteArray? = null,
+        pick: Pair<ModelMirror, ModelMirror>? = null,
+    ) {
+        engine.onUpdateRun(
+            WorldSession(world, userInitiated = false, draw ?: this.draw(), listOf(first, second), pick),
+        )
     }
 
     /**
@@ -150,6 +187,9 @@ private class WorldSession(
     override val userInitiated: Boolean,
     private val draw: ByteArray,
     private val runMirrors: List<ModelMirror>,
+    /** The slot-to-mirror mapping of the run's actual draw (the draw-mutant worlds' oracle);
+     *  null maps by position, the honest default. */
+    private val pick: Pair<ModelMirror, ModelMirror>? = null,
 ) : UpdateSession {
 
     /** D_U: the run's fixed end (§7.3); the world never advances the clock inside a run. */
@@ -169,6 +209,7 @@ private class WorldSession(
             mirror(slot).serveApkChunk(world.fixtures, chunkIndex)
 
         private fun mirror(slot: Int): ModelMirror {
+            if (pick != null) return if (slot == 0) pick.first else pick.second
             val set = if (runMirrors.isEmpty()) world.mirrors else runMirrors
             if (slot !in 0..1 || slot >= set.size) {
                 throw org.ghost.network.NetworkException("invalid_argument")

@@ -55,6 +55,18 @@ internal class WorldFixtures private constructor(
     /** The fixed window the world's clock lives in (epoch days; from meta.properties). */
     val issuedDay: Int,
     val notAfterDay: Int,
+    /** The trusted root's anchor mirrors (canonical `<56>.onion:<port>` + operator hex), the
+     *  draw's input (§7.8) — the slot-to-mirror mapping of the draw-mutant worlds. */
+    val anchors: List<Pair<String, String>>,
+    /** The rollout oracle (PM-D7/PM-D13): the fixed test key, the per-release buckets and the
+     *  without-APK-hash bucket, and version 2's permille (one above its bucket). */
+    val rolloutKey: ByteArray,
+    val rolloutBuckets: Pair<Int, Int>,
+    val rolloutSharedBucket: Int,
+    val rolloutPermille2: Int,
+    /** The reused rollout salt (PM-D7/PM-D13) and the second release's APK hash. */
+    val bucketSalt: ByteArray,
+    val apkSwapSha256: ByteArray,
     /** Every other committed document, by resource name (loaded lazily by the modes). */
     private val resources: Map<String, ByteArray>,
 ) {
@@ -69,9 +81,13 @@ internal class WorldFixtures private constructor(
             "bundle-mainnet.ghrb", "bundle-wrongroot.ghrb",
             "bundle-ff.ghrb", "bundle-replay.ghrb", "bundle-floor.ghrb", "bundle-relabel.ghrb",
             "bundle-big.ghrb", "bundle-2.ghrb", "bundle-stolen.ghrb",
+            "bundle-2bad.ghrb", "bundle-flipsig.ghrb",
+            "bundle-badindex.ghrb", "bundle-badhead.ghrb", "bundle-othermsg.ghrb",
+            "bundle-nocosig.ghrb", "bundle-unknownwit.ghrb",
+            "bundle-badrootproof.ghrb", "bundle-xroot.ghrb", "bundle-bucket.ghrb",
             "manifest-eq-a.ghrm", "manifest-eq-b.ghrm", "manifest-replay.ghrm",
             "manifest-relabel.ghrm", "manifest-stale.ghrm", "manifest-1.ghrm", "manifest-2.ghrm",
-            "manifest-stolen.ghrm", "chain2.ghrc",
+            "manifest-stolen.ghrm", "manifest-xroot.ghrm", "chain2.ghrc",
             "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
         )
 
@@ -101,6 +117,17 @@ internal class WorldFixtures private constructor(
                 apk = resource("app-v2.apk"),
                 issuedDay = meta.getProperty("issued_day").toInt(),
                 notAfterDay = meta.getProperty("not_after_day").toInt(),
+                anchors = listOf(
+                    meta.getProperty("anchor.onion.0") to meta.getProperty("anchor.operator.0"),
+                    meta.getProperty("anchor.onion.1") to meta.getProperty("anchor.operator.1"),
+                ),
+                rolloutKey = hexBytes(meta.getProperty("rollout.test_key")),
+                rolloutBuckets = meta.getProperty("rollout.bucket2").toInt() to
+                    meta.getProperty("rollout.bucket3").toInt(),
+                rolloutSharedBucket = meta.getProperty("rollout.bucket.shared").toInt(),
+                rolloutPermille2 = meta.getProperty("rollout.permille2").toInt(),
+                bucketSalt = hexBytes(meta.getProperty("bucket.salt")),
+                apkSwapSha256 = hexBytes(meta.getProperty("apk.swap_sha256")),
                 resources = RESOURCE_NAMES.associateWith { resource(it) },
             )
         }

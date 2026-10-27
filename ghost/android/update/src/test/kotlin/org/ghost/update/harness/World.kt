@@ -38,6 +38,9 @@ internal class World(
     val clients = ArrayList<Client>()
 
     init {
+        // §11.3: the world selects its mutant once, before the first native call; [close]
+        // resets the selector to 0 (the shipped behaviour, the control's build).
+        if (config.mutant != 0) org.ghost.network.UpdateMutants.select(config.mutant)
         // Seed from the committed bootstrap (the same file the native library compiles in).
         val text = String(WorldFixtures.resource("bootstrap-relays.txt"), Charsets.US_ASCII)
         for (line in text.lineSequence()) {
@@ -77,6 +80,7 @@ internal class World(
 
     override fun close() {
         clients.forEach { it.close() }
+        if (config.mutant != 0) org.ghost.network.UpdateMutants.select(0)
         dir.deleteRecursively()
     }
 

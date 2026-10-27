@@ -9,7 +9,7 @@ package org.ghost.update.harness
  */
 internal class WorldRelayDirectory {
 
-    class Entry(val onion: String, val operator: ByteArray, val source: String)
+    class Entry(val onion: String, val operatorId: ByteArray, val source: String)
 
     /** By onion (the canonical `<56>.onion:<port>` spelling). */
     val entries = LinkedHashMap<String, Entry>()
@@ -33,7 +33,7 @@ internal class WorldRelayDirectory {
     fun upsert(onion: String, operator: ByteArray): Boolean {
         upsertCalls++
         val known = entries[onion]
-        if (known != null && !known.operator.contentEquals(operator)) {
+        if (known != null && !known.operatorId.contentEquals(operator)) {
             relabelAttempts += onion
             return false
         }
