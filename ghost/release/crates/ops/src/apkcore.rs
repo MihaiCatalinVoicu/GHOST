@@ -193,22 +193,52 @@ fn build_core(file: &[u8], l: &Layout, e: u64) -> Vec<u8> {
 }
 
 /// Extract the core inferring the unsigned length: `E` is where the zero padding before the
-/// signing block starts (the zero run ending at `B`). AGP's debug signing pads to 4 bytes, not
-/// the design's 4 096 (that rule is the release pipeline's `apksigner` relation, checked by
-/// `check_core`), so fixture APKs — gate builds signed by AGP — cannot name a length up front.
-/// The pair (core, length) stays self-consistent: the client derives `E` from the length the
-/// same way, so hashing and verification agree.
+/// signing block starts, computed EXACTLY from the central directory's local-record metadata
+/// (compressed size + local offset + name/extra lengths give each entry's data end; the last
+/// one's is `E`). The zero-run heuristic this replaced could cut inside an entry whose data
+/// happened to end with zero bytes (measured: a 2-byte overlap broke apksigner on the drill's
+/// v3 core, while the self-consistent pair still passed the client's own check). Sanity-checks
+/// that `[E, B)` is all zeros.
 pub fn extract_core_inferred(file: &[u8]) -> Result<(Vec<u8>, u64), CoreError> {
     let l = layout(file)?;
     let b = l.cd_offset - l.block_s - 8;
-    let mut e = b;
-    while e > 0 && file[(e - 1) as usize] == 0 {
-        e -= 1;
+    let eocd_at = (l.length - EOCD_LEN as u64) as usize;
+    let eocd = &file[eocd_at..];
+    let count = le16(&eocd[10..12]) as u64;
+    let mut e = 0u64;
+    let mut pos = l.cd_offset;
+    for _ in 0..count {
+        if pos + 46 > l.length {
+            return Err(CoreError::Bounds);
+        }
+        let rec = &file[pos as usize..];
+        if &rec[..4] != b"PK\x01\x02" {
+            return Err(CoreError::CdLayout);
+        }
+        let comment_len = le16(&rec[32..34]) as u64;
+        let local_offset = le32(&rec[42..46]) as u64;
+        let compressed = le32(&rec[20..24]) as u64;
+        // The entry's data end uses the LOCAL header's name/extra lengths: zipalign grows the
+        // local extra field for alignment and the central directory keeps the original extra
+        // length (measured: a 2-byte difference broke apksigner on the drill's v3 core).
+        if local_offset + 30 > l.length {
+            return Err(CoreError::Bounds);
+        }
+        let lfh = &file[local_offset as usize..];
+        if &lfh[..4] != b"PK\x03\x04" {
+            return Err(CoreError::Eocd);
+        }
+        let name_len = le16(&lfh[26..28]) as u64;
+        let extra_len = le16(&lfh[28..30]) as u64;
+        let data_end = local_offset + 30 + name_len + extra_len + compressed;
+        e = e.max(data_end);
+        pos += 46 + le16(&rec[28..30]) as u64 + le16(&rec[30..32]) as u64 + comment_len;
     }
-    // e == b is valid: the block can begin exactly where the unsigned file ends (no padding —
-    // AGP signs that way); only an empty file (e == 0) is impossible.
-    if e == 0 {
+    if e == 0 || e > b {
         return Err(CoreError::Rule);
+    }
+    if file[e as usize..b as usize].iter().any(|&x| x != 0) {
+        return Err(CoreError::Padding);
     }
     let unsigned_length = e + l.cd_size + EOCD_LEN as u64;
     Ok((build_core(file, &l, e), unsigned_length))
