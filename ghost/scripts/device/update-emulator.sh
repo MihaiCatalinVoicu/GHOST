@@ -152,4 +152,15 @@ cp "$APK" "$E/mirror/v1/stagenet/apk/$APK_SHA"
 
 sha256sum "$E/out/chain.ghrc" "$E/out/bundle.ghrb"
 echo "FIXTURES_OK apk_sha256=$APK_SHA core_sha256=$CORE_SHA core_length=$CORE_LEN"
-echo "model mirror dir: $E/mirror  (serve: python3 $GHOST/scripts/device/update-model-mirror.py --root $E/mirror --port 8471)"
+# The emulator run itself (§11.4's matrix): the orchestrator serves the model mirror ON THE
+# HOST and maps it into the emulator with `adb reverse tcp:8472 tcp:8473` (mirror on host
+# 127.0.0.1:8473, the app's loopback endpoint 127.0.0.1:8472) — the 10.0.2.2 path through the
+# WSL forward dropped every second connection on API 29, adb reverse is the robust topology.
+# Then per API: install v1, `probe activate=true`, `update-loopback 127.0.0.1:8472`, two
+# `update-probe` runs (accept, then download+verify), `update-install` with UI Automator.
+# Recorded: API 29 and API 35 both VERIFIED end-to-end (updater half + platform half:
+# adb install -r update accepted, downgrade refused INSTALL_FAILED_VERSION_DOWNGRADE). The
+# ghost-dm-api37 AVD does not boot on this host (qemu stalls before adb, three attempts,
+# cold and snapshot) — API 37's only delta is v3.2/ML-DSA, which the design defers.
+
+echo "model mirror dir: $E/mirror  (host: python3 update-model-mirror.py --root $E/mirror --host 127.0.0.1 --port 8473; adb reverse tcp:8472 tcp:8473)"

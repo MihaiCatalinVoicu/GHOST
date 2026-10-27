@@ -65,6 +65,10 @@ internal object UpdateLoopback {
                 (URL("http://$endpoint$path").openConnection() as HttpURLConnection).also {
                     it.connectTimeout = deadlineMillis
                     it.readTimeout = deadlineMillis
+                    // API 29's pooled keep-alive connections come back stale through the
+                    // emulator forward and kill every second request; the seam is a test double,
+                    // one connection per fetch is exactly what it wants.
+                    it.setRequestProperty("Connection", "close")
                     if (range != null) it.setRequestProperty("Range", "bytes=${range.first}-${range.last}")
                 }
             } catch (e: java.io.IOException) {
