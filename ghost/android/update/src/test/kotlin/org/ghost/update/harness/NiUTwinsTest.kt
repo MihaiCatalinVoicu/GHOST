@@ -340,9 +340,11 @@ class NiUTwinsTest {
         c.updateRun(a, b)
     }
 
-    /** Appends the measured twin line to the report fragment (G-D7's shape). */
+    /** Writes the measured twin line to the report fragment (G-D7's shape), idempotently. */
     private fun report(line: String) {
         val dir = java.io.File("build/update-mutants").apply { mkdirs() }
-        java.io.File(dir, "report.txt").appendText(line + "\n")
+        val file = java.io.File(dir, "report.txt")
+        val lines = if (file.isFile) file.readLines() else emptyList()
+        if (line !in lines) file.appendText(line + "\n")
     }
 }

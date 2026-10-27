@@ -56,6 +56,13 @@ class MutantReportTest {
             }
         }
         val headline = "update mutants: $run run, $detected detected"
+        // The twins' measured lines (NI-Ux) live in the same fragment — preserve them.
+        val reportFile = File("build/update-mutants/report.txt")
+        val twinLines = if (reportFile.isFile) {
+            reportFile.readLines().filter { it.startsWith("NI-") }.distinct()
+        } else {
+            emptyList()
+        }
         // The G-D7 line on the test stdout…
         println(headline)
         if (skipped > 0) {
@@ -67,12 +74,13 @@ class MutantReportTest {
             buildString {
                 appendLine(headline)
                 lines.forEach { appendLine(it) }
+                twinLines.forEach { appendLine(it) }
                 appendLine("MC-D4: not wired — the duplicate-counting site is ghost-client-release's sigblock_meets, outside the update crate's selector")
                 appendLine("MC-D13: wired in ghost-client-net's fetch; the JVM byte seam cannot drive the fetch (kill needs the wire/emulator)")
                 appendLine("MC-D15: wired; the arms sit behind the whole-file hash, unreachable without a second mutation")
                 appendLine("MC-D27: wired; the kill needs a v3.1-lineage APK (the crafted suite)")
-                appendLine("PM-D1/PM-D2/PM-D6/PM-D8/PM-D10/PM-D11/PM-D12: scheduler-held (the job model with the OS limits is a later slice)")
-                appendLine("PM-D3/PM-D4/PM-D5: seam-held (request headers and the root path are built natively and invisible to the byte seam)")
+                appendLine("PM-D1/PM-D2/PM-D6/PM-D8/PM-D11/PM-D12: killed in the NI-U twins (the job model of slice S6d)")
+                appendLine("PM-D3/PM-D4/PM-D5/PM-D10: seam-held (request headers, the root path and an out-of-set onion never cross the byte seam)")
             },
         )
         assertEquals("every executed kill must detect (an unexpected error is not a skip)", 0, broken)

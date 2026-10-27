@@ -88,6 +88,8 @@ internal class WorldFixtures private constructor(
             "manifest-eq-a.ghrm", "manifest-eq-b.ghrm", "manifest-replay.ghrm",
             "manifest-relabel.ghrm", "manifest-stale.ghrm", "manifest-1.ghrm", "manifest-2.ghrm",
             "manifest-stolen.ghrm", "manifest-xroot.ghrm", "chain2.ghrc",
+            "chain4.ghrc", "chain4x.ghrc", "manifest-4.ghrm", "manifest-4x.ghrm",
+            "bundle-4.ghrb", "bundle-4x.ghrb",
             "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
         )
 
