@@ -35,6 +35,18 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 TRANSCRIPT_REL="protocol/test-vectors/wire_transcript.txt"
 TRANSCRIPT="$GHOST_ROOT/$TRANSCRIPT_REL"
 REAL_ROOT="$(cd "$GATES_DIR/../.." && pwd -P)"
+# The workspace directory's path inside a repository checkout: --compare-ref's worktree is a
+# checkout of the REPO root (git toplevel — the workspace may live in a subdirectory of it), so
+# the reference generator runs at <worktree>/<this relative path>. Paths are normalized through
+# cd because git rev-parse returns the native spelling.
+REPO_ROOT="$(git -C "$GHOST_ROOT" rev-parse --show-toplevel 2>/dev/null || echo "$REAL_ROOT")"
+REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)"
+GHOST_SUB="${GHOST_ROOT%/}"
+case "$GHOST_SUB" in
+  "$REPO_ROOT")   GHOST_SUB="." ;;
+  "$REPO_ROOT"/*) GHOST_SUB="${GHOST_SUB#"$REPO_ROOT"/}" ;;
+  *)              GHOST_SUB="." ;;
+esac
 fixture_root=0
 [ "$(cd "$GHOST_ROOT" && pwd -P)" = "$REAL_ROOT" ] || fixture_root=1
 if [ "$fixture_root" = 0 ]; then
@@ -164,7 +176,7 @@ if [ "$compare" = 1 ]; then
       finish wire-transcript
       exit 1
     fi
-    if ! run_generator "$ref_worktree" "$ref_tx" ref-run; then
+    if ! run_generator "$ref_worktree/$GHOST_SUB" "$ref_tx" ref-run; then
       git -C "$GHOST_ROOT" worktree remove --force "$ref_worktree" >/dev/null 2>&1 || true
       fail "the wire-transcript generator did not run at the reference '$compare_ref'"
       finish wire-transcript
