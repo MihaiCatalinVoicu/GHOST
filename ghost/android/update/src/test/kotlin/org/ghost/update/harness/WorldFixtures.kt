@@ -1,7 +1,7 @@
 package org.ghost.update.harness
 
 import org.ghost.network.NetworkException
-import java.security.MessageDigest
+import java.util.Properties
 
 /** One hex-decoded SHA-256 from the fixture meta. */
 internal fun sha256Hex(hex: String): ByteArray {
@@ -10,7 +10,13 @@ internal fun sha256Hex(hex: String): ByteArray {
 }
 
 /** Deterministic 32 bytes from [label] (world draws: the run's draw, rollout keys). */
-internal fun sha256Bytes(label: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(label.toByteArray())
+internal fun sha256Bytes(label: String): ByteArray = java.security.MessageDigest.getInstance("SHA-256").digest(label.toByteArray())
+
+/** Hex-decoded bytes of any even-length lowercase hex string (operator ids, hashes). */
+internal fun hexBytes(hex: String): ByteArray {
+    require(hex.length % 2 == 0 && hex.all { it in '0'..'9' || it in 'a'..'f' }) { "not lowercase hex: $hex" }
+    return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+}
 
 /** Deterministic 64-bit draw from [label]. */
 internal fun sha256Long(label: String): Long {
@@ -27,14 +33,18 @@ internal fun sha256Long(label: String): Long {
  * start their epoch from THIS chain through `UpdateNative.start` (§7.4 step 0 with a fixture
  * embedded chain): the stored facts' trusted root is then the fixture root the manifest is
  * signed under, and every later native call is over the shipped library, unmodified.
+ *
+ * Beside the benign documents, one bundle per hostile mode of §11.2 (each a real ops product or
+ * a documented byte-level surgery on the committed formats), plus the rotation chain (root v2)
+ * and the stolen-release-key manifest.
  */
-internal class WorldFixtures(
+internal class WorldFixtures private constructor(
     /** chain.ghrc: the fixture GHRC (one root, network 2). */
     val chain: ByteArray,
     val network: Int,
     /** bundle.ghrb: the fresh current bundle (chain + manifest + proof). */
     val bundle: ByteArray,
-    /** stale-bundle.ghrb: the same release under an expired manifest (the STALE mirror). */
+    /** stale-bundle.ghrb: the same release under an expired manifest. */
     val staleBundle: ByteArray,
     /** The fresh manifest's SHA-256 (what ACCEPT must store). */
     val manifestSha256: ByteArray,
@@ -45,17 +55,34 @@ internal class WorldFixtures(
     /** The fixed window the world's clock lives in (epoch days; from meta.properties). */
     val issuedDay: Int,
     val notAfterDay: Int,
+    /** Every other committed document, by resource name (loaded lazily by the modes). */
+    private val resources: Map<String, ByteArray>,
 ) {
+    /** A committed document (bundle, manifest, APK variant) by its resource file name. */
+    fun doc(name: String): ByteArray =
+        resources[name] ?: throw IllegalArgumentException("unknown fixture document $name")
+
     companion object {
+        private val RESOURCE_NAMES = listOf(
+            "bundle-eq-a.ghrb", "bundle-eq-b.ghrb",
+            "bundle-wrongproof.ghrb", "bundle-nowproof.ghrb",
+            "bundle-mainnet.ghrb", "bundle-wrongroot.ghrb",
+            "bundle-ff.ghrb", "bundle-replay.ghrb", "bundle-floor.ghrb", "bundle-relabel.ghrb",
+            "bundle-big.ghrb", "bundle-2.ghrb", "bundle-stolen.ghrb",
+            "manifest-eq-a.ghrm", "manifest-eq-b.ghrm", "manifest-replay.ghrm",
+            "manifest-relabel.ghrm", "manifest-stale.ghrm", "chain2.ghrc",
+            "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
+        )
+
         fun load(): WorldFixtures {
-            val meta = java.util.Properties()
+            val meta = Properties()
             java.io.InputStreamReader(
                 requireNotNull(WorldFixtures::class.java.getResourceAsStream("/update-world/meta.properties")) {
                     "update-world fixtures missing from the test resources"
                 },
                 Charsets.US_ASCII,
             ).use { meta.load(it) }
-            val chain = resource("/update-world/chain.ghrc")
+            val chain = resource("chain.ghrc")
             // The same rule as UpdateEngine.networkOf (§4.4's GHRC header): magic ‖ version ‖
             // network, the network byte at offset 5.
             if (chain.size < 6 || chain[0] != 'G'.code.toByte() || chain[1] != 'H'.code.toByte() ||
@@ -66,18 +93,19 @@ internal class WorldFixtures(
             return WorldFixtures(
                 chain = chain,
                 network = chain[5].toInt() and 0xff,
-                bundle = resource("/update-world/bundle.ghrb"),
-                staleBundle = resource("/update-world/stale-bundle.ghrb"),
+                bundle = resource("bundle.ghrb"),
+                staleBundle = resource("stale-bundle.ghrb"),
                 manifestSha256 = sha256Hex(meta.getProperty("manifest_sha256")),
                 apkSha256 = sha256Hex(meta.getProperty("apk_sha256")),
-                apk = resource("/update-world/app-v2.apk"),
+                apk = resource("app-v2.apk"),
                 issuedDay = meta.getProperty("issued_day").toInt(),
                 notAfterDay = meta.getProperty("not_after_day").toInt(),
+                resources = RESOURCE_NAMES.associateWith { resource(it) },
             )
         }
 
-        private fun resource(path: String): ByteArray =
-            requireNotNull(WorldFixtures::class.java.getResourceAsStream(path)) { "missing fixture $path" }
+        internal fun resource(path: String): ByteArray =
+            requireNotNull(WorldFixtures::class.java.getResourceAsStream("/update-world/$path")) { "missing fixture $path" }
                 .use { it.readBytes() }
     }
 }

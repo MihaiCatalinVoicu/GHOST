@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generates the UpdateWorld throwaway keyset (ops keygen's /dev/urandom is Linux-only; the
-keyset format is 32-byte Ed25519 seeds + public keys, the RFC 8032 reference arithmetic)."""
+keyset format is 32-byte Ed25519 seeds + public keys, the RFC 8032 reference arithmetic).
+Usage: gen-keys.py <out-dir> <name>..."""
 import hashlib, secrets, sys
 
 # RFC 8032, section 6.1 reference arithmetic (public domain).
@@ -37,9 +38,6 @@ def scalarmult(P, e):
         e >>= 1
     return Q
 
-def encodeint(y):
-    return y.to_bytes(32, "little")
-
 def encodepoint(P):
     x, y = P
     return ((y | ((x & 1) << 255)).to_bytes(32, "little"))
@@ -51,17 +49,18 @@ def publickey(seed):
     a |= 1 << 254
     return encodepoint(scalarmult(B, a))
 
-# Self-check against the RFC 8032 test vector before writing anything.
+# Self-check against a library-verified test vector before writing anything.
 seed = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 want = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 got = publickey(seed).hex()
 assert got == want, f"RFC 8032 self-check failed: {got}"
 
 out = sys.argv[1]
-for name in ("root-1", "release-1", "attest-1", "apk-1", "log-1", "witness-1"):
+names = sys.argv[2:] or ["root-1", "release-1", "attest-1", "apk-1", "log-1", "witness-1"]
+for name in names:
     s = secrets.token_bytes(32)
     with open(f"{out}/{name}.hex", "w") as f:
         f.write(s.hex())
     with open(f"{out}/{name}.pub", "w") as f:
         f.write(publickey(s).hex())
-print("KEYS_BUILT")
+print(f"KEYS_BUILT n={len(names)}")

@@ -30,12 +30,27 @@ internal class World(
     /** The model transparency log and its witnesses (generated throwaway keys). */
     val log = ModelLog(seed)
 
+    /** The relay directory the ACCEPT transaction applies to (seeded with the committed
+     *  bootstrap relays; the client's directory hook is the world's half of §9.6.1's ACCEPT). */
+    val directory = WorldRelayDirectory()
+
     val mirrors = ArrayList<ModelMirror>()
     val clients = ArrayList<Client>()
 
+    init {
+        // Seed from the committed bootstrap (the same file the native library compiles in).
+        val text = String(WorldFixtures.resource("bootstrap-relays.txt"), Charsets.US_ASCII)
+        for (line in text.lineSequence()) {
+            val parts = line.trim().split(Regex("\\s+"))
+            if (parts.size == 3 && parts[0] == "relay") {
+                directory.seed(parts[1], hexBytes(parts[2]))
+            }
+        }
+    }
+
     /** One model mirror of the world. */
     fun mirror(mode: MirrorMode = MirrorMode.NONE): ModelMirror {
-        val m = ModelMirror(mirrors.size, mode)
+        val m = ModelMirror(mirrors.size, mode, clock)
         mirrors += m
         return m
     }

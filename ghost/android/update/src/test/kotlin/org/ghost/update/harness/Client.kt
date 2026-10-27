@@ -27,11 +27,20 @@ internal class Client(
     val name: String,
     val installed: Int,
     val sdk: Int,
+    /** Test-only SQL wrapper (the crash-enumeration slice's fault injector); the identity by
+     *  default, and reapplied on every [reopen]. */
+    private val wrap: (org.ghost.storage.SqlExecutor) -> org.ghost.storage.SqlExecutor = { it },
 ) : AutoCloseable {
 
     /** The durable database file (a restart reopens it, the crash model's unit of survival). */
-    val db: JdbcSqlExecutor = JdbcSqlExecutor(File(world.dir, "$name.db").absolutePath)
-        .also { MigrationRunner(it).migrate() }
+    private var rawDb: JdbcSqlExecutor = openDb()
+
+    /** What the engine and the facade speak to; [wrap] of [rawDb]. */
+    var db: org.ghost.storage.SqlExecutor = wrap(rawDb)
+        private set
+
+    private fun openDb(): JdbcSqlExecutor =
+        JdbcSqlExecutor(File(world.dir, "$name.db").absolutePath).also { MigrationRunner(it).migrate() }
 
     /** `noBackupFilesDir/update` (X-D10's one directory). */
     val files: File = File(world.dir, "$name-update").apply { mkdirs() }
@@ -48,6 +57,7 @@ internal class Client(
         installedVersionCode = { installed },
         sdk = sdk,
         dayNow = { world.clock.day() to world.clock.nowSeconds() },
+        directory = { _, manifest -> applyDirectory(manifest) },
     )
 
     /** The facade Phase 13 builds on; the world's user calls run through it. */
@@ -66,6 +76,28 @@ internal class Client(
 
     val store: UpdateStateStore get() = UpdateStateStore(db)
 
+    /**
+     * The world's half of ACCEPT's directory transaction (§7.8, §9.6.1): fresh manifests apply
+     * their relay list through the real native decoder; an expired manifest applies nothing
+     * (MC-D30); a relabeled known onion is refused by the write-once guard (MC-D31). On the
+     * device this logic lives in `:sync`'s wiring — the world models the design's rule.
+     */
+    private fun applyDirectory(manifest: ByteArray?) {
+        if (manifest == null) return
+        val expiry = if (manifest.size >= 58 && manifest[0] == 'G'.code.toByte()) be32(manifest, 54) else null
+        if (expiry == null || world.clock.day() > expiry) {
+            world.directory.recordStaleSuppression()
+            return
+        }
+        for (relay in world.config.native.manifestRelays(manifest)) {
+            world.directory.upsert("${relay.host}.onion:${relay.port}", relay.operatorId)
+        }
+    }
+
+    private fun be32(b: ByteArray, at: Int): Int =
+        ((b[at].toInt() and 0xff) shl 24) or ((b[at + 1].toInt() and 0xff) shl 16) or
+            ((b[at + 2].toInt() and 0xff) shl 8) or (b[at + 3].toInt() and 0xff)
+
     /** §7.4 step 0 of the fixture-chain install: the epoch the engine's `start()` would build. */
     fun firstStart() {
         check(store.isEmpty()) { "$name already started its epoch" }
@@ -77,6 +109,17 @@ internal class Client(
     /** One update run over the two given mirrors (§7.3's run: the fixed draw, the fixed end). */
     fun updateRun(first: ModelMirror, second: ModelMirror) {
         engine.onUpdateRun(session(userInitiated = false, runMirrors = listOf(first, second)))
+    }
+
+    /**
+     * Process death and reboot (the F7 §8.3 crash model): the connection closes uncommitted
+     * transactions (SQLite rolls back), the file survives; the client reopens and the engine
+     * continues against the durable state.
+     */
+    fun reopen() {
+        rawDb.close()
+        rawDb = openDb()
+        db = wrap(rawDb)
     }
 
     /** The session the engine sees: the world's clock, the run's draw, the run's two mirrors. */
@@ -91,7 +134,7 @@ internal class Client(
         world.clock.skewDevice("${world.seed}|skew|$name")
     }
 
-    override fun close() = db.close()
+    override fun close() = rawDb.close()
 
     override fun toString(): String = "Client($name)"
 }

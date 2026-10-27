@@ -1,0 +1,20 @@
+# Relay directory of the Entitlement Schedule next to this file (schedule.ghes; Phase 8 design
+# §19.12 point 2, §19.20 point 4). Until the Phase 14 signed release manifest exists, every slot
+# onion of the schedule is listed here with its operator id: the pair the client's relay directory
+# carries (RelayEntry). scripts/gates/entitlement-schedule.sh checks the current and the next week
+# (ghost-issuer-ops schedule-verify --relay-directory): every slot onion is listed, and three slots
+# can be chosen whose relays span at least two operators.
+#
+#   relay <56 base32>.onion:<port> <operator id, 16 bytes in lowercase hex>
+#
+# STAGING (stagenet alpha, slice S2b): one party runs all three relays. The operator ids are three
+# distinct random labels, so the ">= 2 operators" rule of drops and Outbox.enqueue can be exercised
+# in staging; they do not stand for independent operators (ADR-11 independence needs relays run by
+# separate operators, which staging does not claim).
+# Port 443 is the onion port of ghost/infra/relay/torrc (HiddenServicePort 443 127.0.0.1:7443).
+# Slot 0 (staging relay-a)
+relay dee5clmkkhtfagfunbjx6clhg6lw6wla2ztso7r3lkwymwkzehlqsvid.onion:443 22169c983b89a692d5d1b2c36b251b28
+# Slot 1 (staging relay-b)
+relay zlaedoy2kjoq6kybq4lidy2mvsvnnfbgfn4cgzowwqtpmg624xpni3ad.onion:443 19e423fe4ac8f8c5dbfafa5b3cd2cab0
+# Slot 2 (staging relay-c)
+relay dlwabzl7bh6x3xotfnujdi7poevpkvu7u5yz22bkhm32a6gs4mufolyd.onion:443 be18a81f6242aeb5e6b7e667e9f9a4fd
