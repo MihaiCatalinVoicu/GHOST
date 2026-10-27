@@ -1,0 +1,79 @@
+package org.ghost.update.harness
+
+import java.io.File
+import java.nio.file.Files
+
+/**
+ * The update world (Phase 14 design §11.2): 2–50 clients, each the real `:update` engine over
+ * the real `:storage` (SQLite JDBC, migrated to schema U) and the real native decision core
+ * through the host library; model mirrors with hostile modes; a model log with generated
+ * witness keys; a stepped virtual clock with per-device offsets within ±σ; and the recording
+ * installer port. The world runs synchronously on the test thread — the job model with the
+ * OS's limits (§11.2) and crash enumeration are later slices; this core is the benign world's
+ * stage and the hostile worlds' foundation.
+ */
+internal class World(
+    val name: String,
+    val seed: Long,
+    val config: WorldConfig = WorldConfig(),
+) : AutoCloseable {
+
+    val dir: File = Files.createTempDirectory(baseDir(), "ghost-update-world").toFile()
+
+    /** The committed fixture world the mirrors serve. */
+    val fixtures: WorldFixtures = WorldFixtures.load()
+
+    /** The world's stepped clock, starting inside the fixture validity window (the meta's
+     *  issued_day + 1, so the fresh manifest is current and the stale one is expired). */
+    val clock = VirtualClock(seed).also { it.startAt((fixtures.issuedDay + 1L) * VirtualClock.DAY_MILLIS) }
+
+    /** The model transparency log and its witnesses (generated throwaway keys). */
+    val log = ModelLog(seed)
+
+    val mirrors = ArrayList<ModelMirror>()
+    val clients = ArrayList<Client>()
+
+    /** One model mirror of the world. */
+    fun mirror(mode: MirrorMode = MirrorMode.NONE): ModelMirror {
+        val m = ModelMirror(mirrors.size, mode)
+        mirrors += m
+        return m
+    }
+
+    /** One client: a fresh fixture-chain install of [installed] (versionCode), running the real
+     *  engine. The per-device clock offset lands inside ±σ, deterministic from the seed. */
+    fun client(name: String? = null, installed: Int = 1, sdk: Int = 29): Client {
+        check(clients.size < MAX_CLIENTS) { "a world holds at most $MAX_CLIENTS clients" }
+        val c = Client(this, clients.size, name ?: "client-${clients.size}", installed, sdk)
+        c.skewWithinSigma()
+        clients += c
+        return c
+    }
+
+    /** Sum of what every mirror served (the mirror view the twin worlds compare, T51). */
+    fun mirrorView(): List<String> = mirrors.map {
+        "m${it.index}:${it.mode}:bundles=${it.bundleRequests}:chunks=${it.chunkRequests}"
+    }
+
+    override fun close() {
+        clients.forEach { it.close() }
+        dir.deleteRecursively()
+    }
+
+    override fun toString(): String = "World($name, seed=$seed)"
+
+    companion object {
+        /** §11.2's 2–50 clients. */
+        const val MAX_CLIENTS: Int = 50
+
+        fun baseDir(): java.nio.file.Path {
+            val configured = System.getProperty("ghost.update.harness.dir")
+            val dir = when {
+                !configured.isNullOrBlank() -> File(configured)
+                else -> File(System.getProperty("java.io.tmpdir"))
+            }
+            dir.mkdirs()
+            return dir.toPath()
+        }
+    }
+}
