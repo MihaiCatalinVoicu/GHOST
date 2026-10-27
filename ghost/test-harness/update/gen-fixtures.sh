@@ -402,6 +402,39 @@ mkdir -p "$OUT/roots4x" && cp "$OUT/root-1.ghrt" "$OUT/root-2.ghrt" "$OUT/root-3
 write_manifest manifest-4x "$OUT/root-4x.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
 proof_and_bundle manifest-4x
 
+
+# The revocation world: a manifest naming the new root at a higher pair, signed ONLY by the
+# release key RK2 dropped - shipped refuses it at BAD_SIGNATURE whatever its sequence (DS-5,
+# §3.5). The body is manifest-2's with the seq bumped; the block is re-signed with release-1.
+python3 - "$(dirname "$0")" "$OUT" <<'PY'
+import hashlib, os, sys
+here = os.path.abspath(sys.argv[1])
+sys.path.insert(0, here)
+import ghostsign
+out = sys.argv[2]
+d = open(f"{out}/manifest-2.ghrm", "rb").read()
+assert d[:4] == b"GHRM" and d[4] == 1 and d[-97] == 1
+body = bytearray(d[:-97])
+body[6:14] = (2).to_bytes(8, "big")  # a pair above the stored (2,1): not a rollback
+body = bytes(body)
+seed = bytes.fromhex(open(f"{here}/keys/release-1.hex").read())
+msg = b"ghost/v1/release-manifest " + bytes([2]) + hashlib.sha256(body).digest()
+sig = ghostsign.sign(seed, msg)
+pk = ghostsign.publickey(seed)
+open(f"{out}/manifest-removedkey.ghrm", "wb").write(body + bytes([1]) + ghostsign.key_id(pk) + sig)
+PY
+"$OPS" proof-build --file "$OUT/manifest-removedkey.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/manifest-removedkey.ghrp"
+"$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
+  --manifest "$OUT/manifest-removedkey.ghrm" --manifest-proof "$OUT/manifest-removedkey.ghrp" --out "$OUT/bundle-removedkey.ghrb"
+
+# The new root's manifest with an extra mirror (c): normality resumes - the offer, the
+# directory, and the manifest's mirror list re-enter the run.
+write_manifest manifest-2x "$OUT/root-2.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN" \
+  "[[mirror]]" "onion = \"$ATTACKER_ONION\"" "operator = \"$(echo "$ATTACKER_ONION" | sha256sum | cut -c1-32)\""
+proof_and_bundle manifest-2x release-2
+"$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
+  --manifest "$OUT/manifest-2x.ghrm" --manifest-proof "$OUT/manifest-2x.ghrp" --out "$OUT/bundle-2x.ghrb"
 write_manifest manifest-5 "$OUT/root-5.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
 proof_and_bundle manifest-5
 write_manifest manifest-6 "$OUT/root-6.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
@@ -761,6 +794,8 @@ cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghr
    "$OUT"/bundle-badrootproof.ghrb \
    "$OUT"/manifest-xroot.ghrm "$OUT"/bundle-xroot.ghrb \
    "$OUT"/manifest-bucket.ghrm "$OUT"/bundle-bucket.ghrb \
+   "$OUT"/manifest-removedkey.ghrm "$OUT"/bundle-removedkey.ghrb \
+   "$OUT"/manifest-2x.ghrm "$OUT"/bundle-2x.ghrb \
    "$OUT"/chain5.ghrc "$OUT"/chain6.ghrc "$OUT"/chain-rc.ghrc "$OUT"/chain-swap.ghrc \
    "$OUT"/manifest-5.ghrm "$OUT"/manifest-6.ghrm "$OUT"/manifest-rc.ghrm \
    "$OUT"/bundle-5.ghrb "$OUT"/bundle-6.ghrb "$OUT"/bundle-rc.ghrb "$OUT"/bundle-swap.ghrb "$OUT"/bundle-3att.ghrb \
