@@ -48,8 +48,14 @@ pub fn offer(
     let Some(manifest) = &state.manifest else {
         return OfferResult::None(UpdateError::NoManifest);
     };
-    // Current means: its root is the trusted root.
-    if manifest.body.root_version != state.trusted_root().body.root_version {
+    // Current means: its root is the trusted root. MC-D32 (the `mutants` feature, host
+    // libraries only): the stored manifest stays current after a newer root — offers keep
+    // coming from the old root's manifest. The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let currency_checked = !crate::mutants::active(crate::mutants::STORED_MANIFEST_STAYS);
+    #[cfg(not(feature = "mutants"))]
+    let currency_checked = true;
+    if currency_checked && manifest.body.root_version != state.trusted_root().body.root_version {
         return OfferResult::None(UpdateError::NoManifest);
     }
     if day > manifest.body.not_after_day {
@@ -81,10 +87,20 @@ pub fn offer(
             None => OfferResult::None(UpdateError::Unsupported),
         };
     }
+    // MC-D16 (the `mutants` feature, host libraries only): a release at the installed
+    // versionCode is offered — `>=` replaces `>`. The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let above_installed: fn(u32, u32) -> bool = if crate::mutants::active(crate::mutants::OFFER_AT_OR_BELOW) {
+        |vc: u32, installed: u32| vc >= installed
+    } else {
+        |vc: u32, installed: u32| vc > installed
+    };
+    #[cfg(not(feature = "mutants"))]
+    let above_installed: fn(u32, u32) -> bool = |vc, installed| vc > installed;
     let pick = flavor1
         .iter()
         .filter(|(_, r)| {
-            r.version_code > installed_vc
+            above_installed(r.version_code, installed_vc)
                 && r.rollout_permille > 0
                 && bucket(rollout_key, &r.apk_sha256, &r.rollout_salt) < r.rollout_permille
         })

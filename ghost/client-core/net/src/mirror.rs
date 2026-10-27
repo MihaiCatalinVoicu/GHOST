@@ -168,7 +168,16 @@ pub async fn fetch(
         let frame = frame.map_err(|_| cat::MALFORMED_RESPONSE)?;
         if let Some(data) = frame.data_ref() {
             out.extend_from_slice(data);
-            if out.len() > bound {
+            // The fixed bound is checked before reading on (§4.8/§7.2). MC-D13 (the
+            // `test-mutants` feature, host libraries only): the response is read past its
+            // bound. The selector's default keeps the shipped check.
+            #[cfg(feature = "test-mutants")]
+            let bound_checked = !ghost_client_update::mutants::active(
+                ghost_client_update::mutants::PAST_BOUND,
+            );
+            #[cfg(not(feature = "test-mutants"))]
+            let bound_checked = true;
+            if bound_checked && out.len() > bound {
                 return Err(cat::MALFORMED_RESPONSE);
             }
         }

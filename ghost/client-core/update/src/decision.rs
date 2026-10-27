@@ -51,9 +51,17 @@ pub fn start_epoch(
                 || embedded.iter().any(|r| r.to_bytes() == t_bytes);
             if same_lineage {
                 // One lineage: the trusted root becomes the newer of E and S; the stored chain
-                // extends to E if E is newer.
+                // extends to E if E is newer. MC-D28 (the `mutants` feature, host libraries
+                // only): the trust anchor is the embedded chain's last root whatever the stored
+                // state — the stored chain is replaced even when it is newer. The selector's
+                // default keeps the shipped rule.
+                #[cfg(feature = "mutants")]
+                let keep_newer_stored =
+                    !crate::mutants::active(crate::mutants::ANCHOR_IS_EMBEDDED);
+                #[cfg(not(feature = "mutants"))]
+                let keep_newer_stored = true;
                 s.epoch.version_code = installed_vc;
-                if e_version > s.trusted_root().body.root_version {
+                if !keep_newer_stored || e_version > s.trusted_root().body.root_version {
                     s.chain = embedded;
                 }
                 s
@@ -99,7 +107,13 @@ pub fn accept_bundle(
 
     // Step 1: parse within bounds; the network must be the app's.
     let bundle = GHRB::parse(bundle_bytes).map_err(UpdateError::from)?;
-    if bundle.network != network {
+    // MC-D5 (the `mutants` feature, host libraries only): the network byte is ignored. The
+    // selector's default keeps the shipped check.
+    #[cfg(feature = "mutants")]
+    let network_checked = !crate::mutants::active(crate::mutants::NETWORK_IGNORED);
+    #[cfg(not(feature = "mutants"))]
+    let network_checked = true;
+    if network_checked && bundle.network != network {
         return Err(UpdateError::WrongNetwork);
     }
     let manifest_bytes = bundle.manifest.body_bytes_with_block();
@@ -151,7 +165,21 @@ pub fn accept_bundle(
             continue;
         }
         let prev = adopted.last().expect("adopted is never empty");
-        if root.verify_block(&prev.body.root.keys, prev.body.root.threshold).is_err() {
+        // The chain rule: the transition root's block meets the previous root's threshold.
+        // MC-D1 (the `mutants` feature, host libraries only): the old threshold is not enforced
+        // — the block is verified against the transition root's own keyset. MC-D2: the block is
+        // not verified at all. The selector's default keeps the shipped rule.
+        #[cfg(feature = "mutants")]
+        let transition_verified = if crate::mutants::active(crate::mutants::NEW_THRESHOLD_SKIPPED) {
+            true
+        } else if crate::mutants::active(crate::mutants::OLD_THRESHOLD_SKIPPED) {
+            root.verify_block(&root.body.root.keys, root.body.root.threshold).is_ok()
+        } else {
+            root.verify_block(&prev.body.root.keys, prev.body.root.threshold).is_ok()
+        };
+        #[cfg(not(feature = "mutants"))]
+        let transition_verified = root.verify_block(&prev.body.root.keys, prev.body.root.threshold).is_ok();
+        if !transition_verified {
             step2_report = Some(UpdateError::RootChainBroken);
             break;
         }
@@ -160,8 +188,14 @@ pub fn accept_bundle(
             break;
         };
         // The logging clause: the proof sits under the previous root's policy, and the leaf was
-        // signed by a root or release key of the previous root.
-        if verify_proof(proof, &root.to_bytes(), prev, now, true).is_err() {
+        // signed by a root or release key of the previous root. MC-D23 (the `mutants` feature,
+        // host libraries only): the clause is skipped — a new root is adopted without its log
+        // proof under the previous root's policy. The selector's default keeps the shipped rule.
+        #[cfg(feature = "mutants")]
+        let logging_checked = !crate::mutants::active(crate::mutants::ROOT_WITHOUT_LOG_PROOF);
+        #[cfg(not(feature = "mutants"))]
+        let logging_checked = true;
+        if logging_checked && verify_proof(proof, &root.to_bytes(), prev, now, true).is_err() {
             step2_report = Some(UpdateError::RootUnlogged);
             break;
         }
@@ -199,9 +233,16 @@ fn accept_manifest(
 ) -> (StoredState, ChannelStatus, Vec<PersistedChange>, Option<UpdateError>) {
     let mut new_state = base.clone();
 
-    // Step 3: the manifest names R and verifies under R's release keyset.
-    if m.body.root_version != r.body.root_version
-        || m.body.root_sha256 != sha256_of(&r.to_bytes())
+    // Step 3: the manifest names R and verifies under R's release keyset. MC-D18 (the `mutants`
+    // feature, host libraries only): the root binding is not checked — an older root's
+    // manifest is adopted under the new trust. The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let root_binding_checked = !crate::mutants::active(crate::mutants::OLDER_ROOT_ADOPTED);
+    #[cfg(not(feature = "mutants"))]
+    let root_binding_checked = true;
+    if root_binding_checked
+        && (m.body.root_version != r.body.root_version
+            || m.body.root_sha256 != sha256_of(&r.to_bytes()))
     {
         return refuse(new_state, base, UpdateError::RootMismatch);
     }
@@ -238,10 +279,15 @@ fn accept_manifest(
         .map(|(_, rel)| rel.version_code)
         .max()
         .unwrap_or(0);
-    if m.body.floor_version_code > attested_max {
+    // MC-D25 (the `mutants` feature, host libraries only): the floor bound is not enforced.
+    // The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let floor_bound_checked = !crate::mutants::active(crate::mutants::FLOOR_UNBOUNDED);
+    #[cfg(not(feature = "mutants"))]
+    let floor_bound_checked = true;
+    if floor_bound_checked && m.body.floor_version_code > attested_max {
         return refuse(new_state, base, UpdateError::FloorInvalid);
     }
-
     // Step 4: the log proof under R's policy.
     if let Err(e) = verify_proof(proof, manifest_bytes, r, now, false) {
         return refuse(new_state, base, e);
@@ -304,7 +350,14 @@ fn accept_manifest(
     };
     #[cfg(not(feature = "mutants"))]
     let floor_merge = base.floor.version_code.max(m.body.floor_version_code);
-    new_state.floor = if m.body.root_version == base.floor.root_version {
+    // MC-D25 (the `mutants` feature, host libraries only): the floor keeps its scope across a
+    // root change — the old root version's floor survives the new root. The selector's default
+    // keeps the shipped scoping (a new root resets the floor to its own manifest's).
+    #[cfg(feature = "mutants")]
+    let floor_scoped = !crate::mutants::active(crate::mutants::FLOOR_UNBOUNDED);
+    #[cfg(not(feature = "mutants"))]
+    let floor_scoped = true;
+    new_state.floor = if m.body.root_version == base.floor.root_version || !floor_scoped {
         Floor {
             version_code: floor_merge,
             root_version: base.floor.root_version,
@@ -326,7 +379,24 @@ fn accept_manifest(
         (ChannelStatus::Current, changes)
     } else {
         // An expired manifest is accepted as a fact but contributes no directory and no mirror.
-        (ChannelStatus::Stale, vec![])
+        // MC-D30 (the `mutants` feature, host libraries only): the expiry contributes anyway.
+        // The selector's default keeps the shipped rule.
+        #[cfg(feature = "mutants")]
+        let expired_is_silent = !crate::mutants::active(crate::mutants::EXPIRED_DIRECTORY);
+        #[cfg(not(feature = "mutants"))]
+        let expired_is_silent = true;
+        if expired_is_silent {
+            (ChannelStatus::Stale, vec![])
+        } else {
+            let mut changes: Vec<PersistedChange> = m
+                .body
+                .relays
+                .iter()
+                .map(|(o, op)| PersistedChange::RelayUpsert(o.clone(), *op))
+                .collect();
+            changes.push(PersistedChange::MirrorsFromManifest(m.body.extra_mirrors.clone()));
+            (ChannelStatus::Stale, changes)
+        }
     };
     (new_state, status, changes, None)
 }
@@ -366,17 +436,29 @@ fn verify_proof(
     now: u64,
     root_leaf: bool,
 ) -> Result<(), UpdateError> {
-    if p.message != sha256(file) {
+    // MC-D20 (the `mutants` feature, host libraries only): the message is not bound to the
+    // file — a proof of another manifest is accepted. The selector's default keeps the shipped
+    // rule.
+    #[cfg(feature = "mutants")]
+    let message_checked = !crate::mutants::active(crate::mutants::PROOF_OF_OTHER_ACCEPTED);
+    #[cfg(not(feature = "mutants"))]
+    let message_checked = true;
+    if message_checked && p.message != sha256(file) {
         return Err(UpdateError::LogProofInvalid);
     }
+    // MC-D29 (the `mutants` feature, host libraries only): the root leaf is accepted only from
+    // a release key of the policy root — root keys are refused (revision 1's rule). The
+    // selector's default keeps the shipped widening.
     let signer = if root_leaf {
-        policy
-            .body
-            .release
-            .keys
-            .iter()
-            .chain(policy.body.root.keys.iter())
-            .find(|k| key_id(k) == p.leaf_key_id)
+        #[cfg(feature = "mutants")]
+        let release_only = crate::mutants::active(crate::mutants::ROOT_LEAF_RELEASE_ONLY);
+        #[cfg(not(feature = "mutants"))]
+        let release_only = false;
+        let mut keys: Vec<&[u8; 32]> = policy.body.release.keys.iter().collect();
+        if !release_only {
+            keys.extend(policy.body.root.keys.iter());
+        }
+        keys.into_iter().find(|k| key_id(k) == p.leaf_key_id)
     } else {
         policy.body.release.keys.iter().find(|k| key_id(k) == p.leaf_key_id)
     };
@@ -389,10 +471,24 @@ fn verify_proof(
         .logs
         .get(p.log as usize)
         .ok_or(UpdateError::LogProofInvalid)?;
-    if p.verify_log_signature(&log.pk).is_err() {
+    // MC-D10 (the `mutants` feature, host libraries only): the tree-head signature is not
+    // checked. The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let tree_head_checked = !crate::mutants::active(crate::mutants::TREE_HEAD_SKIPPED);
+    #[cfg(not(feature = "mutants"))]
+    let tree_head_checked = true;
+    if tree_head_checked && p.verify_log_signature(&log.pk).is_err() {
         return Err(UpdateError::LogProofInvalid);
     }
-    if check_inclusion(leaf_hash(&p.leaf(file)), p.leaf_index, &p.path, &p.root_hash).is_err() {
+    // MC-D9 (the `mutants` feature, host libraries only): the inclusion path is not checked.
+    // The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let inclusion_checked = !crate::mutants::active(crate::mutants::INCLUSION_SKIPPED);
+    #[cfg(not(feature = "mutants"))]
+    let inclusion_checked = true;
+    if inclusion_checked
+        && check_inclusion(leaf_hash(&p.leaf(file)), p.leaf_index, &p.path, &p.root_hash).is_err()
+    {
         return Err(UpdateError::LogProofInvalid);
     }
     let mut good = 0usize;
@@ -402,6 +498,18 @@ fn verify_proof(
             return Err(UpdateError::LogProofInvalid);
         }
         if seen.contains(&c.witness_key_id) {
+            continue;
+        }
+        // MC-D12 (the `mutants` feature, host libraries only): cosignatures by unknown
+        // witnesses count toward the quorum — no policy lookup, no verification. The selector's
+        // default keeps the shipped rule.
+        #[cfg(feature = "mutants")]
+        let unknown_counted = crate::mutants::active(crate::mutants::UNKNOWN_WITNESS_COUNTED);
+        #[cfg(not(feature = "mutants"))]
+        let unknown_counted = false;
+        if unknown_counted {
+            seen.insert(c.witness_key_id);
+            good += 1;
             continue;
         }
         if let Some(w) = policy
@@ -416,7 +524,13 @@ fn verify_proof(
             }
         }
     }
-    if good < policy.body.quorum {
+    // MC-D11 (the `mutants` feature, host libraries only): the witness quorum is not enforced.
+    // The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let quorum_enforced = !crate::mutants::active(crate::mutants::QUORUM_NOT_ENFORCED);
+    #[cfg(not(feature = "mutants"))]
+    let quorum_enforced = true;
+    if quorum_enforced && good < policy.body.quorum {
         return Err(UpdateError::QuorumNotMet);
     }
     Ok(())

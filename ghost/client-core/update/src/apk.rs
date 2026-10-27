@@ -152,6 +152,16 @@ impl ApkCheck {
             .checked_sub(self.cd_size)
             .and_then(|x| x.checked_sub(EOCD_LEN as u64))
             .ok_or(UpdateError::ApkLayout)?;
+        // MC-D21 (the `mutants` feature, host libraries only): the block is located from the
+        // release's unsigned length, not from the file's footer — the padding is treated as
+        // block. The selector's default keeps the file-derived rule.
+        #[cfg(feature = "mutants")]
+        let b = if crate::mutants::active(crate::mutants::BLOCK_FROM_MANIFEST) {
+            e
+        } else {
+            block_start
+        };
+        #[cfg(not(feature = "mutants"))]
         let b = block_start;
         if !(0 < e && e <= b) || b != e + ((PAGE - e % PAGE) % PAGE) {
             return Err(UpdateError::ApkLayout);
@@ -192,6 +202,13 @@ impl ApkCheck {
                     if head.iter().any(|&x| x != 0) {
                         return Err(UpdateError::ApkLayout);
                     }
+                    // MC-D26 (the `mutants` feature, host libraries only): the core is "the
+                    // file minus the block" — the padding is hashed into it. The selector's
+                    // default keeps the padding out of the core.
+                    #[cfg(feature = "mutants")]
+                    if crate::mutants::active(crate::mutants::CORE_MINUS_BLOCK) {
+                        self.core.update(head);
+                    }
                     self.full.update(head);
                 }
                 _ => {
@@ -219,11 +236,17 @@ impl ApkCheck {
         if self.length != self.release.apk_length {
             return Err(UpdateError::ApkLength);
         }
-        // Whole-file SHA-256: streamed bytes + the end record.
+        // Whole-file SHA-256: streamed bytes + the end record. MC-D14 (the `mutants` feature,
+        // host libraries only): the whole-file hash is not compared — swapped bytes pass. The
+        // selector's default keeps the shipped check.
+        #[cfg(feature = "mutants")]
+        let full_hash_checked = !crate::mutants::active(crate::mutants::FULL_HASH_SKIPPED);
+        #[cfg(not(feature = "mutants"))]
+        let full_hash_checked = true;
         let mut full = self.full;
         full.update(self.tail);
         let full: [u8; 32] = full.finalize().into();
-        if full != self.release.apk_sha256 {
+        if full_hash_checked && full != self.release.apk_sha256 {
             return Err(UpdateError::ApkHash);
         }
         // Core: [0, E) and the central directory, end record with its cd-offset field set to E.
@@ -232,14 +255,35 @@ impl ApkCheck {
         let mut core = self.core;
         core.update(core_tail);
         let core: [u8; 32] = core.finalize().into();
-        if self.release.unsigned_length != self.cd_size + EOCD_LEN as u64 + self.e
-            || core != self.release.unsigned_sha256
+        // MC-D15 (the `mutants` feature, host libraries only): the core comparison and the
+        // attestation clause are skipped. The selector's default keeps the shipped checks.
+        #[cfg(feature = "mutants")]
+        let core_attestation_checked = !crate::mutants::active(crate::mutants::CORE_ATTESTATION_SKIPPED);
+        #[cfg(not(feature = "mutants"))]
+        let core_attestation_checked = true;
+        if core_attestation_checked
+            && (self.release.unsigned_length != self.cd_size + EOCD_LEN as u64 + self.e
+                || core != self.release.unsigned_sha256)
         {
             return Err(UpdateError::ApkCore);
         }
-        let signer = signer_digest(&self.block, self.sdk)?;
+        // MC-D27 (the `mutants` feature, host libraries only): the signer is read from the
+        // v3.1 block whatever the SDK — the [minSdk, maxSdk] window is ignored. The selector's
+        // default keeps the shipped selection.
+        #[cfg(feature = "mutants")]
+        let sdk = if crate::mutants::active(crate::mutants::SIGNER_FROM_V31) {
+            u32::MAX as u8
+        } else {
+            self.sdk
+        };
+        #[cfg(not(feature = "mutants"))]
+        let sdk = self.sdk;
+        let signer = signer_digest(&self.block, sdk)?;
         if !self.root.body.apk_signers.contains(&signer) {
             return Err(UpdateError::ApkSigner);
+        }
+        if !core_attestation_checked {
+            return Ok(());
         }
         let index = self.release_index;
         let at = self

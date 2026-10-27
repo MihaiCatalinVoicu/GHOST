@@ -21,9 +21,25 @@ pub struct MirrorPick {
 /// `NO_CHANNEL` the caller passes the embedded root's anchors as the extras.
 pub fn draw_mirrors(anchors: &[Mirror], extras: &[Mirror], r0: u64, r1: u64) -> Option<MirrorPick> {
     let first = anchors.get((r0 % anchors.len() as u64) as usize)?.clone();
-    let mut candidates: Vec<&Mirror> = anchors
-        .iter()
-        .chain(extras.iter())
+    // MC-D19 (the `mutants` feature, host libraries only): one mirror per run — the second
+    // pick repeats the first. The selector's default keeps the two-mirror draw.
+    #[cfg(feature = "mutants")]
+    if crate::mutants::active(crate::mutants::ONE_MIRROR_PER_RUN) {
+        return Some(MirrorPick { first: first.clone(), second: first });
+    }
+    // MC-D24 (the `mutants` feature, host libraries only): both mirrors come from the
+    // manifest's extras — no anchor mirror in the run. The selector's default keeps the
+    // anchors in the draw.
+    #[cfg(feature = "mutants")]
+    let pool: Vec<&Mirror> = if crate::mutants::active(crate::mutants::NO_ANCHOR_MIRROR) {
+        extras.iter().collect()
+    } else {
+        anchors.iter().chain(extras.iter()).collect()
+    };
+    #[cfg(not(feature = "mutants"))]
+    let pool: Vec<&Mirror> = anchors.iter().chain(extras.iter()).collect();
+    let mut candidates: Vec<&Mirror> = pool
+        .into_iter()
         .filter(|(onion, _)| *onion != first.0)
         .collect();
     let other_op: Vec<&&Mirror> = candidates
