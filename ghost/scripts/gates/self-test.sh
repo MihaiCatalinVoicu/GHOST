@@ -1364,6 +1364,28 @@ elif ! grep -qF "self-test hook for fixture roots only" <<<"$wt_out"; then
 else
   echo "self-test ok: wire-transcript refuses its fixture hooks on the repository"
 fi
+# Phase 14 (G-D7): update-report-check.sh on its fixture fragments
+# (test-harness/gates/update-report/README.md). The gate takes the fragment's path and the kind,
+# so each case names both. The negative is synthesized: an inflated headline (more detected than
+# run), and the gate kind over a PR-scale fragment (no drill lines, 1 world).
+UR_FIX="$HARNESS/update-report"
+ur_case() { # $1 = description, $2 = pass|fail, $3 = fragment, $4 = kind, $5 = text the output must contain
+  local desc="$1" expect="$2" frag="$3" urkind="$4" want="$5" out got
+  if out="$(bash "$DIR/update-report-check.sh" "$frag" "$urkind" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: update-report-check $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: update-report-check $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: update-report-check $desc"
+  fi
+}
+ur_case "accepts a consistent PR-scale fragment" pass \
+  "$UR_FIX/consistent/build/update-mutants/report.txt" pr "OK (pr)"
+ur_case "refuses a fragment claiming more detected than ran" fail \
+  "$UR_FIX/inflated/build/update-mutants/report.txt" pr "more detected than measured"
+ur_case "refuses a PR-scale fragment as the gate job's report" fail \
+  "$UR_FIX/consistent/build/update-mutants/report.txt" gate "is not the gate job's report"
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
