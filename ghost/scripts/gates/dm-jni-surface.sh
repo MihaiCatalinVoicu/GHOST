@@ -270,6 +270,7 @@ UPDATE_KOTLIN="${GHOST_DM_JNI_UPDATE_KOTLIN:-$GHOST_ROOT/android/network/src/mai
 MIRROR_KOTLIN="${GHOST_DM_JNI_MIRROR_KOTLIN:-$GHOST_ROOT/android/network/src/main/kotlin/org/ghost/network/TorMirrorTransport.kt}"
 UPDATE_PREFIX="Java_org_ghost_network_UpdateNative_"
 MIRROR_PREFIX="Java_org_ghost_network_TorMirrorTransport_"
+MUTANTS_PREFIX="Java_org_ghost_network_UpdateMutants_"
 
 [ -f "$UPDATE_SOURCE" ] || { echo "Update JNI source not found: $UPDATE_SOURCE" >&2; exit 2; }
 [ -f "$UPDATE_KOTLIN" ] || { echo "UpdateNative.kt not found: $UPDATE_KOTLIN" >&2; exit 2; }
@@ -324,6 +325,22 @@ while read -r name; do
   [ -n "$name" ] || continue
   fail "TorMirrorTransport does not declare 'external fun $name', which §9.3's list ships"
 done < <(comm -13 "$work/mirror-kotlin" "$work/mirror-declared")
+
+# §11.3's mutant selector (slice S6c): the one `UpdateMutants` entry, both directions, from the
+# same Rust constant the workspace scan is diffed against. No Kotlin half: no production source
+# ever declares the class (its only caller is the JVM update world's test source, reaching the
+# host library's symbol directly), like `DmEquivalence` before its test sources landed.
+sed -n '/pub const TEST_MUTANT_SWITCHES/,/^]/p' "$UPDATE_SOURCE" | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u > "$work/mutants-declared"
+[ -s "$work/mutants-declared" ] || { fail "no UpdateMutants selector entries read from $UPDATE_SOURCE"; finish dm-jni-surface; }
+{ grep -E "^${MUTANTS_PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${MUTANTS_PREFIX}//" | sort -u > "$work/mutants-emitted"
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "the workspace exports UpdateMutants.$name, which is not §11.3's selector list ($UPDATE_SOURCE; scanned $SCAN)"
+done < <(comm -23 "$work/mutants-emitted" "$work/mutants-declared")
+while read -r name; do
+  [ -n "$name" ] || continue
+  fail "'$name' is on §11.3's UpdateMutants selector list but the crate emits no entry point for it"
+done < <(comm -23 "$work/mutants-declared" "$work/mutants-emitted")
 
 # No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
 # `native` method (Java) anywhere but the files of `common.sh`'s GHOST_JNI_NATIVE_FILES (DmNative.kt,
@@ -464,8 +481,9 @@ for LIBRARY in "$@"; do
         fail "$LIBRARY exports the host-only media entry 'MediaNative.$name': a shipped library never carries it (G-M5)"
       done < "$work/media-test-symbols"
     fi
-    # G-D5's update half: exactly §9.3's two lists in every library (there are no host-only
-    # entries on the update surface; a shipped and a test library carry the same set).
+    # G-D5's update half: exactly §9.3's two lists in every library (the lists themselves have
+    # no host-only entries; a shipped and a test library carry the same set — §11.3's host-only
+    # entry lives on `UpdateMutants`, checked below).
     grep -oE "${UPDATE_PREFIX}[A-Za-z0-9]+" "$work/nm-out"       | sed -E "s/${UPDATE_PREFIX}//" | sort -u > "$work/update-symbols" || true
     while read -r name; do
       [ -n "$name" ] || continue
@@ -484,6 +502,25 @@ for LIBRARY in "$@"; do
       [ -n "$name" ] || continue
       fail "$LIBRARY does not export 'TorMirrorTransport.$name', which §9.3's list ships"
     done < <(comm -13 "$work/mirror-symbols" "$work/mirror-declared")
+    # §11.3's mutant selector (slice S6c): `UpdateMutants.select` exactly in a test library —
+    # a `--test` build is the `test-mutants` feature's only enabler (ghost-dm-host) — and never
+    # in a shipped one, where the `mutants` feature cannot exist (G-D5, G-D6).
+    grep -oE "${MUTANTS_PREFIX}[A-Za-z0-9]+" "$work/nm-out"      | sed -E "s/${MUTANTS_PREFIX}//" | sort -u > "$work/mutants-symbols" || true
+    if [ "$is_test" = 1 ]; then
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY exports 'UpdateMutants.$name', which is not §11.3's selector"
+      done < <(comm -23 "$work/mutants-symbols" "$work/mutants-declared")
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY does not export 'UpdateMutants.$name', §11.3's selector (the test-mutants feature)"
+      done < <(comm -13 "$work/mutants-symbols" "$work/mutants-declared")
+    else
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "$LIBRARY exports 'UpdateMutants.$name': a shipped library never carries §11.3's selector (G-D5)"
+      done < "$work/mutants-symbols"
+    fi
   fi
 done
 [ "$TEST_LIBRARY" = 0 ] || fail "--test names no library"

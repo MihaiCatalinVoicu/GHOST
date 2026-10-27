@@ -48,5 +48,7 @@ ghost-client-mls = { path = "../mls", features = ["jni-bridge", "test-vectors"] 
 # feature, so the shipped graph (G-R2's allowlist) is untouched: only this never-shipped package
 # links them for tests. Net also invokes the closed DM/media/channel export macros itself, so this
 # crate must NOT invoke them a second time (duplicate symbols); it adds only the test entries.
-ghost-client-net = { path = "../net" }
+# `test-mutants` (§11.3, slice S6c) is this package's alone too: it compiles the update crate's
+# `mutants` feature and the `UpdateMutants.select` host-only JNI entry (G-D5, G-D6).
+ghost-client-net = { path = "../net", features = ["test-mutants"] }
 jni = { workspace = true }

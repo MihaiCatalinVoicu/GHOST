@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-D5 (`scripts/gates/dm-jni-surface.sh`), negative case (slice S6c,
+# §11.3): a TEST library WITHOUT the update mutant selector — `exact-nm`'s shipped set plus the
+# five test-vectors/media test entries, but no `UpdateMutants.select`. The gate must refuse: a
+# `--test` library is the `test-mutants` feature's only build, and it must carry the selector.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks\n' 65600
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook\n' 65664
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_sidecarLogHook\n' 65728
+printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testVectors\n' 66048
+printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testSealBeginWithKey\n' 66112

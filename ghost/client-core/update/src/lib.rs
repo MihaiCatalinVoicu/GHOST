@@ -15,6 +15,8 @@ pub mod offer;
 pub mod draw;
 pub mod apk;
 pub mod codec;
+#[cfg(feature = "mutants")]
+pub mod mutants;
 
 pub use state::{StoredState, TrustEpoch, Pair, Floor, Time, ChannelStatus, PersistedChange};
 pub use decision::{accept_bundle, start_epoch, AcceptOutcome};

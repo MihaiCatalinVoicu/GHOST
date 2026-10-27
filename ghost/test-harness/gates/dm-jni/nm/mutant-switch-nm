@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-D5 (`scripts/gates/dm-jni-surface.sh`), negative case (slice S6c,
+# §11.3): a SHIPPED library carrying the update mutant selector — `exact-nm`'s shipped set plus
+# `UpdateMutants.select`. The gate must refuse: the selector is the `test-mutants` feature's
+# alone, which only ghost-dm-host enables.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_network_UpdateMutants_select\n' 66256

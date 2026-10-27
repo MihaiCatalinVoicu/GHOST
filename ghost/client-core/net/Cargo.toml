@@ -56,6 +56,10 @@ rustls = { workspace = true }
 [features]
 default = ["jni-bridge"]
 jni-bridge = ["dep:jni"]
+# §11.3's mutation-testing switch (slice S6c): compiles `ghost-client-update`'s `mutants` feature
+# and the `UpdateMutants.select` JNI entry into the host library. Only `ghost-dm-host` enables
+# it; no shipped graph may carry it (G-D5's library half, G-D6).
+test-mutants = ["ghost-client-update/mutants"]
 # Negative fixture for clippy.toml (scripts/gates/clippy-clearnet-fixture.sh). Never enabled in
 # a build; rust-feature-policy.sh fails if it is.
 clippy-fixture = []

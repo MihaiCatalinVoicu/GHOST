@@ -59,6 +59,14 @@ pub const CLOSED_MIRROR: &[&str] = &[
     "nativeFetch",
 ];
 
+/// The test-only entry of `UpdateMutants` (§11.3's mutant selector; slice S6c), mirrored by the
+/// gate's source half exactly like the two closed lists. The symbol is compiled only behind
+/// `ghost-client-net`'s `test-mutants` feature, which only `ghost-dm-host` enables, so a shipped
+/// library never carries it (G-D5's library half checks both directions).
+pub const TEST_MUTANT_SWITCHES: &[&str] = &[
+    "select",
+];
+
 /// One streaming APK check in the handle registry.
 struct ApkState {
     check: Option<ApkCheck>,
@@ -653,4 +661,20 @@ mod tests {
         }
         assert_eq!(pos, encoded.len());
     }
+}
+
+/// §11.3's mutant selector (Phase 14 design §11.3; slice S6c): `UpdateMutants.select(id)` sets
+/// the process-wide active mutant of `ghost-client-update`'s `mutants` feature for the JVM
+/// world's next native calls; 0 restores the shipped behaviour at every site. Test libraries
+/// only: this entry is compiled solely behind the crate's `test-mutants` feature, which only
+/// `ghost-dm-host` enables (G-D5 refuses the symbol in a shipped library; G-D6 keeps the feature
+/// out of every shipped graph). A negative id is never a valid mutant and selects none.
+#[cfg(feature = "test-mutants")]
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_UpdateMutants_select(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jint,
+) {
+    ghost_client_update::mutants::select(u32::try_from(id).unwrap_or(u32::MAX));
 }

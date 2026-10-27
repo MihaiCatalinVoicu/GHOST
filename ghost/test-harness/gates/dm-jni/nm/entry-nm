@@ -4,7 +4,9 @@
 # `exact-nm` prints them (the DM list plus slice S2's media list, G-M5), plus the four symbols a
 # library built with `ghost-client-dm`'s `test-vectors` feature adds — and (G-M5, §13.2, §15.6)
 # the media surface's two host-only entries, which the same feature compiles into the test
-# library. Accepted with `--test`; refused for a shipped library.
+# library. Accepted with `--test`; refused for a shipped library. Slice S6c (§11.3) adds the
+# update mutant selector (`UpdateMutants.select`, derived from the source constant below), the
+# `test-mutants` feature's one symbol — also the test library's alone.
 set -euo pipefail
 "$(dirname "$0")/exact-nm" "$@"
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536
@@ -13,3 +15,12 @@ printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook\n' 6566
 printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_sidecarLogHook\n' 65728
 printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testVectors\n' 66048
 printf '%016x T Java_org_ghost_crypto_bridge_MediaNative_testSealBeginWithKey\n' 66112
+# Slice S6c (§11.3, G-D5): the test library also carries the update mutant selector — the one
+# `UpdateMutants` entry of `client-core/net/src/update.rs`'s `TEST_MUTANT_SWITCHES`, read from
+# the constant itself so fixture and gate cannot drift. A shipped library never carries it.
+update_source="$(dirname "$0")/../../../../client-core/net/src/update.rs"
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_network_UpdateMutants_%s\n' "$((66112 + 16))" "$name"
+done < <(sed -n '/pub const TEST_MUTANT_SWITCHES/,/^]/p' "$update_source" \
+  | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u)

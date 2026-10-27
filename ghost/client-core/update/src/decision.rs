@@ -251,17 +251,35 @@ fn accept_manifest(
     if m.body.issued_day > today + 4 {
         return refuse(new_state, base, UpdateError::NotYetValid);
     }
-    let fresh = today <= m.body.not_after_day;
+    // MC-D8 (the `mutants` feature, host libraries only): the not-after day is ignored and an
+    // expired manifest is treated as fresh. The selector's default keeps the shipped test.
+    #[cfg(feature = "mutants")]
+    let expiry_enforced = !crate::mutants::active(crate::mutants::EXPIRY_IGNORED);
+    #[cfg(not(feature = "mutants"))]
+    let expiry_enforced = true;
+    let fresh = expiry_enforced && today <= m.body.not_after_day;
 
     // Step 6: the pair.
     let pair = Pair { root_version: m.body.root_version, manifest_seq: m.body.manifest_seq };
     let stored_pair = base.pair;
-    if pair < stored_pair {
+    // MC-D6 (the `mutants` feature, host libraries only): a lower pair is accepted — the
+    // Rollback refusal is skipped. The selector's default keeps the shipped check.
+    #[cfg(feature = "mutants")]
+    let lower_pair_refused = !crate::mutants::active(crate::mutants::LOWER_PAIR_ACCEPTED);
+    #[cfg(not(feature = "mutants"))]
+    let lower_pair_refused = true;
+    if pair < stored_pair && lower_pair_refused {
         return refuse(new_state, base, UpdateError::Rollback);
     }
     let hash = sha256(manifest_bytes);
-    // Same pair, different hash: equivocation evidence, kept for this root version.
-    if pair == stored_pair {
+    // Same pair, different hash: equivocation evidence, kept for this root version. MC-D7 (the
+    // `mutants` feature, host libraries only): the equal-pair block is skipped and the
+    // equivocating manifest is accepted over the stored one.
+    #[cfg(feature = "mutants")]
+    let equal_pair_checked = !crate::mutants::active(crate::mutants::EQUAL_PAIR_ACCEPTED);
+    #[cfg(not(feature = "mutants"))]
+    let equal_pair_checked = true;
+    if pair == stored_pair && equal_pair_checked {
         if base.manifest_sha256 == Some(hash) {
             return refuse(new_state, base, UpdateError::Unchanged);
         }
@@ -276,9 +294,19 @@ fn accept_manifest(
     new_state.manifest = Some(m.clone());
     new_state.manifest_proof = Some(proof.clone());
     new_state.manifest_sha256 = Some(hash);
+    // MC-D17 (the `mutants` feature, host libraries only): a manifest lowers the floor within
+    // its root version — `min` replaces `max`. The selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let floor_merge = if crate::mutants::active(crate::mutants::FLOOR_LOWERED) {
+        base.floor.version_code.min(m.body.floor_version_code)
+    } else {
+        base.floor.version_code.max(m.body.floor_version_code)
+    };
+    #[cfg(not(feature = "mutants"))]
+    let floor_merge = base.floor.version_code.max(m.body.floor_version_code);
     new_state.floor = if m.body.root_version == base.floor.root_version {
         Floor {
-            version_code: base.floor.version_code.max(m.body.floor_version_code),
+            version_code: floor_merge,
             root_version: base.floor.root_version,
         }
     } else {

@@ -71,10 +71,12 @@ gradle_files() {
 #   - `org.ghost.crypto.bridge.MlsNative` (the channel closed list, mls-jni-surface.sh) and
 #     `MlsVectors` (its test library's entry point);
 #   - the network surface of Phases 6 and 8 (`TorRelayTransport`, `TorIssuerTransport`,
-#     `EntitlementCrypto`).
+#     `EntitlementCrypto`);
+#   - `org.ghost.network.UpdateMutants` (§11.3's mutant selector; slice S6c): one host-only entry,
+#     `select`, like `DmEquivalence`'s — no production Kotlin ever declares it.
 # A JNI entry point of any other class, in the workspace's sources or in a built library, fails both
 # gates; a new class is a change to this list, which is what makes it arrive deliberately.
-GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MediaNative org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto org_ghost_network_UpdateNative org_ghost_network_TorMirrorTransport"
+GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MediaNative org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto org_ghost_network_UpdateNative org_ghost_network_TorMirrorTransport org_ghost_network_UpdateMutants"
 # The production source files allowed to declare a native method (paths under android/): the two
 # closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
 # live in test source sets, which no production half reads. `MediaNative`'s declarations are
