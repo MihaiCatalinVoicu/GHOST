@@ -202,7 +202,7 @@ class UpdateEngine(
         val target = File(files, offer.apkSha256.toHex() + ".apk")
         if (!file.renameTo(target)) {
             store.stageClear(offer.apkSha256)
-            return refuse("rename")
+            return false
         }
         // The rename is the file half; the row follows in the same step.
         store.stageVerified(offer.apkSha256)
