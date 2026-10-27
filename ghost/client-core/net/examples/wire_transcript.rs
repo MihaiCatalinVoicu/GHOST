@@ -362,9 +362,10 @@ fn record(seen: &Arc<Mutex<Option<Seen>>>, name: &str, md: &tonic::metadata::Met
                     .unwrap_or_else(|_| format!("{} bytes", v.len()));
                 (k.as_str().to_owned(), value)
             }
-            tonic::metadata::KeyAndValueRef::Binary(k, v) => {
-                (k.as_str().to_owned(), format!("{} bytes", v.to_bytes().map_or(0, |b| b.len())))
-            }
+            tonic::metadata::KeyAndValueRef::Binary(k, v) => (
+                k.as_str().to_owned(),
+                format!("{} bytes", v.to_bytes().map_or(0, |b| b.len())),
+            ),
         })
         .collect();
     headers.sort();
