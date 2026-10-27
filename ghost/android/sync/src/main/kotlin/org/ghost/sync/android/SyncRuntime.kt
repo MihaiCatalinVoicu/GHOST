@@ -418,7 +418,10 @@ internal class SyncRuntime(
                     runUserUpdateCallNow(call, null, ClosedLeases.openLease(), ensure = false)
                     return
                 }
-                runUserUpdateCallNow(call, e, leases.openLease(), ensure = true)
+                // The emulator seam (Phase 14 §11.4, G-DM5): with a mirror override, every fetch
+                // of this run goes to the loopback model mirror — the run must not wait for the
+                // Tor transport it never uses.
+                runUserUpdateCallNow(call, e, leases.openLease(), ensure = false, transportFree = updateMirrorOverride() != null)
             }
         }
     }
@@ -426,9 +429,10 @@ internal class SyncRuntime(
     /**
      * [call]'s thread: READY (made by the call itself when [ensure]), then the block with an
      * [UpdateSession] whose deadline is the call's; the lease closes and the transport is aborted
-     * when no other activity owns it.
+     * when no other activity owns it. [transportFree] (the emulator seam's override) runs the
+     * block without any transport readiness: the session's mirror is the override, not the lease.
      */
-    private fun runUserUpdateCallNow(call: UserUpdateCall, e: SyncEngine?, lease: TransportLease, ensure: Boolean) {
+    private fun runUserUpdateCallNow(call: UserUpdateCall, e: SyncEngine?, lease: TransportLease, ensure: Boolean, transportFree: Boolean = false) {
         val startedAt = clock.monotonicMillis()
         val session = RuntimeUpdateSession(
             lease, minOf(call.deadline, startedAt + policy.updateRunMillis), 0, userInitiated = true,
@@ -438,15 +442,17 @@ internal class SyncRuntime(
         startCallbackThread {
             try {
                 if (!lease.closed) {
-                    if (ensure) {
-                        e?.setTransportStatus(TransportStatus.STARTING)
-                        val state = transport.ensureReady(minOf(startedAt + policy.bootstrapMillis, session.deadlineMonotonicMillis - policy.deadlineReserveMillis))
-                        if (!lease.closed) noteTransport(e!!, state)
-                        if (state != TransportState.READY) return@startCallbackThread
-                    } else if (!lease.awaitReady(session.deadlineMonotonicMillis)) {
-                        return@startCallbackThread
+                    when {
+                        transportFree -> call.block(session)
+                        ensure -> {
+                            e?.setTransportStatus(TransportStatus.STARTING)
+                            val state = transport.ensureReady(minOf(startedAt + policy.bootstrapMillis, session.deadlineMonotonicMillis - policy.deadlineReserveMillis))
+                            if (!lease.closed) noteTransport(e!!, state)
+                            if (state != TransportState.READY) return@startCallbackThread
+                            call.block(session)
+                        }
+                        else -> if (lease.awaitReady(session.deadlineMonotonicMillis)) call.block(session)
                     }
-                    call.block(session)
                 }
             } finally {
                 post {
