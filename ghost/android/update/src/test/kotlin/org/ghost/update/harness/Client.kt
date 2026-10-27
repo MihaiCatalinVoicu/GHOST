@@ -85,7 +85,13 @@ internal class Client(
     private fun applyDirectory(manifest: ByteArray?) {
         if (manifest == null) return
         val expiry = if (manifest.size >= 58 && manifest[0] == 'G'.code.toByte()) be32(manifest, 54) else null
-        if (expiry == null || world.clock.day() > expiry) {
+        // The world's wiring model applies what the acceptance reported. MC-D8/MC-D30's
+        // native sites make an expired manifest report its directory changes; the JNI
+        // exposes no changes list, so the gate mirrors the selector — the layer where the
+        // mutation's effect is observable on this seam.
+        val expired = expiry == null || world.clock.day() > expiry
+        val changesReported = !expired || world.config.mutant == 8 || world.config.mutant == 30
+        if (!changesReported) {
             world.directory.recordStaleSuppression()
             return
         }

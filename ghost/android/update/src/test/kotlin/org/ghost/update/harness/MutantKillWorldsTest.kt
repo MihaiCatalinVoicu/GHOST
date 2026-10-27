@@ -29,7 +29,7 @@ class MutantKillWorldsTest {
         } catch (t: AssertionError) {
             if (entry.kotlinSide) throw t // Kotlin-side rows have no rebuild excuse
             throw AssumptionViolatedException(
-                "${entry.name} is not active in this host library (rebuild ghost-dm-host)", t,
+                "${entry.name} is not active in this host library (rebuild ghost-dm-host): ${t.message}", t,
             )
         }
     }

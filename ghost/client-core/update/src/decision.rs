@@ -246,7 +246,14 @@ fn accept_manifest(
     {
         return refuse(new_state, base, UpdateError::RootMismatch);
     }
-    if m.verify_block(&r.body.release.keys, r.body.release.threshold).is_err() {
+    // MC-D3 (the `mutants` feature, host libraries only): the manifest's release signature
+    // block is not verified — a manifest under a key no longer in the root is accepted. The
+    // selector's default keeps the shipped rule.
+    #[cfg(feature = "mutants")]
+    let manifest_block_checked = !crate::mutants::active(crate::mutants::MANIFEST_BLOCK_SKIPPED);
+    #[cfg(not(feature = "mutants"))]
+    let manifest_block_checked = true;
+    if manifest_block_checked && m.verify_block(&r.body.release.keys, r.body.release.threshold).is_err() {
         return refuse(new_state, base, UpdateError::BadSignature);
     }
     // No extra mirror may equal an anchor mirror (the rest of MALFORMED is parse-level).

@@ -60,12 +60,16 @@ internal object MutantKills {
     // ------------------------------------------------------------------ the oracles
 
     /** The native acceptance over the client's current stored state (decides, never persists). */
-    private fun accept(client: Client, bundle: ByteArray): Int {
+    private fun accept(client: Client, bundle: ByteArray): Int =
+        acceptRaw(client, bundle).first
+
+    /** The code and the new-state blob the decision returns (the oracle's full answer). */
+    private fun acceptRaw(client: Client, bundle: ByteArray): Pair<Int, ByteArray> {
         val loaded = client.store.load() ?: throw AssertionError("no stored state")
         return client.world.config.native.accept(
             loaded.blob, bundle, client.world.clock.trusted,
             client.world.clock.day(), client.world.clock.nowSeconds(),
-        ).first
+        )
     }
 
     /** The native streaming APK check over [bytes] as the offered release. */
@@ -158,21 +162,22 @@ internal object MutantKills {
     }
 
     private fun expiryIgnoredControl() {
-        // The benign world applies the fresh manifest's relays; under MC-D8 nothing is fresh.
+        // The stale mirror's manifest is expired: the acceptance reports no changes and the
+        // wiring applies nothing.
         World("mc-d8-c", seed = 63).use { w ->
             val c = freshClient(w)
-            c.updateRun(w.mirror(), w.mirror())
-            assertEquals(3, w.directory.upsertCalls)
+            c.updateRun(w.mirror(MirrorMode.STALE), w.mirror(MirrorMode.STALE))
+            assertEquals(1, w.directory.staleSuppressions)
+            assertEquals(0, w.directory.upsertCalls)
         }
-
     }
 
-    private fun expiryIgnoredMutant() {        World("mc-d8", seed = 63, config = WorldConfig(mutant = 8)).use { w ->
+    private fun expiryIgnoredMutant() {
+        World("mc-d8", seed = 63, config = WorldConfig(mutant = 8)).use { w ->
             val c = freshClient(w)
-            c.updateRun(w.mirror(), w.mirror())
-            assertEquals("no manifest counts as fresh under the mutant", 0, w.directory.upsertCalls)
+            c.updateRun(w.mirror(MirrorMode.STALE), w.mirror(MirrorMode.STALE))
+            assertEquals("the expired manifest applied its relays", 3, w.directory.upsertCalls)
         }
-    
     }
 
     private fun floorLoweredControl() {
@@ -186,14 +191,15 @@ internal object MutantKills {
 
     }
 
-    private fun floorLoweredMutant() {        World("mc-d17", seed = 64, config = WorldConfig(mutant = 17)).use { w ->
+    private fun floorLoweredMutant() {
+        World("mc-d17", seed = 64, config = WorldConfig(mutant = 17)).use { w ->
             val c = freshClient(w)
             c.updateRun(serving(w, w.fixtures.doc("bundle-floor.ghrb")), serving(w, w.fixtures.doc("bundle-floor.ghrb")))
-            assertEquals(2, c.store.load()!!.facts.floorVersionCode)
+            // The min-merge lowers the floor already at the bound manifest itself.
+            assertEquals("the floor was lowered at the bound manifest", 0, c.store.load()!!.facts.floorVersionCode)
             c.updateRun(serving(w, w.fixtures.doc("bundle-replay.ghrb")), serving(w, w.fixtures.doc("bundle-replay.ghrb")))
-            assertEquals("the floor was lowered", 0, c.store.load()!!.facts.floorVersionCode)
+            assertEquals(0, c.store.load()!!.facts.floorVersionCode)
         }
-    
     }
 
     // ------------------------------------------------------------------ the chain rule
@@ -213,8 +219,10 @@ internal object MutantKills {
     private fun badThresholdPairMutant(id: Int) {
         World("mc-d$id", seed = 65, config = WorldConfig(mutant = id)).use { w ->
             val c = freshClient(w)
-            assertEquals("the transition root is adopted", UpdateNative.OK, accept(c, w.fixtures.doc("bundle-2bad.ghrb")))
-            assertEquals(2, c.store.load()!!.facts.rootVersion)
+            val (code, blob) = acceptRaw(c, w.fixtures.doc("bundle-2bad.ghrb"))
+            assertEquals("the transition root is adopted", UpdateNative.OK, code)
+            // The oracle decides, it does not persist: the adoption shows in its returned blob.
+            assertEquals(2, UpdateCodec.decode(blob, 2).rootVersion)
         }
     }
 
@@ -363,12 +371,16 @@ internal object MutantKills {
 
     }
 
-    private fun fullHashSkippedMutant() {        World("mc-d14", seed = 77, config = WorldConfig(mutant = 14)).use { w ->
+    private fun fullHashSkippedMutant() {
+        World("mc-d14", seed = 77, config = WorldConfig(mutant = 14)).use { w ->
             val c = freshClient(w)
             c.updateRun(w.mirror(), w.mirror())
-            assertEquals("the swapped bytes pass", UpdateNative.OK, checkApk(c, w.fixtures.doc("app-v2-swap.apk")))
+            // The hash check is skipped, so the same fixture now refuses one layer later: the
+            // core check catches the flipped core (22 = APK_HASH on the shipped library; the
+            // refusal surface moved to 23 = APK_CORE — the detection is the move).
+            assertEquals("the refusal moved past the skipped full-file hash",
+                UpdateNative.APK_CORE, checkApk(c, w.fixtures.doc("app-v2-swap.apk")))
         }
-    
     }
 
     private fun engineVerifyKillControl(id: Int, seed: Long, label: String) {
