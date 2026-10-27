@@ -70,7 +70,8 @@ internal class WorldFixtures private constructor(
             "bundle-ff.ghrb", "bundle-replay.ghrb", "bundle-floor.ghrb", "bundle-relabel.ghrb",
             "bundle-big.ghrb", "bundle-2.ghrb", "bundle-stolen.ghrb",
             "manifest-eq-a.ghrm", "manifest-eq-b.ghrm", "manifest-replay.ghrm",
-            "manifest-relabel.ghrm", "manifest-stale.ghrm", "manifest-1.ghrm", "chain2.ghrc",
+            "manifest-relabel.ghrm", "manifest-stale.ghrm", "manifest-1.ghrm", "manifest-2.ghrm",
+            "manifest-stolen.ghrm", "chain2.ghrc",
             "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
         )
 
