@@ -45,7 +45,7 @@ class UpdatesImpl(
             val (day, _) = dayNow()
             val staged = store.staged()
             if (staged != null && (staged.state == "verified" || staged.state == "committed")) {
-                return UpdateStatus.Ready(nameOf(loaded.blob), staged.versionCode)
+                return UpdateStatus.Ready(nameOf(loaded.blob, staged.versionCode), staged.versionCode)
             }
             if (staged != null && staged.state == "partial") {
                 return UpdateStatus.Downloading(staged.received, staged.apkLength)
@@ -132,13 +132,34 @@ class UpdatesImpl(
         ((b[at].toInt() and 0xff) shl 24) or ((b[at + 1].toInt() and 0xff) shl 16) or
             ((b[at + 2].toInt() and 0xff) shl 8) or (b[at + 3].toInt() and 0xff)
 
-    /** The release's `version_name` (§4.5: version_code u32 at 58, then a u16-length ASCII name). */
-    private fun nameOf(blob: ByteArray): String {
+    /** The release's `version_name` for [versionCode] (§4.5): `nrel` at offset 62, then
+     * `nrel × release`, each `u32 version_code ‖ u16 name_len ‖ name ‖` a fixed tail of
+     * 165 bytes, `nart`, `nart × 41`, an attestation block (`u8 n ‖ n × 64`). Every read is
+     * bounds-checked; the walk replaces revision 1's fixed-offset read, which was only right
+     * for a one-release manifest. */
+    private fun nameOf(blob: ByteArray, versionCode: Int): String {
         val manifest = store.load()?.facts?.manifestFile ?: return "update"
-        if (manifest.size < 64 || manifest[0] != 'G'.code.toByte()) return "update"
-        val len = ((manifest[62].toInt() and 0xff) shl 8) or (manifest[63].toInt() and 0xff)
-        if (len < 1 || 64 + len > manifest.size) return "update"
-        return manifest.copyOfRange(64, 64 + len).toString(Charsets.US_ASCII)
+        if (manifest.size < 63 || manifest[0] != 'G'.code.toByte()) return "update"
+        val nrel = manifest[62].toInt() and 0xff
+        if (nrel < 1 || nrel > 4) return "update"
+        var at = 63
+        for (entry in 0 until nrel) {
+            if (at + 6 > manifest.size) return "update"
+            val code = be32(manifest, at)
+            val len = ((manifest[at + 4].toInt() and 0xff) shl 8) or (manifest[at + 5].toInt() and 0xff)
+            if (len < 1 || at + 6 + len > manifest.size) return "update"
+            if (code == versionCode) {
+                return manifest.copyOfRange(at + 6, at + 6 + len).toString(Charsets.US_ASCII)
+            }
+            at += 6 + len
+            if (at + 166 > manifest.size) return "update"
+            val nart = manifest[at + 165].toInt() and 0xff
+            at += 166 + nart * 41
+            if (at + 1 > manifest.size) return "update"
+            val nsig = manifest[at].toInt() and 0xff
+            at += 1 + nsig * 64
+        }
+        return "update"
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

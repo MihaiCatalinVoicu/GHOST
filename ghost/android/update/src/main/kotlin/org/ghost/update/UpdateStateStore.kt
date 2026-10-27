@@ -115,6 +115,20 @@ class UpdateStateStore(private val db: SqlExecutor) {
         }
     }
 
+    /**
+     * CONFLICT (T49): an equal pair with other bytes sets the conflict flag for that root
+     * version and changes nothing else — no manifest, pair, floor or directory adoption. The
+     * flag is kept while the root version is unchanged and cleared by the next ACCEPT under a
+     * newer root; an existing scope is never overwritten (a stored flag of another root version
+     * means the state was inconsistent, and ACCEPT is the only writer that may clear it).
+     */
+    fun markConflict(rootVersion: Int) {
+        db.execUpdate(
+            "UPDATE upd_state SET conflict_root = ? WHERE id = 1 AND conflict_root IS NULL",
+            listOf(rootVersion.toLong()),
+        )
+    }
+
     /** RUN-END (§9.6.1): `failed_runs` counts unanswered runs; a crash loses at most one count. */
     fun runEnd(anyMirrorAnswered: Boolean) {
         db.execUpdate(

@@ -82,6 +82,12 @@ class UpdateEngine(
                     if (code == UpdateNative.OK && newBlob.isNotEmpty()) {
                         store.accept(UpdateCodec.decode(newBlob, loaded.network), directory)
                         loaded = store.load()!!
+                    } else if (code == UpdateNative.CONFLICT && newBlob.isNotEmpty()) {
+                        // T49: an equal pair with other bytes sets the conflict flag for that
+                        // root version and changes nothing else. The refused state carries the
+                        // flag; storing it is the whole effect.
+                        val facts = UpdateCodec.decode(newBlob, loaded.network)
+                        if (facts.conflict) store.markConflict(facts.manifestRoot)
                     }
                 }
                 // The offer is derived from the accepted facts: recompute it now (§9.5: acceptance

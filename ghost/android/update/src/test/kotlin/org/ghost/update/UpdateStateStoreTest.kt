@@ -182,6 +182,20 @@ class UpdateStateStoreTest {
     }
 
     @Test
+    fun conflictMarksTheRootVersionOnceAndNeverOverwrites() = db().use { db ->
+        val store = UpdateStateStore(db)
+        store.insertFirst(facts(), ByteArray(32) { 0x31 })
+        assertFalse(store.load()!!.facts.conflict)
+        store.markConflict(rootVersion = 2)
+        assertTrue(store.load()!!.facts.conflict)
+        // Idempotent, and a second scope never overwrites the stored one (T49: the flag is
+        // kept while the root version is unchanged; ACCEPT under a newer root clears it).
+        store.markConflict(rootVersion = 2)
+        store.markConflict(rootVersion = 3)
+        assertEquals(2, store.load()!!.conflictRoot)
+    }
+
+    @Test
     fun theStagedRowLivesPartialVerifiedCommittedAndClears() = db().use { db ->
         val store = UpdateStateStore(db)
         store.insertFirst(facts(), ByteArray(32) { 0x31 })

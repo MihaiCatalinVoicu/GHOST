@@ -41,10 +41,12 @@ class UpdatesImplTest {
         }
         put32(50, issued)
         put32(54, notAfter)
-        put32(58, 2) // version_code
-        out[62] = 0
-        out[63] = name.length.toByte()
-        name.toByteArray(Charsets.US_ASCII).copyInto(out, 64)
+        put32(58, 0) // floor_version_code (§4.5)
+        out[62] = 1 // nrel
+        put32(63, 2) // version_code
+        out[67] = 0
+        out[68] = name.length.toByte()
+        name.toByteArray(Charsets.US_ASCII).copyInto(out, 69)
         return out
     }
 
