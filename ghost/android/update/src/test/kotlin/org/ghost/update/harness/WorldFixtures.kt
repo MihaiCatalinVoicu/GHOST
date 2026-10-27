@@ -96,6 +96,9 @@ internal class WorldFixtures private constructor(
             "bundle-swap.ghrb", "bundle-3att.ghrb",
             "manifest-removedkey.ghrm", "bundle-removedkey.ghrb",
             "manifest-2x.ghrm", "bundle-2x.ghrb",
+            "chain-31.ghrc", "manifest-31.ghrm", "bundle-31.ghrb", "app-v31.apk",
+            "manifest-floorbad.ghrm", "bundle-floorbad.ghrb",
+            "manifest-ml.ghrp", "manifest-badpath.ghrp", "bundle-ml.ghrb", "bundle-badpath.ghrb",
             "app-v2-swap.apk", "app-v2-extra.apk", "app-v2-big.apk",
         )
 

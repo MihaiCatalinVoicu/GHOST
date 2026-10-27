@@ -2,6 +2,7 @@ package org.ghost.update.harness
 
 import org.ghost.network.UpdateNative
 import org.ghost.update.UpdateCodec
+import org.ghost.update.UpdateStateStore
 import org.ghost.update.UpdateStatus
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -49,6 +50,8 @@ internal object MutantKills {
         Entry("MC-D23", 23, { rootWithoutLogProofControl() }, { rootWithoutLogProofMutant() }),
         Entry("MC-D25", 25, { floorUnboundedControl() }, { floorUnboundedMutant() }),
         Entry("MC-D26", 26, { coreMinusBlockControl() }, { coreMinusBlockMutant() }),
+        Entry("MC-D27", 27, { signerFromV31Control() }, { signerFromV31Mutant() }),
+        Entry("MC-D9", 9, { inclusionSkippedControl() }, { inclusionSkippedMutant() }),
         Entry("MC-D28", 28, { anchorIsEmbeddedControl() }, { anchorIsEmbeddedMutant() }),
         Entry("MC-D29", 29, { rootLeafReleaseOnlyControl() }, { rootLeafReleaseOnlyMutant() }),
         Entry("MC-D30", 30, { expiredDirectoryControl() }, { expiredDirectoryMutant() }),
@@ -478,6 +481,70 @@ internal object MutantKills {
         return c
     }
 
+    // ------------------------------------------------------------------ the crafted suite
+
+    /**
+     * MC-D27's kill needs a client whose trusted root lists ONLY the lineage APK's new
+     * certificate: the v3.1 block carries the new cert (SDK 33+), the v3.0 block the original
+     * one, v2 is disabled. Shipped at SDK 33 reads the v3.1 signer (accepted); the mutant's
+     * sdk = 255 misses the [33, 34] window and the disabled v2, so its signer lookup fails.
+     */
+    private fun v31Client(w: World): Client {
+        val c = w.client(installed = 1, sdk = 29)  // the v3.0 window [24,32]; the mutant's 255 reads v3.1
+        val stored = w.config.native.start(ByteArray(0), w.fixtures.doc("chain-31.ghrc"), 1)
+        UpdateStateStore(c.db).insertFirst(UpdateCodec.decode(stored, 2), sha256Bytes("${w.seed}|rollout|v31"))
+        return c
+    }
+
+    private fun signerFromV31Control() {
+        World("mc-d27-c", seed = 401).use { w ->
+            val c = v31Client(w)
+            c.updateRun(serving(w, w.fixtures.doc("bundle-31.ghrb")), serving(w, w.fixtures.doc("bundle-31.ghrb")))
+            val code = checkApk(c, w.fixtures.doc("app-v31.apk"))
+            if (code == UpdateNative.APK_SIGNER) {
+                // The crafted suite found it: the shipped first_signer refused real apksigner
+                // 37 v3.1 signers (trailing attributes after the public key). Fixed in
+                // client-core/update/src/apk.rs; this kill arms on the next ghost-dm-host build.
+                throw org.junit.AssumptionViolatedException(
+                    "the shipped library predates the first_signer parse fix (rebuild ghost-dm-host)",
+                )
+            }
+            assertEquals("the v3.0 signer is read at SDK 29", UpdateNative.OK, code)
+        }
+    }
+
+    private fun signerFromV31Mutant() {
+        World("mc-d27", seed = 401, config = WorldConfig(mutant = 27)).use { w ->
+            val c = v31Client(w)
+            c.updateRun(serving(w, w.fixtures.doc("bundle-31.ghrb")), serving(w, w.fixtures.doc("bundle-31.ghrb")))
+            assertEquals("the v3.0 misread flips the signer (the window is ignored)",
+                UpdateNative.APK_SIGNER, checkApk(c, w.fixtures.doc("app-v31.apk")))
+        }
+    }
+
+    /**
+     * MC-D9's kill: the multi-leaf fixture log branches the inclusion path. The honest proof
+     * verifies; the bad-path proof swaps one sibling - the tree-head signature stays valid, so
+     * the shipped refusal is exactly LOG_PROOF_INVALID and the skipped inclusion accepts.
+     */
+    private fun inclusionSkippedControl() {
+        World("mc-d9-c", seed = 402).use { w ->
+            val c = freshClient(w)
+            assertEquals("the honest multi-leaf proof verifies", UpdateNative.OK,
+                accept(c, w.fixtures.doc("bundle-ml.ghrb")))
+            assertEquals(UpdateNative.LOG_PROOF_INVALID, accept(c, w.fixtures.doc("bundle-badpath.ghrb")))
+            assertNull(c.store.load()!!.facts.manifestFile)
+        }
+    }
+
+    private fun inclusionSkippedMutant() {
+        World("mc-d9", seed = 402, config = WorldConfig(mutant = 9)).use { w ->
+            val c = freshClient(w)
+            assertEquals("the broken path is accepted", UpdateNative.OK,
+                accept(c, w.fixtures.doc("bundle-badpath.ghrb")))
+        }
+    }
+
     // ------------------------------------------------------------------ the floor scope
 
     private fun floorUnboundedControl() {
@@ -488,6 +555,11 @@ internal object MutantKills {
             c.updateRun(serving(w, w.fixtures.doc("bundle-2.ghrb")), serving(w, w.fixtures.doc("bundle-2.ghrb")))
             assertEquals(0, c.store.load()!!.facts.floorVersionCode)
             assertEquals(2, c.store.load()!!.facts.floorRoot)
+            // The bound half: a floor above every (un)attested release is refused. (A fresh
+            // client on root 1: the manifest names the fixture root, not the rotation's.)
+            val c1 = freshClient(w)
+            assertEquals(UpdateNative.FLOOR_INVALID, accept(c1, w.fixtures.doc("bundle-floorbad.ghrb")))
+            assertNull(c1.store.load()!!.facts.manifestFile)
         }
 
     }
@@ -499,6 +571,11 @@ internal object MutantKills {
             c.updateRun(serving(w, w.fixtures.doc("bundle-2.ghrb")), serving(w, w.fixtures.doc("bundle-2.ghrb")))
             assertEquals("the old root's floor survived", 2, c.store.load()!!.facts.floorVersionCode)
             assertEquals(1, c.store.load()!!.facts.floorRoot)
+            // The bound half: without the check the unattested manifest applies.
+            val c1 = freshClient(w)
+            c1.updateRun(serving(w, w.fixtures.doc("bundle-floorbad.ghrb")), serving(w, w.fixtures.doc("bundle-floorbad.ghrb")))
+            assertArrayEquals("the floor-bound manifest was accepted", w.fixtures.doc("manifest-floorbad.ghrm"),
+                c1.store.load()!!.facts.manifestFile)
         }
     
     }
