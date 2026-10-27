@@ -64,10 +64,10 @@ class MutantReportTest {
             }
         }
         val headline = "update mutants: $run run, $detected detected"
-        // The twins' measured lines (NI-Ux) live in the same fragment — preserve them.
+        // The twins' (NI-Ux) and gate-scale lines live in the same fragment — preserve them.
         val reportFile = File("build/update-mutants/report.txt")
         val twinLines = if (reportFile.isFile) {
-            reportFile.readLines().filter { it.startsWith("NI-") }.distinct()
+            reportFile.readLines().filter { it.startsWith("NI-") || it.startsWith("update gate scale") }.distinct()
         } else {
             emptyList()
         }
@@ -89,6 +89,7 @@ class MutantReportTest {
                 appendLine("MC-D27: wired; the kill needs a v3.1-lineage APK (the crafted suite)")
                 appendLine("PM-D1/PM-D2/PM-D6/PM-D8/PM-D11/PM-D12: killed in the NI-U twins (the job model of slice S6d)")
                 appendLine("PM-D3/PM-D4/PM-D5/PM-D10: seam-held (request headers, the root path and an out-of-set onion never cross the byte seam)")
+                appendLine("NI-U5: wire-held (G-D11's wire-transcript generator, protocol/test-vectors/wire_transcript.txt, is not built yet - the byte-identical transcript claim needs it; the release-independent request shapes on this seam are covered by PM-D9's kill)")
             },
         )
         assertEquals("every executed kill must detect (an unexpected error is not a skip)", 0, broken)
