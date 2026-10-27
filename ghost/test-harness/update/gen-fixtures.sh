@@ -56,14 +56,8 @@ def build(path, dex_bytes):
         z.writestr("AndroidManifest.xml", bytes([3, 0, 8, 0]) + b"fixture-world-apk")
         z.writestr("classes.dex", dex_bytes)
     return os.path.getsize(path)
-# 2048-byte dex payloads, different content, so the two unsigned zips (and thus the signed
-# APKs, same key and structure) have equal lengths: the swap reaches the native full-file hash.
-a = bytes(((i * 7 + 3) & 0xff) for i in range(2048))
-b = bytes(((i * 13 + 5) & 0xff) for i in range(2048))
-la = build(f"{out}/unsigned.zip", a)
-lb = build(f"{out}/unsigned2.zip", b)
-assert la == lb, f"unsigned zips differ in length: {la} vs {lb}"
-# The multi-chunk APK (> 4 MiB) for DROP_MID_RANGE and SLOW.
+# The single fixture APK's unsigned zip (the multi-chunk one for DROP_MID_RANGE and SLOW).
+build(f"{out}/unsigned.zip", bytes(((i * 7 + 3) & 0xff) for i in range(2048)))
 big = bytes(((i * 31 + 11) & 0xff) for i in range(5 * 1024 * 1024))
 build(f"{out}/unsigned-big.zip", big)
 PY
@@ -82,10 +76,20 @@ sign() { # sign <in> <out>
     --out "$(cygpath -w "$2")" "$(cygpath -w "$1")"
 }
 sign "$OUT/unsigned.zip" "$OUT/app-v2.apk"
-sign "$OUT/unsigned2.zip" "$OUT/app-v2-swap.apk"
 sign "$OUT/unsigned-big.zip" "$OUT/app-v2-big.apk"
-[ "$(stat -c%s "$OUT/app-v2.apk")" = "$(stat -c%s "$OUT/app-v2-swap.apk")" ] || {
-  echo "swap APK length mismatch"; exit 1; }
+
+# The swap APK: the signed fixture with 32 bytes flipped inside its core data region (offset
+# 1024, far before the signing block). Same layout, same length, a different core - exactly
+# APK_SWAP's vector - and deterministic where re-signing is not (a fresh signature's trailing
+# bytes shift the inferred zero-padding boundary and trip the padding rule before the hash).
+python3 - "$OUT/app-v2.apk" "$OUT/app-v2-swap.apk" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+d = bytearray(open(src, "rb").read())
+for i in range(32):
+    d[1024 + i] ^= 0x5A
+open(dst, "wb").write(bytes(d))
+PY
 
 # APK_EXTRA: same length, bytes spliced inside the v2 signing block (the crafted-APK suite's
 # territory; here one deterministic splice between the block's size fields and its magics).
@@ -340,6 +344,236 @@ bundle1 manifest-big "$OUT/bundle-big.ghrb"
   --manifest "$OUT/manifest-2.ghrm" --manifest-proof "$OUT/manifest-2.ghrp" --out "$OUT/bundle-2.ghrb"
 bundle1 manifest-stolen "$OUT/bundle-stolen.ghrb"
 
+# --- the mutant-kill fixtures (§11.3, slice S6c) -----------------------------------------
+# MC-D1/MC-D2: the bad transition root — a v2 root signed by a key of neither old keyset
+# (root-2), logged correctly (the leaf by root-1). Shipped refuses the chain walk; both
+# threshold mutants adopt.
+root_cfg 2 root-2 release-2 "$OUT/cfg-root-bad2.toml"
+"$OPS" root-build --config "$OUT/cfg-root-bad2.toml" --keys "$KEYS" --out "$OUT/root-bad2.ghrt"
+mkdir -p "$OUT/roots2bad" && cp "$OUT/root-1.ghrt" "$OUT/root-bad2.ghrt" "$OUT/roots2bad/"
+"$OPS" chain-build --network 2 --roots "$OUT/roots2bad" --out "$OUT/chain2bad.ghrc"
+"$OPS" proof-build --file "$OUT/root-bad2.ghrt" --log-index 0 --log-key log-1 --submit-key root-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/root-bad2.ghrp"
+write_manifest manifest-2bad "$OUT/root-bad2.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.0.0-bad2" "$APK_WIN" "$CORE_WIN"
+proof_and_bundle manifest-2bad release-2
+"$OPS" bundle --chain "$OUT/chain2bad.ghrc" --root-proof "$OUT/root-bad2.ghrp" \
+  --manifest "$OUT/manifest-2bad.ghrm" --manifest-proof "$OUT/manifest-2bad.ghrp" --out "$OUT/bundle-2bad.ghrb"
+
+# MC-D3: the same release with one flipped byte in the release signature block, and an honest
+# proof over the flipped bytes. Shipped: BAD_SIGNATURE; the mutant accepts.
+python3 - "$OUT/manifest-1.ghrm" "$OUT/manifest-flipsig.ghrm" <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], "rb").read())
+assert d[-97] == 1, "expected a one-entry release block at the end"
+d[-10] ^= 0x01  # inside the 64-byte signature, not the count or the key id
+open(sys.argv[2], "wb").write(bytes(d))
+PY
+"$OPS" proof-build --file "$OUT/manifest-flipsig.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/manifest-flipsig.ghrp"
+"$OPS" bundle --chain "$OUT/chain.ghrc" --manifest "$OUT/manifest-flipsig.ghrm" \
+  --manifest-proof "$OUT/manifest-flipsig.ghrp" --out "$OUT/bundle-flipsig.ghrb"
+
+# MC-D9/MC-D10/MC-D20: proof-level surgeries, rebundled over the honest manifest. The two
+# that ops' bundle cross-check would refuse (the index past the tree, the foreign message) are
+# rebundled by section surgery; the flipped tree-head signature passes ops' checks (it does not
+# verify the log's signature, only the message and the inclusion).
+python3 - "$OUT" <<'PY'
+import struct, sys, hashlib
+out = sys.argv[1]
+d = open(f"{out}/manifest-1.ghrp", "rb").read()
+assert d[:4] == b"GHRP" and d[4] == 1
+pos = 5
+message = d[pos:pos+32]; pos += 32
+log = d[pos]; pos += 1
+leaf_sig = d[pos:pos+64]; pos += 64
+leaf_key = d[pos:pos+32]; pos += 32
+tree_size = d[pos:pos+8]; pos += 8
+leaf_index = d[pos:pos+8]; pos += 8
+(npath,) = struct.unpack_from(">B", d, pos); pos += 1
+path = d[pos:pos+32*npath]; pos += 32*npath
+root_hash = d[pos:pos+32]; pos += 32
+log_sig = d[pos:pos+64]; pos += 64
+rest = d[pos:]  # the cosignatures
+def build(message=message, leaf_index=leaf_index, root_hash=root_hash, log_sig=log_sig):
+    return (b"GHRP" + b"\x01" + message + bytes([log]) + leaf_sig + leaf_key +
+            tree_size + leaf_index + bytes([npath]) + path +
+            root_hash + log_sig + rest)
+variants = {}
+# MC-D9: the leaf index past the tree size — the inclusion path cannot verify.
+variants[f"{out}/manifest-badindex.ghrp"] = build(leaf_index=(1).to_bytes(8, "big"))
+# MC-D10: one flipped byte in the log's tree-head signature.
+bad = bytearray(log_sig); bad[20] ^= 0x40
+variants[f"{out}/manifest-badhead.ghrp"] = build(log_sig=bytes(bad))
+# MC-D20: an honest proof whose message names another manifest.
+other = hashlib.sha256(open(f"{out}/manifest-eq-a.ghrm", "rb").read()).digest()
+variants[f"{out}/manifest-othermsg.ghrp"] = build(message=other)
+for path_out, doc in variants.items():
+    open(path_out, "wb").write(doc)
+
+def split_bundle(p):
+    b = open(p, "rb").read()
+    assert b[:4] == b"GHRB"
+    q = 6
+    (n,) = struct.unpack_from(">I", b, q); q += 4 + n
+    (nroot,) = struct.unpack_from(">H", b, q); q += 2
+    for _ in range(nroot):
+        (n,) = struct.unpack_from(">I", b, q); q += 4 + n
+    mlen = struct.unpack_from(">I", b, q)[0]
+    return b[:q + 4 + mlen]  # through the manifest section, before the proof's u32
+head = split_bundle(f"{out}/bundle.ghrb")
+for name in ("badindex", "badhead", "othermsg"):
+    proof = open(f"{out}/manifest-{name}.ghrp", "rb").read()
+    open(f"{out}/bundle-{name}.ghrb", "wb").write(
+        head + struct.pack(">I", len(proof)) + proof)
+PY
+
+# MC-D11/MC-D12: quorum proofs — none, and one by a witness the root does not list.
+"$OPS" proof-build --file "$OUT/manifest-1.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --keys "$KEYS" --out "$OUT/manifest-nocosig.ghrp"
+"$OPS" bundle --chain "$OUT/chain.ghrc" --manifest "$OUT/manifest-1.ghrm" \
+  --manifest-proof "$OUT/manifest-nocosig.ghrp" --out "$OUT/bundle-nocosig.ghrb"
+"$OPS" proof-build --file "$OUT/manifest-1.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --witness attest-2 --keys "$KEYS" --out "$OUT/manifest-unknownwit.ghrp"
+"$OPS" bundle --chain "$OUT/chain.ghrc" --manifest "$OUT/manifest-1.ghrm" \
+  --manifest-proof "$OUT/manifest-unknownwit.ghrp" --out "$OUT/bundle-unknownwit.ghrb"
+
+# MC-D23: the rotation bundle with another file's proof in the root-proof section.
+python3 - "$OUT" <<'PY'
+import struct, sys
+out = sys.argv[1]
+def split_bundle(path):
+    d = open(path, "rb").read()
+    assert d[:4] == b"GHRB"
+    pos = 6
+    (n,) = struct.unpack_from(">I", d, pos); pos += 4 + n
+    head = d[:pos]          # through the chain, before nroot
+    (nroot,) = struct.unpack_from(">H", d, pos); pos += 2
+    rp = []
+    for _ in range(nroot):
+        (n,) = struct.unpack_from(">I", d, pos); pos += 4
+        rp.append(d[pos:pos+n]); pos += n
+    rest = d[pos:]
+    return head, nroot, rp, rest
+head, nroot, rp, rest = split_bundle(f"{out}/bundle-2.ghrb")
+assert nroot == 1
+# The foreign proof: bundle-2's own manifest proof — a valid GHRP whose message names the
+# manifest, not the root.
+(mlen,) = struct.unpack_from(">I", rest, 0)
+ppos = 4 + mlen
+(plen,) = struct.unpack_from(">I", rest, ppos)
+foreign = rest[ppos + 4: ppos + 4 + plen]
+open(f"{out}/bundle-badrootproof.ghrb", "wb").write(
+    head + struct.pack(">H", 1) + struct.pack(">I", len(foreign)) + foreign + rest)
+PY
+
+# MC-D18: a manifest of the OLD root (patched from manifest-2: root_version 1, root hash of
+# root-1, seq 2) re-signed with release-2 — the key root 2 trusts — and an honest proof.
+# Shipped: ROOT_MISMATCH (the manifest does not name the trusted root); the mutant accepts it.
+python3 - "$(dirname "$0")" "$OUT" <<'PY'
+import hashlib, os, sys
+here = os.path.abspath(sys.argv[1])
+sys.path.insert(0, here)
+import ghostsign
+out = sys.argv[2]
+d = open(f"{out}/manifest-2.ghrm", "rb").read()
+assert d[:4] == b"GHRM" and d[4] == 1 and d[-97] == 1
+body = bytearray(d[:-97])
+body[14:18] = (1).to_bytes(4, "big")  # root_version: name the old root
+root1 = open(f"{out}/root-1.ghrt", "rb").read()
+body[18:50] = hashlib.sha256(root1).digest()  # its hash
+body[6:14] = (2).to_bytes(8, "big")  # seq: above the stored pair
+body = bytes(body)
+seed = bytes.fromhex(open(f"{here}/keys/release-2.hex").read())
+msg = b"ghost/v1/release-manifest\x00" + bytes([2]) + hashlib.sha256(body).digest()
+sig = ghostsign.sign(seed, msg)
+pk = ghostsign.publickey(seed)
+block = bytes([1]) + ghostsign.key_id(pk) + sig
+open(f"{out}/manifest-xroot.ghrm", "wb").write(body + block)
+PY
+"$OPS" proof-build --file "$OUT/manifest-xroot.ghrm" --log-index 0 --log-key log-1 --submit-key release-2 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/manifest-xroot.ghrp"
+"$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
+  --manifest "$OUT/manifest-xroot.ghrm" --manifest-proof "$OUT/manifest-xroot.ghrp" --out "$OUT/bundle-xroot.ghrb"
+
+# PM-D7/PM-D13: one manifest with two releases sharing a rollout salt (version 2 = the fixture
+# APK, version 3 = the swap APK): the bucket is per release because the APK's SHA-256 salts it.
+# The permille of version 2 is computed so the with-APK-hash bucket passes and the
+# without-APK-hash bucket (PM-D13's mutant) does not: the oracle test reads the predictions.
+"$OPS" apk-core --apk "$OUT/app-v2-swap.apk" --extract "$OUT/core-swap.apk" >/dev/null
+BUCKET_META=$(python3 - "$OUT" "$SALT" <<'PY'
+import hashlib, hmac, secrets, sys
+out, salt_hex = sys.argv[1], sys.argv[2]
+salt = bytes.fromhex(salt_hex)
+apk2 = hashlib.sha256(open(f"{out}/app-v2.apk", "rb").read()).digest()
+apk3 = hashlib.sha256(open(f"{out}/app-v2-swap.apk", "rb").read()).digest()
+for _ in range(100):
+    key = secrets.token_bytes(32)
+    def bucket(with_apk, apk=b""):
+        m = hmac.new(key, b"ghost/v1/rollout", hashlib.sha256)
+        if with_apk:
+            m.update(apk)
+        m.update(salt)
+        return int.from_bytes(m.digest()[:8], "big") * 1000 // (1 << 64)
+    b2, b3, shared = bucket(True, apk2), bucket(True, apk3), bucket(False)
+    if b2 != b3 and b2 < 999 and shared >= b2 + 1:
+        break
+else:
+    raise SystemExit("no rollout key separates the buckets")
+open(f"{out}/bucket-key.hex", "w").write(key.hex())
+print(f"{b2} {b3} {shared} {key.hex()}")
+PY
+)
+read -r B2 B3 SHARED BUCKET_KEY <<<"$BUCKET_META"
+{
+  echo "seq = 1"
+  echo "issued_day = $ISSUED"
+  echo "not_after_day = $NOT_AFTER"
+  echo "floor_version_code = 0"
+  echo "[[release]]"
+  echo "version_code = 2"
+  echo "version_name = \"2.0.0-world\""
+  echo "min_sdk = 29"
+  echo "anchor_root = 1"
+  echo "wire_changing = false"
+  echo "apk = \"$APK_WIN\""
+  echo "unsigned = \"$CORE_WIN\""
+  echo "rollout_permille = $((B2 + 1))"
+  echo "rollout_salt = \"$SALT\""
+  echo "commit = \"$COMMIT\""
+  echo "es_seq = $ES_SEQ"
+  echo "es_file = \"$(cygpath -m "$ES_FILE")\""
+  echo "[[release.artifacts]]"
+  echo "kind = 16"
+  echo "file = \"$CORE_WIN\""
+  echo "[[release]]"
+  echo "version_code = 3"
+  echo "version_name = \"3.0.0-swap\""
+  echo "min_sdk = 29"
+  echo "anchor_root = 1"
+  echo "wire_changing = false"
+  echo "apk = \"$(cygpath -m "$OUT/app-v2-swap.apk")\""
+  echo "unsigned = \"$(cygpath -m "$OUT/core-swap.apk")\""
+  echo "rollout_permille = 0"
+  echo "rollout_salt = \"$SALT\""
+  echo "commit = \"$COMMIT\""
+  echo "es_seq = $ES_SEQ"
+  echo "es_file = \"$(cygpath -m "$ES_FILE")\""
+  echo "[[release.artifacts]]"
+  echo "kind = 16"
+  echo "file = \"$(cygpath -m "$OUT/core-swap.apk")\""
+  grep '^relay ' "$RELAY_DIR" | while read -r _ onion _op; do
+    echo "[[relay]]"
+    echo "onion = \"$onion\""
+    echo "operator = \"$(grep "^relay $onion" "$RELAY_DIR" | awk '{print $3}')\""
+  done
+} > "$OUT/cfg-bucket.toml"
+"$OPS" manifest-build --source "$OUT/cfg-bucket.toml" --root "$OUT/root-1.ghrt" --keys "$KEYS" \
+  --attest-keys attest-1 --out "$OUT/manifest-bucket.ghrm"
+"$OPS" proof-build --file "$OUT/manifest-bucket.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/manifest-bucket.ghrp"
+"$OPS" bundle --chain "$OUT/chain.ghrc" --manifest "$OUT/manifest-bucket.ghrm" \
+  --manifest-proof "$OUT/manifest-bucket.ghrp" --out "$OUT/bundle-bucket.ghrb"
+
 # GHRB surgery: WRONG_PROOF (the proof section of another manifest's bundle) and WITHHOLD_PROOF
 # (no proof section at all). Layout (§4.8): GHRB|u8|u8|u32 chain|...|u32 manifest|manifest|u32 proof|proof.
 python3 - "$OUT" <<'PY'
@@ -388,6 +622,17 @@ apk_sha256=$APK_SHA
 apk_big_sha256=$APK_BIG_SHA
 manifest_sha256=$MANIFEST_SHA
 bundle_sha256=$BUNDLE_SHA
+anchor.onion.0=$MIRROR_A
+anchor.onion.1=$MIRROR_B
+anchor.operator.0=11111111111111111111111111111111
+anchor.operator.1=22222222222222222222222222222222
+bucket.salt=$SALT
+apk.swap_sha256=$(sha256sum "$OUT/app-v2-swap.apk" | cut -d' ' -f1)
+rollout.test_key=$BUCKET_KEY
+rollout.bucket2=${B2:-0}
+rollout.bucket3=${B3:-0}
+rollout.bucket.shared=${SHARED:-0}
+rollout.permille2=${B2:+$(($B2 + 1))}
 EOF
 
 "$OPS" inspect --bundle "$OUT/bundle.ghrb" --today "$TODAY"
@@ -406,6 +651,13 @@ cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghr
    "$OUT"/manifest-big.ghrm "$OUT"/bundle-big.ghrb \
    "$OUT"/manifest-2.ghrm "$OUT"/bundle-2.ghrb \
    "$OUT"/manifest-stolen.ghrm "$OUT"/bundle-stolen.ghrb \
+   "$OUT"/chain2bad.ghrc "$OUT"/manifest-2bad.ghrm "$OUT"/bundle-2bad.ghrb \
+   "$OUT"/manifest-flipsig.ghrm "$OUT"/bundle-flipsig.ghrb \
+   "$OUT"/bundle-badindex.ghrb "$OUT"/bundle-badhead.ghrb "$OUT"/bundle-othermsg.ghrb \
+   "$OUT"/bundle-nocosig.ghrb "$OUT"/bundle-unknownwit.ghrb \
+   "$OUT"/bundle-badrootproof.ghrb \
+   "$OUT"/manifest-xroot.ghrm "$OUT"/bundle-xroot.ghrb \
+   "$OUT"/manifest-bucket.ghrm "$OUT"/bundle-bucket.ghrb \
    "$OUT"/app-v2.apk "$OUT"/app-v2-swap.apk "$OUT"/app-v2-extra.apk "$OUT"/app-v2-big.apk "$OUT"/core.apk \
    "$RES/"
 cp "$RELAY_DIR" "$RES/bootstrap-relays.txt"
