@@ -88,3 +88,11 @@ num-bigint-dig = { workspace = true }
 [[example]]
 name = "dm_restore"
 path = "examples/dm_restore/main.rs"
+
+# G-D11's wire-transcript generator (dev-only, slice S6f): drives every client RPC against
+# in-process tonic/h2 servers over loopback TCP, captures the byte stream through a tee'd
+# connector and renders protocol/test-vectors/wire_transcript.txt, the golden artifact
+# scripts/gates/wire-transcript.sh regenerates and diffs. Never part of the shipped library.
+[[example]]
+name = "wire_transcript"
+path = "examples/wire_transcript.rs"

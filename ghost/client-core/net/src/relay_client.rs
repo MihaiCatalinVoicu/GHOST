@@ -92,7 +92,9 @@ pub struct Io<T> {
 }
 
 impl<T> Io<T> {
-    pub(crate) fn new(t: T) -> Self {
+    /// Wraps an in-process stream (the `with_connector` test seam; G-D11's wire-transcript
+    /// generator tees bytes off this).
+    pub fn new(t: T) -> Self {
         Io {
             inner: Box::pin(TokioIo::new(t)),
         }
@@ -425,7 +427,9 @@ where
     C::Future: Unpin + Send,
     C::Error: Into<BoxError>,
 {
-    pub(crate) fn with_connector(connector: C) -> Self {
+    /// In-process constructor over another connector (loopback relays; G-D11's wire-transcript
+    /// generator drives every relay RPC through this seam instead of Tor).
+    pub fn with_connector(connector: C) -> Self {
         let http = HyperClient::builder(TokioExecutor::new())
             .http2_only(true)
             .build(connector);

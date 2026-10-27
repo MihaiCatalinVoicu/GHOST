@@ -13,10 +13,10 @@ use hyper_util::rt::TokioExecutor;
 use tokio::time::timeout;
 
 use crate::categories as cat;
+use crate::isolation::IsolationScope;
 use crate::onion::OnionAddress;
 use crate::relay_client::onion_connector;
 use crate::transport::TorTransport;
-use crate::isolation::IsolationScope;
 
 /// The fixed 4 MiB range step of an APK download (§7.2).
 pub(crate) const CHUNK: u64 = 4 * 1024 * 1024;
@@ -73,7 +73,11 @@ impl MirrorSet {
             1 => {
                 let sha = self.apk_sha256.ok_or(cat::INVALID_ARGUMENT)?;
                 let length = self.apk_length;
-                if chunk_index.checked_mul(CHUNK).ok_or(cat::INVALID_ARGUMENT)? >= length {
+                if chunk_index
+                    .checked_mul(CHUNK)
+                    .ok_or(cat::INVALID_ARGUMENT)?
+                    >= length
+                {
                     return Err(cat::INVALID_ARGUMENT);
                 }
                 Ok(format!("/ghost/v1/{net}/apk/{}", hex64(&sha)))
@@ -95,12 +99,45 @@ pub async fn fetch(
     deadline: Duration,
 ) -> Result<Vec<u8>, &'static str> {
     let onion = set.onion(slot).ok_or(cat::INVALID_ARGUMENT)?;
-    let path = set.path(kind, chunk_index)?;
+    fetch_with(
+        onion_connector(transport, &onion, &IsolationScope::Update),
+        set,
+        slot,
+        kind,
+        chunk_index,
+        deadline,
+    )
+    .await
+    .map_err(|e| e.1)
+}
+
+/// The fetch over any connector (the in-process seam of G-D11's wire-transcript generator; the
+/// Tor [`fetch`] is exactly this over the onion connector). Errors pair the wire stage with the
+/// category, so the generator can transcribe the request shape of a refused fetch too.
+pub async fn fetch_with<C>(
+    connector: C,
+    set: &MirrorSet,
+    slot: u8,
+    kind: u8,
+    chunk_index: u64,
+    deadline: Duration,
+) -> Result<Vec<u8>, (&'static str, &'static str)>
+where
+    C: tower::Service<http::Uri, Response = crate::relay_client::Io<C::Stream>>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    C: crate::relay_client::StreamType,
+    C::Future: Unpin + Send,
+    C::Error: Into<crate::relay_client::BoxError>,
+{
+    let path = set.path(kind, chunk_index).map_err(|e| ("path", e))?;
     let authority = std::str::from_utf8(match slot {
         0 => &set.first,
         _ => &set.second,
     })
-    .map_err(|_| cat::INVALID_ARGUMENT)?;
+    .map_err(|_| ("authority", cat::INVALID_ARGUMENT))?;
 
     let http = HyperClient::builder(TokioExecutor::new())
         .http2_only(true)
@@ -110,14 +147,10 @@ pub async fn fetch(
         .http2_initial_connection_window_size(65_535)
         .http2_max_frame_size(16_384)
         .http2_adaptive_window(false)
-        .build(onion_connector(
-            transport,
-            &onion,
-            &IsolationScope::Update,
-        ));
+        .build(connector);
     let uri: Uri = format!("http://{authority}{path}")
         .parse()
-        .map_err(|_| cat::INVALID_ARGUMENT)?;
+        .map_err(|_| ("uri", cat::INVALID_ARGUMENT))?;
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(uri)
@@ -129,21 +162,23 @@ pub async fn fetch(
         let end = (start + CHUNK).min(set.apk_length) - 1;
         builder = builder.header(RANGE, format!("bytes={start}-{end}"));
     }
-    let request = builder.body(http_body_util::Empty::<hyper::body::Bytes>::new()).map_err(|_| cat::INTERNAL)?;
+    let request = builder
+        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
+        .map_err(|_| ("request", cat::INTERNAL))?;
 
     let response = timeout(deadline, http.request(request))
         .await
-        .map_err(|_| cat::TIMEOUT)?
-        .map_err(|_| cat::TRANSPORT)?;
+        .map_err(|_| ("deadline", cat::TIMEOUT))?
+        .map_err(|_| ("transport", cat::TRANSPORT))?;
     let status = response.status();
     let bound = if kind == 0 {
         if status != StatusCode::OK {
-            return Err(cat::MALFORMED_RESPONSE);
+            return Err(("status", cat::MALFORMED_RESPONSE));
         }
         BUNDLE_MAX
     } else {
         if status != StatusCode::PARTIAL_CONTENT {
-            return Err(cat::MALFORMED_RESPONSE);
+            return Err(("status", cat::MALFORMED_RESPONSE));
         }
         let expected = format!(
             "bytes {}-{}/{}",
@@ -155,9 +190,9 @@ pub async fn fetch(
             .headers()
             .get(CONTENT_RANGE)
             .and_then(|v| v.to_str().ok())
-            .ok_or(cat::MALFORMED_RESPONSE)?;
+            .ok_or(("content-range", cat::MALFORMED_RESPONSE))?;
         if got != expected {
-            return Err(cat::MALFORMED_RESPONSE);
+            return Err(("content-range", cat::MALFORMED_RESPONSE));
         }
         CHUNK as usize
     };
@@ -165,25 +200,24 @@ pub async fn fetch(
     let mut out: Vec<u8> = Vec::new();
     use http_body_util::BodyExt;
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| cat::MALFORMED_RESPONSE)?;
+        let frame = frame.map_err(|_| ("body", cat::MALFORMED_RESPONSE))?;
         if let Some(data) = frame.data_ref() {
             out.extend_from_slice(data);
             // The fixed bound is checked before reading on (§4.8/§7.2). MC-D13 (the
             // `test-mutants` feature, host libraries only): the response is read past its
             // bound. The selector's default keeps the shipped check.
             #[cfg(feature = "test-mutants")]
-            let bound_checked = !ghost_client_update::mutants::active(
-                ghost_client_update::mutants::PAST_BOUND,
-            );
+            let bound_checked =
+                !ghost_client_update::mutants::active(ghost_client_update::mutants::PAST_BOUND);
             #[cfg(not(feature = "test-mutants"))]
             let bound_checked = true;
             if bound_checked && out.len() > bound {
-                return Err(cat::MALFORMED_RESPONSE);
+                return Err(("bound", cat::MALFORMED_RESPONSE));
             }
         }
     }
     if kind == 1 && out.is_empty() {
-        return Err(cat::MALFORMED_RESPONSE);
+        return Err(("body", cat::MALFORMED_RESPONSE));
     }
     Ok(out)
 }

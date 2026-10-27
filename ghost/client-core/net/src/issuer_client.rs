@@ -140,7 +140,9 @@ where
     C::Future: Unpin + Send,
     C::Error: Into<BoxError>,
 {
-    pub(crate) fn with_connector(connector: C) -> Self {
+    /// In-process constructor over another connector (G-D11's wire-transcript generator drives
+    /// every issuer RPC through this seam instead of Tor).
+    pub fn with_connector(connector: C) -> Self {
         let http = HyperClient::builder(TokioExecutor::new())
             .http2_only(true)
             .build(connector);

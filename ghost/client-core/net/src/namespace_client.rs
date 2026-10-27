@@ -105,9 +105,9 @@ where
     C::Future: Unpin + Send,
     C::Error: Into<BoxError>,
 {
-    /// Test constructor over another connector (loopback relays).
-    #[cfg(test)]
-    pub(crate) fn with_connector(connector: C, relay: OnionAddress, namespace: [u8; 32]) -> Self {
+    /// In-process constructor over another connector (loopback relays; G-D11's wire-transcript
+    /// generator drives the namespace RPCs through this seam instead of Tor).
+    pub fn with_connector(connector: C, relay: OnionAddress, namespace: [u8; 32]) -> Self {
         NamespaceClient {
             inner: RelayClient::with_connector(connector),
             namespace,
