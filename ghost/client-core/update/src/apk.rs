@@ -395,7 +395,7 @@ pub fn block_ids(file: &[u8]) -> Result<Vec<u32>, UpdateError> {
     while pos + 12 <= footer {
         let len = le64(&file[pos..pos + 8]) as usize;
         ids.push(le32(&file[pos + 8..pos + 12]));
-        pos = pos.checked_add(12).and_then(|x| x.checked_add(len)).ok_or(UpdateError::ApkLayout)?;
+        pos = pos.checked_add(8).and_then(|x| x.checked_add(len)).ok_or(UpdateError::ApkLayout)?;
     }
     if pos != footer {
         return Err(UpdateError::ApkLayout);
@@ -515,16 +515,11 @@ fn first_signer(value: &[u8], v3_layout: bool) -> Result<Signer, UpdateError> {
     let signer = c.lp32()?;
     let mut s = Cursor::new(signer);
     let signed = s.lp32()?;
-    s.lp32()?; // signatures (not checked: the platform verifies them)
-    s.lp32()?; // public key
-    // No `done()` here: v3.1 signers carry additional attributes after the public key in
-    // real apksigner 37 output (the lineage drill's crafted suite caught the strict reader
-    // refusing rotated APKs at APK_SIGNER); the platform's parser is lenient about them, and
-    // this reader takes the first signer only. The outer `top.done()` still pins the value. 
+    let after_signed = 4 + signed.len();
     let mut d = Cursor::new(signed);
     d.lp32()?; // digests
     let certs = d.lp32()?;
-    let (min_sdk, max_sdk) = if v3_layout {
+    let inner = if v3_layout {
         (le32(d.take(4)?), le32(d.take(4)?))
     } else {
         (0, SDK_MAX)
@@ -532,5 +527,29 @@ fn first_signer(value: &[u8], v3_layout: bool) -> Result<Signer, UpdateError> {
     // The first certificate, lengths only.
     let mut cc = Cursor::new(certs);
     let cert = cc.lp32()?.to_vec();
+    // Two signer grammars exist in the wild, and the crafted suite caught the single-grammar
+    // reader refusing real rotated APKs (MC-D27's fixture): apksigner 37's v3/v3.1 lineage
+    // output carries signer-level [u32 minSdk][u32 maxSdk] right after the signed-data, then
+    // [lp32 signatures][lp32 public key]; the v2-era grammar (and the synthetic vectors) goes
+    // straight to the two sections, with the SDK range inside the signed-data. Try the modern
+    // tail first; the platform's selection uses the signer-level range when present.
+    let (min_sdk, max_sdk) = if v3_layout {
+        modern_tail(&signer[after_signed..]).unwrap_or(inner)
+    } else {
+        (0, SDK_MAX)
+    };
     Ok(Signer { min_sdk, max_sdk, cert })
+}
+
+/// The apksigner 37 v3/v3.1 signer tail: `[u32 minSdk][u32 maxSdk][lp32 signatures]
+/// [lp32 public key]`, consuming the signer exactly. `None` when the tail does not match —
+/// the caller falls back to the legacy grammar (the SDK range inside the signed-data).
+fn modern_tail(rest: &[u8]) -> Option<(u32, u32)> {
+    let mut t = Cursor::new(rest);
+    let min = le32(t.take(4).ok()?);
+    let max = le32(t.take(4).ok()?);
+    t.lp32().ok()?;
+    t.lp32().ok()?;
+    t.done().ok()?;
+    Some((min, max))
 }
