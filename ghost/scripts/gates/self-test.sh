@@ -1322,6 +1322,35 @@ es_case "refuses its self-test hooks on the repository" fail "$DIR/../.." "self-
   GHOST_ES_TEST_KEY="$ES_TEST_KEY"
 es_case "refuses its git hook on the repository" fail "$DIR/../.." "self-test hook for fixture roots only" \
   GHOST_ES_GIT=1
+# Phase 14 (G-D11): wire-transcript.sh on its fixture roots
+# (test-harness/gates/wire-transcript/README.md). The fixtures' machines have no cargo: the
+# "regenerated" side comes from the gate's fixture-only hook GHOST_WIRE_TRANSCRIPT_REGEN, so each
+# case names its regenerated file. Every case must end as expected and report the named reason.
+WT_FIX="$HARNESS/wire-transcript"
+wt_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain, $5 = regenerated file
+  local desc="$1" expect="$2" root="$3" want="$4" regen="$5" out got
+  if out="$(GHOST_ROOT="$root" GHOST_WIRE_TRANSCRIPT_REGEN="$regen" bash "$DIR/wire-transcript.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: wire-transcript $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: wire-transcript $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: wire-transcript $desc"
+  fi
+}
+wt_case "accepts a committed transcript equal to the regenerated one" pass \
+  "$WT_FIX/regenerated-equal" "matches the regenerated transcript" "$WT_FIX/regenerated-equal/regenerated.txt"
+wt_case "rejects a committed transcript that differs from the regenerated one" fail \
+  "$WT_FIX/mismatch" "differs from the regenerated transcript" "$WT_FIX/mismatch/regenerated.txt"
+# The fixture hook is refused on the repository itself (the gate exits 2, so a plain expect_fail
+# would also pass: check the message).
+if wt_out="$(GHOST_ROOT="$DIR/../.." GHOST_WIRE_TRANSCRIPT_REGEN="$WT_FIX/mismatch/regenerated.txt" bash "$DIR/wire-transcript.sh" 2>&1)"; then
+  echo "SELF-TEST FAIL: wire-transcript accepted its fixture hook on the repository" >&2; rc=1
+elif ! grep -qF "self-test hook for fixture roots only" <<<"$wt_out"; then
+  echo "SELF-TEST FAIL: wire-transcript refused its hook on the repository without saying so" >&2; printf '%s\n' "$wt_out" | tail -3 >&2; rc=1
+else
+  echo "self-test ok: wire-transcript refuses its fixture hook on the repository"
+fi
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive

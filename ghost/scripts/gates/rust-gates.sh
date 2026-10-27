@@ -41,5 +41,9 @@ mpl_bundle="$(mktemp -d)"
 bash "$GATES_DIR/mpl-sources.sh" --bundle "$mpl_bundle" || fail "mpl-sources"
 rm -rf "$mpl_bundle"
 bash "$GATES_DIR/entitlement-schedule.sh" || fail "entitlement-schedule"
+# G-D11 (Phase 14, slice S6f): the wire transcript is a golden artifact — the generator drives
+# every client RPC over loopback TCP and the committed file must diff equal to a regeneration
+# (the wire half of NI-U5's two-release comparison harness).
+bash "$GATES_DIR/wire-transcript.sh" || fail "wire-transcript"
 bash "$GATES_DIR/clippy-clearnet-fixture.sh" || fail "clippy-clearnet-fixture"
 finish rust-gates

@@ -1,0 +1,25 @@
+# GHOST wire transcript — protocol/test-vectors/wire_transcript.txt
+# Fixture stand-in for the self-test: the gate's GHOST_WIRE_TRANSCRIPT_REGEN hook supplies the
+# regenerated side, so this only needs to be plausible, not generated.
+
+## relay StoreBlob
+:authority: relay.invalid
+:method: POST
+:path: /ghost.relay.v1.RelayService/StoreBlob
+# RelayClient::store with the smallest ciphertext bucket.
+request headers (recorded at the mock service `store_blob`, sorted):
+  content-type: application/grpc
+  te: trailers
+c2s DATA: 1087 bytes in 1 frame(s)
+c2s frames:
+  settings: header_table_size=4096 enable_push=0 initial_window_size=65535 max_frame_size=16384
+  headers: stream=1 len=38
+  data: stream=1 len=1087
+  headers: stream=1 len=4 end_stream
+s2c DATA: 39 bytes in 1 frame(s)
+s2c frames:
+  settings: max_concurrent_streams= Some(2147483647)
+  settings: ack
+  headers: stream=1 len=24
+  data: stream=1 len=39
+  headers: stream=1 len=22 end_stream
