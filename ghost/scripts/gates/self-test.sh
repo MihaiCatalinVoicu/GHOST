@@ -2726,6 +2726,18 @@ if command -v cargo >/dev/null; then
   expect_fail_msg "rust-feature-policy rejects an issuer-only package in the relay graph" \
     "package 'redb' is linked into ghost-relay-node" \
     env GHOST_POLICY_ISSUER_ONLY_EXTRA=redb bash "$DIR/rust-feature-policy.sh"
+  # Slice S6c: ghost-dm-host's host graph may link getrandom 0.2/0.3 (net's Tor stack, covered
+  # neither by the seeded backend nor by any GHOST draw — the worlds never run Tor code); the
+  # clause is majors-within-the-allowed-set plus a no-direct-draw scan over the workspace
+  # manifests. Both directions are drilled: a narrower allowed set, and a fixture metadata
+  # document whose fake member names rand_core directly.
+  expect_fail_msg "rust-feature-policy rejects a host major outside the allowed set" \
+    "ghost-dm-host links getrandom 0.2: allowed host majors" \
+    env GHOST_POLICY_HOST_MAJORS="0.4" bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects a workspace crate drawing rand_core directly" \
+    "ghost-client-dm names rand_core in dependencies: a GHOST crate draws only through the seeded" \
+    env GHOST_POLICY_HOST_DRAW_META="$DIR/../../test-harness/gates/feature-policy/host-draw-rand-core.json" \
+      bash "$DIR/rust-feature-policy.sh"
   # Crypto pins: a mutated copy of Cargo.lock (a second rsa 0.9 version), a mutated pins file (a
   # version drift in one graph, a required crate missing from a graph).
   tmp="$(mktemp)"

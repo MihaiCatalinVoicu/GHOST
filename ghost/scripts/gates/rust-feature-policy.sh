@@ -62,6 +62,8 @@
 # and GHOST_POLICY_ROOT_MANIFEST / GHOST_POLICY_LOCK replace the manifest and lock whose [patch],
 # [replace] and sources are checked (review of S2a, F7); GHOST_POLICY_SHIPPED_MLS names the package
 # the shipped graph must hold and GHOST_POLICY_MLS_SHIPPED_ALLOWED replaces the features it may carry
+# GHOST_POLICY_HOST_MAJORS replaces the getrandom majors ghost-dm-host's graph may link (the
+# real tree links 0.2/0.3/0.4 since slice S6; the hook drills the majors clause both directions)
 # there (S2b's two clauses, given fixtures by the review of S2b).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
@@ -464,12 +466,64 @@ while IFS= read -r gf; do
   [ -n "$gf" ] || continue
   if grep -q 'getrandom_backend' "$gf"; then fail "$gf names getrandom_backend (G-R2: never in an Android build)"; fi
 done < <(gradle_files)
-for root in ghost-dm-host ghost-client-mls ghost-host-rng; do
+for root in ghost-client-mls ghost-host-rng; do
   raw="$(tree -p "$root" -e normal,no-proc-macro --target all --prefix none -f '{p}')" || { FAILURES=$((FAILURES + 1)); continue; }
   majors="$(awk '$1 == "getrandom" {sub(/^v/, "", $2); split($2, v, "."); print v[1] "." v[2]}' <<< "$raw" | sort -u)"
   if [ -z "$majors" ]; then fail "no getrandom in $root's linked graph (the check would pass vacuously)"; continue; fi
   [ "$(grep -c . <<< "$majors")" = 1 ] || fail "$root links getrandom $(tr '\n' ' ' <<< "$majors")(G-R2, S0-7 (c): one major)"
 done
+# ghost-dm-host, the JVM host library (slice S6, §11.2): it links ghost-client-net for the update
+# surface, and net's Tor stack links two getrandom majors the seeded backend cannot cover —
+# 0.2 (tor-llcrypto's ed25519-dalek keygen; 0.2 ignores custom registration on supported
+# targets) and 0.3 (target-only arti chains; 0.3.4 ships no live custom backend). S0-7 (c)'s real
+# invariant is "no draw at world runtime bypasses the seeded stream": the JVM worlds never run
+# Tor code (the MirrorAccess seam, slice S6a), and no workspace crate names a direct rand_core /
+# getrandom dependency (scan below), so no GHOST code can draw 0.2/0.3 — every dependent is
+# third-party and unreachable in world runs. The clause is therefore: majors within the allowed
+# set, and no direct draw dependency in any workspace manifest; a future GHOST crate drawing
+# 0.2/0.3 directly fails here, and the determinism suites (scripts/ci/mls-determinism.sh and the
+# worlds' seeded reruns) carry the empirical half. The strict one-major rule stays for the two
+# roots above, whose graphs hold no Tor stack.
+raw="$(tree -p ghost-dm-host -e normal,no-proc-macro --target all --prefix none -f '{p}')" || { FAILURES=$((FAILURES + 1)); majors=""; }
+if [ -n "$raw" ]; then
+  majors="$(awk '$1 == "getrandom" {sub(/^v/, "", $2); split($2, v, "."); print v[1] "." v[2]}' <<< "$raw" | sort -u)"
+  if [ -z "$majors" ]; then fail "no getrandom in ghost-dm-host's linked graph (the check would pass vacuously)"; majors=""; fi
+fi
+if [ -n "$majors" ]; then
+  allowed="$(printf '%s\n' ${GHOST_POLICY_HOST_MAJORS:-0.2 0.3 0.4})"
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    grep -qx "$m" <<< "$allowed" || fail "ghost-dm-host links getrandom $m: allowed host majors (S0-7 (c), slice S6c): $(tr '\n' ' ' <<< "$allowed")"
+  done <<< "$majors"
+fi
+# The direct-draw scan: workspace manifests (cargo metadata is authoritative — fixture manifests
+# under test-harness/ are not members) name no rand_core/getrandom dependency. ghost-host-rng is
+# the seeded backend's provider and names getrandom 0.4 by design; everything else must draw
+# through the workspace rand 0.10 (getrandom 0.4, covered by __getrandom_v03_custom).
+meta_host="$(cargo metadata --locked --no-deps --format-version 1 2>/dev/null)"
+if [ -n "${GHOST_POLICY_HOST_DRAW_META:-}" ]; then
+  # Self-test hook: a fixture metadata document stands in for cargo's (a fake workspace member
+  # naming rand_core/getrandom drills the scan without a fixture crate).
+  meta_host="$(cat "$GHOST_POLICY_HOST_DRAW_META")"
+fi
+if [ -z "$meta_host" ]; then
+  fail "cargo metadata for the host draw scan failed"
+else
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    fail "$v"
+  done < <(perl -MJSON::PP -e '
+    local $/; my $m = JSON::PP->new->decode(<STDIN>);
+    for my $p (@{ $m->{packages} }) {
+      next if $p->{name} eq "ghost-host-rng";
+      for my $kind (qw(dependencies dev-dependencies build-dependencies)) {
+        for my $d (@{ $p->{$kind} // [] }) {
+          print "$p->{name} names $d->{name} in $kind: a GHOST crate draws only through the seeded getrandom 0.4 stream (S0-7 (c), slice S6c)\n"
+            if $d->{name} =~ /^(?:rand_core|getrandom)$/;
+        }
+      }
+    }' <<< "$meta_host")
+fi
 
 # ---- G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1) -------------------------
 # The media crate carries no feature but its empty `default` in any graph that holds it, so

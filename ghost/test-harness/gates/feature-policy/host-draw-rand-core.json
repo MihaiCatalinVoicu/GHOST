@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "name": "ghost-client-dm",
+      "dependencies": [
+        { "name": "rand_core" }
+      ],
+      "dev-dependencies": [],
+      "build-dependencies": []
+    }
+  ]
+}
