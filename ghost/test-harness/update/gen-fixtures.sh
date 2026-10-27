@@ -403,6 +403,44 @@ write_manifest manifest-4x "$OUT/root-4x.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest
 proof_and_bundle manifest-4x
 
 
+# --- the crafted-suite gaps (S6c-crafted): MC-D27, FLOOR_INVALID, MC-D9 -----------------
+# MC-D27: a real v3.1-lineage APK. A second throwaway key (G-D1's carve-out), apksigner
+# rotate for the lineage, then signed by the NEW key with --lineage and v2 disabled: the
+# v3.1 block carries the new certificate (SDK 33+), the v3.0 block the original one, so the
+# signer digests differ and the misread flips. The trusted root lists ONLY the new digest.
+rm -f "$KEYS/fixture2.ks" && "$JAVA_HOME/bin/keytool.exe" -genkeypair -keystore "$KEYS/fixture2.ks" -storepass "$KEYSTORE_PASS" \
+  -keypass "$KEYSTORE_PASS" -alias fixture2 -keyalg RSA -keysize 2048 -validity 20000 \
+  -dname "CN=Ghost UpdateWorld Fixture 2, OU=test, O=ghost-fixture" 2>/dev/null
+CERT2_SHA=$("$JAVA_HOME/bin/keytool.exe" -exportcert -keystore "$KEYS/fixture2.ks" -storepass "$KEYSTORE_PASS" \
+  -alias fixture2 2>/dev/null | sha256sum | cut -d' ' -f1)
+cmd //c "$(cygpath -w "$BT/apksigner.bat")" rotate --out "$(cygpath -w "$KEYS/lineage-v31")" \
+  --old-signer --ks "$(cygpath -w "$KEYS/fixture.ks")" --ks-pass "pass:$KEYSTORE_PASS" --key-pass "pass:$KEYSTORE_PASS" \
+  --new-signer --ks "$(cygpath -w "$KEYS/fixture2.ks")" --ks-pass "pass:$KEYSTORE_PASS" --key-pass "pass:$KEYSTORE_PASS"
+cmd //c "$(cygpath -w "$BT/apksigner.bat")" sign \
+  --ks "$(cygpath -w "$KEYS/fixture.ks")" --ks-pass "pass:$KEYSTORE_PASS" --key-pass "pass:$KEYSTORE_PASS" \
+  --next-signer --ks "$(cygpath -w "$KEYS/fixture2.ks")" --ks-pass "pass:$KEYSTORE_PASS" --key-pass "pass:$KEYSTORE_PASS" \
+  --lineage "$(cygpath -w "$KEYS/lineage-v31")" --v1-signing-enabled false --v2-signing-enabled false \
+  --min-sdk-version 29 --max-sdk-version 34 \
+  --out "$(cygpath -w "$OUT/app-v31.apk")" "$(cygpath -w "$OUT/unsigned.zip")"
+"$OPS" apk-core --apk "$OUT/app-v31.apk" --extract "$OUT/core-31.apk" >/dev/null
+# The kill runs at SDK 29: shipped reads the v3.0 block (window [24,32], the ORIGINAL cert);
+# the mutant's sdk 255 falls into the v3.1 window [33, INT_MAX] (the rotated cert).
+root_cfg 1 root-1 release-1 "$OUT/cfg-root31.toml"
+"$OPS" root-build --config "$OUT/cfg-root31.toml" --keys "$KEYS" --out "$OUT/root-31.ghrt"
+rm -rf "$OUT/roots31" && mkdir -p "$OUT/roots31" && cp "$OUT/root-31.ghrt" "$OUT/roots31/"
+"$OPS" chain-build --network 2 --roots "$OUT/roots31" --out "$OUT/chain-31.ghrc"
+V31_WIN=$(cygpath -m "$OUT/app-v31.apk")
+CORE31_WIN=$(cygpath -m "$OUT/core-31.apk")
+
+# FLOOR_INVALID: the literal native case (floor above every attested release), unreachable
+# through ops' stricter release-time rule: manifest-1's floor raised to 3, the release block
+# re-signed with release-1 (the S6e removedkey pattern).
+python3 "$(dirname "$0")/floorbad.py" "$OUT"
+"$OPS" proof-build --file "$OUT/manifest-floorbad.ghrm" --log-index 0 --log-key log-1 --submit-key release-1 \
+  --witness witness-1 --keys "$KEYS" --out "$OUT/manifest-floorbad.ghrp"
+"$OPS" bundle --chain "$OUT/chain.ghrc" \
+  --manifest "$OUT/manifest-floorbad.ghrm" --manifest-proof "$OUT/manifest-floorbad.ghrp" --out "$OUT/bundle-floorbad.ghrb"
+
 # The revocation world: a manifest naming the new root at a higher pair, signed ONLY by the
 # release key RK2 dropped - shipped refuses it at BAD_SIGNATURE whatever its sequence (DS-5,
 # §3.5). The body is manifest-2's with the seq bumped; the block is re-signed with release-1.
@@ -433,6 +471,11 @@ PY
 write_manifest manifest-2x "$OUT/root-2.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN" \
   "[[mirror]]" "onion = \"$ATTACKER_ONION\"" "operator = \"$(echo "$ATTACKER_ONION" | sha256sum | cut -c1-32)\""
 proof_and_bundle manifest-2x release-2
+
+write_manifest manifest-31 "$OUT/root-31.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "3.1.0-lineage" "$V31_WIN" "$CORE31_WIN"
+proof_and_bundle manifest-31
+"$OPS" bundle --chain "$OUT/chain-31.ghrc" \
+  --manifest "$OUT/manifest-31.ghrm" --manifest-proof "$OUT/manifest-31.ghrp" --out "$OUT/bundle-31.ghrb"
 "$OPS" bundle --chain "$OUT/chain2.ghrc" --root-proof "$OUT/root-2.ghrp" \
   --manifest "$OUT/manifest-2x.ghrm" --manifest-proof "$OUT/manifest-2x.ghrp" --out "$OUT/bundle-2x.ghrb"
 write_manifest manifest-5 "$OUT/root-5.ghrt" 1 "$ISSUED" "$NOT_AFTER" 0 attest-1 "2.1.0-rk4" "$APK_WIN" "$CORE_WIN"
@@ -773,6 +816,62 @@ EOF
 
 "$OPS" inspect --bundle "$OUT/bundle.ghrb" --today "$TODAY"
 
+# MC-D9: a real multi-leaf fixture log (4 leaves, so the inclusion path branches). The honest
+# proof over manifest-1 passes everything; the bad-path proof swaps one path sibling - the
+# tree-head signature stays valid, so the ONLY failing check is the inclusion fold. Hand-built
+# with ghostsign (the same RFC 8032 machinery), bundled by section surgery (ops' bundle would
+# refuse the broken inclusion).
+python3 - "$(dirname "$0")" "$OUT" <<'PY'
+import hashlib, os, struct, sys
+here = os.path.abspath(sys.argv[1])
+sys.path.insert(0, here)
+import ghostsign
+out = sys.argv[2]
+f = lambda b: hashlib.sha256(b).digest()
+manifest = open(f"{out}/manifest-1.ghrm", "rb").read()
+message = f(manifest)
+checksum = f(message)  # SHA-256(SHA-256(file)): the leaf checksum the log stores
+release = bytes.fromhex(open(f"{here}/keys/release-1.hex").read())
+log = bytes.fromhex(open(f"{here}/keys/log-1.hex").read())
+wit = bytes.fromhex(open(f"{here}/keys/witness-1.hex").read())
+leaf_stmt = b"sigsum.org/v1/tree-leaf\x00" + checksum
+leaf_sig = ghostsign.sign(release, leaf_stmt)
+leaf128 = checksum + leaf_sig + ghostsign.key_id(ghostsign.publickey(release))
+h0 = f(b"\x00" + leaf128)
+leaves = [h0] + [f(b"fixture-leaf-%d" % i) for i in (1, 2, 3)]
+def node(a, b):
+    return f(b"\x01" + a + b)
+h01 = node(leaves[0], leaves[1])
+h23 = node(leaves[2], leaves[3])
+root = node(h01, h23)
+log_key_id = ghostsign.key_id(ghostsign.publickey(log))
+checkpoint = b"sigsum.org/v1/tree/" + log_key_id.hex().encode() + b"\n4\n" + root.hex().encode() + b"\n"
+log_sig = ghostsign.sign(log, checkpoint)
+cosign_stmt = b"cosignature/v1\ntime 0\n" + checkpoint
+cosig = ghostsign.key_id(ghostsign.publickey(wit)) + (0).to_bytes(8, "big") + ghostsign.sign(wit, cosign_stmt)
+def ghrp(path):
+    return (b"GHRP" + b"\x01" + message + b"\x00" + leaf_sig +
+        ghostsign.key_id(ghostsign.publickey(release)) + (4).to_bytes(8, "big") +
+        (0).to_bytes(8, "big") + bytes([len(path)]) + b"".join(path) +
+        root + log_sig + b"\x01" + cosig)
+open(f"{out}/manifest-ml.ghrp", "wb").write(ghrp([leaves[1], h23]))
+open(f"{out}/manifest-badpath.ghrp", "wb").write(ghrp([leaves[2], h23]))
+# Section surgery: the honest ops bundle with the hand-built proof section swapped in.
+def split_bundle(path):
+    d = open(path, "rb").read()
+    pos = 6
+    (n,) = struct.unpack_from(">I", d, pos); pos += 4 + n
+    (nroot,) = struct.unpack_from(">H", d, pos); pos += 2
+    for _ in range(nroot):
+        (n,) = struct.unpack_from(">I", d, pos); pos += 4 + n
+    (m,) = struct.unpack_from(">I", d, pos)
+    return d[:pos + 4 + m]
+head = split_bundle(f"{out}/bundle.ghrb")
+for name in ("ml", "badpath"):
+    proof = open(f"{out}/manifest-{name}.ghrp", "rb").read()
+    open(f"{out}/bundle-{name}.ghrb", "wb").write(head + struct.pack(">I", len(proof)) + proof)
+PY
+
 cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghrp \
    "$OUT"/manifest-1.ghrm "$OUT"/manifest-1.ghrp "$OUT"/bundle.ghrb \
    "$OUT"/manifest-eq-a.ghrm "$OUT"/manifest-eq-b.ghrm "$OUT"/bundle-eq-a.ghrb "$OUT"/bundle-eq-b.ghrb \
@@ -795,6 +894,9 @@ cp "$OUT"/chain.ghrc "$OUT"/chain2.ghrc "$OUT"/chain-main.ghrc "$OUT"/root-2.ghr
    "$OUT"/manifest-xroot.ghrm "$OUT"/bundle-xroot.ghrb \
    "$OUT"/manifest-bucket.ghrm "$OUT"/bundle-bucket.ghrb \
    "$OUT"/manifest-removedkey.ghrm "$OUT"/bundle-removedkey.ghrb \
+   "$OUT"/chain-31.ghrc "$OUT"/manifest-31.ghrm "$OUT"/bundle-31.ghrb "$OUT"/app-v31.apk \
+   "$OUT"/manifest-floorbad.ghrm "$OUT"/bundle-floorbad.ghrb \
+   "$OUT"/manifest-ml.ghrp "$OUT"/manifest-badpath.ghrp "$OUT"/bundle-ml.ghrb "$OUT"/bundle-badpath.ghrb \
    "$OUT"/manifest-2x.ghrm "$OUT"/bundle-2x.ghrb \
    "$OUT"/chain5.ghrc "$OUT"/chain6.ghrc "$OUT"/chain-rc.ghrc "$OUT"/chain-swap.ghrc \
    "$OUT"/manifest-5.ghrm "$OUT"/manifest-6.ghrm "$OUT"/manifest-rc.ghrm \

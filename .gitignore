@@ -84,3 +84,4 @@ ghost/third_party/tor-expert/.cache/
 !ghost/android/update/src/test/resources/update-world/app-v2-swap.apk
 !ghost/android/update/src/test/resources/update-world/app-v2-extra.apk
 !ghost/android/update/src/test/resources/update-world/app-v2-big.apk
+!ghost/android/update/src/test/resources/update-world/app-v31.apk

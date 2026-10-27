@@ -517,7 +517,10 @@ fn first_signer(value: &[u8], v3_layout: bool) -> Result<Signer, UpdateError> {
     let signed = s.lp32()?;
     s.lp32()?; // signatures (not checked: the platform verifies them)
     s.lp32()?; // public key
-    s.done().map_err(|_| UpdateError::ApkSigner)?;
+    // No `done()` here: v3.1 signers carry additional attributes after the public key in
+    // real apksigner 37 output (the lineage drill's crafted suite caught the strict reader
+    // refusing rotated APKs at APK_SIGNER); the platform's parser is lenient about them, and
+    // this reader takes the first signer only. The outer `top.done()` still pins the value. 
     let mut d = Cursor::new(signed);
     d.lp32()?; // digests
     let certs = d.lp32()?;
