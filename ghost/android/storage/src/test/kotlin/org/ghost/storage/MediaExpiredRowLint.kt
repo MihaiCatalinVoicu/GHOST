@@ -133,6 +133,7 @@ object MediaExpiredRowLint {
     val O4 = id(0xA4) // DEAD: its message expired at NOW
     val O5 = id(0xA5) // DEAD: failed, its message expired
     val O6 = id(0xA6) // live, uploading, deadline exactly NOW (reads as failed)
+    val O9 = id(0xA7) // DEAD: uploaded, its message expired, a kind-5 item still pending
     val I1 = id(0xB1) // live, fetching, hour ahead
     val I2 = id(0xB2) // live, awaiting, hour exactly NOW (declared incomplete)
     val I3 = id(0xB3) // live, fetching, hour passed (declared incomplete)
@@ -144,6 +145,7 @@ object MediaExpiredRowLint {
     val M_E1 = id(0x91) // expires exactly at NOW (a read at NOW no longer shows it)
     val M_E2 = id(0x92)
     val M_E3 = id(0x93)
+    val M_E4 = id(0x94) // O9's message: a dead, uploaded, view-once-less object whose kind-5 item is still 'pending'
 
     fun message(n: Int): ByteArray = id(0x80 + n)
 
@@ -226,6 +228,15 @@ object MediaExpiredRowLint {
             )
         }
 
+        /** A Phase 9 outbound item of a message: the kind-5 rows the view-once recovery reads join on. */
+        fun item(itemN: Int, messageId: ByteArray, state: String) {
+            db.exec(
+                "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, deadline_hour, state, ttl_seconds) " +
+                    "VALUES (?, ?, ?, 5, ?, ?, 86400)",
+                listOf(id(itemN), MediaFixture.DEST, messageId, NOW, state),
+            )
+        }
+
         /**
          * The Phase 7 operation a media op maps to (`MediaOrphanStore`'s third clause joins it).
          * All three are unreleased in both worlds — the release is a flag, and the row itself is
@@ -255,6 +266,7 @@ object MediaExpiredRowLint {
             insertMessage(M_E1, NOW)
             insertMessage(M_E2, NOW - 60)
             insertMessage(M_E3, NOW - 120)
+            insertMessage(M_E4, NOW - 180)
         }
 
         // ---- blobs
@@ -281,9 +293,10 @@ object MediaExpiredRowLint {
         op(0x22, O1, 0)
         outboxOp(0x21)
         outboxOp(0x22)
-        obj(O2, "out", if (withExpired) "uploading" else "failed", message(2))
+        obj(O2, "out", if (withExpired) "uploading" else "failed", message(2), viewOnce = true)
         upload(O2, NOW - 3_600L)
         outFragment(O2, 0, 4, "unsent")
+        item(0xD1, message(2), "failed") // O2's view-once descriptor, failed: the recovery read's live row
         obj(O6, "out", if (withExpired) "uploading" else "failed", message(6))
         upload(O6, NOW)
         outFragment(O6, 0, 5, "unsent")
@@ -321,13 +334,18 @@ object MediaExpiredRowLint {
             outFragment(O4, 0, 0x12, "unsent")
             op(0x31, O4, -1)
             outboxOp(0x31)
-            obj(O5, "out", "failed", M_E2)
+            obj(O5, "out", "failed", M_E2, viewOnce = true)
             upload(O5, NOW + 3_600L, ttl = 3_600L)
             outFragment(O5, 0, 0x13, "sent")
             outFragment(O5, 1, 0x14, "failed")
             obj(I7, "in", "fetching", M_E3, hour = NOW + 3_600L)
             inFragment(I7, -1, 0x71, "expected")
             inFragment(I7, 0, 0x21, "bound") // names a blob a live object names too (D25): it stays when I7 goes
+            // O9: dead with its message, still 'uploaded', its kind-5 item 'pending' — the
+            // descriptor-recovery read's row that the sweep takes with the message.
+            obj(O9, "out", "uploaded", M_E4)
+            upload(O9, NOW + 7_200L)
+            item(0xD2, M_E4, "pending")
         }
     }
 
@@ -425,6 +443,19 @@ internal object MediaQueryTexts {
     const val OBJECTS_DECODE_FAILURES_OF =
         "SELECT decode_failures FROM media_object WHERE object_id = ?"
 
+    const val OBJECTS_KEYED_VIEW_ONCE_OF_MESSAGE =
+        "SELECT object_id FROM media_object WHERE message_id = ? " +
+            "AND role = 'out' AND view_once = 1 AND key_env IS NOT NULL"
+
+    const val OBJECTS_FAILED_VIEW_ONCE_DESCRIPTORS =
+        "SELECT o.object_id FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
+            "JOIN dm_outbound_item i ON i.message_ref = o.message_id " +
+            "LEFT JOIN dm_message m ON m.message_id = o.message_id " +
+            "WHERE o.role = 'out' AND o.view_once = 1 AND o.key_env IS NOT NULL " +
+            "AND i.kind = 5 AND i.state = 'failed' AND u.deadline_hour <= ? " +
+            "AND (m.message_id IS NULL OR m.delete_at_minute IS NULL OR m.delete_at_minute > ?) " +
+            "ORDER BY u.deadline_hour, o.object_id LIMIT ?"
+
     const val OBJECTS_INCOMPLETE_DUE =
         "SELECT o.object_id FROM media_object o LEFT JOIN dm_message m ON m.message_id = o.message_id " +
         "WHERE o.state IN ('awaiting', 'fetching') AND o.incomplete_after_hour <= ? " +
@@ -466,6 +497,21 @@ internal object MediaQueryTexts {
 
     const val FRAGMENTS_OPEN_OF_DEVICE =
         "SELECT count(*) FROM media_fragment WHERE upload_state = 'open'"
+
+    const val FRAGMENTS_HAS_FAILED =
+        "SELECT count(*) FROM media_fragment WHERE object_id = ? AND upload_state = 'failed'"
+
+    // ---- the messaging engine's inline reads over the media tables (MediaEngineSupport, MediaSteps):
+    // no constant of their file exists, so the lint holds the verbatim literal.
+    const val ENGINE_BOUND_ORDINAL_COUNT =
+        "SELECT count(*) FROM media_fragment WHERE object_id = ? AND state = 'bound' AND ordinal >= 0"
+
+    const val STEPS_RECOVER_DESCRIPTORS =
+        "SELECT o.dest_id, u.ttl_seconds, u.deadline_hour, o.key_env, o.message_id " +
+            "FROM media_object o JOIN media_upload u ON u.object_id = o.object_id " +
+            "JOIN dm_outbound_item i ON i.message_ref = o.message_id " +
+            "WHERE o.role = 'out' AND o.state = 'uploaded' " +
+            "AND i.kind = 5 AND i.state = 'pending'"
 
     const val FRAGMENTS_EXPECTED_OF_OBJECT =
         "SELECT count(*) FROM media_fragment WHERE object_id = ? AND state = 'expected'"
@@ -629,6 +675,10 @@ object MediaDaoQueries {
         // answers 2); 0x31 is O4's and its message has expired, so the filter hides it exactly as
         // the sweep is about to cascade it — without the filter the unswept world would answer 3.
         read("theMediaOpsStillBlockingTheMcOrphan", MediaQueryTexts.ORPHAN_OP_BLOCKERS, listOf(MediaFixture.DEST, NOW), rows = 1),
+        // ---- the view-once recovery (MediaObjects): O2 is an out view-once object past its
+        // upload deadline, keyed, with a failed kind-5 outbound item on its live message — one
+        // row in both worlds (the message is live; the deadline filter names O2 exactly).
+        read("aFailedViewOnceDescriptorOfALiveMessage", MediaQueryTexts.OBJECTS_FAILED_VIEW_ONCE_DESCRIPTORS, listOf(NOW, NOW, LIMIT), rows = 1),
     )
 }
 
@@ -667,6 +717,14 @@ object MediaBoundQueries {
         bound("theObjectsOfADeadMessage", MediaQueryTexts.OBJECTS_OBJECTS_OF_MESSAGE, listOf(L.M_E1)),
         bound("theStoredStateOfAnUploadPastItsDeadline", MediaQueryTexts.OBJECTS_RAW_STATE, listOf(L.O2)),
         bound("theDecodeFailuresOfADeadDownload", MediaQueryTexts.OBJECTS_DECODE_FAILURES_OF, listOf(L.I7)),
+        // ---- the view-once and recovery reads that must SEE the expired rows (no message filter
+        // of their own): O5 is the dead out view-once object with a failed fragment, I7 the dead
+        // download with a bound ordinal, O9 the dead uploaded object whose kind-5 item is still
+        // pending — each answers in the unswept world and nothing in the swept one.
+        bound("theFailedFragmentsOfADeadUpload", MediaQueryTexts.FRAGMENTS_HAS_FAILED, listOf(L.O5)),
+        bound("theKeyedViewOnceObjectsOfADeadMessage", MediaQueryTexts.OBJECTS_KEYED_VIEW_ONCE_OF_MESSAGE, listOf(L.M_E2)),
+        bound("theBoundOrdinalsOfADeadDownload", MediaQueryTexts.ENGINE_BOUND_ORDINAL_COUNT, listOf(L.I7)),
+        bound("theDescriptorsPendingRecoveryOfADeadMessage", MediaQueryTexts.STEPS_RECOVER_DESCRIPTORS, emptyList()),
     )
 }
 

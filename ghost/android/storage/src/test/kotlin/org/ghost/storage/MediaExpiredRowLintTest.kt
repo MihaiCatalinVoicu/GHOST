@@ -36,8 +36,8 @@ class MediaExpiredRowLintTest {
     fun theFixtureWorldHoldsTheExpiredAndTheLiveRowsItDescribes() {
         // table -> (rows with the expired ones, rows after the sweep)
         val expected = mapOf(
-            "media_object" to (13L to 10L), "media_upload" to (6L to 4L), "media_blob" to (21L to 15L),
-            "media_fragment" to (21L to 13L), "media_outbound_op" to (3L to 2L), "dm_message" to (12L to 9L),
+            "media_object" to (14L to 10L), "media_upload" to (7L to 4L), "media_blob" to (21L to 15L),
+            "media_fragment" to (21L to 13L), "media_outbound_op" to (3L to 2L), "dm_message" to (13L to 9L),
         )
         for ((table, counts) in expected) {
             assertEquals("$table before the sweep", counts.first, L.countIn("SELECT count(*) FROM $table", emptyList(), true))
@@ -175,7 +175,7 @@ class MediaExpiredRowLintTest {
 
     @Test
     fun everyBoundQuerySeesTheExpiredRowsBecauseTheTriggerAndTheReconcileCountThem() {
-        assertEquals(23, MediaBoundQueries.registered.size)
+        assertEquals(27, MediaBoundQueries.registered.size)
         for (query in MediaBoundQueries.registered) {
             val outcome = L.outcomeOf(query.sql, query.args)
             assertTrue("${query.name} must see the expired rows too, as the trigger and the reconcile do", outcome.showsAnExpiredRow)
