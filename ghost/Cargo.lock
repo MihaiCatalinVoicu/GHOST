@@ -2120,6 +2120,7 @@ version = "0.1.0"
 dependencies = [
  "ghost-client-dm",
  "ghost-client-mls",
+ "ghost-client-net",
  "jni",
 ]
 
