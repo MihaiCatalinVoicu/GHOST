@@ -253,6 +253,7 @@ impl J {
 /// One resolved package of interest.
 struct Pkg {
     id: String,
+    name: String,
     version: String,
     checksum: Option<String>,
 }
@@ -335,6 +336,7 @@ pub fn sbom_json(package: &str) -> Result<String, String> {
         let checksum = checksums.get(&(name.to_string(), version.clone())).cloned();
         by_id.push(Pkg {
             id,
+            name: name.to_string(),
             version,
             checksum,
         });
@@ -380,7 +382,7 @@ pub fn sbom_json(package: &str) -> Result<String, String> {
         .collect();
     components.sort_by(|a, b| purl_of(a).cmp(&purl_of(b)));
 
-    let name_of = |p: &Pkg| p.id.split(' ').next().unwrap_or(&p.id).to_string();
+    let name_of = |p: &Pkg| p.name.clone();
     let mut out = String::new();
     out.push_str(
         "{\n  \"bomFormat\": \"CycloneDX\",\n  \"specVersion\": \"1.7\",\n  \"version\": 1,\n",
