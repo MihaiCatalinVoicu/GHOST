@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates=20260816ubuntu0.24.04.1 \
       curl=8.5.0-2ubuntu10.16 \
       git=1:2.43.0-1ubuntu7.4 \
+      g++-mingw-w64-x86-64=13.2.0-6ubuntu1+26.1 \
       pkg-config=1.8.1-2build1 \
       protobuf-compiler=3.21.12-8.2ubuntu0.4 \
       unzip=6.0-28ubuntu4.1 \

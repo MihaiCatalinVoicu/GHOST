@@ -14,7 +14,7 @@ TAG="${1:?usage: run-in-image.sh <tag> [--out <dir>]}"
 OUT="$(pwd)/build-out-image"
 [ "${2:-}" = "--out" ] && OUT="${3:?--out needs a directory}"
 
-IMG="ghost-builder:24.04-4"
+IMG="ghost-builder:24.04-5"
 REPO="$(git rev-parse --show-toplevel)"
 mkdir -p "$OUT"
 

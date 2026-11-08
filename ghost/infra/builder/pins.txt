@@ -13,6 +13,7 @@ build-essential  12.10ubuntu1        apt pin (Dockerfile)
 ca-certificates  20260816ubuntu0.24.04.1  apt pin (Dockerfile)
 curl             8.5.0-2ubuntu10.16  apt pin (Dockerfile)
 git              1:2.43.0-1ubuntu7.4 apt pin (Dockerfile)
+g++-mingw-w64-x86-64  13.2.0-6ubuntu1+26.1  apt pin (Dockerfile; ghost-verify-x86_64-windows, kind 22)
 pkg-config       1.8.1-2build1       apt pin (Dockerfile)
 protobuf-compiler 3.21.12-8.2ubuntu0.4 apt pin (Dockerfile, prost-build needs protoc)
 unzip            6.0-28ubuntu4.1     apt pin (Dockerfile)
@@ -56,6 +57,7 @@ processor_count 2  JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2, GRADLE_OPTS=-Do
 # 24.04-2  sha256:f5553b90c8281ab1f22b0f3220f184ca08b95886dace760195c7394d08749ff5  D11-compliant (direct archives, Android half), selfcheck PASS 2026-10-26 (2x recipe-A, identical, b_digest d92aa5decd049b35 — same bytes as 24.04-1 across rustup-vs-direct-archive toolchains) — superseded by the rebuilt 24.04-2 below (HOME, licenses, package.xml)
 # 24.04-2  sha256:5e2d757070542a281f4e3f014f4ccbafbfeb88bf1430e38dd881438bb9483a03  FINAL (package.xml layer; same toolchain layers as f5553b90): host selfcheck PASS 2026-10-26 (IMAGE_SELFCHECK_EQUAL, b_digest d92aa5decd049b35) + android selfcheck PASS 2026-10-26 (ANDROID_SELFCHECK_EQUAL, unsigned APK sha256 09e31628c2b9a0de852e4112e5313b56fd846d629e873b67ea70b59615f89d6e, native-libs sums verified in-output)
 # 24.04-4  sha256:bacf49edcb0489e35778a4cb25275b041f61950aff971325c5d60315eb2e5d48  24.04-3 + musl C cross toolchains (musl.cc x86_64/aarch64, pinned); host selfcheck PASS 2026-11-08 (IMAGE_SELFCHECK_EQUAL, 5 files); cross: ghost-verify-x86_64-linux + ghost-verify-aarch64-linux buildate și instalate, Windows iese loud la mingw lipsă (declarat, nepinned)
+# 24.04-5  sha256:PLACEHOLDER — g++-mingw-w64-x86-64 pinned (ghost-verify-x86_64-windows)
 #            linker config; filled by the parent's selfcheck re-measure after the image
 #            build (never by hand). Expected next run: GHOST_RELEASE_CROSS=1 ends with
 #            BOTH static Linux binaries installed and the EXPECTED mingw exit-1.
