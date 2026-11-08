@@ -93,11 +93,21 @@ here). Licence: MIT.
 ";
 
 fn ws_root() -> PathBuf {
-    // release/crates/ops -> the workspace root (the private tree export-public runs in).
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .expect("the workspace root resolves")
+    // release/crates/ops -> the workspace root, resolved at RUNTIME from the current
+    // directory's ancestors. `env!("CARGO_MANIFEST_DIR")` would bake the absolute build
+    // path into the binary — path remapping does not cover that macro — and the
+    // selfcheck's two recipe-A runs build in different directories, which broke
+    // byte-equality (found by IMAGE_SELFCHECK_DIFFER on image 24.04-3).
+    let cwd = std::env::current_dir().expect("the current directory resolves");
+    cwd.ancestors()
+        .find(|d| d.join("scripts/gates/identity-patterns.txt").is_file())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            panic!(
+                "the workspace root (scripts/gates/identity-patterns.txt) not found from {}",
+                cwd.display()
+            )
+        })
 }
 
 /// One file going into the tar.
