@@ -8,7 +8,7 @@
 # dl.google.com's repository2-1.xml / repository2-3.xml; SHA-256 values for Rust/Temurin
 # are official (static.rust-lang.org / Adoptium API).
 
-apt-snapshot 20261026T000000Z  https://snapshot.ubuntu.com/ubuntu/20261026T000000Z  Dockerfile sources.list (toate cele trei suite; fără el arhiva live pierde versiunile pinuite între două builduri — măsurat 2026-11-08)
+apt-snapshot 20261026T000000Z  https://snapshot.ubuntu.com/ubuntu/20261026T000000Z  Dockerfile sources.list (noble + noble-updates; noble-security lipsește din snapshot la acest timestamp și niciun pin nu are nevoie de el; Error-Mode=any; fără snapshot arhiva live pierde versiunile pinuite între builduri — măsurat 2026-11-08)
 image        ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac  Dockerfile FROM
 build-essential  12.10ubuntu1        apt pin (Dockerfile)
 ca-certificates  20260816ubuntu0.24.04.2  apt pin (Dockerfile)
