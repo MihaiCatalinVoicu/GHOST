@@ -91,9 +91,33 @@ RUN curl -fSL https://static.rust-lang.org/dist/rust-std-1.98.1-x86_64-pc-window
     && mkdir -p /tmp/std-w && tar -xzf /tmp/std-w.tar.gz -C /tmp/std-w --strip-components=1 \
     && /tmp/std-w/install.sh --prefix=/opt/rust \
     && rm -rf /tmp/std-w /tmp/std-w.tar.gz
-ENV PATH=/opt/rust/bin:$PATH \
+# The musl C cross toolchains (pins.txt's musl_cc lines; musl.cc static builds, hashed at
+# pin time). ghost-verify's static Linux targets link through these; cc-rs also finds them
+# by the target-triple name via PATH. Extraction keeps a fixed path for the cargo config.
+ARG MUSL_X86_64_SHA256=c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+ARG MUSL_AARCH64_SHA256=c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
+RUN curl -fSL https://musl.cc/x86_64-linux-musl-cross.tgz -o /tmp/musl-x.tgz \
+    && echo "$MUSL_X86_64_SHA256  /tmp/musl-x.tgz" | sha256sum -c - \
+    && mkdir -p /opt/musl-x86_64 && tar -xzf /tmp/musl-x.tgz -C /opt/musl-x86_64 --strip-components=1 \
+    && rm -f /tmp/musl-x.tgz
+RUN curl -fSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/musl-a.tgz \
+    && echo "$MUSL_AARCH64_SHA256  /tmp/musl-a.tgz" | sha256sum -c - \
+    && mkdir -p /opt/musl-aarch64 && tar -xzf /tmp/musl-a.tgz -C /opt/musl-aarch64 --strip-components=1 \
+    && rm -f /tmp/musl-a.tgz
+# The linker wiring under CARGO_HOME (appended — this file may gain other sections): the
+# musl targets link with the toolchains above; host and Android builds are untouched (no
+# default target is set).
+RUN mkdir -p /opt/cargo && touch /opt/cargo/config.toml \
+    && printf '%s\n' \
+         '[target.x86_64-unknown-linux-musl]' \
+         'linker = "/opt/musl-x86_64/bin/x86_64-linux-musl-gcc"' \
+         '' \
+         '[target.aarch64-unknown-linux-musl]' \
+         'linker = "/opt/musl-aarch64/bin/aarch64-linux-musl-gcc"' \
+         >> /opt/cargo/config.toml
+ENV PATH=/opt/rust/bin:/opt/musl-x86_64/bin:/opt/musl-aarch64/bin:$PATH \
     CARGO_HOME=/opt/cargo
-RUN mkdir -p /opt/cargo && chmod -R a+w /opt/cargo /opt/rust
+RUN mkdir -p /opt/cargo && chmod -R a+w /opt/cargo /opt/rust /opt/musl-x86_64 /opt/musl-aarch64
 
 # cargo-ndk 4.1.2, same pin as scripts/build-native.sh and CI (--locked: the crate's own
 # Cargo.lock decides its deps; the image's rustc compiles it).
