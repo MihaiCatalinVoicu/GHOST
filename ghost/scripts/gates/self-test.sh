@@ -1386,6 +1386,22 @@ ur_case "refuses a fragment claiming more detected than ran" fail \
   "$UR_FIX/inflated/build/update-mutants/report.txt" pr "more detected than measured"
 ur_case "refuses a PR-scale fragment as the gate job's report" fail \
   "$UR_FIX/consistent/build/update-mutants/report.txt" gate "is not the gate job's report"
+# Phase 14 (G-D9): public-identity-scrub.sh on its fixture release outputs
+# (test-harness/gates/public-identity/README.md). The --committed mode is not cased: by D25 it
+# must fail on today's committed files until the S3 project-identity slice.
+PI_FIX="$HARNESS/public-identity"
+if pi_out="$(GHOST_ROOT="$PI_FIX/clean" bash "$DIR/public-identity-scrub.sh" "$PI_FIX/clean" 2>&1)"; then
+  echo "self-test ok: public-identity-scrub accepts a clean release output"
+else
+  echo "SELF-TEST FAIL: public-identity-scrub refused the clean fixture" >&2; printf '%s\n' "$pi_out" | tail -3 >&2; rc=1
+fi
+if pi_out="$(GHOST_ROOT="$PI_FIX/infested" bash "$DIR/public-identity-scrub.sh" "$PI_FIX/infested" 2>&1)"; then
+  echo "SELF-TEST FAIL: public-identity-scrub accepted an infested release output" >&2; rc=1
+elif ! grep -qF "identity pattern" <<<"$pi_out"; then
+  echo "SELF-TEST FAIL: public-identity-scrub refused the infested fixture without naming the pattern" >&2; printf '%s\n' "$pi_out" | tail -3 >&2; rc=1
+else
+  echo "self-test ok: public-identity-scrub rejects an identity pattern in a release output"
+fi
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive

@@ -10,6 +10,7 @@
 # home/runner paths the design names. Additions need a D25 note.
 
 MihaiCatalinVoicu
+Mihai Voicu
 github.com/MihaiCatalinVoicu
 mihayyy175@gmail.com
 /home/runner/

@@ -5,11 +5,13 @@
 # the operators' builds), and writes SHA256SUMS over the results plus the b_digest line the
 # owner compares on an independent device (RK1 step 2, CR-M5).
 #
-# What this script deliberately is not (later slices): the three environments A/B/C, the
-# Android half (build-native.sh, apksigner, zipalign) and the notices/SBOM/archive-index
-# steps. Everything here is host-toolchain-only, so a mismatch investigation can run it on
-# any checkout. The ghost-verify cross targets (§6.1 kinds 19-22, from the exported public
-# tree) need cross toolchains and run only under GHOST_RELEASE_CROSS=1 — see step (3).
+# What this script deliberately is not (later slices): the three environments A/B/C and the
+# Android half (build-native.sh, apksigner, zipalign — its hand-off is step (5)'s conditional).
+# Everything here is host-toolchain-only, so a mismatch investigation can run it on any
+# checkout. The ghost-verify cross targets (§6.1 kinds 19-22, from the exported public tree)
+# need cross toolchains and run only under GHOST_RELEASE_CROSS=1 — see step (3). Steps (4)-(7)
+# are the notices (G-L1), the APK/native-lib check when the Android half ran, the SBOMs and the
+# identity scrub (G-D9); the selfcheck's two runs byte-equal SHA256SUMS over all of it.
 set -euo pipefail
 
 TAG="${1:?usage: build-release.sh <tag> [--out <dir>]}"
@@ -100,8 +102,44 @@ else
   echo "note: ghost-verify cross targets skipped (GHOST_RELEASE_CROSS=1 enables them; design §6.1 kinds 19-22)" >&2
 fi
 
-# (4) The sums and the value job B prints (and the owner recomputes independently).
+# (4) The notices (design §6.1's notices/ row, G-L1): regenerate from what ships, re-verify as a
+# gate, copy into the output. The android notices need the Gradle half (G-L2 runs in the android
+# job); here the committed file is the tag's own bytes, copied as-is.
+bash scripts/gates/license-notices.sh rust --write
+bash scripts/gates/license-notices.sh rust
+mkdir -p "$OUT/notices"
+for part in client-net relay issuer android; do
+  install -m 0644 "licenses/THIRD_PARTY_NOTICES-$part.txt" "$OUT/notices/THIRD_PARTY_NOTICES-$part.txt"
+done
+
+# (5) The Android half's hand-off, when present: its contract (build-native.sh / the apk step)
+# drops the unsigned APK, its native-library sums and the lib/ tree into the output. Without it
+# (a host-only investigation run) this step is a note, not a failure.
+if [ -f "$OUT/apk/unsigned.apk" ] && [ -f "$OUT/apk/native-libs.sha256" ] && [ -d "$OUT/lib" ]; then
+  bash scripts/gates/apk-native-libs.sh "$OUT/apk/unsigned.apk" "$OUT/apk/native-libs.sha256"
+else
+  echo "note: android half absent — no APK/native-lib check, no lib/ outputs (design §6.1)" >&2
+fi
+
+# (6) The SBOMs (design §6.1's sbom/ row): CycloneDX 1.7 per shipped target — client =
+# ghost-client-net (the shipped Android library, graphs.txt's client-net row), relay =
+# ghost-relay-node, issuer = ghost-issuer. Sorted keys and arrays, no timestamp, no serial.
+mkdir -p "$OUT/sbom"
+for spec in "client:ghost-client-net" "relay:ghost-relay-node" "issuer:ghost-issuer"; do
+  "$WORK/target/release/ghost-release-ops" sbom --package "${spec##*:}" --out "$OUT/sbom/${spec%%:*}.cdx.json"
+done
+
+# (7) The identity scrub (G-D9, D25): every output byte carries no personal identifier — after
+# the notices and SBOMs exist, before the sums are taken.
+bash scripts/gates/public-identity-scrub.sh "$OUT"
+
+# (8) The sums and the value job B prints (and the owner recomputes independently). Every output
+# of §6.1 is covered: the binaries, the public source tar, the notices, the SBOMs and, when the
+# Android half ran, the native libraries.
 cd "$OUT"
-sha256sum bin/* > SHA256SUMS
+shopt -s nullglob
+SUM_FILES=(bin/* notices/* sbom/* ghost-public-*.tar lib/*/*.so)
+shopt -u nullglob
+sha256sum "${SUM_FILES[@]}" > SHA256SUMS
 BDIGEST="$(sha256sum SHA256SUMS | cut -c1-16)"
 echo "BUILD_OK tag=$TAG files=$(wc -l < SHA256SUMS) b_digest=$BDIGEST"
