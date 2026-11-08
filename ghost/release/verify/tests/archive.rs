@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use ghost_verify::archive::{ArchiveError, Monitor};
+use ghost_verify::archive::{merge_observation, ArchiveError, Monitor};
 use ghost_verify::sigsum::RawLeaf;
 
 /// Writes the fixture archive: the green manifest, its binding root, the APK, the artifact
@@ -262,4 +262,166 @@ fn leaf_lines_round_trip_through_the_sigsum_parser() {
         }
     );
     assert!(ghost_verify::sigsum::parse_leaf_line("aGVsbG8=").is_err());
+}
+
+#[test]
+fn record_merge_extends_windows_and_keeps_mirrors_distinct() {
+    let mut record = Vec::new();
+    merge_observation(&mut record, (1, 1), b"a.onion:443", DAY);
+    merge_observation(&mut record, (1, 1), b"a.onion:443", DAY + 3);
+    merge_observation(&mut record, (1, 1), b"a.onion:443", DAY - 2);
+    merge_observation(&mut record, (1, 1), b"b.onion:443", DAY + 1);
+    assert_eq!(record.len(), 2, "one line per (pair, mirror)");
+    let a = record
+        .iter()
+        .find(|o| o.mirror == b"a.onion:443".to_vec())
+        .unwrap();
+    assert_eq!((a.first_seen_day, a.last_seen_day), (DAY - 2, DAY + 3));
+    let b = record
+        .iter()
+        .find(|o| o.mirror == b"b.onion:443".to_vec())
+        .unwrap();
+    assert_eq!((b.first_seen_day, b.last_seen_day), (DAY + 1, DAY + 1));
+    // The record round-trips through its own exact NDJSON shape.
+    let text = ghost_verify::archive::record_text(&record);
+    assert_eq!(ghost_verify::archive::parse_record(&text).unwrap(), record);
+}
+
+/// A bundle around the green manifest, assembled as data (no log machinery needed: served-once
+/// reads the manifest's pair, nothing cryptographic).
+fn fixture_bundle(g: &Green) -> Vec<u8> {
+    use ghost_client_release::bundle::GHRB;
+    use ghost_client_release::chain::GHRC;
+    use ghost_client_release::proof::GHRP;
+    let proof = GHRP {
+        message: [0; 32],
+        log: 0,
+        leaf_signature: [0; 64],
+        leaf_key_id: [0; 32],
+        tree_size: 1,
+        leaf_index: 0,
+        path: vec![],
+        root_hash: [0; 32],
+        log_signature: [0; 64],
+        cosignatures: vec![],
+    };
+    GHRB {
+        network: 2,
+        chain: GHRC {
+            network: 2,
+            first_version: 1,
+            roots: vec![GHRT::parse(&g.root_doc).unwrap()],
+        },
+        root_proofs: vec![],
+        manifest: GHRM::parse(&g.manifest).unwrap(),
+        manifest_proof: proof,
+    }
+    .to_bytes()
+}
+
+#[test]
+fn served_once_merges_fixture_bundles_into_the_record() {
+    let (_w, g) = green();
+    let bundle = fixture_bundle(&g);
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("served.ndjson");
+    let fetch = |_: &str| Ok(bundle.clone());
+    let seen = ghost_verify::archive::served_once(
+        &["m1.onion:443".to_string(), "m2.onion:443".to_string()],
+        &record,
+        DAY,
+        &fetch,
+    )
+    .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            ("m1.onion:443".to_string(), (1, 1)),
+            ("m2.onion:443".to_string(), (1, 1)),
+        ]
+    );
+    let record_now =
+        ghost_verify::archive::parse_record(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(record_now.len(), 2);
+    // A later run extends last_seen on the same line; the untouched mirror keeps its window.
+    ghost_verify::archive::served_once(&["m1.onion:443".to_string()], &record, DAY + 5, &fetch)
+        .unwrap();
+    let record_now =
+        ghost_verify::archive::parse_record(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(
+        record_now.len(),
+        2,
+        "no new line for a known (pair, mirror)"
+    );
+    let m1 = record_now
+        .iter()
+        .find(|o| o.mirror == b"m1.onion:443".to_vec())
+        .unwrap();
+    assert_eq!((m1.first_seen_day, m1.last_seen_day), (DAY, DAY + 5));
+    let m2 = record_now
+        .iter()
+        .find(|o| o.mirror == b"m2.onion:443".to_vec())
+        .unwrap();
+    assert_eq!((m2.first_seen_day, m2.last_seen_day), (DAY, DAY));
+    // A failing mirror refuses the run before anything is written.
+    let before = std::fs::read_to_string(&record).unwrap();
+    let failing = |_: &str| Err("the mirror is down".to_string());
+    let err = ghost_verify::archive::served_once(
+        &["m3.onion:443".to_string()],
+        &record,
+        DAY + 6,
+        &failing,
+    )
+    .unwrap_err();
+    assert!(err.starts_with("mirror m3.onion:443:"));
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap(),
+        before,
+        "all-or-nothing"
+    );
+}
+
+#[test]
+fn a_registered_drill_leaf_reports_through_the_walker() {
+    let (_w, g) = green();
+    let dir = fixture_archive(&g, false, None);
+    let mut monitor = load_green(&g, dir.path());
+    monitor
+        .attach_served_record(&format!(
+            "{{\"pair\":[1,1],\"mirror\":\"abc2d.onion:443\",\"first_seen_day\":{},\"last_seen_day\":{}}}",
+            DAY - 1,
+            DAY
+        ))
+        .unwrap();
+    let drill_key = sha256(b"the drill root's release key");
+    monitor.register_drill_key(drill_key);
+    let mut leaves = leaves_file(&g, None);
+    leaves.push('\n');
+    leaves.push_str(&leaf_line(
+        &sha256(b"a drill manifest not in the release archive"),
+        &drill_key,
+    ));
+    monitor.attach_leaves_from_text(&leaves).unwrap();
+    let findings = monitor.run();
+    assert_eq!(
+        findings,
+        vec![Finding::DrillLeaf {
+            log: 0,
+            index: 1,
+            key_hash: drill_key,
+        }]
+    );
+    // Without registration the same leaf is not watched at all (rule (a) scopes watched
+    // keys): nothing is flagged.
+    let dir2 = fixture_archive(&g, false, None);
+    let mut monitor2 = load_green(&g, dir2.path());
+    monitor2
+        .attach_served_record(&format!(
+            "{{\"pair\":[1,1],\"mirror\":\"abc2d.onion:443\",\"first_seen_day\":{},\"last_seen_day\":{}}}",
+            DAY - 1,
+            DAY
+        ))
+        .unwrap();
+    monitor2.attach_leaves_from_text(&leaves).unwrap();
+    assert_eq!(monitor2.run(), vec![]);
 }

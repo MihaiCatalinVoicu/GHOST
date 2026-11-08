@@ -14,9 +14,10 @@ fn main() {
         Some("operator") => run_operator(&args[1..]),
         Some("fetch") => run_fetch(&args[1..]),
         Some("monitor") => run_monitor(&args[1..]),
+        Some("served-once") => run_served_once(&args[1..]),
         _ => {
             eprintln!(
-                "usage:\n  ghost-verify apk --bundle <current.ghrb> --apk <signed.apk> --root <anchor.ghrt> --day <epoch day> --now <unix seconds> [--sdk <n>...]\n  ghost-verify libs --bundle <b> --apk <a> --root <r> --day <n> --now <n>\n  ghost-verify operator --bundle <b> --root <r> --binary <f> --kind relay|issuer --day <n> --now <n>\n  ghost-verify fetch --socks 127.0.0.1:9050 --mirror <onion:port> --path <p> --out <f> [--bound <bytes>] [--range a-b]\n  ghost-verify monitor --archive <dir> --root <anchor.ghrt> (--leaves <file> | --log-origin <o> --log-base-url <url> --log-key-hash <hex> --log-verification-key <hex>) [--schedule-key <hex>] [--served-record <file>] [--today <day>]"
+                "usage:\n  ghost-verify apk --bundle <current.ghrb> --apk <signed.apk> --root <anchor.ghrt> --day <epoch day> --now <unix seconds> [--sdk <n>...]\n  ghost-verify libs --bundle <b> --apk <a> --root <r> --day <n> --now <n>\n  ghost-verify operator --bundle <b> --root <r> --binary <f> --kind relay|issuer --day <n> --now <n>\n  ghost-verify fetch --socks 127.0.0.1:9050 --mirror <onion:port> --path <p> --out <f> [--bound <bytes>] [--range a-b]\n  ghost-verify monitor --archive <dir> --root <anchor.ghrt> (--leaves <file> | --log-origin <o> --log-base-url <url> --log-key-hash <hex> --log-verification-key <hex>) [--schedule-key <hex>] [--served-record <file>] [--today <day>] [--drill-key <hex32>...]\n  ghost-verify served-once --mirror <onion:port>... --record <file> --day <day> --bundle-path <p> [--bundle-file <f>] [--socks <addr>]"
             );
             exit(2);
         }
@@ -37,6 +38,7 @@ fn run_monitor(args: &[String]) {
     let mut schedule_key: Option<String> = None;
     let mut served_record: Option<PathBuf> = None;
     let mut today: Option<u32> = None;
+    let mut drill_keys: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> String {
@@ -57,6 +59,7 @@ fn run_monitor(args: &[String]) {
             "--schedule-key" => schedule_key = Some(take(&mut i)),
             "--served-record" => served_record = Some(PathBuf::from(take(&mut i))),
             "--today" => today = Some(take(&mut i).parse().unwrap_or_else(|_| exit(2))),
+            "--drill-key" => drill_keys.push(take(&mut i)),
             other => {
                 eprintln!("unknown argument {other}");
                 exit(2);
@@ -207,11 +210,114 @@ fn run_monitor(args: &[String]) {
             exit(1);
         }
     }
+    for key in drill_keys {
+        let b = hex::decode(key.trim()).unwrap_or_else(|_| {
+            eprintln!("REFUSED MONITOR_DRILL_KEY the --drill-key is not hex");
+            exit(1);
+        });
+        let key_hash: [u8; 32] = b.try_into().unwrap_or_else(|_| {
+            eprintln!("REFUSED MONITOR_DRILL_KEY the --drill-key is not 32 bytes");
+            exit(1);
+        });
+        monitor.register_drill_key(key_hash);
+    }
     let findings = monitor.run();
     for finding in &findings {
         println!("{finding}");
     }
-    exit(if findings.is_empty() { 0 } else { 1 });
+    // Rule (i): DRILL_LEAF is informational — drills are expected, and a run that saw only
+    // drills is not an alarm. Every other finding is.
+    let alarm = findings
+        .iter()
+        .any(|f| !matches!(f, ghost_verify::monitor::Finding::DrillLeaf { .. }));
+    exit(if alarm { 1 } else { 0 });
+}
+
+/// `served-once`: the buildable half of rule (f)'s loop (design §5.3). For every mirror,
+/// fetch `current.ghrb` (through the local Tor SOCKS proxy, or from the `--bundle-file`
+/// fixture seam — the same bytes serve every named mirror, which is what tests use), parse
+/// the manifest's pair, merge the sighting into the record (first day min, last day max, one
+/// line per (pair, mirror)) and write it back atomically. The random-time scheduling (run at
+/// least daily at a random time) is the operator's calendar, out of scope here.
+fn run_served_once(args: &[String]) {
+    let mut mirrors: Vec<String> = Vec::new();
+    let mut record: Option<PathBuf> = None;
+    let mut day: Option<u32> = None;
+    let mut bundle_path: Option<String> = None;
+    let mut bundle_file: Option<PathBuf> = None;
+    let mut socks = "127.0.0.1:9050".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        let take = |i: &mut usize| -> String {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| {
+                eprintln!("missing value for {}", args[*i - 1]);
+                exit(2);
+            })
+        };
+        match args[i].as_str() {
+            "--mirror" => mirrors.push(take(&mut i)),
+            "--record" => record = Some(PathBuf::from(take(&mut i))),
+            "--day" => day = Some(take(&mut i).parse().unwrap_or_else(|_| exit(2))),
+            "--bundle-path" => bundle_path = Some(take(&mut i)),
+            "--bundle-file" => bundle_file = Some(PathBuf::from(take(&mut i))),
+            "--socks" => socks = take(&mut i),
+            other => {
+                eprintln!("unknown argument {other}");
+                exit(2);
+            }
+        }
+        i += 1;
+    }
+    let (record, day) = match (record, day) {
+        (Some(r), Some(d)) => (r, d),
+        _ => {
+            eprintln!("served-once needs --record and --day");
+            exit(2);
+        }
+    };
+    if mirrors.is_empty() {
+        eprintln!("served-once needs at least one --mirror");
+        exit(2);
+    }
+    // The fetch seam: the fixture file serves every mirror without Tor; a real run goes
+    // through the SOCKS proxy at `socks` (§5.3: a local Tor).
+    let fetch = move |mirror: &str| -> Result<Vec<u8>, String> {
+        if let Some(file) = &bundle_file {
+            return std::fs::read(file).map_err(|e| format!("cannot read the fixture bundle: {e}"));
+        }
+        let path = bundle_path.as_deref().unwrap_or_else(|| {
+            eprintln!("served-once needs --bundle-path for a real fetch (the fixture --bundle-file needs none)");
+            exit(2);
+        });
+        let (host, port) = match mirror.rsplit_once(':') {
+            Some((h, p)) => (
+                h.to_string(),
+                p.parse().map_err(|_| "mirror port does not parse")?,
+            ),
+            None => (mirror.to_string(), 80u16),
+        };
+        ghost_verify::fetch::socks_fetch(
+            &socks,
+            &host,
+            port,
+            path,
+            None,
+            ghost_verify::fetch::DEFAULT_BOUND,
+        )
+    };
+    match ghost_verify::archive::served_once(&mirrors, &record, day, &fetch) {
+        Ok(seen) => {
+            for (mirror, pair) in &seen {
+                println!("SERVED mirror={mirror} pair={}:{}", pair.0, pair.1);
+            }
+            exit(0);
+        }
+        Err(e) => {
+            println!("REFUSED SERVED_ONCE {e}");
+            exit(1);
+        }
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

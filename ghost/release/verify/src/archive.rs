@@ -212,6 +212,7 @@ pub struct Monitor {
     leaves: Vec<DecodedLeaf>,
     observations: Vec<Observation>,
     archive_day: Vec<((u32, u64), u32)>,
+    drill_keys: Vec<[u8; 32]>,
 }
 
 impl Monitor {
@@ -251,6 +252,7 @@ impl Monitor {
             leaves: Vec::new(),
             observations: Vec::new(),
             archive_day: Vec::new(),
+            drill_keys: Vec::new(),
         };
         // The anchor answers root leaves itself.
         m.root_metas.push(RootMeta {
@@ -542,7 +544,17 @@ impl Monitor {
             .collect()
     }
 
-    /// Runs the rules and returns the findings (deterministic in input order).
+    /// Registers a drill root's release/root key hash (rule (i); repeatable as the CLI's
+    /// `--drill-key`). Leaves under registered drill keys report as drills, never as releases.
+    pub fn register_drill_key(&mut self, key_hash: [u8; 32]) {
+        if !self.drill_keys.contains(&key_hash) {
+            self.drill_keys.push(key_hash);
+        }
+    }
+
+    /// Runs the rules and returns the findings (deterministic in input order). Drill findings
+    /// ([`Finding::DrillLeaf`]) are informational: the CLI counts them separately and they
+    /// alone never set its exit code.
     pub fn run(&self) -> Vec<Finding> {
         let views = self.archive_view();
         crate::monitor::run(&MonitorInput {
@@ -554,6 +566,7 @@ impl Monitor {
             today: self.today,
             archive: &views,
             es: &self.es,
+            drill_keys: &self.drill_keys,
         })
     }
 }
@@ -607,4 +620,100 @@ pub fn parse_served_line(line: &str) -> Result<Observation, &'static str> {
         first_seen_day: first as u32,
         last_seen_day: last as u32,
     })
+}
+
+/// The record after one more observation: `first_seen_day` is the minimum, `last_seen_day`
+/// the maximum over every sighting of the same `(pair, mirror)`; a new (pair, mirror) appends
+/// its own line. One line per `(pair, mirror)`, the record's invariant.
+pub fn merge_observation(record: &mut Vec<Observation>, pair: (u32, u64), mirror: &[u8], day: u32) {
+    match record
+        .iter_mut()
+        .find(|o| o.pair == pair && o.mirror == mirror)
+    {
+        Some(o) => {
+            o.first_seen_day = o.first_seen_day.min(day);
+            o.last_seen_day = o.last_seen_day.max(day);
+        }
+        None => record.push(Observation {
+            pair,
+            mirror: mirror.to_vec(),
+            first_seen_day: day,
+            last_seen_day: day,
+        }),
+    }
+}
+
+/// The record as NDJSON — the exact line shape [`parse_served_line`] reads.
+pub fn record_text(record: &[Observation]) -> String {
+    let mut out = String::new();
+    for o in record {
+        out.push_str(&format!(
+            "{{\"pair\":[{},{}],\"mirror\":\"{}\",\"first_seen_day\":{},\"last_seen_day\":{}}}\n",
+            o.pair.0,
+            o.pair.1,
+            String::from_utf8_lossy(&o.mirror),
+            o.first_seen_day,
+            o.last_seen_day
+        ));
+    }
+    out
+}
+
+/// Reads a record file (absent = empty; malformed = refused).
+pub fn parse_record(text: &str) -> Result<Vec<Observation>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        out.push(parse_served_line(line).map_err(|e| format!("record line {}: {e}", n + 1))?);
+    }
+    Ok(out)
+}
+
+/// Writes the record atomically (a sibling temp file + rename), so a reader never sees a
+/// half-written record.
+pub fn write_record_atomic(path: &Path, record: &[Observation]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, record_text(record))
+        .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("cannot rename the record into place: {e}"))
+}
+
+/// The `--served-once` core (design §5.3 rule (f)'s buildable half): for every mirror, fetch
+/// `current.ghrb` through `fetch`, parse the manifest's pair, merge the sighting at `day`
+/// into the record at `record_path`, and write it back atomically. All-or-nothing: a mirror
+/// that fails refuses the run before anything is written. Returns the observed
+/// `(mirror, pair)` list.
+///
+/// `fetch` is the seam: the CLI wires the crate's SOCKS fetch (or the `--bundle-file`
+/// fixture), tests close over fixture bytes — no Tor anywhere in tests.
+pub fn served_once(
+    mirrors: &[String],
+    record_path: &Path,
+    day: u32,
+    fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<(String, (u32, u64))>, String> {
+    let mut record = match std::fs::read_to_string(record_path) {
+        Ok(text) => parse_record(&text)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(format!("cannot read {}: {e}", record_path.display())),
+    };
+    let mut seen = Vec::new();
+    for mirror in mirrors {
+        let bytes = fetch(mirror).map_err(|e| format!("mirror {mirror}: {e}"))?;
+        let bundle = ghost_client_release::bundle::GHRB::parse(&bytes)
+            .map_err(|e| format!("mirror {mirror}: the bundle does not parse: {e}"))?;
+        let pair = crate::monitor::manifest_pair(&bundle.manifest);
+        merge_observation(&mut record, pair, mirror.as_bytes(), day);
+        seen.push((mirror.clone(), pair));
+    }
+    if let Some(parent) = record_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+    }
+    write_record_atomic(record_path, &record)?;
+    Ok(seen)
 }

@@ -59,6 +59,7 @@ fn clean_run_finds_nothing() {
         today: DAY,
         archive: &[],
         es: &[],
+        drill_keys: &[],
     };
     assert_eq!(run(&input), vec![]);
 }
@@ -130,6 +131,7 @@ fn the_rules_fire_one_by_one() {
         today: DAY,
         archive: &[],
         es: &[],
+        drill_keys: &[],
     };
     let findings = run(&input);
     assert!(findings.contains(&Finding::UnmatchedLeaf {
@@ -453,4 +455,117 @@ fn rule_h_flags_a_decreasing_issued_day() {
         previous_seq: 1,
         previous_day: DAY,
     }));
+}
+
+#[test]
+fn rule_i_reports_a_registered_drill_leaf_and_never_as_a_release() {
+    let (w, g) = green();
+    // The drill key is the policy root's own release key: registered, its leaf reports as a
+    // drill; unregistered, the same leaf hits the existing UNMATCHED_LEAF path (rule (a)
+    // watches the policy root's keys). A stranger key the monitor was not taught at all would
+    // not be watched either — rule (a) scopes watched keys (§5.3).
+    let drill_key = w.release_key_id();
+    let checksum = sha256(b"a drill manifest the release archive does not hold");
+    let leaf = || DecodedLeaf {
+        index: 7,
+        checksum,
+        key_hash: drill_key,
+        doc: LeafDoc::Unknown,
+    };
+    let root = GHRT::parse(&g.root_doc).unwrap();
+    let run_with = |drill_keys: &[[u8; 32]]| {
+        let leaves = vec![leaf()];
+        let input = MonitorInput {
+            root: &root,
+            logs: &[leaves],
+            served: &[],
+            observations: &[],
+            archive_day: &[],
+            today: DAY,
+            archive: &[],
+            es: &[],
+            drill_keys,
+        };
+        run(&input)
+    };
+    // Registered: exactly the drill line, never UnmatchedLeaf.
+    assert_eq!(
+        run_with(&[drill_key]),
+        vec![Finding::DrillLeaf {
+            log: 0,
+            index: 7,
+            key_hash: drill_key,
+        }]
+    );
+    assert_eq!(
+        run_with(&[drill_key])[0].to_string(),
+        format!(
+            "FLAG DRILL_LEAF log=0 index=7 key_hash={}",
+            hex::encode(drill_key)
+        )
+    );
+    // Unregistered: the existing behaviour — a watched key the archive cannot stand behind.
+    assert_eq!(
+        run_with(&[]),
+        vec![Finding::UnmatchedLeaf {
+            log: 0,
+            index: 7,
+            key_hash: drill_key,
+        }]
+    );
+    // A real violation beside a drill is not silenced: the drill leaf reports as a drill
+    // (informational), the watched key's unknown leaf still alarms — and the alarm predicate
+    // the CLI's exit code uses (any non-drill finding) sees only the second one.
+    let drill_root_key = sha256(b"the drill root's own key hash");
+    let drill_leaf = DecodedLeaf {
+        index: 7,
+        checksum,
+        key_hash: drill_root_key,
+        doc: LeafDoc::Unknown,
+    };
+    let real_leaf = DecodedLeaf {
+        index: 3,
+        checksum: sha256(b"a real release the archive lacks"),
+        key_hash: drill_key,
+        doc: LeafDoc::Unknown,
+    };
+    let leaves = vec![drill_leaf, real_leaf];
+    let input = MonitorInput {
+        root: &root,
+        logs: &[leaves],
+        served: &[],
+        observations: &[],
+        archive_day: &[],
+        today: DAY,
+        archive: &[],
+        es: &[],
+        drill_keys: &[drill_root_key],
+    };
+    let findings = run(&input);
+    assert_eq!(
+        findings,
+        vec![
+            Finding::DrillLeaf {
+                log: 0,
+                index: 7,
+                key_hash: drill_root_key,
+            },
+            Finding::UnmatchedLeaf {
+                log: 0,
+                index: 3,
+                key_hash: drill_key,
+            },
+        ]
+    );
+    let alarm = findings
+        .iter()
+        .any(|f| !matches!(f, Finding::DrillLeaf { .. }));
+    assert!(alarm, "the real violation alarms");
+    let drills_only = run_with(&[drill_key]);
+    assert!(
+        !drills_only
+            .iter()
+            .any(|f| !matches!(f, Finding::DrillLeaf { .. })),
+        "drills alone are not an alarm"
+    );
 }

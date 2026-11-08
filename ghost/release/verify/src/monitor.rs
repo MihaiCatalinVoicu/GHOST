@@ -68,7 +68,7 @@ pub struct Served {
 
 /// The observation series behind rule (f)'s short-window clause: the days a pair was observed
 /// served, per mirror.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     pub pair: (u32, u64),
     pub mirror: Vec<u8>,
@@ -102,6 +102,15 @@ pub struct ArchiveManifest<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
+    /// (i) a leaf signed by a registered drill root's key (design §5.3 rule (i)): reported as
+    /// a drill, never as a release — informational, counted separately, never alone an
+    /// exit-code-1 finding, and it reclassifies only its own leaves (rules (a)/(b) for the
+    /// policy's real keys are untouched).
+    DrillLeaf {
+        log: usize,
+        index: u64,
+        key_hash: [u8; 32],
+    },
     /// (a) a key the policy watches submitted a leaf the archive cannot stand behind.
     UnmatchedLeaf {
         log: usize,
@@ -225,6 +234,17 @@ impl std::fmt::Display for Finding {
             write!(f, "pair={}:{}", pair.0, pair.1)
         };
         match self {
+            Finding::DrillLeaf {
+                log,
+                index,
+                key_hash,
+            } => {
+                write!(
+                    f,
+                    "FLAG DRILL_LEAF log={log} index={index} key_hash={}",
+                    hex::encode(key_hash)
+                )
+            }
             Finding::UnmatchedLeaf {
                 log,
                 index,
@@ -407,6 +427,10 @@ pub struct MonitorInput<'a> {
     /// and the document, signature-verified by the caller (exactly the client's `Schedule::
     /// verify`). Any order; the rule walks it in `es_seq`.
     pub es: &'a [(u64, Schedule)],
+    /// Rule (i): the drill roots' release/root key hashes, registered by the caller (the
+    /// monitor cannot discover drill keys by itself). A leaf under a registered drill key is
+    /// reported as a drill, never as a release — see [`Finding::DrillLeaf`].
+    pub drill_keys: &'a [[u8; 32]],
 }
 
 /// The ABIs whose library/symbol build-id pairs rule (e) checks.
@@ -426,6 +450,9 @@ const ABI_PAIRS: [(ArtifactKind, ArtifactKind, &str); 2] = [
 /// Runs the rules this module owns. Findings are deterministic in input order.
 pub fn run(input: &MonitorInput<'_>) -> Vec<Finding> {
     let mut out = Vec::new();
+    // Watched keys: the anchor root's release and root keys (rule (a) scopes "any GHOST
+    // root") plus every registered drill root's key hashes — registration is how the monitor
+    // learns keys it cannot discover (rule (i)).
     let watched: Vec<[u8; 32]> = input
         .root
         .body
@@ -434,12 +461,30 @@ pub fn run(input: &MonitorInput<'_>) -> Vec<Finding> {
         .iter()
         .chain(input.root.body.root.keys.iter())
         .map(ghost_client_release::key_id)
+        .chain(input.drill_keys.iter().copied())
         .collect();
 
-    // (a): watched keys' leaves must stand on the archive.
+    // (i): a leaf signed by a drill root's key is reported as a drill, never as a release.
+    // The reclassification comes first: it only reclassifies its own leaves and never
+    // silences rules (a)/(b) for the policy's real keys. Informational — the CLI counts it
+    // separately and it alone never sets the exit code.
     for (log, leaves) in input.logs.iter().enumerate() {
         for leaf in leaves {
-            if watched.contains(&leaf.key_hash) {
+            if input.drill_keys.contains(&leaf.key_hash) {
+                out.push(Finding::DrillLeaf {
+                    log,
+                    index: leaf.index,
+                    key_hash: leaf.key_hash,
+                });
+            }
+        }
+    }
+
+    // (a): watched keys' leaves must stand on the archive. Drill keys were reclassified by
+    // rule (i) above and never reach this branch.
+    for (log, leaves) in input.logs.iter().enumerate() {
+        for leaf in leaves {
+            if watched.contains(&leaf.key_hash) && !input.drill_keys.contains(&leaf.key_hash) {
                 match &leaf.doc {
                     LeafDoc::Unknown => out.push(Finding::UnmatchedLeaf {
                         log,

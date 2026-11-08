@@ -504,6 +504,7 @@ pub fn archive_findings(
         today: DAY,
         archive,
         es,
+        drill_keys: &[],
     };
     run(&input)
 }
