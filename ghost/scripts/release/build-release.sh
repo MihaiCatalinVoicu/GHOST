@@ -94,6 +94,7 @@ android_half() {
   bash scripts/build-native.sh "$WORK/jniLibs" "$OUT/lib/native-libs.sha256" "$WORK/symbols"
   mkdir -p "$OUT/lib" "$OUT/symbols"
   for abi in arm64-v8a x86_64; do
+    mkdir -p "$OUT/lib/$abi" "$OUT/symbols/$abi"
     install -m 0644 "$WORK/jniLibs/$abi/libghost_client_net.so" "$OUT/lib/$abi/libghost_client_net.so"
     install -m 0644 "$WORK/symbols/$abi/libghost_client_net.so.debug" "$OUT/symbols/$abi/libghost_client_net.so.debug"
   done
