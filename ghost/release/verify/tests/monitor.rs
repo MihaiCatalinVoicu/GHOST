@@ -569,11 +569,12 @@ fn green() -> (World, Green) {
     let (_, signed) = apk_pair(900 + 100);
     let (es1_seq, es1) = es_doc(|_| {});
     let (es2_seq, es2) = es_doc(|c| c.seq = es1_seq + 1);
+    let root_doc = std::fs::read(&w.root).unwrap();
     (
         w,
         Green {
             manifest,
-            root_doc: std::fs::read(&w.root).unwrap(),
+            root_doc,
             signed,
             lib: tiny_elf(&[7u8; 20]),
             sym: tiny_elf(&[7u8; 20]),
