@@ -64,7 +64,7 @@ if [ "${GHOST_RELEASE_CROSS:-0}" = 1 ]; then
   mkdir -p "$PUB"
   tar -xf "$OUT/ghost-public-$TAG.tar" -C "$PUB"
   cross_one() {
-    local target="$1" name="$2"
+    local target="$1" name="$2" exe="${3:-}"
     # Works with and without rustup: rustc refuses an unknown target either way (the image
     # installs stds by direct archive, no rustup).
     if ! rustc --print target-libdir --target "$target" >/dev/null 2>&1; then
@@ -72,12 +72,12 @@ if [ "${GHOST_RELEASE_CROSS:-0}" = 1 ]; then
       exit 1
     fi
     ( cd "$PUB" && CARGO_TARGET_DIR="$WORK/target-public" cargo build --release --locked --target "$target" )
-    install -m 0755 "$WORK/target-public/$target/release/ghost-verify" "$OUT/bin/$name"
+    install -m 0755 "$WORK/target-public/$target/release/ghost-verify$exe" "$OUT/bin/$name"
   }
   cross_one x86_64-unknown-linux-musl ghost-verify-x86_64-linux
   cross_one aarch64-unknown-linux-musl ghost-verify-aarch64-linux
   if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-    cross_one x86_64-pc-windows-gnu ghost-verify-x86_64-windows.exe
+    cross_one x86_64-pc-windows-gnu ghost-verify-x86_64-windows.exe .exe
   else
     echo "GHOST_RELEASE_CROSS=1 and x86_64-w64-mingw32-gcc is absent: mingw-w64 is not in the builder image yet (declared, not pinned) — the Windows target cannot build" >&2
     exit 1
