@@ -5,10 +5,11 @@
 # the operators' builds), and writes SHA256SUMS over the results plus the b_digest line the
 # owner compares on an independent device (RK1 step 2, CR-M5).
 #
-# What this script deliberately is not (later slices): the pinned builder image (infra/builder/,
-# G-D2), the three environments A/B/C, the Android half (build-native.sh, apksigner, zipalign)
-# and the notices/SBOM/archive-index steps. Everything here is host-toolchain-only, so a
-# mismatch investigation can run it on any checkout.
+# What this script deliberately is not (later slices): the three environments A/B/C, the
+# Android half (build-native.sh, apksigner, zipalign) and the notices/SBOM/archive-index
+# steps. Everything here is host-toolchain-only, so a mismatch investigation can run it on
+# any checkout. The ghost-verify cross targets (§6.1 kinds 19-22, from the exported public
+# tree) need cross toolchains and run only under GHOST_RELEASE_CROSS=1 — see step (3).
 set -euo pipefail
 
 TAG="${1:?usage: build-release.sh <tag> [--out <dir>]}"
@@ -50,7 +51,42 @@ build_one ghost-issuer-ops ghost-issuer-ops
 build_one ghost-release-ops ghost-release-ops
 build_one ghost-verify ghost-verify
 
-# (3) The sums and the value job B prints (and the owner recomputes independently).
+# (3) ghost-verify's public targets (design §6.1 kinds 19-22): export the public source tree
+# (artifact kind 19) and build inside it, so the binaries are reproducible from what users
+# read. Behind GHOST_RELEASE_CROSS until the builder image carries every toolchain piece:
+# the musl rust-stds are pinned in infra/builder (pins.txt/Dockerfile, official static.rust-
+# lang.org SHA-256s) and need an image rebuild; the x86_64-w64-mingw32 linker (mingw-w64) is
+# declared in pins.txt but deliberately not pinned into the image yet — the Windows target
+# fails loudly under the guard until that deeper slice lands.
+if [ "${GHOST_RELEASE_CROSS:-0}" = 1 ]; then
+  "$WORK/target/release/ghost-release-ops" export-public --tag "$TAG" --out "$OUT"
+  PUB="$WORK/public-tree"
+  mkdir -p "$PUB"
+  tar -xf "$OUT/ghost-public-$TAG.tar" -C "$PUB"
+  cross_one() {
+    local target="$1" name="$2"
+    # Works with and without rustup: rustc refuses an unknown target either way (the image
+    # installs stds by direct archive, no rustup).
+    if ! rustc --print target-libdir --target "$target" >/dev/null 2>&1; then
+      echo "GHOST_RELEASE_CROSS=1 and $target has no installed std: rebuild the builder image (its pins.txt gained the rust-std archives)" >&2
+      exit 1
+    fi
+    ( cd "$PUB" && CARGO_TARGET_DIR="$WORK/target-public" cargo build --release --locked --target "$target" )
+    install -m 0755 "$WORK/target-public/$target/release/ghost-verify" "$OUT/bin/$name"
+  }
+  cross_one x86_64-unknown-linux-musl ghost-verify-x86_64-linux
+  cross_one aarch64-unknown-linux-musl ghost-verify-aarch64-linux
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    cross_one x86_64-pc-windows-gnu ghost-verify-x86_64-windows.exe
+  else
+    echo "GHOST_RELEASE_CROSS=1 and x86_64-w64-mingw32-gcc is absent: mingw-w64 is not in the builder image yet (declared, not pinned) — the Windows target cannot build" >&2
+    exit 1
+  fi
+else
+  echo "note: ghost-verify cross targets skipped (GHOST_RELEASE_CROSS=1 enables them; design §6.1 kinds 19-22)" >&2
+fi
+
+# (4) The sums and the value job B prints (and the owner recomputes independently).
 cd "$OUT"
 sha256sum bin/* > SHA256SUMS
 BDIGEST="$(sha256sum SHA256SUMS | cut -c1-16)"

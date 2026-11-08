@@ -22,6 +22,15 @@ jdk            temurin 17.0.21+9, sha256 8b9b611d917e3dfd8419d3566b5949226f69b05
 rust           1.98.1-x86_64-unknown-linux-gnu, sha256 24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea  Dockerfile ARG RUST_SHA256
 rust-std       1.98.1-aarch64-linux-android, sha256 ba22ece6e6c2051bc20c05b2d7e809ec9fe1e656b02033424db30deca084c4a9  Dockerfile ARG
 rust-std       1.98.1-x86_64-linux-android, sha256 8bb372f26cc9813d3685a1bbd73ff04de8e3d4aeb6f3779c354436c594d3f013  Dockerfile ARG
+# ghost-verify's public targets (design §6.1 kinds 19-22): official SHA-256 from
+# static.rust-lang.org's channel manifest for 1.98.1 (same source as the pins above).
+# The musl stds make the static Linux targets buildable; the windows-gnu entry pins the
+# std only — the x86_64-w64-mingw32 LINKER (mingw-w64) is deliberately not in the image
+# yet (apt pinning for it is a deeper slice); build-release.sh fails loudly on the
+# Windows target under GHOST_RELEASE_CROSS=1 until it lands.
+rust-std       1.98.1-x86_64-unknown-linux-musl, sha256 ac111ad77967e98d0362e49a2c19121f3f54e4e68c247b90995e665687ebede8  Dockerfile ARG
+rust-std       1.98.1-aarch64-unknown-linux-musl, sha256 630ed4ccdc9877864aa3bd8689161dffd8987c7a923bf01e50c7d8affef7ae47  Dockerfile ARG
+rust-std       1.98.1-x86_64-pc-windows-gnu, sha256 0cda26447df0749bc84044be8c8083ac4dc87bf137c11cc31ec9673a6e2e0344  Dockerfile ARG (std only; the mingw-w64 linker is not pinned yet)
 cargo-ndk      4.1.2 (cargo install --locked), same pin as scripts/build-native.sh  Dockerfile
 gradle         9.7.1 via wrapper, distributionSha256Sum acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a  ghost/android/gradle/wrapper/gradle-wrapper.properties
 java_deps      ghost/android/gradle/verification-metadata.xml (Gradle dependency verification, sha256 per module)

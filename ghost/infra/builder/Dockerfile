@@ -69,6 +69,28 @@ RUN curl -fSL https://static.rust-lang.org/dist/rust-std-1.98.1-x86_64-linux-and
     && mkdir -p /tmp/std-x && tar -xzf /tmp/std-x.tar.gz -C /tmp/std-x --strip-components=1 \
     && /tmp/std-x/install.sh --prefix=/opt/rust \
     && rm -rf /tmp/std-x /tmp/std-x.tar.gz
+# ghost-verify's public targets (design §6.1 kinds 19-22; pins.txt). The musl stds build
+# the static Linux binaries from the exported public tree; the windows-gnu std is pinned
+# for when the mingw-w64 linker lands (build-release.sh's GHOST_RELEASE_CROSS guard fails
+# loudly on the Windows target until then — see pins.txt's note).
+ARG RUST_STD_X86_64_MUSL_SHA256=ac111ad77967e98d0362e49a2c19121f3f54e4e68c247b90995e665687ebede8
+ARG RUST_STD_AARCH64_MUSL_SHA256=630ed4ccdc9877864aa3bd8689161dffd8987c7a923bf01e50c7d8affef7ae47
+ARG RUST_STD_WINDOWS_GNU_SHA256=0cda26447df0749bc84044be8c8083ac4dc87bf137c11cc31ec9673a6e2e0344
+RUN curl -fSL https://static.rust-lang.org/dist/rust-std-1.98.1-x86_64-unknown-linux-musl.tar.gz -o /tmp/std-xm.tar.gz \
+    && echo "$RUST_STD_X86_64_MUSL_SHA256  /tmp/std-xm.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/std-xm && tar -xzf /tmp/std-xm.tar.gz -C /tmp/std-xm --strip-components=1 \
+    && /tmp/std-xm/install.sh --prefix=/opt/rust \
+    && rm -rf /tmp/std-xm /tmp/std-xm.tar.gz
+RUN curl -fSL https://static.rust-lang.org/dist/rust-std-1.98.1-aarch64-unknown-linux-musl.tar.gz -o /tmp/std-am.tar.gz \
+    && echo "$RUST_STD_AARCH64_MUSL_SHA256  /tmp/std-am.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/std-am && tar -xzf /tmp/std-am.tar.gz -C /tmp/std-am --strip-components=1 \
+    && /tmp/std-am/install.sh --prefix=/opt/rust \
+    && rm -rf /tmp/std-am /tmp/std-am.tar.gz
+RUN curl -fSL https://static.rust-lang.org/dist/rust-std-1.98.1-x86_64-pc-windows-gnu.tar.gz -o /tmp/std-w.tar.gz \
+    && echo "$RUST_STD_WINDOWS_GNU_SHA256  /tmp/std-w.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/std-w && tar -xzf /tmp/std-w.tar.gz -C /tmp/std-w --strip-components=1 \
+    && /tmp/std-w/install.sh --prefix=/opt/rust \
+    && rm -rf /tmp/std-w /tmp/std-w.tar.gz
 ENV PATH=/opt/rust/bin:$PATH \
     CARGO_HOME=/opt/cargo
 RUN mkdir -p /opt/cargo && chmod -R a+w /opt/cargo /opt/rust
