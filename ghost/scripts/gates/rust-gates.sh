@@ -45,5 +45,8 @@ bash "$GATES_DIR/entitlement-schedule.sh" || fail "entitlement-schedule"
 # every client RPC over loopback TCP and the committed file must diff equal to a regeneration
 # (the wire half of NI-U5's two-release comparison harness).
 bash "$GATES_DIR/wire-transcript.sh" || fail "wire-transcript"
+# G-D6 (Phase 14 design §12.1): ghost-client-update in the shipped graph with no feature of
+# its own (the mutants switch, G-R2's method) and the crate's source purity (no fs/net/clock/log).
+bash "$GATES_DIR/update-rust-purity.sh" || fail "update-rust-purity"
 bash "$GATES_DIR/clippy-clearnet-fixture.sh" || fail "clippy-clearnet-fixture"
 finish rust-gates

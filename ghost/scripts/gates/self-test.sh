@@ -1402,6 +1402,44 @@ elif ! grep -qF "identity pattern" <<<"$pi_out"; then
 else
   echo "self-test ok: public-identity-scrub rejects an identity pattern in a release output"
 fi
+# Phase 14 (G-D2): builder-pins.sh on its fixture roots
+# (test-harness/gates/builder-pins/README.md). The hook names the scanned root; each case
+# must end as expected and report the named reason.
+BP_FIX="$HARNESS/builder-pins"
+bp_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain
+  local desc="$1" expect="$2" root="$3" want="$4" out got
+  if out="$(GHOST_BP_ROOT="$root" bash "$DIR/builder-pins.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: builder-pins $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: builder-pins $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: builder-pins $desc"
+  fi
+}
+bp_case "accepts the pinned builder tree" pass "$BP_FIX/clean" "OK"
+bp_case "refuses a drifted FROM" fail "$BP_FIX/from-drift" "not the pinned image"
+bp_case "refuses a download without a digest check" fail "$BP_FIX/unpinned-download" "without a digest check"
+bp_case "refuses a toolchain channel the pins do not name" fail "$BP_FIX/wrong-rust" "channel 1.99.0"
+bp_case "refuses a native-CPU flag in a build file" fail "$BP_FIX/native-flag" "-march=native"
+# Phase 14 (G-D6): update-rust-purity.sh on its fixture roots
+# (test-harness/gates/update-rust-purity/README.md). The saved-tree hook stands in for cargo.
+UP_FIX="$HARNESS/update-rust-purity"
+up_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain
+  local desc="$1" expect="$2" root="$3" want="$4" out got
+  if out="$(GHOST_ROOT="$root" GHOST_D6_TREE="$root/tree.txt" GHOST_D6_SOURCES="$root/client-core/update/src" bash "$DIR/update-rust-purity.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: update-rust-purity $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: update-rust-purity $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: update-rust-purity $desc"
+  fi
+}
+up_case "accepts the shipped-graph and purity clauses' clean fixture" pass "$UP_FIX/clean" "OK"
+up_case "refuses the mutants feature in the shipped graph" fail "$UP_FIX/feature" 'feature "mutants"'
+up_case "refuses the crate leaving the shipped graph" fail "$UP_FIX/absent" "absent from the shipped client graph"
+up_case "refuses an impure source" fail "$UP_FIX/impure" "println!"
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
