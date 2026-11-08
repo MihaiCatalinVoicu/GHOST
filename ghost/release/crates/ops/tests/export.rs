@@ -21,11 +21,11 @@ fn untar(bytes: &[u8]) -> Vec<(String, Vec<u8>, u64, u32)> {
             .trim_end_matches('\0')
             .to_string();
         let parse_octal = |f: &[u8]| -> u64 {
-            String::from_utf8_lossy(f)
+            let s = String::from_utf8_lossy(f)
                 .trim_end_matches('\0')
                 .trim()
-                .parse()
-                .unwrap()
+                .to_string();
+            u64::from_str_radix(&s, 8).unwrap()
         };
         let mode = parse_octal(&h[100..108]) as u32;
         let size = parse_octal(&h[124..136]) as usize;
@@ -170,7 +170,17 @@ fn the_tree_is_what_the_design_names() {
     ] {
         assert!(lock.contains(present), "lock keeps {present}");
     }
-    for absent in ["ghost-release-ops", "tokio", "arti-client", "tonic"] {
+    for absent in [
+        "ghost-release-ops",
+        "tokio",
+        "arti-client",
+        "tonic",
+        // Dev-dependency edges of the original lock do not reach the public manifests
+        // (ghost-blind-rsa's dev-only signer crate and its issuer-crypto tree).
+        "blind-rsa-signatures",
+        "crypto-bigint",
+        "base16ct",
+    ] {
         assert!(!lock.contains(absent), "lock drops {absent}");
     }
 }
