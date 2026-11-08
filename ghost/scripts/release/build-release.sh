@@ -24,6 +24,15 @@ trap 'rm -rf "$WORK"' EXIT
 git -C "$REPO" archive "$TAG" | tar -x -C "$WORK"
 cd "$WORK/ghost"
 
+# The recipe itself must come from the tag, not from the caller's tree: a stale or edited
+# working-tree copy would run a different recipe against the tag's sources (measured on
+# 2026-11-08: a not-yet-synced working tree silently skipped the cross block; the debugging
+# cost a container trace). Re-exec from the archive whenever the two differ.
+SELF="$WORK/ghost/scripts/release/build-release.sh"
+if ! cmp -s "$0" "$SELF" 2>/dev/null; then
+  exec bash "$SELF" "$TAG" ${OUT:+--out "$OUT"}
+fi
+
 # (2) The fixed environment (design §6.3's core; the image pins the rest). SOURCE_DATE_EPOCH
 # removes the one timestamp some toolchains embed; CARGO_NET_OFFLINE makes a forgotten lock
 # update fail instead of silently resolving fresh.

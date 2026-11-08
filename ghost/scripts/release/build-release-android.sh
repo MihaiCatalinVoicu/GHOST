@@ -24,6 +24,13 @@ trap 'rm -rf "$WORK"' EXIT
 git -C "$REPO" archive "$TAG" | tar -x -C "$WORK"
 cd "$WORK/ghost"
 
+# The recipe runs from the tag, not the caller's tree (same bootstrap as build-release.sh:
+# a stale working-tree copy must not define the recipe).
+SELF="$WORK/ghost/scripts/release/build-release-android.sh"
+if ! cmp -s "$0" "$SELF" 2>/dev/null; then
+  exec bash "$SELF" "$TAG" ${OUT:+--out "$OUT"}
+fi
+
 # (2) The fixed environment (design §6.3): no cache may survive between environments.
 export SOURCE_DATE_EPOCH="$(git -C "$REPO" log -1 --format=%ct "$TAG")"
 export GRADLE_USER_HOME="$WORK/.gradle"
