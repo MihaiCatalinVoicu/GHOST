@@ -92,7 +92,7 @@ and examples are not part of the public tree (`cargo test` is not supported
 here). Licence: MIT.
 ";
 
-fn ws_root() -> PathBuf {
+pub(crate) fn ws_root() -> PathBuf {
     // release/crates/ops -> the workspace root, resolved at RUNTIME from the current
     // directory's ancestors. `env!("CARGO_MANIFEST_DIR")` would bake the absolute build
     // path into the binary — path remapping does not cover that macro — and the

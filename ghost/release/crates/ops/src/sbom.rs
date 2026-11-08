@@ -21,12 +21,10 @@
 
 use std::path::Path;
 
-fn ws_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .expect("the workspace root resolves")
-}
+// The workspace root comes from export's runtime resolver: env!("CARGO_MANIFEST_DIR")
+// would bake the absolute build path into the binary and break the selfcheck's A/B
+// byte-equality (the export.rs ws_root carries the incident's documentation).
+pub(crate) use crate::export::ws_root;
 
 // ---------------------------------------------------------------------------
 // A minimal JSON reader: exactly what cargo metadata needs. Numbers are
