@@ -24,8 +24,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 404s); no pinned package needs it (verified: every pin resolves from main/updates alone).
 RUN rm -f /etc/apt/sources.list.d/ubuntu.sources \
     && printf '%s\n' \
-      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
-      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
+      'deb http://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
+      'deb http://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
       > /etc/apt/sources.list
 # Exact apt versions as of the base-image snapshot; pins.txt records them. gcc/glibc
 # versions are part of the release environment exactly like rustc's. Error-Mode=any turns
