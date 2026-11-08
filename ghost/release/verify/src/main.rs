@@ -157,7 +157,7 @@ fn run_monitor(args: &[String]) {
             .find(|l| l.origin == origin.as_bytes());
         let matches = match policy {
             Some(entry) => {
-                &ghost_client_release::key_id(&entry.key)[..] == key_hash.as_slice()
+                &ghost_client_release::key_id(&entry.pk)[..] == key_hash.as_slice()
                     && sha256_hex(&vkey) == hex::encode(&key_hash)
             }
             None => false,

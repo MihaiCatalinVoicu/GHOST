@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use ed25519_dalek::Signer;
+
 pub use ghost_client_release::manifest::GHRM;
 pub use ghost_client_release::root::GHRT;
 pub use ghost_client_release::{SigBlock, SigEntry};
@@ -213,7 +215,7 @@ pub fn tiny_elf(id: &[u8]) -> Vec<u8> {
 /// The committed test ES (the entitlement crate's public fixture) and its public test key
 /// (SHA-256("ghost/test/schedule-key") as the Ed25519 seed — test material, never pinned).
 pub const TEST_ES: &[u8] =
-    include_bytes!("../../../issuer/crates/entitlement/tests/fixtures/test_schedule.ghes");
+    include_bytes!("../../../../issuer/crates/entitlement/tests/fixtures/test_schedule.ghes");
 
 pub fn test_schedule_signing_key() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&sha256(b"ghost/test/schedule-key"))
@@ -225,6 +227,21 @@ pub fn test_schedule_key() -> [u8; 32] {
 
 /// The committed test ES re-signed with the test key after `edit` — rule (d)'s engine input,
 /// exactly what the caller produces from an archived ES file it verified.
+/// The committed test ES re-signed with an exact `seq` — the document bytes, for fixtures that
+/// must hash to a name (the archive's files are named by SHA-256) or be embedded in a manifest.
+pub fn es_bytes_with_seq(seq: u64) -> Vec<u8> {
+    let base = Schedule::verify_with_key(TEST_ES, &test_schedule_key()).unwrap();
+    let mut content = base.content().clone();
+    content.seq = seq;
+    let body = content.body().unwrap();
+    let msg = [ghost_entitlement::schedule::SIGNATURE_DOMAIN, &body].concat();
+    let sig = test_schedule_signing_key().sign(&msg);
+    let mut doc = body.clone();
+    doc.extend_from_slice(&sig.to_bytes());
+    Schedule::verify_with_key(&doc, &test_schedule_key()).unwrap();
+    doc
+}
+
 pub fn es_doc(
     edit: impl FnOnce(&mut ghost_entitlement::schedule::ScheduleContent),
 ) -> (u64, Schedule) {
@@ -283,8 +300,10 @@ impl World {
         write(&lib, tiny_elf(&[7u8; 20]));
         let sym = dir.join("lib.so.debug");
         write(&sym, tiny_elf(&[7u8; 20]));
+        // The manifest's es_seq is 2957 (below); embed a re-signed test ES at exactly that
+        // seq so the archive walker's declared-vs-document check (rule (d)'s input) agrees.
         let es_file = dir.join("es.ghes");
-        write(&es_file, TEST_ES);
+        write(&es_file, es_bytes_with_seq(2957));
         let mut toml = format!(
             "seq = {seq}\nissued_day = {issued_day}\nnot_after_day = {}\nfloor_version_code = {floor}\n",
             issued_day + 30

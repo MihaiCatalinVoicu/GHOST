@@ -41,7 +41,8 @@ fn fixture_archive(g: &Green, omit_apk: bool, swapped_apk: Option<&[u8]>) -> tem
         };
         put(&bytes);
     }
-    put(TEST_ES); // named by sha256(TEST_ES), the release's es_sha256
+    put(&es_bytes_with_seq(2957)); // named by its SHA-256, the release's es_sha256 — the
+                                   // same re-signed seq-2957 document the manifest embeds
     let log_key_hash = sha256(b"the policy log key");
     let index = format!(
         "1:1 {} {} 0 {}:{}\n",
@@ -130,7 +131,11 @@ fn a_missing_apk_surfaces_with_the_exact_flag_line() {
     let dir = fixture_archive(&g, true, None);
     let mut monitor = load_green(&g, dir.path());
     monitor
-        .attach_leaves_from_text(&leaves_file(&g, None))
+        .attach_served_record(&format!(
+            "{{\"pair\":[1,1],\"mirror\":\"abc2d.onion:443\",\"first_seen_day\":{},\"last_seen_day\":{}}}",
+            DAY - 1,
+            DAY
+        ))
         .unwrap();
     let findings = monitor.run();
     let m = GHRM::parse(&g.manifest).unwrap();
@@ -157,6 +162,13 @@ fn an_extra_watched_leaf_is_unmatched() {
     let mut monitor = load_green(&g, dir.path());
     monitor
         .attach_leaves_from_text(&leaves_file(&g, Some(w.release_key_id())))
+        .unwrap();
+    monitor
+        .attach_served_record(&format!(
+            "{{\"pair\":[1,1],\"mirror\":\"abc2d.onion:443\",\"first_seen_day\":{},\"last_seen_day\":{}}}",
+            DAY - 1,
+            DAY
+        ))
         .unwrap();
     let findings = monitor.run();
     assert_eq!(findings.len(), 1);

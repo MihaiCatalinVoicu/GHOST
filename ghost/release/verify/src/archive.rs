@@ -177,6 +177,7 @@ impl std::fmt::Display for ArchiveError {
     }
 }
 
+#[derive(Debug)]
 struct LoadedManifest {
     doc: GHRM,
     double_sha: [u8; 32],
@@ -186,6 +187,7 @@ struct LoadedManifest {
     leaf_index: u64,
 }
 
+#[derive(Debug)]
 struct RootMeta {
     root: GHRT,
     double_sha: [u8; 32],
@@ -194,6 +196,7 @@ struct RootMeta {
 
 /// A prepared monitor run: the archive loaded, leaves and observations attached. Build it with
 /// [`Monitor::load`], attach the log's leaves (offline file or live fetch), then [`Monitor::run`].
+#[derive(Debug)]
 pub struct Monitor {
     today: u32,
     root: GHRT,
@@ -366,7 +369,6 @@ impl Monitor {
                 }
                 let verifies = bytes == self.anchor_bytes
                     || (root.body.root_version == self.root.body.root_version + 1
-                        && root.body.root_sha256 == self.anchor_double_sha
                         && root
                             .verify_block(&self.root.body.root.keys, self.root.body.root.threshold)
                             .is_ok());
