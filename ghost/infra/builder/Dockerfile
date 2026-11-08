@@ -17,18 +17,21 @@ FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f57
 ENV DEBIAN_FRONTEND=noninteractive
 # The apt archive is a moving target: a version the pins name can disappear from the live
 # archive between two image builds (measured 2026-11-08: ca-certificates=20260816ubuntu0.24.04.2
-# gone from noble-updates ten days after the pins were taken). Every apt source therefore
+# gone from the live archive ten days after the pins were taken). Every apt source therefore
 # points at the pinned Ubuntu snapshot (pins.txt: apt-snapshot), and the exact package
 # versions below are recorded there — the same discipline as the toolchain archives.
+# noble-security is absent from the snapshot service at this timestamp (one index always
+# 404s); no pinned package needs it (verified: every pin resolves from main/updates alone).
 RUN rm -f /etc/apt/sources.list.d/ubuntu.sources \
     && printf '%s\n' \
       'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
       'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
-      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-security main restricted universe multiverse' \
       > /etc/apt/sources.list
 # Exact apt versions as of the base-image snapshot; pins.txt records them. gcc/glibc
-# versions are part of the release environment exactly like rustc's.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# versions are part of the release environment exactly like rustc's. Error-Mode=any turns
+# a missing index into a hard failure instead of a half-updated cache.
+RUN apt-get update -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends \
       build-essential=12.10ubuntu1 \
       ca-certificates=20260816ubuntu0.24.04.2 \
       curl=8.5.0-2ubuntu10.16 \
