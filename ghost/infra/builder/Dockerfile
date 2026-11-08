@@ -15,17 +15,21 @@
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 ENV DEBIAN_FRONTEND=noninteractive
-# The apt archive is a moving target: a version the pins name can disappear from the live
-# archive between two image builds (measured 2026-11-08: ca-certificates=20260816ubuntu0.24.04.2
-# gone from the live archive ten days after the pins were taken). Every apt source therefore
-# points at the pinned Ubuntu snapshot (pins.txt: apt-snapshot), and the exact package
-# versions below are recorded there — the same discipline as the toolchain archives.
-# noble-security is absent from the snapshot service at this timestamp (one index always
-# 404s); no pinned package needs it (verified: every pin resolves from main/updates alone).
+# Bootstrap TLS trust from the live archive over HTTP (the base image's own sources; the
+# snapshot service answers HTTPS only, and ca-certificates cannot come from the snapshot
+# before TLS works). The version floats once here; the pinned phase right after installs
+# the exact set (ca-certificates included) from the snapshot. The live archive is a moving
+# target — a pinned version can disappear between two image builds (measured 2026-11-08) —
+# which is why the pinned set does not come from it.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# noble-security is absent from the snapshot service at this timestamp (verified: no pin
+# needs it). Error-Mode=any turns a missing index into a hard failure, not a half-updated
+# cache.
 RUN rm -f /etc/apt/sources.list.d/ubuntu.sources \
     && printf '%s\n' \
-      'deb http://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
-      'deb http://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
+      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
+      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
       > /etc/apt/sources.list
 # Exact apt versions as of the base-image snapshot; pins.txt records them. gcc/glibc
 # versions are part of the release environment exactly like rustc's. Error-Mode=any turns
