@@ -16,7 +16,7 @@ FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f57
 
 ENV DEBIAN_FRONTEND=noninteractive
 # The apt archive is a moving target: a version the pins name can disappear from the live
-# archive between two image builds (measured 2026-11-08: ca-certificates=20260816ubuntu0.24.04.1
+# archive between two image builds (measured 2026-11-08: ca-certificates=20260816ubuntu0.24.04.2
 # gone from noble-updates ten days after the pins were taken). Every apt source therefore
 # points at the pinned Ubuntu snapshot (pins.txt: apt-snapshot), and the exact package
 # versions below are recorded there — the same discipline as the toolchain archives.
@@ -30,7 +30,7 @@ RUN rm -f /etc/apt/sources.list.d/ubuntu.sources \
 # versions are part of the release environment exactly like rustc's.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential=12.10ubuntu1 \
-      ca-certificates=20260816ubuntu0.24.04.1 \
+      ca-certificates=20260816ubuntu0.24.04.2 \
       curl=8.5.0-2ubuntu10.16 \
       git=1:2.43.0-1ubuntu7.4 \
       g++-mingw-w64-x86-64=13.2.0-6ubuntu1+26.1 \

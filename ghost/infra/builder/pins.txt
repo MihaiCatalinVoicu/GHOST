@@ -11,7 +11,7 @@
 apt-snapshot 20261026T000000Z  https://snapshot.ubuntu.com/ubuntu/20261026T000000Z  Dockerfile sources.list (toate cele trei suite; fără el arhiva live pierde versiunile pinuite între două builduri — măsurat 2026-11-08)
 image        ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac  Dockerfile FROM
 build-essential  12.10ubuntu1        apt pin (Dockerfile)
-ca-certificates  20260816ubuntu0.24.04.1  apt pin (Dockerfile)
+ca-certificates  20260816ubuntu0.24.04.2  apt pin (Dockerfile)
 curl             8.5.0-2ubuntu10.16  apt pin (Dockerfile)
 git              1:2.43.0-1ubuntu7.4 apt pin (Dockerfile)
 g++-mingw-w64-x86-64  13.2.0-6ubuntu1+26.1  apt pin (Dockerfile; ghost-verify-x86_64-windows, kind 22)
