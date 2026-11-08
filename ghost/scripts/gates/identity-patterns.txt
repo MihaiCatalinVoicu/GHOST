@@ -1,0 +1,16 @@
+# Identity patterns for gate G-D9 (docs/design/faza14-distribution.md row G-D9, D25, ADR-39
+# points 4 and 6): nothing published — release outputs, the public repository's tree, archive
+# texts — may carry the owner's personal identifiers. One literal pattern per line; matching
+# is ASCII case-insensitive. `ghost-release-ops export-public` sweeps every exported file
+# against this list at export time and refuses on a hit; G-D9 scans release outputs the same
+# way when the gate lands.
+#
+# The patterns name what is known in the private tree today: the owner's GitHub account and
+# its repository URL (the `origin` remote), the owner's e-mail (git authorship), and the
+# home/runner paths the design names. Additions need a D25 note.
+
+MihaiCatalinVoicu
+github.com/MihaiCatalinVoicu
+mihayyy175@gmail.com
+/home/runner/
+C:\Users\

@@ -13,7 +13,7 @@ use ghost_release_ops::{apkcore, build};
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned <unsigned.apk>\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned-length <n> --expect <sha256 hex>\n  ghost-release-ops keygen --out <dir> --spec root:3,release:2,...\n  ghost-release-ops root-build --config <toml> --keys <dir> --out <path>\n  ghost-release-ops chain-build --network <n> --roots <dir> --out <path>\n  ghost-release-ops proof-build --file <logged> --log-index <i> --log-key <n> --submit-key <n> --witness <n>... [--time <unix>] --keys <dir> --out <path>\n  ghost-release-ops manifest-build --source <toml> --root <ghrt> --keys <dir> --attest-keys n1,n2 [--prev <ghrm>] --out <path>\n  ghost-release-ops bundle --chain <ghrc> --root-proof <ghrp>... --manifest <ghrm> --manifest-proof <ghrp> --out <path>"
+        "usage:\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned <unsigned.apk>\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned-length <n> --expect <sha256 hex>\n  ghost-release-ops keygen --out <dir> --spec root:3,release:2,...\n  ghost-release-ops root-build --config <toml> --keys <dir> --out <path>\n  ghost-release-ops chain-build --network <n> --roots <dir> --out <path>\n  ghost-release-ops proof-build --file <logged> --log-index <i> --log-key <n> --submit-key <n> --witness <n>... [--time <unix>] --keys <dir> --out <path>\n  ghost-release-ops manifest-build --source <toml> --root <ghrt> --keys <dir> --attest-keys n1,n2 [--prev <ghrm>] --out <path>\n  ghost-release-ops export-public --tag <tag> --out <dir> [--mtime <unix>]\n  ghost-release-ops bundle --chain <ghrc> --root-proof <ghrp>... --manifest <ghrm> --manifest-proof <ghrp> --out <path>"
     );
     exit(2)
 }
@@ -59,9 +59,7 @@ fn parse_args() -> Args {
 }
 
 fn path(a: &Args, name: &str) -> PathBuf {
-    a.get(name)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| usage())
+    a.get(name).map(PathBuf::from).unwrap_or_else(|| usage())
 }
 
 fn main() {
@@ -113,7 +111,17 @@ fn main() {
             let today = a.get("today").and_then(|s| s.parse().ok());
             build::inspect(&path(&a, "bundle"), today)
         }
-        "sums-compare" => build::sums_compare(&path(&a, "a-local"), &path(&a, "a-job"), &path(&a, "b-job")),
+        "sums-compare" => {
+            build::sums_compare(&path(&a, "a-local"), &path(&a, "a-job"), &path(&a, "b-job"))
+        }
+        "export-public" => {
+            let mtime = a.get("mtime").and_then(|s| s.parse().ok());
+            ghost_release_ops::export::export_public(
+                a.get("tag").unwrap_or_else(|| usage()),
+                &path(&a, "out"),
+                mtime,
+            )
+        }
         "bundle" => {
             let proofs: Vec<PathBuf> = a.all("root-proof").iter().map(PathBuf::from).collect();
             build::bundle(
@@ -138,9 +146,13 @@ fn main() {
 
 fn run_apk_core(a: &Args) -> Result<String, String> {
     let apk_path = a.get("apk").unwrap_or_else(|| usage());
-    let file = std::fs::read(apk_path)
-        .map_err(|e| format!("cannot read {apk_path}: {e}"))?;
-    match (a.get("unsigned"), a.get("unsigned-length"), a.get("expect"), a.get("extract")) {
+    let file = std::fs::read(apk_path).map_err(|e| format!("cannot read {apk_path}: {e}"))?;
+    match (
+        a.get("unsigned"),
+        a.get("unsigned-length"),
+        a.get("expect"),
+        a.get("extract"),
+    ) {
         (Some(u), None, None, None) => {
             let ufile = std::fs::read(u).map_err(|e| format!("cannot read {u}: {e}"))?;
             apkcore::check_core(&file, &ufile)
@@ -163,7 +175,9 @@ fn run_apk_core(a: &Args) -> Result<String, String> {
                 apkcore::extract_core_inferred(&file).map_err(|e| e.to_string())?;
             let sha = sha256_hex(&core);
             std::fs::write(&out, &core).map_err(|e| format!("cannot write {out}: {e}"))?;
-            return Ok(format!("CORE_EXTRACTED path={out} unsigned_length={unsigned_length} sha256={sha}"));
+            return Ok(format!(
+                "CORE_EXTRACTED path={out} unsigned_length={unsigned_length} sha256={sha}"
+            ));
         }
         _ => usage(),
     }
