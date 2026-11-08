@@ -41,7 +41,10 @@ fn signer_v3(cert: &[u8], min_sdk: u32, max_sdk: u32) -> Vec<u8> {
     let mut signer = lp32(&signed);
     signer.extend_from_slice(&lp32(b"signatures"));
     signer.extend_from_slice(&lp32(b"public-key"));
-    lp32(&signer)
+    // The pair value is [lp32 signers] with each signer length-prefixed inside it — the level
+    // S5's drill fix added to the parser (a9c5317d); this S3 fixture predated the fix and
+    // encoded the single-level shape.
+    lp32(&lp32(&signer))
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -101,7 +104,9 @@ fn build_apk(content_e: usize, cd: &[u8], pairs: &[(u32, Vec<u8>)], pad_byte: u8
     let b = e + pad;
     let mut pairs_bytes = Vec::new();
     for (id, value) in pairs {
-        pairs_bytes.extend_from_slice(&le64(value.len() as u64));
+        // The pair size counts the id AND the value (the spec excludes only the size field) —
+        // the S5 drill fix (a9c5317d); this S3 fixture predated it and wrote the value length.
+        pairs_bytes.extend_from_slice(&le64(value.len() as u64 + 4));
         pairs_bytes.extend_from_slice(&le32(*id));
         pairs_bytes.extend_from_slice(value);
     }

@@ -675,22 +675,25 @@ fn rule_c_flags_a_missing_apk() {
 fn rule_c_flags_a_swapped_apk_on_every_clause_it_breaks() {
     let (w, g) = green();
     // The archive's file is another build's signed APK: its whole-file hash is not the
-    // manifest's apk_sha256 and its core is not the attested unsigned_sha256.
+    // manifest's apk_sha256. Rule (c)'s clauses are checked in order and the FIRST failure
+    // alone is flagged (a swapped file is caught at the hash; the core is never reached) —
+    // the core clause's own test is rule_c_flags_a_wrong_attested_core below.
     let (_, other) = apk_pair(900 + 100 + 4096);
     let root = GHRT::parse(&g.root_doc).unwrap();
     let m = GHRM::parse(&g.manifest).unwrap();
     let mut entry = green_entry(&g, &m, &root);
     entry.releases[0].apk = Some(&other);
     let findings = archive_findings(&w, &g, &[entry], &g.es, &[(1, 1)]);
-    let unsigned: [u8; 32] = m.body.releases[0].unsigned_sha256;
     assert!(findings.contains(&Finding::ApkHashMismatch {
         version_code: 100,
         apk_sha256: m.body.releases[0].apk_sha256
     }));
-    assert!(findings.contains(&Finding::CoreMismatch {
-        version_code: 100,
-        unsigned_sha256: unsigned
-    }));
+    assert!(
+        !findings
+            .iter()
+            .any(|f| matches!(f, Finding::CoreMismatch { .. })),
+        "the hash clause fires first; the core is not reached on a swapped file"
+    );
 }
 
 #[test]
@@ -786,10 +789,11 @@ fn rule_d_flags_a_changed_price() {
     let m = GHRM::parse(&g.manifest).unwrap();
     let entry = green_entry(&g, &m, &root);
     // The second ES changes a covered epoch's price: ADR-22 rule 5's "prices never change".
+    // The table stays valid (prices are multiples of 10), only different.
     let (es1_seq, _) = g.es[0].clone();
     let (es2_seq, es2) = es_doc(|c| {
         c.seq = es1_seq + 1;
-        c.prices[0].pack_price_atomic += 1;
+        c.prices[0].pack_price_atomic += 10;
     });
     let findings = archive_findings(
         &w,
