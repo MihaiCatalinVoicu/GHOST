@@ -217,6 +217,175 @@ pub enum Finding {
     },
 }
 
+/// The alarm line (RK4's public alarm): `FLAG <NAME> k=v …`, hashes lowercase hex, byte
+/// strings lossy UTF-8 — one line per finding, the only vocabulary `monitor` prints.
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pair = |f: &mut std::fmt::Formatter<'_>, pair: (u32, u64)| {
+            write!(f, "pair={}:{}", pair.0, pair.1)
+        };
+        match self {
+            Finding::UnmatchedLeaf {
+                log,
+                index,
+                key_hash,
+            } => {
+                write!(
+                    f,
+                    "FLAG UNMATCHED_LEAF log={log} index={index} key_hash={}",
+                    hex::encode(key_hash)
+                )
+            }
+            Finding::BadDocument { log, index } => {
+                write!(f, "FLAG BAD_DOCUMENT log={log} index={index}")
+            }
+            Finding::PairCollision {
+                pair: p,
+                first,
+                second,
+            } => {
+                write!(f, "FLAG PAIR_COLLISION ")?;
+                pair(f, *p)?;
+                write!(
+                    f,
+                    " first={}:{} second={}:{}",
+                    first.0, first.1, second.0, second.1
+                )
+            }
+            Finding::PairOrder {
+                log,
+                lower_index,
+                higher_index,
+                pair: p,
+            } => {
+                write!(f, "FLAG PAIR_ORDER log={log} lower_index={lower_index} higher_index={higher_index} ")?;
+                pair(f, *p)
+            }
+            Finding::MissingApk {
+                version_code,
+                apk_sha256,
+            } => {
+                write!(
+                    f,
+                    "FLAG MISSING_APK version_code={version_code} apk_sha256={}",
+                    hex::encode(apk_sha256)
+                )
+            }
+            Finding::ApkHashMismatch {
+                version_code,
+                apk_sha256,
+            } => {
+                write!(
+                    f,
+                    "FLAG APK_HASH_MISMATCH version_code={version_code} apk_sha256={}",
+                    hex::encode(apk_sha256)
+                )
+            }
+            Finding::ApkLayout { version_code } => {
+                write!(f, "FLAG APK_LAYOUT version_code={version_code}")
+            }
+            Finding::CoreMismatch {
+                version_code,
+                unsigned_sha256,
+            } => {
+                write!(
+                    f,
+                    "FLAG CORE_MISMATCH version_code={version_code} unsigned_sha256={}",
+                    hex::encode(unsigned_sha256)
+                )
+            }
+            Finding::BadAttestation { version_code } => {
+                write!(f, "FLAG BAD_ATTESTATION version_code={version_code}")
+            }
+            Finding::EsSeqConflict { es_seq } => write!(f, "FLAG ES_SEQ_CONFLICT es_seq={es_seq}"),
+            Finding::EsSeqMismatch {
+                declared,
+                schedule_seq,
+            } => {
+                write!(
+                    f,
+                    "FLAG ES_SEQ_MISMATCH declared={declared} schedule_seq={schedule_seq}"
+                )
+            }
+            Finding::EsNetworkChange { es_seq } => {
+                write!(f, "FLAG ES_NETWORK_CHANGE es_seq={es_seq}")
+            }
+            Finding::EsNotAppendOnly { es_seq } => {
+                write!(f, "FLAG ES_NOT_APPEND_ONLY es_seq={es_seq}")
+            }
+            Finding::MissingSymbols { version_code, abi } => {
+                write!(
+                    f,
+                    "FLAG MISSING_SYMBOLS version_code={version_code} abi={abi}"
+                )
+            }
+            Finding::BuildIdMismatch { version_code, abi } => {
+                write!(
+                    f,
+                    "FLAG BUILD_ID_MISMATCH version_code={version_code} abi={abi}"
+                )
+            }
+            Finding::BuildIdUnreadable { version_code, abi } => {
+                write!(
+                    f,
+                    "FLAG BUILD_ID_UNREADABLE version_code={version_code} abi={abi}"
+                )
+            }
+            Finding::UnservedManifest { pair: p } => {
+                write!(f, "FLAG UNSERVED_MANIFEST ")?;
+                pair(f, *p)
+            }
+            Finding::ShortServed { pair: p, mirror } => {
+                write!(f, "FLAG SHORT_SERVED ")?;
+                pair(f, *p)?;
+                write!(f, " mirror={}", String::from_utf8_lossy(mirror))
+            }
+            Finding::LateArchive { pair: p, days } => {
+                write!(f, "FLAG LATE_ARCHIVE ")?;
+                pair(f, *p)?;
+                write!(f, " days={days}")
+            }
+            Finding::SaltChanged { apk_sha256 } => {
+                write!(
+                    f,
+                    "FLAG SALT_CHANGED apk_sha256={}",
+                    hex::encode(apk_sha256)
+                )
+            }
+            Finding::SaltShared {
+                salt,
+                first_version_code,
+                second_version_code,
+            } => {
+                write!(f, "FLAG SALT_SHARED salt={} first_version_code={first_version_code} second_version_code={second_version_code}", hex::encode(salt))
+            }
+            Finding::FloorInvalid {
+                root_version,
+                manifest_seq,
+                floor,
+                attested_max,
+            } => {
+                write!(f, "FLAG FLOOR_INVALID root_version={root_version} manifest_seq={manifest_seq} floor={floor} attested_max={attested_max}")
+            }
+            Finding::IssuedDayDecreased {
+                root_version,
+                manifest_seq,
+                issued_day,
+                previous_seq,
+                previous_day,
+            } => {
+                write!(f, "FLAG ISSUED_DAY_DECREASED root_version={root_version} manifest_seq={manifest_seq} issued_day={issued_day} previous_seq={previous_seq} previous_day={previous_day}")
+            }
+            Finding::WireChangingStaged {
+                version_code,
+                rollout_permille,
+            } => {
+                write!(f, "FLAG WIRE_CHANGING_STAGED version_code={version_code} rollout_permille={rollout_permille}")
+            }
+        }
+    }
+}
+
 /// The engine's whole input.
 pub struct MonitorInput<'a> {
     /// The trusted root (the policy's anchor).

@@ -118,7 +118,11 @@ pub fn parse_head_body(body: &str) -> Result<RawCosignedHead, String> {
             .ok_or("cosignature line does not parse")?;
         cosignatures.push((hex32(name)?, base64_decode(sig)?));
     }
-    Ok(RawCosignedHead { tree_size: size, root_hash, cosignatures })
+    Ok(RawCosignedHead {
+        tree_size: size,
+        root_hash,
+        cosignatures,
+    })
 }
 
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
@@ -133,7 +137,10 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
             _ => None,
         }
     }
-    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=' && b != b'\n' && b != b'\r').collect();
+    let bytes: Vec<u8> = s
+        .bytes()
+        .filter(|&b| b != b'=' && b != b'\n' && b != b'\r')
+        .collect();
     if bytes.len() % 4 == 1 {
         return Err("bad base64 length".into());
     }
@@ -153,4 +160,19 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
+}
+
+/// One C2SP leaf per line, base64 of `checksum[32] ‖ signature[64] ‖ key_hash[32]` (§5.1's
+/// leaf shape) — the offline seam of `ghost-verify monitor --leaves`: the same leaves
+/// `get-leaves` returns, recorded by the runner instead of fetched.
+pub fn parse_leaf_line(line: &str) -> Result<RawLeaf, String> {
+    let bytes = base64_decode(line.trim())?;
+    if bytes.len() != 128 {
+        return Err(format!("a C2SP leaf is 128 bytes, got {}", bytes.len()));
+    }
+    Ok(RawLeaf {
+        checksum: bytes[0..32].try_into().expect("32 bytes"),
+        signature: bytes[32..96].try_into().expect("64 bytes"),
+        key_hash: bytes[96..128].try_into().expect("32 bytes"),
+    })
 }
