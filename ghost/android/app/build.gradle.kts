@@ -36,6 +36,12 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // No VCS metadata in the APK (design faza14-distribution.md §6.3, D12; AGP >= 8.3
+            // embeds META-INF/version-control-info.textproto by default): the release bytes must
+            // not depend on the checkout's git state, or two honest environments would differ.
+            vcsInfo {
+                include = false
+            }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signing is done offline (FR-8.2, ADR-07); CI produces the unsigned, reproducible artifact.
             // The one exception is the emulator job's smoke run (see `smokeRelease` above).

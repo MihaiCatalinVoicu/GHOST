@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Builds libghost_client_net.so for the Android ABIs into <out-dir> (ADR-19, ADR-07).
+#   - the dedicated client-release profile (design §6.3): line tables kept at link, the debug
+#     info split after linking into <symbols-dir>/<abi>/libghost_client_net.so.debug
+#     (third argument, default <out-dir>), the shipped .so stripped (.dynsym stays);
 #   - pinned cargo-ndk version and --locked dependency resolution;
 #   - a fixed target directory inside the workspace, so two builds of the same checkout at the
 #     same path produce identical bytes (checked in CI);
@@ -9,7 +12,7 @@
 # Cross-environment byte identity is NOT claimed: Windows hosts keep '\' separators after the
 # remapped prefix, and cargo hashes the remap flags (which name the builder's paths) into
 # build-script directories. A fixed-path builder image is Phase 14 work (ADR-07).
-# Usage: build-native.sh <out-dir> [sums-file (default: <ghost>/native-libs.sha256)]
+# Usage: build-native.sh <out-dir> [sums-file (default: <ghost>/native-libs.sha256)] [symbols-dir]
 # Requires: ANDROID_NDK_HOME, rust targets aarch64-linux-android + x86_64-linux-android.
 set -euo pipefail
 
@@ -23,6 +26,7 @@ OUT="$(cd "$OUT_ARG" && pwd)"
 SUMS_ARG="${2:-$GHOST_ROOT/native-libs.sha256}"
 mkdir -p "$(dirname "$SUMS_ARG")"
 SUMS="$(cd "$(dirname "$SUMS_ARG")" && pwd)/$(basename "$SUMS_ARG")"
+SYMBOLS_OUT="${3:-}"
 TARGET_DIR="$GHOST_ROOT/target/android-native"
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 mkdir -p "$TARGET_DIR"
@@ -49,6 +53,9 @@ flags=()
 while IFS= read -r p; do flags+=("--remap-path-prefix=$p=/cargo"); done < <(spellings "$CARGO_HOME_DIR")
 while IFS= read -r p; do flags+=("--remap-path-prefix=$p=/src"); done < <(spellings "$GHOST_ROOT")
 while IFS= read -r p; do flags+=("--remap-path-prefix=$p=/target"); done < <(spellings "$TARGET_DIR")
+# The shipped library's build-id is pinned too (design §6.3's "Symbols and build-id" row):
+# the symbol file ties to the binary by this id, and the reproducible-build gate reads it.
+flags+=("-C" "link-arg=-Wl,--build-id=sha1")
 # CARGO_ENCODED_RUSTFLAGS (0x1f-separated) keeps paths with spaces intact.
 unset RUSTFLAGS
 CARGO_ENCODED_RUSTFLAGS="$(IFS=$'\x1f'; echo "${flags[*]}")"
@@ -67,7 +74,20 @@ done
 targets=()
 for abi in "${ABIS[@]}"; do targets+=(-t "$abi"); done
 # cargo-ndk prints compiler messages on stdout; keep stdout clean for callers.
-cargo ndk "${targets[@]}" -o "$OUT" build --release --locked -p ghost-client-net 1>&2
+cargo ndk "${targets[@]}" -o "$OUT" build --profile client-release --locked -p ghost-client-net 1>&2
+
+# The symbol split (design §6.3): the linked .so keeps its line tables; the debug info moves to
+# the symbol file, the shipped .so is stripped (.dynsym stays, so the JNI surface gate works).
+OBJCOPY="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-objcopy 2>/dev/null | head -1)"
+[ -n "$OBJCOPY" ] || { echo "llvm-objcopy not found under $ANDROID_NDK_HOME/toolchains/llvm/prebuilt" >&2; exit 1; }
+for abi in "${ABIS[@]}"; do
+  so="$OUT/$abi/libghost_client_net.so"
+  [ -f "$so" ] || { echo "missing $so" >&2; exit 1; }
+  debug_dir="${SYMBOLS_OUT:-$OUT}/$abi"
+  mkdir -p "$debug_dir"
+  "$OBJCOPY" --only-keep-debug "$so" "$debug_dir/libghost_client_net.so.debug"
+  "$OBJCOPY" --strip-all "$so"
+done
 
 leaks=0
 check_paths=()

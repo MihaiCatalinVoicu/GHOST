@@ -23,19 +23,31 @@ bash scripts/release/build-release-android.sh builder-selfcheck --out /out/AB
 
 echo "--- compare"
 ok=1
-for f in bin/app-release-unsigned.apk bin/native-libs.sha256; do
-  if cmp -s "/out/AA/$f" "/out/AB/$f"; then
-    echo "EQUAL $f $(sha256sum "/out/AA/$f" | cut -c1-16)"
+# The android subset in §6.1's layout: the zip-aligned unsigned APK, the stripped libraries
+# with their checksum record, and the split debug info. Everything byte-compares.
+for f in /out/AA/apk/*-unsigned.apk; do
+  name="$(basename "$f")"
+  if cmp -s "$f" "/out/AB/apk/$name"; then
+    echo "EQUAL apk/$name $(sha256sum "$f" | cut -c1-16)"
   else
-    echo "DIFFER $f"
+    echo "DIFFER apk/$name"
     ok=0
   fi
 done
-# The unsigned core must also carry the exact native bytes the checksum record lists.
-(cd /out/AA/bin && sha256sum -c native-libs.sha256) || ok=0
+for dir in lib symbols; do
+  if diff -r "/out/AA/$dir" "/out/AB/$dir" >/dev/null 2>&1; then
+    echo "EQUAL $dir/ $(find "/out/AA/$dir" -type f | wc -l) files"
+  else
+    echo "DIFFER $dir/"
+    diff -r "/out/AA/$dir" "/out/AB/$dir" || true
+    ok=0
+  fi
+done
+# The unsigned APK must carry the exact native bytes the checksum record lists.
+(cd /out/AA/lib && sha256sum -c native-libs.sha256) || ok=0
 
 if [ "$ok" = 1 ]; then
-  echo "ANDROID_SELFCHECK_EQUAL apk=$(sha256sum /out/AA/bin/app-release-unsigned.apk | cut -c1-16)"
+  echo "ANDROID_SELFCHECK_EQUAL apk=$(sha256sum /out/AA/apk/*-unsigned.apk | cut -c1-16)"
   echo "=== selfcheck-android PASS $(date -u)"
 else
   echo "=== selfcheck-android FAIL $(date -u)"

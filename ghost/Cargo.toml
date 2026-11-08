@@ -218,3 +218,14 @@ saturating-time = { path = "third_party/saturating-time" }
 [profile.release]
 # Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.
 strip = "symbols"
+
+# The shipped native library's dedicated profile (design faza14-distribution.md §6.3 "Symbols
+# and build-id", V-D9): line tables only, nothing stripped at link — build-native.sh splits
+# the debug info with llvm-objcopy after linking (symbols/<abi>/libghost_client_net.so.debug in
+# the release output) and strips the shipped .so itself (.dynsym stays, so G-R6 keeps working).
+# [profile.release] above is unchanged: it serves every binary of the workspace, and shipping
+# it unstripped would reach operators and add debug info to every CI release build.
+[profile.client-release]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
