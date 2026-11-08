@@ -16,6 +16,11 @@ TAG="${1:?usage: build-release.sh <tag> [--out <dir>]}"
 OUT="${2:-$(pwd)/build-out}"
 [ "${2:-}" = "--out" ] && OUT="${3:?--out needs a directory}"
 
+# Resolve the invocation path BEFORE any cd: "$0" is relative to the invocation
+# directory, and the archive+cd below would otherwise make it point into $WORK
+# (the guard would compare the archive against itself and never re-exec — measured).
+CALLER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 REPO="$(git rev-parse --show-toplevel)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -28,9 +33,6 @@ cd "$WORK/ghost"
 # working-tree copy would run a different recipe against the tag's sources (measured on
 # 2026-11-08: a not-yet-synced working tree silently skipped the cross block; the debugging
 # cost a container trace). Re-exec from the archive whenever the two differ.
-# "$0" is relative to the INVOCATION directory: resolve it before the cd below, or
-# the comparison would test the archive's copy against itself and never re-exec.
-CALLER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 SELF="$WORK/ghost/scripts/release/build-release.sh"
 if ! cmp -s "$CALLER" "$SELF" 2>/dev/null; then
   exec bash "$SELF" "$TAG" ${OUT:+--out "$OUT"}
