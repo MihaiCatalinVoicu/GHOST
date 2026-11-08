@@ -1,0 +1,65 @@
+# ghost-builder pins (gate G-D2, docs/design/faza14-distribution.md §6.3, decision D11)
+#
+# One line per pin: <name> <value> <where-enforced>
+# A ceremony starts only if every line below matches the image it is about to use
+# (docker image inspect ghost-builder:24.04-2).
+# Toolchain inputs are fetched directly (no sdkmanager/rustup) and verified in the
+# Dockerfile against these digests; Android SHA-1 values are the official ones from
+# dl.google.com's repository2-1.xml / repository2-3.xml; SHA-256 values for Rust/Temurin
+# are official (static.rust-lang.org / Adoptium API).
+
+apt-snapshot 20261026T000000Z  https://snapshot.ubuntu.com/ubuntu/20261026T000000Z  Dockerfile sources.list (noble + noble-updates; noble-security lipsește din snapshot la acest timestamp și niciun pin nu are nevoie de el; Error-Mode=any; fără snapshot arhiva live pierde versiunile pinuite între builduri — măsurat 2026-11-08)
+image        ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac  Dockerfile FROM
+build-essential  12.10ubuntu1        apt pin (Dockerfile)
+ca-certificates  20260816ubuntu0.24.04.2  apt pin (Dockerfile)
+curl             8.5.0-2ubuntu10.16  apt pin (Dockerfile)
+git              1:2.43.0-1ubuntu7.4 apt pin (Dockerfile)
+g++-mingw-w64-x86-64  13.2.0-6ubuntu1+26.1  apt pin (Dockerfile; ghost-verify-x86_64-windows, kind 22)
+pkg-config       1.8.1-2build1       apt pin (Dockerfile)
+protobuf-compiler 3.21.12-8.2ubuntu0.4 apt pin (Dockerfile, prost-build needs protoc)
+unzip            6.0-28ubuntu4.1     apt pin (Dockerfile)
+zip              3.0-13ubuntu0.2     apt pin (Dockerfile)
+
+jdk            temurin 17.0.21+9, sha256 8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711  Dockerfile ARG JDK_SHA256
+rust           1.98.1-x86_64-unknown-linux-gnu, sha256 24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea  Dockerfile ARG RUST_SHA256
+rust-std       1.98.1-aarch64-linux-android, sha256 ba22ece6e6c2051bc20c05b2d7e809ec9fe1e656b02033424db30deca084c4a9  Dockerfile ARG
+rust-std       1.98.1-x86_64-linux-android, sha256 8bb372f26cc9813d3685a1bbd73ff04de8e3d4aeb6f3779c354436c594d3f013  Dockerfile ARG
+# ghost-verify's public targets (design §6.1 kinds 19-22): official SHA-256 from
+# static.rust-lang.org's channel manifest for 1.98.1 (same source as the pins above).
+# The musl stds make the static Linux targets buildable; the windows-gnu entry pins the
+# std only — the x86_64-w64-mingw32 LINKER (mingw-w64) is deliberately not in the image
+# yet (apt pinning for it is a deeper slice); build-release.sh fails loudly on the
+# Windows target under GHOST_RELEASE_CROSS=1 until it lands.
+rust-std       1.98.1-x86_64-unknown-linux-musl, sha256 ac111ad77967e98d0362e49a2c19121f3f54e4e68c247b90995e665687ebede8  Dockerfile ARG
+rust-std       1.98.1-aarch64-unknown-linux-musl, sha256 630ed4ccdc9877864aa3bd8689161dffd8987c7a923bf01e50c7d8affef7ae47  Dockerfile ARG
+rust-std       1.98.1-x86_64-pc-windows-gnu, sha256 0cda26447df0749bc84044be8c8083ac4dc87bf137c11cc31ec9673a6e2e0344  Dockerfile ARG (std only; the mingw-w64 linker is not pinned yet)
+# The musl C cross toolchains for ghost-verify's static Linux targets (design §6.1 kinds
+# 19-21): musl.cc's static cross builds, fetched and hashed at pin time. musl.cc serves
+# rolling builds without version numbers — the Last-Modified stamp (2021-11-23) and the
+# SHA-256 are the pin. The windows-gnu target keeps its note above: no mingw-w64 yet.
+musl_cc      x86_64-linux-musl-cross, sha256 c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea  Dockerfile ARG
+musl_cc      aarch64-linux-musl-cross, sha256 c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38  Dockerfile ARG
+cargo-ndk      4.1.2 (cargo install --locked), same pin as scripts/build-native.sh  Dockerfile
+gradle         9.7.1 via wrapper, distributionSha256Sum acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a  ghost/android/gradle/wrapper/gradle-wrapper.properties
+java_deps      ghost/android/gradle/verification-metadata.xml (Gradle dependency verification, sha256 per module)
+
+android_sdk_cmdline-tools 12.0  commandlinetools-linux-11076708_latest.zip  sha1 d313adb7aedccf6cf0cfca51ec180f0059f5f8f8
+android_sdk_platform-tools r37.0.1  platform-tools_r37.0.1-linux.zip  sha1 477254aa5f903c15cf51001717bdf347fb6b53e0
+android_sdk_platform android-37.0  platform-37.0_r02.zip  sha1 ed8ebf7f8822a4de5686d427f237d2fa30ff7410  (repository2-3.xml)
+android_sdk_platform android-37.2  platform-37.2_r01.zip  sha1 4bec12a02162ff6852df50b5fcf8ee762b050966  (repository2-3.xml)
+android_sdk_build-tools 37.0.0  build-tools_r37_linux.zip  sha1 70954e99f4c3d9d46ee70fa32624672fe7cd6ebe
+android_sdk_build-tools 36.0.0  build-tools_r36_linux.zip  sha1 b0b6376977657e8ad9b969bacf4093601da2c6fb
+android_ndk    r30 (30.0.16248370)  android-ndk-r30-linux.zip  sha1 5107f898313790e449e87eee2183d9a20602dee9
+
+processor_count 2  JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2, GRADLE_OPTS=-Dorg.gradle.workers.max=2, CARGO_BUILD_JOBS=2  Dockerfile ENV
+
+# Instances (appended at build time; each line = one verification record):
+# 24.04-1  sha256:56f9d949f4804afafbf12eebeec5ed9a2c188013233f11bb79a9523d87ecf0ff  rustup-based, selfcheck PASS 2026-10-26 (b_digest d92aa5decd049b35) — superseded by 24.04-2 (D11: direct archives + Android half)
+# 24.04-2  sha256:f5553b90c8281ab1f22b0f3220f184ca08b95886dace760195c7394d08749ff5  D11-compliant (direct archives, Android half), selfcheck PASS 2026-10-26 (2x recipe-A, identical, b_digest d92aa5decd049b35 — same bytes as 24.04-1 across rustup-vs-direct-archive toolchains) — superseded by the rebuilt 24.04-2 below (HOME, licenses, package.xml)
+# 24.04-2  sha256:5e2d757070542a281f4e3f014f4ccbafbfeb88bf1430e38dd881438bb9483a03  FINAL (package.xml layer; same toolchain layers as f5553b90): host selfcheck PASS 2026-10-26 (IMAGE_SELFCHECK_EQUAL, b_digest d92aa5decd049b35) + android selfcheck PASS 2026-10-26 (ANDROID_SELFCHECK_EQUAL, unsigned APK sha256 09e31628c2b9a0de852e4112e5313b56fd846d629e873b67ea70b59615f89d6e, native-libs sums verified in-output)
+# 24.04-4  sha256:bacf49edcb0489e35778a4cb25275b041f61950aff971325c5d60315eb2e5d48  24.04-3 + musl C cross toolchains (musl.cc x86_64/aarch64, pinned); host selfcheck PASS 2026-11-08 (IMAGE_SELFCHECK_EQUAL, 5 files); cross: ghost-verify-x86_64-linux + ghost-verify-aarch64-linux buildate și instalate, Windows iese loud la mingw lipsă (declarat, nepinned)
+# 24.04-5  sha256:48f233af200c1051c000aaaac166efb8e049ec17e56ab73038d8e5f42a2f9040  24.04-4 + g++-mingw-w64-x86-64 pinned + apt din snapshot 20261026T000000Z (bootstrap TLS în două faze); host selfcheck PASS 2026-11-08 (IMAGE_SELFCHECK_EQUAL); cross COMPLET: toate cele 3 ținte ghost-verify (musl static ×2 + windows PE32+), 8 binare în SHA256SUMS
+#            linker config; filled by the parent's selfcheck re-measure after the image
+#            build (never by hand). Expected next run: GHOST_RELEASE_CROSS=1 ends with
+#            BOTH static Linux binaries installed and the EXPECTED mingw exit-1.
+# 24.04-3  sha256:f7fa4b52dfb5713a0ce193954a1318826d6ce0a837e75b6f3a3eeee83043edd1  24.04-2 + rust-std musl x86_64/aarch64 + windows-gnu (GHOST_RELEASE_CROSS); host selfcheck PASS 2026-11-08 (IMAGE_SELFCHECK_EQUAL, 5 files, b_digest e099c749a56b0c15; ws_root runtime-fix fc1854f9 prins de primul DIFFER)

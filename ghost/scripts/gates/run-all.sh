@@ -73,7 +73,7 @@ rc=0
 for g in ui-secure-window ui-text-protection ui-sensitive-text ui-input ui-isolation ui-no-persist ui-deps ui-claims ui-coroutines ui-notifications ui-l10n; do
   bash "$DIR/$g.sh" || rc=1
 done
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock pt-source-pin pt-exec-site pt-no-bridge-line-in-logs pt-refusals; do
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity media-no-plaintext-io media3-dependency-allowlist media-decoder-confinement media-golden-lock builder-pins pt-source-pin pt-exec-site pt-no-bridge-line-in-logs pt-refusals; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc
