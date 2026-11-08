@@ -15,6 +15,17 @@
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 ENV DEBIAN_FRONTEND=noninteractive
+# The apt archive is a moving target: a version the pins name can disappear from the live
+# archive between two image builds (measured 2026-11-08: ca-certificates=20260816ubuntu0.24.04.1
+# gone from noble-updates ten days after the pins were taken). Every apt source therefore
+# points at the pinned Ubuntu snapshot (pins.txt: apt-snapshot), and the exact package
+# versions below are recorded there — the same discipline as the toolchain archives.
+RUN rm -f /etc/apt/sources.list.d/ubuntu.sources \
+    && printf '%s\n' \
+      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble main restricted universe multiverse' \
+      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-updates main restricted universe multiverse' \
+      'deb https://snapshot.ubuntu.com/ubuntu/20261026T000000Z noble-security main restricted universe multiverse' \
+      > /etc/apt/sources.list
 # Exact apt versions as of the base-image snapshot; pins.txt records them. gcc/glibc
 # versions are part of the release environment exactly like rustc's.
 RUN apt-get update && apt-get install -y --no-install-recommends \
