@@ -205,6 +205,29 @@ impl TorTransport {
     /// context. Call [`TorTransport::bootstrap`] next. Bridge-line errors are
     /// [`TransportError::Config`]; local setup failures are [`TransportError::Setup`].
     pub fn create(cfg: &TransportConfig) -> Result<Self, TransportError> {
+        // Arti's directory manager opens its SQLite cache during create, and on some hosts the
+        // open intermittently fails with a TRANSIENT SQLite disk-I/O error under load (observed
+        // on a loaded WSL2 volume: SqliteFailure(SystemIoFailure), ~1/3 of a parallel test run,
+        // green in isolation; the shipped app creates one transport per process, so this is a
+        // robustness rule, not a test accommodation). The setup is local and side-effect-free
+        // to repeat, so exactly that failure is retried, bounded; everything else — config
+        // errors above all — fails fast.
+        let mut attempts = 0;
+        loop {
+            match Self::create_once(cfg) {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    let transient = matches!(&e, TransportError::Setup(m) if m.contains("disk I/O error"));
+                    attempts += 1;
+                    if !transient || attempts >= 3 {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    fn create_once(cfg: &TransportConfig) -> Result<Self, TransportError> {
         Self::install_crypto_provider();
         let config = Self::build_config(cfg)?;
         let client = TorClient::builder()
