@@ -1,5 +1,18 @@
 # GHOST — Threat Model v2.1
 
+## Addendum documentar v2.2 - mesh, voce și APK (2026-10-31)
+
+Extensia normativă este [spec v2.2 §3-8](GHOST_Technical_Specification_v2.2.md); traseul este [roadmap v2.2](GHOST_Roadmap_v2.2.md). Acest addendum nu constituie review independent al modelului sau validare de produs.
+
+- Adversari noi/explicitați: vecin verificat dar ostil, operator de mai multe identități, gateway care reține/rejoacă pachete, observator radio/LAN, destinatar care înregistrează și analist care modifică APK-ul.
+- Granițe: verificarea identității nu dovedește comportament onest; fiecare hop autorizează custodia, destinatarul verifică expeditorul; trust-ul nu este tranzitiv. Grant-uri semnate, direcționale, finite și nedelegabile; cote globale și per grant; replay/epoch persistente.
+- Transport: Tor pentru extern; singura excepție este locală, opt-in, pe dispozitiv/interfață autentificate. Fără DNS/mDNS/SSDP, scanare, discovery în fundal sau fallback Internet. Apelul este direct; transcript DM leagă fingerprint-urile și candidații, iar calea pierdută termină sesiunea.
+- Conținut: note vocale criptate înainte de persistență; audio live DTLS-SRTP; fără cache/backup/log plaintext. Nicio promisiune PQ pentru media audio derivată din protecția semnalizării.
+- APK: obfuscarea și self-check-urile sunt ocolibile și nu reprezintă granițe pentru chei/autorizare; ADR-38 pct. 9 amendat păstrează auditul și reproducibilitatea, cu mapări/simboluri private auditorilor.
+- Limite: proximitatea, IP-ul local, timing-ul, corelarea și copiile unui peer ostil rămân posibile; revocarea offline nu este instantanee, iar un endpoint compromis poate vedea audio/chei active.
+
+Probe noi obligatorii: MESH-01-09, VOICE-01-04, CALL-01-06, APK-01-08 și NFR din spec. Scope-ul auditului extern include aceste suprafețe; niciun High/Critical deschis înainte de activarea domeniului livrat. Modelul de bază și evidența istorică urmează mai jos.
+
 | Câmp | Valoare |
 |---|---|
 | Status | Livrabil Faza 2 — **așteaptă review independent** (gate-ul de ieșire al fazei) |

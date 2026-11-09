@@ -99,6 +99,10 @@ Propuse 2026-10-17 (design `docs/design/faza12-transports.md`, revizia 4, aproba
 | [ADR-61](ADR-61-transporturi-pluggable-lyrebird.md) | Transporturi pluggable: obfs4 și WebTunnel prin lyrebird, proveniență din sursă fixată, build reproductibil, execuție prin tor-ptmgr |
 | [ADR-62](ADR-62-liniile-de-bridge.md) | Liniile de bridge: doar de la utilizator, stocare învelită, fără listă încorporată, mod auto redus |
 
+## Amendamente documentare v2.2 (2026-10-31)
+
+Cererea proprietarului pentru mesh opțional, voce E2EE și protecția APK este documentată în [spec v2.2](../GHOST_Technical_Specification_v2.2.md) și [roadmap v2.2](../GHOST_Roadmap_v2.2.md). [ADR-01](ADR-01-tor-transport.md) primește excepția locală strict delimitată, iar [ADR-38](ADR-38-verifiability-without-source.md) pct. 9 înlocuiește keepnames/simbolurile publice cu obfuscare și mapări/simboluri private auditorilor. Aceste amendamente nu aprobă un protocol wire încă nescris, nu certifică implementarea și nu închid T6/T12b. Designurile detaliate și probele sunt livrabile M1/H0/B2.
+
 ## Retrase
 
 | ADR | Titlu | Stare |

@@ -1,5 +1,20 @@
 # Limitele reziduale și mitigările lor
 
+## Addendum v2.2 - limitele mesh/voce/APK (2026-10-31)
+
+Cerințe și probe: [spec v2.2](GHOST_Technical_Specification_v2.2.md), §3-11. Controalele noi sunt planificate, fără dovadă de implementare prin această actualizare.
+
+| Limită nouă | Mitigare cerută | Ce rămâne posibil |
+|---|---|---|
+| L-MESH-1: identitate verificată, peer ostil | Grant-uri nedelegabile, scope, cote globale, ACK de destinație autentificat | Blackhole, Sybil admis voluntar, retenție/copie pe peer ostil |
+| L-MESH-2: radio și metadate locale | Discovery efemer explicit, inventar PRF per grant, local-only delimitat | Proximitate, IP local, volume/timing și corelare; mesh nu garantează anonimat |
+| L-MESH-3: revocare offline | Epoch semnat, maximum 24 h grant, timp incert fail-closed | Peer-ul izolat nu află imediat revocarea; ciphertext anterior nu poate fi șters de la distanță |
+| L-VOICE-1: voce și endpoint | E2EE, criptare înainte de disc, buffers limitate, fără transcriere cloud | Vocea poate identifica vorbitorul; destinatarul poate înregistra; OS compromis vede plaintext |
+| L-CALL-1: disponibilitate live | Apel direct, autentificat, limite de resurse și stop la pierderea căii | Bruiajul, distanța și interferența opresc apelul; nu există livrare live întârziată |
+| L-APK-1: reverse engineering | R8, strip symbols, no embedded secrets, signing, audit și reproducibilitate | Decompilare/instrumentare și bypass self-check rămân posibile; nu sunt frontiere de autorizare |
+
+L-SRC și adversarul furnizorului rămân aplicabile. Amendamentul ADR-38 pct. 9 înlocuiește numele publice neobfuscate și publicarea simbolurilor cu mapări/simboluri private, accesibile auditorilor și legate prin hash de release. Dovezile publice, accesul la sursă al auditorilor și reproducibilitatea se păstrează; utilizatorul nu devine capabil să certifice singur sursa închisă.
+
 | Câmp | Valoare |
 |---|---|
 | Status | Analiză + ADR-13…ADR-16 (**aprobate** 2026-09-10); ADR-20 (aprobat 2026-09-12); ADR-22 … ADR-26 (**propuse** 2026-09-12, aplicate în Faza 8, în așteptarea deciziei proprietarului); ADR-30′ … ADR-34′ și ADR-35 … ADR-39 (**propuse** 2026-09-16, aplicate în Faza 9, în așteptarea deciziei proprietarului); ADR-40 … ADR-43 (**propuse** 2026-09-25, aplicate în Faza 10, în așteptarea deciziei proprietarului) |

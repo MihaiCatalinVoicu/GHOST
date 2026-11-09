@@ -1,5 +1,7 @@
 # GHOST — Master Plan v2.1 (propunere optimizată)
 
+**Extensie documentară v2.2, 2026-10-31:** [specificația tehnică](GHOST_Technical_Specification_v2.2.md) și [roadmapul secvențial](GHOST_Roadmap_v2.2.md) adaugă mesh opțional între contacte/dispozitive verificate, mesaje vocale, apeluri locale E2EE și hardening APK. Secțiunile de audit inițial de mai jos sunt istorice; starea curentă declarată se citește în STATUS. Noua revizie nu închide porți și nu certifică implementarea.
+
 | Câmp | Valoare |
 |---|---|
 | Status | PROPUNERE — delta peste *GHOST Technical Specification v2.0 FINAL* (20 aug 2026) |
@@ -150,6 +152,8 @@ Fiecare ADR se aprobă sau se respinge individual. Formatul urmează practica di
 - Padding-ul pe bucket-uri (1/4/16/64 KiB) se aplică **înainte** de trimiterea în Tor (ADR-09).
 - Izolarea circuitelor: un circuit Tor distinct per canal și per scop (isolation tokens), ca un relay să nu poată lega două canale ale aceluiași client.
 - Bridges/pluggable transports (obfs4, snowflake) — P1, pentru rețele care blochează Tor.
+
+**Amendament v2.2 (2026-10-31):** regula Tor-only rămâne obligatorie pentru serviciile externe. Singura excepție nouă este transportul local activat explicit, către dispozitive verificate, pe interfața/calea autentificată; fără DNS/mDNS/SSDP, scanare de subnet, discovery în fundal, STUN/TURN sau fallback Internet. Vezi ADR-01 amendat și spec v2.2 §4.1. Gateway-ul este separat, opt-in, și folosește Tor pentru relay. Testele T6 existente nu sunt relaxate generic; M1/B2 trebuie să introducă o excepție testată și strict delimitată.
 
 **Consecințe.** (+) set de anonimat = rețeaua Tor; (+) fără DNS și fără IP-uri de relay expuse; (+) relay-urile nu pot fi enumerate/atacate direct; (+) eliminarea unui protocol custom de auditat. (−) latență: RTT prin onion service tipic 0,5–2 s → NFR-1/NFR-2 se recalibrează (DM p95 < 5 s, post sync p95 < 8 s) și se măsoară; (−) APK mai mare (+5–10 MiB) → NFR-4 devine < 80 MiB; (−) dependență de Tor, atenuată prin bridges, nu prin clearnet.
 
@@ -322,6 +326,20 @@ Păstrat din §7.5: DM: plicul GHOST folosește X-Wing (X25519 + ML-KEM-768) pen
 | 16 | Private alpha (20–50 testeri, relay-uri staging, plăți testnet/stagenet Monero) | toți | 3–4 s | 15 | 2 săptămâni stabile; recovery verificat |
 | 17 | Controlled beta (200–500 utilizatori, trezorerie limitată, SLO-uri) | toți | 4–8 s | 16 | 30 zile stabile; reconciliere XMR |
 | 18 | RC și lansare: Go/No-Go, rollout 5/25/50/100, rollback | toți | 1–2 s | 17 | aprobare semnată (Appendix C) |
+
+### 6.2.1 Extensia v2.2 și drumul rămas până la producție
+
+Fazele 0-18 și stările lor rămân mai sus; duratele istorice nu devin estimări ale muncii rămase. [Roadmap v2.2](GHOST_Roadmap_v2.2.md) ordonează pașii B0-B7 pentru închiderea bazei și introduce:
+
+| Pachet | Domeniu | Admitere |
+|---|---|---|
+| M0-M3 | Fezabilitate, protocol, transport direct, store/carry/forward și gateway separat | Contacte/dispozitive verificate, trust netranzitiv, cote și revocare; MESH-01-09 |
+| M4 | Note vocale Opus, criptate înainte de persistență, format media existent | VOICE-01-04; fără cache plaintext |
+| C0/M5 | Motor RTC verificat și apel local direct unu-la-unu | CALL-01-06; fără STUN/TURN Internet, multi-hop live sau fallback |
+| M6/M7 | Matrice fizică, adversari, NFR, audit și activare voluntară | Modul OFF până la admiterea proprie; nu înlocuiește auditul bazei |
+| H0-H2 | R8, simboluri private auditorilor, distribuție, reproducibilitate și probe release | Obligatoriu pentru orice producție; APK-01-08, audit și retest |
+
+**Stare:** numai documentat, neimplementat/nevalidat prin această revizie. Estimare inițială a extensiei: 92-149 zile-om, fără backlog-ul bazei, audit extern și așteptări. Ținta completă include toate funcțiile solicitate; un core release intermediar fără mesh nu finalizează v2.2. Se păstrează private alpha de două săptămâni, beta de 30 zile și rollout-ul existent 5/25/50/100.
 
 ### 6.3 Comparativ v2.0 → v2.1
 

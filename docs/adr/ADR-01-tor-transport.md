@@ -23,6 +23,16 @@ Onion routing propriu peste 3–5 relay-uri ale operatorului oferă un set de an
 (+) set de anonimat = rețeaua Tor; fără DNS/IP expuse; fără protocol custom de auditat.
 (−) latență (NFR-1 DM p95 < 5 s, NFR-2 post sync p95 < 8 s, măsurate); APK +5–10 MiB (NFR-4 < 80 MiB); dependență de Tor, atenuată prin bridges.
 
+## Amendament documentar v2.2 - excepție locală limitată (2026-10-31)
+
+Prin cererea proprietarului de a documenta mesh opțional, regula de mai sus se extinde exclusiv pentru comunicația locală explicit activată între dispozitive de contacte verificate. Cerințele sunt în [spec v2.2 §4-7](../GHOST_Technical_Specification_v2.2.md). Implementarea și porțile nu sunt validate prin acest amendament.
+
+- Relay, issuer, entitlement, bootstrap și update păstrează transportul Tor existent; nu sunt expuse prin noul adaptor local. Un gateway separat autorizat poate retransmite ciphertext către relay numai prin Tor, cu drepturi limitate.
+- Transportul local se leagă de rețeaua Android și endpoint-ul peer-ului autentificat; rendezvous QR/BLE într-o sesiune explicită, fără discovery în fundal, DNS/mDNS/SSDP, scanare de subnet, STUN/TURN, rută implicită sau fallback Internet.
+- Modul local-only nu inițiază conexiuni GHOST la Internet; modul hibrid este separat și folosește Tor pentru extern. Pierderea căii locale închide socket-urile; reconectarea mesajelor cere handshake nou, iar apelul se termină.
+- Excepția nu oferă anonimatul Tor: vecinul/interlocutorul local poate afla IP-ul local, proximitatea și timing-ul. UI declară diferența; verificarea unui contact nu dovedește onestitatea lui.
+- T6 păstrează interdicția externă; extinderea viitoare a harness-ului trebuie să probeze exact excepția și zero egress interzis, cu fixture-uri negative. Rândul istoric T6 nu este marcat PASS pentru mesh.
+
 ## Completări după review-ul de securitate al Fazei 6 (2026-09-11)
 Completări de implementare; decizia aprobată (Arti embedded, onion-only, izolare per scop) nu se schimbă.
 - **Vanguards-lite activ** (feature `vanguards`, mod `Lite` fixat explicit în configurație). Toate circuitele GHOST se termină la onion service-ul unui operator de relay, exact adversarul (AD-1/AD-2) împotriva căruia vanguards-lite protejează garda clientului (Prop 333). Impus de gate-ul `rust-feature-policy.sh` și de un test unitar.
