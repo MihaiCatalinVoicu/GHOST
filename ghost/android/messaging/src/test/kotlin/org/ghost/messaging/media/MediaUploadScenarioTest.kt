@@ -80,6 +80,75 @@ class MediaUploadScenarioTest {
             listOf(objectId),
         )!!
 
+    /**
+     * §15.3's SCN-MB enumeration: a crash at every file operation of the upload run (the
+     * preparation, `MEDIA-COMMIT`, `MEDIA-FEED`), a reboot and the MB oracles after each — the op
+     * set stays exactly the 17 first-feed ops (release-first + deterministic op ids: a resumed
+     * feed never double-feeds), the run resumes to READY from wherever the process died. The
+     * outcome branches (INDETERMINATE resends, FAILED retry, the deadline) have their dedicated
+     * tests above; this enumeration covers the crash points of the happy upload path.
+     */
+    @Test
+    fun aCrashAtEveryFileOperationOfTheUploadRunResumesToReady() {
+        if (!MediaScenarios.owns(1)) return
+        val objectId = ByteArray(16) { 0x35 }
+
+        // Quiet pass: count the run's file calls (prepare + commit + feed).
+        val counter = Sandbox()
+        val cw = counter.open()
+        val ccid = ByteArray(16) { 0x21 }
+        cw.addContact(ccid)
+        commitOne(cw, ccid, tag = 0x35)
+        val totalCalls = cw.crashFs.trace.size
+        counter.world.close()
+
+        for (k in 1..totalCalls) {
+            val box = Sandbox()
+            var world = box.open()
+            val contact = ByteArray(16) { 0x21 }
+            world.addContact(contact)
+            world.crashFs.crashAtCall = k
+            try {
+                commitOne(world, contact, tag = 0x35)
+                error("the crash at call $k did not fire")
+            } catch (e: Exception) {
+                // the process death: close without reconcile, like a power loss
+            }
+            box.world.close()
+
+            world = box.open()
+            world.reconcile()
+            world.assertSendInvariants()
+            val committed = world.sql.queryLong(
+                "SELECT count(*) FROM media_object WHERE object_id = ?",
+                listOf(objectId),
+            )!! > 0
+            if (!committed) {
+                // The crash preceded MEDIA-COMMIT: the preparation is memory-only (S0-23), its
+                // orphaned files died with the reconcile; the run redoes from the preparation.
+                commitOne(world, contact, tag = 0x35)
+            } else {
+                // Mid-feed: the release-first ops resume; an ordinal already fed is not fed twice.
+                world.steps.feed()
+            }
+            world.assertSendInvariants()
+            repeat(17) { i ->
+                world.relay.script(world.relay.opIdOf(objectId, i - 1), Outcome.SENT)
+            }
+            world.steps.outcomes()
+            assertEquals(
+                "crash at call $k: uploaded",
+                "uploaded",
+                world.sql.queryString("SELECT state FROM media_object WHERE object_id = ?", listOf(objectId)),
+            )
+            // The MB oracle: exactly the 17 first-feed ops — no double feed across the crash.
+            assertEquals("crash at call $k: 17 ops, every id unique", 17L, oracleOps(world, objectId))
+            world.assertSendInvariants()
+            box.world.close()
+        }
+        MediaScenarios.report("SCN-MB", totalCalls, "preparation, MEDIA-COMMIT and MEDIA-FEED file operations on a class-0 object")
+    }
+
     @Test
     fun sentOutcomesReachReadyExactlyOnceWithTheCountdownStarted() {
         val box = Sandbox()
