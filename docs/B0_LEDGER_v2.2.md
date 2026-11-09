@@ -59,7 +59,7 @@ la fiecare pachet închis.
 
 | # | Poartă / item | Fază | Dovadă existentă | Clasă rămasă |
 |---|---|---|---|---|
-| 1 | Rulări la scara porții F11: lumea N=300×28 zile×5 seeds, mutanții Rust 43/43, corpus §15.7 | 11 | scripturile locale există; suitele mici verzi | EXEC (WSL) |
+| 1 | Rulări la scara porții F11 — **ÎN DESFĂȘURARE** (2026-11-09): pasul `world` (JM1-JM7 + NI-M1-7, N=300, 28 zile, 5 seeds) lansat detașat pe mașina de lucru (java pid urmărit; log `ghost/android/messaging/build/reports/media/logs/world-agent.log`, raport `.../media/exit.txt`; ≤240 min); după el: `media-exit-gate.sh mutants` (43) și `check` (G-M9). T2/T32 (DM, N=600) rămân de lansat la fel pe rând. Dovadă locală, nu gate evidence până la Q32 (D23) | 11 | scripturile există; mașina de lucru rulează pasul world | EXEC (rulare; mașina de lucru e resursa) |
 | 2 | ~~Clasa `… \| head -1` SIGPIPE~~ **ÎNCHISĂ** (`73c37285`): 19 gate-uri convertite la `sed -n 1p`; self-test final 1 209 ok / 0 FAIL / 0 skip | gates | — | — |
 | 3 | `cargo-deny` 0.20.2 instalat în runner; cele 14 cazuri de bans rulează (self-test 2026-11-09) | CI local | — | — |
 | 4 | Rândurile G-D1/G-D2/G-D4 care scanează workflows CI | 14 | documentate ca manuale în gate-uri | EXEC (CI-L: migrarea workflows în scripturi locale, decizie ADR-58) |
