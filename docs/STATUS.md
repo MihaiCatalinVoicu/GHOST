@@ -4,6 +4,8 @@
 
 **2026-10-31 - domeniu documentar v2.2:** [specificația](GHOST_Technical_Specification_v2.2.md) și [roadmapul](GHOST_Roadmap_v2.2.md) includ mesh opt-in între contacte/dispozitive verificate, mesaje vocale, apeluri locale E2EE și hardening APK. M0-M7/C0/H0-H2 sunt **planificate, neimplementate și nevalidate prin această revizie**. ADR-01 și ADR-38 au amendamente documentare; actualizarea porților T6/T12b și a designurilor de implementare este lucru viitor în M1/B2/H0. Nicio stare de fază sau poartă de mai jos nu este schimbată în PASS. H este obligatoriu pentru producție; M/V/C rămân OFF până la admiterea proprie.
 
+**2026-11-09 - B0 executat:** [ledger-ul de execuție și matricea de porți v2.2](B0_LEDGER_v2.2.md) — lista unică a porților rămase din fazele 0-18 și a pachetelor B0-B7/M0-M7/C0/H0-H2, fiecare cu clasa de blocaj (EXEC = de făcut acum de agent / DEVICE = dispozitive fizice / 3P = terți / OWNER = decizie sau achiziție a proprietarului). Obiectivul curent: se închid toate liniile EXEC, în ordinea roadmap-ului, astfel încât la final să rămână exclusiv DEVICE/3P/OWNER.
+
 | Element | Stare (2026-10-24) |
 |---|---|
 | Specificație | v2.0 FINAL (`output/pdf/GHOST_Technical_Specification_v2_FINAL.pdf`) + delta v2.1 (`docs/GHOST_Master_Plan_v2.1_OPTIMIZAT.md`) |

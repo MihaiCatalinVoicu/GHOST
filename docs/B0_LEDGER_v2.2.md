@@ -1,0 +1,119 @@
+# B0 — Ledger de execuție și matrice de porți v2.2
+
+Reconcilierea stării cerută de `docs/GHOST_Roadmap_v2.2.md` §3. Surse: STATUS.md (rândurile fazelor,
+verificate 2026-11-09 prin self-test integral 1 194 ok / 0 FAIL și run-all 46/46 pe arborele real),
+roadmap §23, specificația v2.2. Nicio poartă de mai jos nu primește PASS prin existența acestui
+ledger; dovezile rămân cele din STATUS, la commit-urile menționate acolo.
+
+## 1. Punct de control
+
+- Branch `main`, HEAD la întocmire: `117819eb` (după `bfd22420` — închiderea verificărilor Fazei 14 —
+  plus acest pachet documentar v2.2 comis ca baseline).
+- Arbore curat la cod (toate fixurile F14 din 2026-11-09 comise); `docs/tools/build_ghost_v2_2.py` +
+  `verify_ghost_v2_2.py` + PDF-urile `output/pdf/*v2.2*` rămân artefacte de documentație ale
+  proprietarului (necomise, neincluse în dovezile de produs).
+- CI local conform ADR-58; rulările de mai jos se fac în WSL (`ghost-runner`), codul sursă de
+  adevăr fiind acest worktree.
+- ADR-uri: aprobate 01-62 inclusiv amendamentele v2.2 documentare (ADR-01 excepție locală, ADR-38
+  punct 9 înlocuit); nimic propus-nerezolvat în afara celor din §4.
+
+## 2. Clasele de blocaj folosite în matrice
+
+| Clasă | Sens | Cine o ridică |
+|---|---|---|
+| EXEC | Implementabil acum: cod, design, teste locale (WSL/emulator), documente | agentul, fără input extern |
+| DEVICE | Cere dispozitive fizice (telefoane, radio, al doilea mediu de build) | proprietarul pune la dispoziție |
+| 3P | Cere terți (auditori, counsel/editor, testeri umani, includere Sigsum live, GMS-free hardware cumpărat) | contractare/recrutare |
+| OWNER | Decizie sau achiziție a proprietarului (token-uri hardware, domeniu, buget audit, autorizare lansare, Q3/Q18) | decizie scrisă |
+
+Regula obiectivului curent al proprietarului: se lucrează tot ce este EXEC, în ordinea
+roadmap-ului, astfel încât la final să rămână exclusiv DEVICE/3P/OWNER. Ledger-ul se actualizează
+la fiecare pachet închis.
+
+## 3. Matricea pachetelor
+
+| Pachet | Rol | Stare | Blocaj |
+|---|---|---|---|
+| B0 | Reconciliere + matrice porți | **ÎNCHIS** (acest fișier) | — |
+| H0 | Design protecție APK | DESCHIS — următorul | EXEC |
+| M0 | Fezabilitate radio | PARȚIAL: spike-uri de laborator EXEC; matricea fizică de măsurat | DEVICE (4 modele / 2 producători / 2 fără GMS / cel mai vechi API) |
+| B1 | Închidere bază DM/storage/sync/media/metadate | PARȚIAL: porțile mari închise (STATUS); rămân rulările la scara porții F11, F12 tuning, AUDIT_SCOPE refresh | EXEC + DEVICE (runner KVM Q32, telefoane Q31) + 3P (review captură F-T1) |
+| M1 | Protocol mesh, grant-uri, design date | DESCHIS | EXEC (design + vectori + schemă), review criptografic OWNER/3P înainte de cod |
+| M2 | Legătură locală directă | BLOCAT DE M1/B1 | EXEC cod + DEVICE teste |
+| M3 | Store/carry/forward + gateway | BLOCAT DE M2 | EXEC cod + DEVICE teste |
+| M4 | Note vocale | BLOCAT DE M3 + poarta media B1 | EXEC |
+| C0 | Motor apel: selecție + verificare izolare | DESCHIS parțial: analiza licențelor/SBOM EXEC; experimentul de izolare cere două dispozitive | EXEC + DEVICE |
+| M5 | Apel local E2EE | BLOCAT DE C0+M2 | EXEC cod + DEVICE teste |
+| B2 | Integrare Android + privacy UX | BLOCAT DE contractele M4/M5 | EXEC |
+| H1 | Implementare hardening release | BLOCAT DE H0 | EXEC |
+| B3 | Candidat distribuibil + dovezi F14 | PARȚIAL FĂCUT (F14: build reproductibil în imagine, gates, recipe unificat); rămân mediul B, tag-ul semnat, workflows | DEVICE (mediul B) + OWNER (cheie tag, token-uri) + EXEC (CI-L workflows) |
+| M6 | Validare integrată pe dispozitive | BLOCAT DE M3-M5/H1/B3 | DEVICE-heavy + QA independent |
+| H2 | Acceptare protecție APK pe candidat | BLOCAT DE H1/B3 (+M6 varianta completă) | EXEC + 3P (audit la B4) |
+| B4 | Audit extern + remediere | DESCHIS | 3P (contractare auditori, buget OWNER) |
+| B5 | Private alpha (20-50 testeri) | DESCHIS | 3P (oameni) + OWNER (timp) |
+| B6 | Beta controlată (200-500) | DESCHIS | 3P (oameni) + OWNER |
+| M7 | Admitere module opționale | BLOCAT DE M6/H2/B4/B6 | EXEC (documentare) + OWNER (decizie) |
+| B7 | Pregătit de producție + lansare | BLOCAT DE toate porțile | OWNER (autorizare semnată) |
+
+## 4. Porțile rămase din fazele 0-18 (listă unică, cu clasă)
+
+| # | Poartă / item | Fază | Dovadă existentă | Clasă rămasă |
+|---|---|---|---|---|
+| 1 | Rulări la scara porții F11: lumea N=300×28 zile×5 seeds, mutanții Rust 43/43, corpus §15.7 | 11 | scripturile locale există; suitele mici verzi | EXEC (WSL) |
+| 2 | Clasa `… \| head -1` SIGPIPE (~20 gate-uri; cursa câștigată azi pe toate) | gates | `ui-notifications` fixat; restul documentat | EXEC |
+| 3 | `cargo-deny` instalat + cazurile de self-test activate (acum skip documentat) | CI local | gate-urile există | EXEC (instalare binar în runner) |
+| 4 | Rândurile G-D1/G-D2/G-D4 care scanează workflows CI | 14 | documentate ca manuale în gate-uri | EXEC (CI-L: migrarea workflows în scripturi locale, decizie ADR-58) |
+| 5 | Refresh `docs/audit/AUDIT_SCOPE.md` §0 (condiții vechi: „Fazele 9-14 fără cod în main" — depășit) | 15 | pachetul de audit există | EXEC |
+| 6 | Tuning jitter/batch transporturi (rândul 12 rămas) + review independent captură metadate (F-T1, cere design propriu sau repointare L9) | 12 | loopback verde, porți G-T1-T8 | EXEC (tuning) + 3P (review independent) |
+| 7 | F11 R3: expeditorul nu-și vede propriul obiect „vezi o dată" (mai strict decât design) | 11 | înregistrat cu probes | OWNER (decizie produs) |
+| 8 | Hang load-dependent `ChannelM20CrashTest.aCrashAtEveryEventOfTheFourthWave…` | 11 | nu se reproduce izolat; reprodus 2× sub load | DEVICE/EXEC (rulare la scara gate pe runner KVM — Q32) |
+| 9 | Q32 runner KVM + cotă artefacte; Q31 telefoane de referință; jumătatea Android a porților la scara PR | 10/11/13 | porțile de cod verzi | DEVICE (hardware/procurement) |
+| 10 | OA-1 live pe bridge-uri publice + WebTunnel live; OA-2 pasul arm64 pe două telefoane; confirmare scrisă prune OA-3 | 12 | mecanism deblocat, `tests/live_pt.rs` | DEVICE + OWNER (confirmare scrisă) |
+| 11 | F13: TalkBack walkthrough formal; T4 calea device-transfer (D2D); geamănul T6 cu identitate configurată | 13 | dovezi emulator parțiale | DEVICE (emulator pe runner KVM / telefoane) + 3P (evaluator uman TalkBack) |
+| 12 | OA-5: editor nativ RO + counsel texte plată/privacy/Tor | 13 | — | 3P (contractare) |
+| 13 | Runda formativă 2-3 oameni + summativ anonim S11 (materiale `docs/ux-s11/` gata) | 13 | staging real J1-J6 măsurat | 3P (oameni) |
+| 14 | F14: mediul B (al doilea mediu independent) | 14 | runbook + recipe unificat validat | DEVICE (mașina fizică) |
+| 15 | F14: cheie de tag + token-uri hardware + domeniu; proba vie V-D11b (includere Sigsum live) | 14 | chei software stagenet pentru drill | OWNER (achiziție) + 3P (Sigsum) |
+| 16 | F14: drill live S9 pe telefon real; ceremonii RK0-RK6 | 14 | APK drill + staging gata | DEVICE + OWNER (token-uri) |
+| 17 | Q3: domeniul `org.ghost.app` neînregistrat; Q18: verificarea dezvoltatorilor Google (2027) | 14/13 | înregistrat | OWNER (decizie/domeniu) |
+| 18 | B4 audit extern: contractare, buget, acces auditori la sursă/mapping | 15 | RFQ + pachet există | 3P + OWNER (buget) |
+
+## 5. Trasabilitatea cerințelor v2.2
+
+Tabelul cerință→pachet→probă din roadmap §23 se adoptă ca atare (M-01…M-16, V-01…V-06,
+C-01…C-09, H-01…H-12 → MESH-01…09, VOICE-01…04, CALL-01…06, APK-01…08). Ledger-ul de mai sus
+adaugă peste el doar clasa de blocaj. Protocoalele wire (mesh) și binding-ul apelului rămân de
+înghețat în design (M1/C0) și revizuite criptografic ÎNAINTE de cod — specificația v2.2 nu
+inventează protocol, doar fixează cerințele.
+
+## 6. NFR înregistrate ca ținte (fără rezultate inventate)
+
+N-M1 (legătură p95 ≤ 15 s), N-M2 (text 4 KiB p95 ≤ 3 s), N-M3 (OFF = zero activitate locală),
+N-M4 (buget resurse §5.1), N-M5 (≤ 2 pp baterie/oră), N-V1 (zero audio plaintext persistent),
+N-C1 (audio p95 ≤ 5 s), N-C2 (latență p95 ≤ 200 ms), N-C3 (oprire captură ≤ 1 s), N-H1 (zero
+secrete/debug/mapping în APK), N-H2 (≤ 10% startup/RSS), N-H3 (reproducibilitate verificată).
+Mărimea APK se remsoară cu motorul RTC ales (C0); NFR-ul de bază nu se relaxează automat.
+
+## 7. Model fizic, OS/ABI, buget audit, acces auditori — puncte deschise (B0)
+
+- **Matricea fizică minimă** (propunere de validat la M0, proprietarul confirmă/procură):
+  4 modele / ≥2 producători, 2 fără GMS, cel mai vechi API suportat de funcție; fiecare raport
+  fixează model/OS/ABI/radio/distanță/build hash.
+- **Bugetul auditului și accesul la sursă/mapping** (ADR-38 punct 9 amendat: mapping privat cu
+  acces controlat) — decizie OWNER, blocată la B4.
+- **Escrow de sursă** (ADR-38 punct 10) — decizie OWNER.
+
+## 8. Non-obiective înghețate (B0)
+
+Fără: unknown peers, apeluri de grup, video, multi-hop live, telefonie publică, colectare
+automată de diagnostice, fallback Internet pentru local, STUN/TURN, discovery în fundal,
+scanare de subnet, DNS/mDNS/SSDP, trust tranzitiv, delegare de grant, reputație globală,
+packere/loadere opace fără evaluare separată. Push-to-talk live nu primește proprietățile
+notelor vocale. Orice extindere trece prin revizie de design, nu prin roadmap tacit.
+
+## 9. Reguli de execuție (din roadmap §2/§23, adoptate)
+
+Un singur integrator (agentul), un singur writer per worktree, un singur flux de implementare +
+unul de verificare; fiecare pachet produce: obiectiv, checkout/SHA, fișiere modificate, decizii,
+comenzi, exit codes, număr/scop teste, rezultate negative, hash-uri, limite, următorul gate.
+Nicio fază istorică nu primește PASS retroactiv. Verificări locale conform ADR-58.
