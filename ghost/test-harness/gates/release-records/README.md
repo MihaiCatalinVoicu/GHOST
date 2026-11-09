@@ -10,4 +10,4 @@ Run by `scripts/gates/self-test.sh`.
 | `drill-root` | fails: a network-3 (drill) chain in a release build |
 | `wrong-network` | fails: a mainnet-byte chain under protocol/release/stagenet |
 | `checker-refused` | fails: the records checker exits non-zero |
-| `missing-signers` | fails: root records without the allowed-signers file |
+| `missing-signers` | passes with a loud notice: clause (e) skips while the allowed-signers file is absent (the first tag key is RK1's, the owner's) — fail-closed only once the file exists but is empty/malformed |

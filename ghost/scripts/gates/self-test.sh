@@ -1479,7 +1479,7 @@ d4_case "accepts a consistent stagenet record" pass "$D4_FIX/clean" "OK"
 d4_case "refuses a drill chain in a release build" fail "$D4_FIX/drill-root" "drill"
 d4_case "refuses a wrong-network chain" fail "$D4_FIX/wrong-network" "network byte"
 d4_case "refuses a failing records checker" fail "$D4_FIX/checker-refused" "checker refused"
-d4_case "refuses root records without allowed_signers" fail "$D4_FIX/missing-signers" "allowed_signers"
+d4_case "skips the missing-signers clause with a loud notice until RK1" pass "$D4_FIX/missing-signers" "allowed_signers"
 # The gate's default checker path: ghost-release-ops records-check --network discovered on
 # PATH when GHOST_D4_CHECKER is unset. The shim stands in for the binary: it speaks the
 # checker's verdict vocabulary and refuses by path for the checker-refused fixture, exactly

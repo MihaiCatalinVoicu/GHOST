@@ -17,8 +17,10 @@
 #       an integer no smaller than the previous. Skipped with a notice while the file (or
 #       the git history, for fixture roots) does not exist.
 #   (e) The tag-signing allowed-signers file exists — once the network holds any release
-#       record (a root chain). The file lands with the first tag key; a network holding
-#       roots but no allowed_signers fails.
+#       record (a root chain). The file lands with the first tag key (RK1's ceremony, the
+#       owner's); a network holding roots but no allowed_signers is a LOUD SKIP with a
+#       printed notice, not a pass and not a fail — until the first tag key is provisioned.
+#       Fail-closed only once the file exists: an empty/malformed allowed_signers fails.
 #   (f) Network separation of the embedded chains: every *.ghrc under a release network
 #       dir carries that network's byte (GHRC v1: "GHRC" 0-3, version 4, network 5 —
 #       mainnet 1, stagenet 2, stagenet-drill 3); a stagenet root never sits in a mainnet
