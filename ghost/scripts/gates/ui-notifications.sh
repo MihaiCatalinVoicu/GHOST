@@ -37,7 +37,7 @@ if [ -f "$GHOST_ROOT/$NOTIFIER" ]; then
 fi
 
 # Vacuity floor: the scanned trees must hold sources (the notifier file itself lands with S4).
-notif_count=$(find "$GHOST_ROOT/android/ui/src/main" "$GHOST_ROOT/android/app/src/main" -type f -name '*.kt' 2>/dev/null | head -1)
+notif_count=$(find "$GHOST_ROOT/android/ui/src/main" "$GHOST_ROOT/android/app/src/main" -type f -name '*.kt' -print -quit 2>/dev/null)
 [ -n "$notif_count" ] || fail "no UI/app sources (empty scan refused)"
 
 if [ "$FAILURES" -gt 0 ]; then echo "[ui-notifications] FAILED with $FAILURES violation(s)" >&2; exit 1; fi
