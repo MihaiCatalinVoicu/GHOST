@@ -254,6 +254,7 @@ crate equivalent@1.0.2 build-time Apache-2.0 OR MIT
 crate generic-array@0.14.7 lib MIT
 crate getrandom@0.4.3 lib MIT OR Apache-2.0
 crate ghost-client-dm@0.1.0 lib LicenseRef-GHOST-Proprietary
+crate ghost-client-media@0.1.0 lib LicenseRef-GHOST-Proprietary
 crate hashbrown@0.17.1 build-time MIT OR Apache-2.0
 crate hax-lib-macros@0.3.7 proc-macro Apache-2.0
 crate hax-lib@0.3.7 lib Apache-2.0
