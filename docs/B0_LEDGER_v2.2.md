@@ -42,7 +42,7 @@ la fiecare pachet închis.
 | M2 | Legătură locală directă | BLOCAT DE M1/B1 | EXEC cod + DEVICE teste |
 | M3 | Store/carry/forward + gateway | BLOCAT DE M2 | EXEC cod + DEVICE teste |
 | M4 | Note vocale | BLOCAT DE M3 + poarta media B1 | EXEC |
-| C0 | Motor apel: selecție + verificare izolare | DESCHIS parțial: analiza licențelor/SBOM EXEC; experimentul de izolare cere două dispozitive | EXEC + DEVICE |
+| C0 | Motor apel: selecție + verificare izolare | **ANALIZA COMISĂ** (`4407ba7e`, `docs/design/c0-rtc-engine.md`): libwebrtc audio-only din sursă în builder, izolare ICE proiectată, binding DTLS prin transcript DM, impact NFR; experimentul pe două telefoane rămâne | DEVICE (experiment) + OWNER (Q-C0-1..3) |
 | M5 | Apel local E2EE | BLOCAT DE C0+M2 | EXEC cod + DEVICE teste |
 | B2 | Integrare Android + privacy UX | BLOCAT DE contractele M4/M5 | EXEC |
 | H1 | Implementare hardening release | **JUMĂTATEA 1 COMISĂ** (`e6e11bfb`): H-01 obfuscare reală (validat pe mapping real: 747 clase, 15 nume justificate) + G-DM5 rescris pe whitelist; H-02 verificat (recipe A strip-uiește .so). Rămân: H-10 (suite E2E pe release minificat), H-11 (selfcheck reproductibilitate în imagine, la rebuild) | EXEC (H-10 parțial DEVICE — emulator) |
