@@ -372,16 +372,23 @@ sub packages {
         die "cargo tree: $name $version comes from a git or other non-registry source ($rest)\n" if $rest =~ /\((?:https?|git|ssh):/;
         my $key = "$name $version";
         # A path package is one of GHOST's own crates: G-R5 scans its sources, the notices skip it.
+        # An exception: third_party/ holds VENDORED UPSTREAM sources (a [patch.crates-io] of an
+        # upstream crate, e.g. saturating-time) — those keep their own licence and are third-party
+        # for every licence gate; "own" must mean a GHOST crate or the header and licence.workspace
+        # clauses demand the proprietary licence of someone else's code.
         if ($rest =~ /\(((?:[A-Za-z]:)?[\/\\][^)]*)\)/) {
           (my $dir = $1) =~ tr{\\}{/};
-          $pkgs{$key} //= { name => $name, version => $version, license => $licence // "", graphs => {}, own => 1, dir => $dir };
+          my $vendored_upstream = $dir =~ m{(?:^|/)third_party/} ? 1 : 0;
+          $pkgs{$key} //= { name => $name, version => $version, license => $licence // "", graphs => {}, own => $vendored_upstream ? 0 : 1, dir => $dir };
         }
         $pkgs{$key} //= { name => $name, version => $version, license => $licence // "", graphs => {}, own => 0 };
         $pkgs{$key}{graphs}{$g} = 1;
       }
     }
   }
-  for my $p (grep { !$_->{own} } values %pkgs) {
+  # Third-party packages without a source dir yet: resolved from the cargo registry. (Vendored
+  # upstream under third_party/ already carry theirs — see the classification above.)
+  for my $p (grep { !$_->{own} && !$_->{dir} } values %pkgs) {
     $p->{dir} = registry_dir($p->{name}, $p->{version}) // die "no extracted sources for $p->{name} $p->{version} under " . cargo_home() . "/registry/src\n";
   }
   # GHOST's own crates that a shipped library holds, or will hold once its slice links it, are each

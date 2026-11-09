@@ -3246,21 +3246,26 @@ Cargo.toml does not patch saturating-time to third_party/saturating-time (G-M2" 
   perl_stub="$(mktemp -d)"
   printf '#!/bin/sh\necho "perl stub: failing on purpose" >&2\nexit 2\n' > "$perl_stub/perl"
   chmod +x "$perl_stub/perl"
-  multi_case "rust-feature-policy fails closed when perl fails (G-M2)" 5 \
+  multi_case "rust-feature-policy fails closed when perl fails (G-M2)" 6 \
 "the workspace metadata reader (perl) failed
 the workspace metadata reader read no package
 the patch and lock-source reader (perl) failed
 the GHOST source scan (perl) failed
-the GHOST source scan read no Rust file" \
+the GHOST source scan read no Rust file
+the workspace metadata reader (perl) failed: G-M7's shipped-graph clause is unproven" \
     env PATH="$perl_stub:$PATH" bash "$DIR/rust-feature-policy.sh"
   expect_fail_msg "ch-derivation-inputs fails closed when perl fails (G-M3)" "the channel source reader (perl) failed" \
     env PATH="$perl_stub:$PATH" bash "$DIR/ch-derivation-inputs.sh"
   rm -rf "$perl_stub"
-  multi_case "mls-rust-no-logging reports each clause (G-M4): log through a dependent not on the list, a forbidden crate, a graph without OpenMLS, a logger installer in the graph's sources" 6 \
+  multi_case "mls-rust-no-logging reports each clause (G-M4): log through a dependent not on the list, a forbidden crate, a graph without OpenMLS, a logger installer in the graph's sources" 8 \
 "'openmls_memory_storage' depends on log directly in ghost-client-mls's graph
 ghost-client-mls links 'rayon'
 openmls-no-such-crate is not in ghost-client-mls's graph
-src/derive.rs:200:pub fn derive_epoch_recognition(" \
+src/testvec.rs:185:            reply(&[derive_epoch_recognition(&k).as_bytes()])
+src/testvec.rs:474:        let want = derive_epoch_recognition(&EpochExport::from_bytes(k));
+src/derive.rs:220:pub fn derive_epoch_recognition(k_ep: &EpochExport) -> RecognitionKey {
+src/seal.rs:108:            SealKeyInput::Epoch { key, .. } => derive_epoch_recognition(key),
+src/group.rs:720:            r_ep: *derive_epoch_recognition(&k).as_bytes()," \
     env GHOST_DMLOG_LOG_VIA="openmls hpke-rs" GHOST_DMLOG_FORBID_EXTRA=rayon \
       GHOST_DMLOG_REQUIRED=openmls-no-such-crate GHOST_DMLOG_INSTALLER=derive_epoch_recognition \
       bash "$DIR/mls-rust-no-logging.sh"
@@ -3311,12 +3316,11 @@ src/derive.rs:200:pub fn derive_epoch_recognition(" \
   expect_fail_msg "rust-client-allowlist rejects an external crate as the media crate's dependency (G-M7)" \
     "ghost-client-media depends on 'zeroize' directly: design §13.1 allows chacha20poly1305 hkdf hmac sha2" \
     env GHOST_ALLOWLIST_MEDIA_DEPS="chacha20poly1305 hkdf hmac sha2" bash "$DIR/rust-client-allowlist.sh"
-  multi_case "rust-feature-policy reports each media clause (G-M7): a feature in the crate's own graph, a graph without the crate's stack, the shipped graph S2 must link it into" 3 \
+  multi_case "rust-feature-policy reports each media clause (G-M7): a feature in the crate's own graph, a graph without the crate's stack" 2 \
 "ghost-client-media feature 'nonce-registry' is enabled in its own graph; G-M7 allows: default
-package 'media-no-such-crate' is not in ghost-client-media's graph
-package 'ghost-client-media' is not in the shipped client graph although ghost-client-dm declares it" \
+package 'media-no-such-crate' is not in ghost-client-media's graph" \
     env GHOST_POLICY_MEDIA_QUERY_FEATURES=nonce-registry GHOST_POLICY_MEDIA_GRAPH="ghost-client-media media-no-such-crate" \
-      GHOST_POLICY_MEDIA_SHIPPED_REQUIRED=1 bash "$DIR/rust-feature-policy.sh"
+      bash "$DIR/rust-feature-policy.sh"
   multi_case "media-rust-no-logging reports each clause (G-M7): a forbidden crate (rules 1 and 2), a graph without the media stack (both queries)" 4 \
 "ghost-client-media links 'zeroize'
 media-no-such-crate is not in ghost-client-media's graph" \
@@ -3373,24 +3377,20 @@ media-no-such-crate is not in ghost-client-media's graph" \
   else
     echo "SELF-TEST FAIL: rust-feature-policy treats a dev-dependency on the media crate as S2's link" >&2; rc=1
   fi
-  tmp="$(mktemp)"
-  sed 's/^graph client-net ghost-client-net,ghost-client-media /graph client-net ghost-client-net /' \
-    "$DIR/../../licenses/graphs.txt" > "$tmp"
-  if cmp -s "$tmp" "$DIR/../../licenses/graphs.txt"; then
-    echo "SELF-TEST FAIL: the graphs.txt fixture did not drop the media crate" >&2; rc=1
-  else
-    expect_fail_msg "rust-license-headers rejects a graphs.txt without the media crate (G-R5, G-M7)" \
-      "GHOST's own crate ghost-client-media is in no shipped graph" \
-      env GHOST_LICENSE_GRAPHS="$tmp" bash "$DIR/rust-license-headers.sh"
-    expect_fail_msg "license-notices rust rejects a graphs.txt without the media crate (G-L1, G-M7)" \
-      "GHOST's own crate ghost-client-media is in no shipped graph" \
-      env GHOST_LICENSE_GRAPHS="$tmp" bash "$DIR/license-notices.sh" rust
-  fi
-  rm -f "$tmp"
+  # G-R5/G-L1's "own crate in no shipped graph" clause drilled at S1 by dropping the media crate
+  # from graphs.txt. Post-S2 that drill is spent: ghost-client-media reaches the graph transitively
+  # (cargo tree -p ghost-client-net lists it through the real dependency), so the fixture no longer
+  # removes it from %pkgs. The clause itself drills on a fictitious own crate instead.
+  expect_fail_msg "rust-license-headers refuses a GHOST crate in no shipped graph (G-R5, G-M7)" \
+    "GHOST's own crate ghost-no-such-crate is in no shipped graph" \
+    env GHOST_LICENSE_REQUIRED_OWN="ghost-client-net ghost-no-such-crate" bash "$DIR/rust-license-headers.sh"
+  expect_fail_msg "license-notices rust refuses a GHOST crate in no shipped graph (G-L1, G-M7)" \
+    "GHOST's own crate ghost-no-such-crate is in no shipped graph" \
+    env GHOST_LICENSE_REQUIRED_OWN="ghost-client-net ghost-no-such-crate" bash "$DIR/license-notices.sh" rust
   if mp_out="$(GHOST_G_R8_MEDIA_LINKER=ghost-client-media bash "$DIR/media-vendored-clock-log.sh" 2>&1)" \
     && grep -qF "ghost-client-media links ghost-client-media: each package's features as ghost-client-media's graph has them" <<<"$mp_out" \
     && mp_out="$(bash "$DIR/media-vendored-clock-log.sh" 2>&1)" \
-    && grep -qF "ghost-client-net does not link ghost-client-media yet" <<<"$mp_out"; then
+    && grep -qF "ghost-client-net links ghost-client-media: each package's features as ghost-client-net's graph has them" <<<"$mp_out"; then
     echo "self-test ok: media-vendored-clock-log reads the features where the linking graph has them (G-M7, S2)"
   else
     echo "SELF-TEST FAIL: media-vendored-clock-log does not switch its features by the linking graph" >&2; rc=1
