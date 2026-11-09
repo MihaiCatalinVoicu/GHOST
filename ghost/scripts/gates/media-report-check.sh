@@ -85,7 +85,7 @@ max_seeded="${GHOST_MEDIA_REPORT_MAX_SEEDED_WORLDS:-1000}"
 if [ "$kind" = gate ]; then
   grep -qE '^seeded worlds: 1000 run, 0 failures$' "$report" || bad "no exact 'seeded worlds: 1000 run, 0 failures' line"
 else
-  seeded="$(sed -nE 's/^seeded worlds: ([0-9]+) run, 0 failures$/\1/p' "$report" | head -1)"
+  seeded="$(sed -nE 's/^seeded worlds: ([0-9]+) run, 0 failures$/\1/p' "$report" | sed -n '1p')"
   [ -n "$seeded" ] || bad "no seeded-worlds line of the form 'seeded worlds: N run, 0 failures'"
   [ "$seeded" -le "$max_seeded" ] || bad "the PR report claims $seeded seeded worlds, above the $max_seeded pin"
 fi

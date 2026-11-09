@@ -99,7 +99,7 @@ if [ "$changed" = 1 ]; then
     trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
     cargo test --locked -p ghost-client-media --test goldens 2>&1 | tr -d '\r' > "$work/run" || true
     grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed;  0 ignored;' "$work/run" || \
-      fail "the golden drill did not pass with 0 ignored: $(grep -E '^test result:' "$work/run" | head -1)"
+      fail "the golden drill did not pass with 0 ignored: $(grep -E '^test result:' "$work/run" | sed -n '1p')"
     for t in the_sums_are_the_committed_ones every_fmp4_golden_is_canonical \
              every_jpeg_golden_is_canonical_and_a_fixed_point every_golden_seals_and_reads_back_to_itself; do
       grep -qxF "test $t ... ok" "$work/run" || fail "at the bump, the walker's $t did not run and pass"

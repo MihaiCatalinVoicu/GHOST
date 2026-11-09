@@ -29,7 +29,7 @@ HEX40='^[0-9a-f]{40}$'
 
 # A variable's value from a pins.env (KEY=VALUE lines, comments and blanks skipped).
 pin() { # $1 = file, $2 = key
-  sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
+  sed -n "s/^$2=//p" "$1" 2>/dev/null | sed -n '1p'
 }
 [ -f "$PINS" ] || fail "ghost/third_party/lyrebird/pins.env missing"
 [ -f "$TE_PINS" ] || fail "ghost/third_party/tor-expert/pins.env missing"
@@ -90,9 +90,9 @@ if [ -f "$TE_PINS" ]; then
   if [ -f "$FETCH" ]; then
     src="$(grep -v '^[[:space:]]*#' "$FETCH")"
     grep -q 'sha256sum -c' <<< "$src" || fail "tor-expert FETCH.sh fetches the pinned tarball without sha256sum -c"
-    d_line="$(grep -nE '(^|[^[:alnum:]_-])(curl|wget)([[:space:]]|$)' <<< "$src" | head -1 | cut -d: -f1)"
-    c_line="$(grep -n 'sha256sum -c' <<< "$src" | head -1 | cut -d: -f1)"
-    x_line="$(grep -nE '(^|[^[:alnum:]_-])(tar |unzip|mv )' <<< "$src" | head -1 | cut -d: -f1)"
+    d_line="$(grep -nE '(^|[^[:alnum:]_-])(curl|wget)([[:space:]]|$)' <<< "$src" | sed -n '1p' | cut -d: -f1)"
+    c_line="$(grep -n 'sha256sum -c' <<< "$src" | sed -n '1p' | cut -d: -f1)"
+    x_line="$(grep -nE '(^|[^[:alnum:]_-])(tar |unzip|mv )' <<< "$src" | sed -n '1p' | cut -d: -f1)"
     [ -n "$d_line" ] && [ -n "$c_line" ] && [ "$c_line" -gt "$d_line" ] \
       || fail "tor-expert FETCH.sh checks the tarball before its download"
     [ -z "$x_line" ] || [ "$c_line" -lt "$x_line" ] \

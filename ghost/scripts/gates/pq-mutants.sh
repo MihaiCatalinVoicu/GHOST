@@ -88,7 +88,7 @@ if ! run_tests "$work/clean"; then
   finish pq-mutants
 fi
 grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$work/clean" \
-  || fail "the unpatched run did not pass with 0 ignored: $(grep -E '^test result:' "$work/clean" | head -1)"
+  || fail "the unpatched run did not pass with 0 ignored: $(grep -E '^test result:' "$work/clean" | sed -n '1p')"
 passed="$(results "$work/clean" ok)"
 has "$passed" "$WORLD" || fail "the unpatched run did not run and pass the world's test $WORLD"
 while IFS= read -r test; do

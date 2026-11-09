@@ -149,7 +149,7 @@ sort -u -o "$work/baseline.txt" "$work/baseline.txt"
 if [ "${GHOST_G_R8_PRINT:-}" = 1 ]; then
   # Baseline form for a reviewer: reasons of unchanged entries kept, new entries marked.
   while IFS= read -r entry; do
-    reason="$(grep -F -- "$entry  # " "$BASELINE" | head -1 | sed 's/^.*  # //' || true)"
+    reason="$(grep -F -- "$entry  # " "$BASELINE" | sed -n '1p' | sed 's/^.*  # //' || true)"
     case "$entry" in
       crate\ *) printf '%s\n' "$entry" ;;
       *) printf '%s  # %s\n' "$entry" "${reason:-UNJUSTIFIED}" ;;

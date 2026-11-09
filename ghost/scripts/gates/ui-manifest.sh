@@ -62,7 +62,7 @@ for m in "${MANIFESTS[@]}"; do
       if ($tag =~ /android:required="([^"]+)"/) { print "CAMERA\t$1\n"; } else { print "CAMERA\t(absent)\n"; }
     } else { print "CAMERA\tnot-declared\n"; }
   ' "$m")"
-  getf() { printf '%s\n' "$M_OUT" | grep "^$1" | head -1 | cut -f"$2"-; }
+  getf() { printf '%s\n' "$M_OUT" | grep "^$1" | sed -n '1p' | cut -f"$2"-; }
   n_activities=$(getf ACTIVITIES 2)
   [ "$n_activities" = "1" ] || fail "$m: exactly one activity expected, found '$n_activities'"
   if [ "$n_activities" = "1" ]; then

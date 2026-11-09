@@ -15,7 +15,7 @@
 #     two under a re-pin-worthy growth)
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 LB="$GHOST_ROOT/third_party/lyrebird"
-pin() { sed -n "s/^$1=//p" "$LB/pins.env" 2>/dev/null | head -1; }
+pin() { sed -n "s/^$1=//p" "$LB/pins.env" 2>/dev/null | sed -n '1p'; }
 
 [ -f "$LB/pins.env" ] || { fail "third_party/lyrebird/pins.env missing"; finish pt-size; }
 missing=0

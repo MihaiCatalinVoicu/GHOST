@@ -19,7 +19,7 @@ fi
 PT_FIX="test-harness/privacy/fixtures/pt-relay-shape.txt"
 [ -s "$PT_FIX" ] || fail "pt-relay-shape.txt missing or empty (record it from a pt_loopback run; D28: a vacuous scan is not evidence)"
 shape_line() { # $1 = tag (pt|direct): prints "handshake=<...> alphabet=<...>"
-  grep -E "^$1[[:space:]]" "$PT_FIX" | head -1
+  grep -E "^$1[[:space:]]" "$PT_FIX" | sed -n '1p'
 }
 pt_line="$(shape_line pt)"
 dir_line="$(shape_line direct)"
@@ -39,7 +39,7 @@ grep -q '^# pt path:' "$PT_FIX" || fail "pt-relay-shape.txt carries no byte-size
 # The drifted twin must be rejected.
 PT_NEG="test-harness/privacy/fixtures/pt-relay-shape-negative.txt"
 if [ -f "$PT_NEG" ]; then
-  neg_hand="$(grep -E '^pt[[:space:]]' "$PT_NEG" | head -1 | sed -n 's/.*handshake=\(\[.*\)\] alphabet=.*/\1]/p')"
+  neg_hand="$(grep -E '^pt[[:space:]]' "$PT_NEG" | sed -n '1p' | sed -n 's/.*handshake=\(\[.*\)\] alphabet=.*/\1]/p')"
   [ -n "$neg_hand" ] && [ "$neg_hand" != "$dir_hand" ] || fail "the negative PT shape fixture no longer drifts (it would pass vacuously)"
 else
   fail "pt-relay-shape-negative.txt missing (the PT rows' negative fixture)"

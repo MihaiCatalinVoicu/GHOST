@@ -41,7 +41,7 @@ while IFS= read -r f; do
 done < <(find "$GHOST_ROOT/android/ui/src/main" "$GHOST_ROOT/android/app/src/main/kotlin/org/ghost/app/ui" "$GHOST_ROOT/android/app/src/release" -type f -name '*.kt' 2>/dev/null || true)
 
 # Vacuity floor: the scanned trees must hold sources.
-ui_count=$(find "$GHOST_ROOT/android/ui/src/main" -type f -name '*.kt' 2>/dev/null | head -1)
+ui_count=$(find "$GHOST_ROOT/android/ui/src/main" -type f -name '*.kt' 2>/dev/null | sed -n '1p')
 [ -n "$ui_count" ] || fail "android/ui/src/main holds no sources (empty scan refused)"
 
 if [ "$FAILURES" -gt 0 ]; then echo "[ui-no-persist] FAILED with $FAILURES violation(s)" >&2; exit 1; fi

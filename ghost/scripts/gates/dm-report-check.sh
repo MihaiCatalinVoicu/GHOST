@@ -119,7 +119,7 @@ privacy_worlds() {
   local scale="$1" clients="$2" days="$3" pairs worlds join n
   grep -qE "^scale: ${scale}, seed pairs [1-9][0-9]*, STANDARD\$" "$report" \
     || bad "the report is not of the expected scale (${scale})"
-  pairs="$(sed -nE "s/^scale: ${scale}, seed pairs ([0-9]+), STANDARD\$/\\1/p" "$report" | head -1)"
+  pairs="$(sed -nE "s/^scale: ${scale}, seed pairs ([0-9]+), STANDARD\$/\\1/p" "$report" | sed -n '1p')"
   pairs="${pairs:-0}"
   # One world line per seed pair, a world that did something, and a world **of the header's scale**:
   # the header alone would let a PR-scale world be reported under a gate header.
@@ -312,7 +312,7 @@ privacy_suite() {
   # T34: a non-empty expired-week sample with nothing recognised or opened, and **every** control
   # complete — each "N of M" with N = M and M > 0 — so a "0" is never the output of an attempt that
   # does not work (a control of "1 of 515" is refused, not accepted).
-  t34="$(grep -E '^dm T34: PASS seized c[0-9]+, c[0-9]+ at day 70; expired-week pair blobs [1-9][0-9]*, 0 recognised and 0 opened by retained keys \(.*\), 0 recognised by derived keys \(.*\); control ' "$report" | head -1 || true)"
+  t34="$(grep -E '^dm T34: PASS seized c[0-9]+, c[0-9]+ at day 70; expired-week pair blobs [1-9][0-9]*, 0 recognised and 0 opened by retained keys \(.*\), 0 recognised by derived keys \(.*\); control ' "$report" | sed -n '1p' || true)"
   if [ -z "$t34" ]; then
     bad "no T34 PASS over a non-empty expired-week sample with nothing recognised or opened"
   else
@@ -512,7 +512,7 @@ fi
 for pair in "SCN-E bob|6" "SCN-E alice|6" "SCN-E/LOSE_KEYS bob|3" "SCN-E/LOSE_KEYS alice|3"; do
   subject="${pair%%|*}"
   want_phases="${pair#*|}"
-  line="$(grep -E "^dm crash sample: ${subject} " "$report" | head -1 || true)"
+  line="$(grep -E "^dm crash sample: ${subject} " "$report" | sed -n '1p' || true)"
   if [ -z "$line" ]; then
     bad "no crash-sample line for $subject"
     continue
@@ -702,7 +702,7 @@ for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9
   "ME-7|$rule_me7" "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17" "ME-19|$rule_me19" "ME-20|$rule_me20" "ME-24|$rule_me24"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"
-  line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"
+  line="$(grep -E "^dm mutant ${mutant}: " "$report" | sed -n '1p' || true)"
   if ! printf '%s\n' "$line" | grep -qE "^dm mutant ${mutant}: detected by .+"; then
     bad "no detection line for mutant $mutant"
   elif [ "${line##*; kill rule: }" != "$rule" ]; then

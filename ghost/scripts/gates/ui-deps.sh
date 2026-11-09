@@ -45,7 +45,7 @@ while IFS= read -r f; do
 done < <(find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name 'build.gradle.kts' -o -name 'build.gradle' \) -print 2>/dev/null || true)
 
 # Vacuity floor: at least one Gradle build file.
-deps_count=$(find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name 'build.gradle.kts' -o -name 'build.gradle' \) -print 2>/dev/null | head -1)
+deps_count=$(find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name 'build.gradle.kts' -o -name 'build.gradle' \) -print 2>/dev/null | sed -n '1p')
 [ -n "$deps_count" ] || fail "no Gradle build files (empty scan refused)"
 
 if [ "$FAILURES" -gt 0 ]; then echo "[ui-deps] FAILED with $FAILURES violation(s)" >&2; exit 1; fi

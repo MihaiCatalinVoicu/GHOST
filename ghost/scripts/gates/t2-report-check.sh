@@ -38,7 +38,7 @@ case "$kind" in
     # them a relay registered, and the registrations the relays answered OK, WRONG_PERIOD or not
     # at all. A population that names none, registered nothing, is not three per owner, or whose
     # loopback failed a registration, did not model them.
-    dm_field="$(sed -nE 's/^population: PASS .*dm_owner_namespaces ([0-9]+) \(3 per activated client: ([0-9]+) owners, ([0-9]+) namespaces registered at a relay; ([0-9]+) registrations ok, ([0-9]+) wrong_period, ([0-9]+) failed\).*/\1 \2 \3 \4 \6/p' "$report" | head -1)"
+    dm_field="$(sed -nE 's/^population: PASS .*dm_owner_namespaces ([0-9]+) \(3 per activated client: ([0-9]+) owners, ([0-9]+) namespaces registered at a relay; ([0-9]+) registrations ok, ([0-9]+) wrong_period, ([0-9]+) failed\).*/\1 \2 \3 \4 \6/p' "$report" | sed -n '1p')"
     if [ -z "$dm_field" ]; then
       bad "the population line names no dm_owner_namespaces with its owners and registrations (Phase 9 design §4.9, Phase 11 §5.2)"
     else

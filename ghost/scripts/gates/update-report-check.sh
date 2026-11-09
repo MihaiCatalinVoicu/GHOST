@@ -64,7 +64,7 @@ killable_count=30
 # holds — rebuild ghost-dm-host, do not paper over it).
 grep -qxF "update mutants: $killable_count run, $killable_count detected" "$report" \
   || bad "the mutant line is not 'update mutants: $killable_count run, $killable_count detected'"
-headline="$(sed -nE 's/^update mutants: ([0-9]+) run, ([0-9]+) detected$/\1 \2/p' "$report" | head -1)"
+headline="$(sed -nE 's/^update mutants: ([0-9]+) run, ([0-9]+) detected$/\1 \2/p' "$report" | sed -n '1p')"
 if [ -n "$headline" ]; then
   [ "${headline% *}" = "${headline#* }" ] || bad "the headline claims ${headline#* } detected over ${headline% *} run: more detected than measured"
 fi

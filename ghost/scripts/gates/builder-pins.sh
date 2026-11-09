@@ -60,7 +60,7 @@ PINS="$ROOT/infra/builder/pins.txt"
 nocomment() { grep -vE '^[[:space:]]*#' "$1"; }
 
 # Rule 1: FROM digest, and the pins <-> ARG digests, both directions.
-from_line="$(grep -E '^FROM ' "$DOCKERFILE" | head -1)"
+from_line="$(grep -E '^FROM ' "$DOCKERFILE" | sed -n '1p')"
 image_pin="$(awk '/^image /{print $2; exit}' "$PINS")"
 [ -n "$image_pin" ] || fail "pins.txt has no image line"
 [ "$from_line" = "FROM $image_pin" ] || fail "Dockerfile FROM '$from_line' is not the pinned image '$image_pin'"
@@ -83,7 +83,7 @@ paragraph="$(nocomment "$DOCKERFILE" | awk 'BEGIN{RS="";FS="\n"} {out=""; for(i=
 while IFS= read -r block; do
   [ -n "$block" ] || continue
   if grep -q 'curl .*http' <<< "$block"; then
-    grep -qE 'sha(256|1)sum -c' <<< "$block" || fail "a Dockerfile layer downloads without a digest check: $(printf '%s' "$block" | head -1)"
+    grep -qE 'sha(256|1)sum -c' <<< "$block" || fail "a Dockerfile layer downloads without a digest check: $(printf '%s' "$block" | sed -n '1p')"
   fi
 done <<< "$paragraph"
 
@@ -109,26 +109,26 @@ while IFS= read -r f; do
 done < <(find "$ROOT/infra/builder" -maxdepth 1 -type f \( -name 'Dockerfile' -o -name '*.sh' \) -print 2>/dev/null | sort)
 
 # Rule 5: the named toolchain versions agree with their pins.
-channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/rust-toolchain.toml" | head -1)"
+channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/rust-toolchain.toml" | sed -n '1p')"
 [ -n "$channel" ] || fail "rust-toolchain.toml carries no channel"
 awk -v c="$channel" '/^rust /{if (index($0, c)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's rust line does not name the toolchain channel $channel"
 
 WRAP="$ROOT/android/gradle/wrapper/gradle-wrapper.properties"
 gradle_sum="$(awk -F= '/^distributionSha256Sum=/{print $2; exit}' "$WRAP")"
-gradle_ver="$(awk -F= '/^distributionUrl=/{print $2; exit}' "$WRAP" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+gradle_ver="$(awk -F= '/^distributionUrl=/{print $2; exit}' "$WRAP" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n '1p')"
 [ -n "$gradle_ver" ] && [ -n "$gradle_sum" ] || fail "gradle-wrapper.properties carries no version/sum"
 awk -v v="$gradle_ver" '/^gradle /{if (index($0, v)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's gradle line does not name $gradle_ver"
 awk -v s="$gradle_sum" '/^gradle /{if (index($0, s)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's gradle line does not record distributionSha256Sum $gradle_sum"
 
-protoc_ver="$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' "$ROOT/scripts/install-protoc.sh" | head -1)"
-protoc_sha="$(sed -n 's/^SHA256="\([^"]*\)".*/\1/p' "$ROOT/scripts/install-protoc.sh" | head -1)"
+protoc_ver="$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' "$ROOT/scripts/install-protoc.sh" | sed -n '1p')"
+protoc_sha="$(sed -n 's/^SHA256="\([^"]*\)".*/\1/p' "$ROOT/scripts/install-protoc.sh" | sed -n '1p')"
 [ -n "$protoc_ver" ] && [ -n "$protoc_sha" ] || fail "scripts/install-protoc.sh carries no VERSION/SHA256 pair"
 if awk '$1 == "protoc"{found=1} END{exit !found}' "$PINS"; then
   awk -v v="$protoc_ver" '$1 == "protoc"{if (index($0, v)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's protoc line does not name $protoc_ver"
   awk -v s="$protoc_sha" '$1 == "protoc"{if (index($0, s)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's protoc line does not record $protoc_sha"
 fi
 
-cargo_ndk="$(sed -n 's/^CARGO_NDK_VERSION="\([^"]*\)".*/\1/p' "$ROOT/scripts/build-native.sh" | head -1)"
+cargo_ndk="$(sed -n 's/^CARGO_NDK_VERSION="\([^"]*\)".*/\1/p' "$ROOT/scripts/build-native.sh" | sed -n '1p')"
 [ -n "$cargo_ndk" ] || fail "scripts/build-native.sh carries no CARGO_NDK_VERSION"
 awk -v v="$cargo_ndk" '/^cargo-ndk /{if (index($0, v)) found=1} END{exit !found}' "$PINS" || fail "pins.txt's cargo-ndk line does not name $cargo_ndk"
 

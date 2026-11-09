@@ -74,7 +74,7 @@ done <<<"$m20"
 
 # The variants and the oracle and size lines (one each at least, zeros where the design asserts them).
 grep -qE "^channel SCN-M20: PASS seed $seeds_re owner_restore: " "$report" || bad "no owner-restore variant line"
-fork="$(grep -E '^channel SCN-M20 fork: PASS' "$report" | head -1 || true)"
+fork="$(grep -E '^channel SCN-M20 fork: PASS' "$report" | sed -n '1p' || true)"
 [ -n "$fork" ] || bad "no FORK variant line"
 grep -qE '[1-9][0-9]* members split_suspected, [1-9][0-9]* rejoined' <<<"$fork" || bad "the FORK line's counts are zero: $fork"
 
@@ -94,7 +94,7 @@ grep -qE '^channel sizes: PASS [1-9][0-9]* commits within the floor, [1-9][0-9]*
 for jc in 1 2 3 4 5 6 7; do
   grep -qE "^channel JC-$jc: PASS" "$report" || bad "no JC-$jc line or not a PASS"
 done
-world="$(grep -E '^channel privacy world: PASS' "$report" | head -1 || true)"
+world="$(grep -E '^channel privacy world: PASS' "$report" | sed -n '1p' || true)"
 [ -n "$world" ] || bad "no privacy world line"
 grep -qE '60 clients, 12 channels, 28 days' <<<"$world" || bad "the privacy world is not at §12.7's PR scale: $world"
 for field in 'posts' 'commits' 'generations' 'removals' 'admissions'; do
@@ -103,7 +103,7 @@ done
 for twin in NI-CH1 NI-CH2 NI-CH3 NI-CH4 NI-CH5; do
   grep -qE "^channel $twin: PASS" "$report" || bad "no $twin line or not a PASS"
 done
-high="$(grep -E '^channel JC-6: PASS .*HIGH mode' "$report" | head -1 || true)"
+high="$(grep -E '^channel JC-6: PASS .*HIGH mode' "$report" | sed -n '1p' || true)"
 [ -n "$high" ] || bad "no HIGH-mode JC-6 line"
 grep -qE '[1-9][0-9]* distinct delayed ops' <<<"$high" || bad "the HIGH-mode line names no distinct delayed ops: $high"
 

@@ -46,7 +46,7 @@ done
 echo "[release-sums] the two trees are byte-equal ($(wc -l < "$A/SHA256SUMS") files)"
 
 # 3: the APK's native entries equal the lib/ lines.
-apk="$(cd "$A" && ls apk/*-unsigned.apk 2>/dev/null | head -1)"
+apk="$(cd "$A" && ls apk/*-unsigned.apk 2>/dev/null | sed -n '1p')"
 [ -n "$apk" ] || fail "$A: no unsigned APK under apk/ (the android half is not in this tree)"
 for abi in arm64-v8a x86_64; do
   lib="$A/lib/$abi/libghost_client_net.so"

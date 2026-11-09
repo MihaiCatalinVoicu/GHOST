@@ -144,7 +144,7 @@ if [ "${GHOST_GOLDEN_NO_TESTS:-}" != 1 ]; then
     cargo test --locked -p ghost-client-dm --lib -- pq5_ pq_world_ ghost_reencodes_vodozemacs_own_dehydrated_device 2>&1 | tr -d '\r' > "$work/lib.run" || true
     for f in golden lib; do
       grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$work/$f.run" || \
-        fail "the $f drill did not pass with 0 ignored: $(grep -E '^test result:' "$work/$f.run" | head -1)"
+        fail "the $f drill did not pass with 0 ignored: $(grep -E '^test result:' "$work/$f.run" | sed -n '1p')"
     done
     for t in "${GOLDEN_TESTS[@]}"; do grep -qxF "test $t ... ok" "$work/golden.run" || fail "at the bump, $t did not run and pass"; done
     for t in "${LIB_TESTS[@]}"; do grep -qxF "test $t ... ok" "$work/lib.run" || fail "at the bump, $t did not run and pass"; done

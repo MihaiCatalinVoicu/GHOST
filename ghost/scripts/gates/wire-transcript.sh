@@ -84,7 +84,7 @@ committed_before=0
 if command -v git >/dev/null \
   && git -C "$GHOST_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [ "$(git -C "$GHOST_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
-  [ -z "$(git -C "$GHOST_ROOT" log --first-parent --format=%H -- "$TRANSCRIPT_REL" 2>/dev/null | head -1)" ] \
+  [ -z "$(git -C "$GHOST_ROOT" log --first-parent --format=%H -- "$TRANSCRIPT_REL" 2>/dev/null | sed -n '1p')" ] \
     || committed_before=1
 fi
 

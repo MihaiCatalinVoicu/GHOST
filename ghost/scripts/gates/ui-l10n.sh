@@ -56,7 +56,7 @@ while IFS= read -r vals; do
 done < <(find "$GHOST_ROOT/android/ui" "$GHOST_ROOT/android/app" -path '*/src/main/res/values' -type d 2>/dev/null || true)
 
 # Vacuity floor: at least one values dir.
-vals_count=$(find "$GHOST_ROOT/android/ui" "$GHOST_ROOT/android/app" -path '*/src/main/res/values' -type d 2>/dev/null | head -1)
+vals_count=$(find "$GHOST_ROOT/android/ui" "$GHOST_ROOT/android/app" -path '*/src/main/res/values' -type d 2>/dev/null | sed -n '1p')
 [ -n "$vals_count" ] || fail "no res/values in :ui (empty scan refused)"
 
 # No literal user-visible string in composables of android/ui.
