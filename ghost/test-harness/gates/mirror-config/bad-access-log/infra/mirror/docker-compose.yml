@@ -1,0 +1,13 @@
+services:
+  mirror-a:
+    build: .
+    logging:
+      driver: none
+    volumes:
+      - /srv/mirrors/a/tor:/var/lib/tor
+  mirror-b:
+    build: .
+    logging:
+      driver: none
+    volumes:
+      - /srv/mirrors/b/tor:/var/lib/tor
