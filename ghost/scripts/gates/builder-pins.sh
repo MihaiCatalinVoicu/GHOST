@@ -36,11 +36,21 @@ if [ -n "${GHOST_BP_ROOT:-}" ] && [ "$(cd "$ROOT" && pwd -P)" = "$REAL_ROOT" ]; 
   echo "GHOST_BP_ROOT is a self-test hook for fixture roots only" >&2
   exit 2
 fi
-for need in infra/builder/Dockerfile infra/builder/pins.txt rust-toolchain.toml \
-  android/gradle/wrapper/gradle-wrapper.properties scripts/install-protoc.sh \
-  scripts/build-native.sh scripts/release/build-release.sh; do
+SCAN_FILES="infra/builder/Dockerfile infra/builder/pins.txt rust-toolchain.toml
+  android/gradle/wrapper/gradle-wrapper.properties scripts/install-protoc.sh
+  scripts/build-native.sh scripts/release/build-release.sh"
+for need in $SCAN_FILES; do
   [ -f "$ROOT/$need" ] || { echo "G-D2: $need missing under $ROOT" >&2; exit 2; }
 done
+# CRLF-robustness: the tree may be checked out on Windows (autocrlf) — the first WSL run
+# failed 33 violations on stray \r alone. Normalize every scanned file into a temp tree.
+BP_TMP="$(mktemp -d)"
+trap 'rc=$?; rm -rf "$BP_TMP"; exit $rc' EXIT
+for need in $SCAN_FILES; do
+  mkdir -p "$BP_TMP/$(dirname "$need")"
+  tr -d '\r' < "$ROOT/$need" > "$BP_TMP/$need"
+done
+ROOT="$BP_TMP"
 
 DOCKERFILE="$ROOT/infra/builder/Dockerfile"
 PINS="$ROOT/infra/builder/pins.txt"
