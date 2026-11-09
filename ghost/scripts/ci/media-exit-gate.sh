@@ -81,8 +81,17 @@ gradle_media() { # $1 = log name, rest = extra args
 
 case "$cmd" in
   shard)
+    # Only the SCN scenario classes: the world/mutants/twins have their own steps, and rerunning
+    # them per shard would multiply the gate's dominant cost. The shard properties are read by
+    # MediaScenarios (scenario index i runs in shard i % shards + 1); with six scenarios and eight
+    # shards, shards 7-8 take the seeded worlds when that suite lands (§15.3's remaining pieces).
     gradle_media "shard-$shard" \
-      --tests 'org.ghost.messaging.media.*' \
+      --tests 'org.ghost.messaging.media.MediaSendScenarioTest' \
+      --tests 'org.ghost.messaging.media.MediaUploadScenarioTest' \
+      --tests 'org.ghost.messaging.media.MediaReceiveScenarioTest' \
+      --tests 'org.ghost.messaging.media.MediaViewOnceScenarioTest' \
+      --tests 'org.ghost.messaging.media.MediaViewOnceSenderTest' \
+      --tests 'org.ghost.messaging.media.MediaExpiryScenarioTest' \
       -Dghost.media.shard="$shard" -Dghost.media.shards=8
     ;;
   world)

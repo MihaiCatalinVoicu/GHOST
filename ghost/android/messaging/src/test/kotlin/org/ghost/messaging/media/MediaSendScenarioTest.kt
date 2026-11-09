@@ -70,6 +70,7 @@ class MediaSendScenarioTest {
 
     @Test
     fun aCrashAtEveryFileOperationLeavesAWholeObjectOrNothing() {
+        if (!MediaScenarios.owns(0)) return
         // Measure the run's file calls on a quiet pass first.
         val counter = Sandbox()
         val cw = counter.open()
@@ -128,6 +129,8 @@ class MediaSendScenarioTest {
             )
             box.world.close()
         }
+        // §15.3's close-out: the enumeration ran whole and every reboot's invariants held.
+        MediaScenarios.report("SCN-MA", totalCalls, "preparation and MEDIA-COMMIT file operations")
     }
 
     @Test

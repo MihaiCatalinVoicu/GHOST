@@ -460,6 +460,7 @@ class MediaReceiveScenarioTest {
     fun aCrashAtEveryIngestFileOperationLeavesAConsistentStore() {
         // One blob, one write of five calls; a fresh world per point, a reboot and a reconcile
         // between the crash and the retry — §15.3's engine-boundary enumeration.
+        if (!MediaScenarios.owns(2)) return
         for (point in 1..5) {
             val box = Box()
             box.open().use { world ->
@@ -489,6 +490,10 @@ class MediaReceiveScenarioTest {
                 assertEquals("point $point: one file on disk", 1, filesOnDisk(world))
             }
         }
+        // §15.3's close-out — the coverage is the slice's engine-boundary scope (the design's full
+        // SCN-MC also spans BIND/VERIFY/RECV through both decrypt functions; the parenthesis keeps
+        // the line honest about what was enumerated).
+        MediaScenarios.report("SCN-MC", 5, "MEDIA-INGEST file operations at the engine boundary")
     }
 
     /** The receive-side half of §15.3's invariants: every row names a whole file and vice versa. */

@@ -207,6 +207,7 @@ class MediaViewOnceScenarioTest {
      */
     @Test
     fun aCrashAtEveryFileOperationOfTheCloseReconcileIsRepairedByTheNextReconcile() {
+        if (!MediaScenarios.owns(3)) return
         // The reconcile traces one call per delete: the manifest's file plus the 16 fragments
         // of a class-0 object (F + 1 blobs, §15.3's count).
         val points = 17
@@ -242,6 +243,9 @@ class MediaViewOnceScenarioTest {
                 )
             }
         }
+        // §15.3's close-out (the open-side crash branches are the class's other tests: the
+        // after-open death and the busy-checkpoint lag, run above).
+        MediaScenarios.report("SCN-MD", points, "VIEW-ONCE-CLOSE reconcile file operations")
     }
 
     /** Whether the raw database file or its write-ahead log holds [needle]. */
