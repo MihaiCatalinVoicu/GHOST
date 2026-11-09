@@ -24,4 +24,5 @@ NI-M6: equal at the pool cap (flood twin, descriptors withheld vs delivered)
 NI-M7: equal up to the TTL scalar (5-minute vs 1-hour timer, class-7 video in background sessions only; the two timers' buckets, declared)
 T25 media (EP-M): PASS (every timer x path, the physical byte oracles)
 seizure: 0 opened (330 key_env values tried on 6104 archived blobs); control: 21 live objects open
-media mutants: 43 run, 43 detected
+media mutants: 9 run, 9 detected (JVM privacy-world kills)
+media S1 mutants: 52 run, 52 detected

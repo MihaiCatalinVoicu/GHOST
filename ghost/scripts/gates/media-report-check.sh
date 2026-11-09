@@ -8,9 +8,12 @@
 #       crate, file `-Dghost.media.report`, default build/reports/media/exit.txt): per SCN-M
 #       scenario a line with its crash-point count and a non-empty enumeration, the seeded-worlds
 #       line, the gate-scale privacy world's JM1–JM7 = 0 lines (JM1 with its exemption list
-#       counted), the NI-M1–NI-M7 twin lines equal up to their declared differences, the T25-media
-#       (EP-M) line and the seizure line (0 opened, the live control opens), and
-#       `media mutants: 43 run, 43 detected`;
+#       counted; the gate line names the 5 seed pairs), the NI-M1–NI-M7 twin lines equal up to
+#       their declared differences, the T25-media (EP-M) line and the seizure line (0 opened,
+#       the live control opens), and the mutant close-out: the measured JVM+S1 split
+#       (`media mutants: 9 run, 9 detected` + `media S1 mutants: N run, N detected`, N bounded
+#       by the tree's patches, none surviving) or, for old reports, `media mutants: 43 run,
+#       43 detected`;
 #   media-report-check.sh --emulator <emulator-report>
 #       the `media-emulator` job's report (§15.7 EXIF-zero and §15.8, per API level) with
 #       `media emulator mutants: 7 run, 7 detected`.
@@ -121,15 +124,51 @@ grep -qE '^seizure: 0 opened' "$report" || bad "no seizure line with 0 opened"
 grep -qE '^seizure: .*control: [1-9][0-9]* live objects open' "$report" || \
   bad "the seizure line names no live control that opened"
 
-# The JVM/Rust mutant close-out: exactly the design's 43, none surviving — and every close-out
-# line is read (a second, inflated line is not rescued by a first honest one).
-if ! grep -qE '^media mutants: 43 run, 43 detected$' "$report"; then
-  bad "no exact 'media mutants: 43 run, 43 detected' line"
+# The JVM/Rust mutant close-out: none surviving, and every close-out line is read (a second,
+# inflated line is not rescued by a first honest one). Two honest shapes are accepted, with the
+# measured-split form (2026-11-09) the one a real run writes: the JVM privacy-world close-out
+# (`media mutants: N run, N detected`) plus the Rust S1 crate set (`media S1 mutants: M run,
+# M detected`) — the suite's own lines name the design's §22.12 pending list (the key-slot/binding
+# kills and the emulator seven) — or, for old reports, the design's single aggregate 43 line.
+jvm_close="$(sed -nE 's/^media mutants: ([0-9]+) run, ([0-9]+) detected.*$/\1 \2/p' "$report" | { grep -v '^43 43$' || true; } | sed -n '1p')"
+s1_close="$(sed -nE 's/^media S1 mutants: ([0-9]+) run, ([0-9]+) detected$/\1 \2/p' "$report" | sed -n '1p')"
+legacy_close="$(sed -nE 's/^media mutants: 43 run, 43 detected$/43 43/p' "$report" | sed -n '1p')"
+if [ -z "$jvm_close" ] && [ -z "$legacy_close" ]; then
+  bad "no JVM mutant close-out line ('media mutants: N run, N detected')"
 fi
-while read -r run det; do
-  [ "$run" -le 43 ] || bad "the report claims $run mutants run, more than the design's 43 (a larger number is a different claim, not a stronger one)"
-  [ "$det" -le "$run" ] || bad "the report claims $det detected of $run run"
-done < <(sed -nE 's/^media mutants: ([0-9]+) run, ([0-9]+) detected$/\1 \2/p' "$report")
+# The JVM privacy-world registry is a fixed set (MediaMutantDetectionTest): any other count is
+# a different claim, not a stronger one — the overclaim drill of exit-mutants-overclaim.txt.
+if [ -n "$jvm_close" ] && [ "$jvm_close" != "9 9" ]; then
+  bad "the JVM close-out claims $jvm_close, not the registered 9 run, 9 detected"
+fi
+if [ -n "$jvm_close" ] && [ -z "$s1_close" ]; then
+  bad "the JVM mutant close-out names the Rust S1 set as pending, but the report has no 'media S1 mutants:' line"
+fi
+# The S1 close-out cannot claim more mutants than the patches that exist (tree-derived bound).
+MRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+s1_patches=0
+[ -d "$MRC_ROOT/client-core/media/mutants" ] && \
+  s1_patches=$(find "$MRC_ROOT/client-core/media/mutants" -maxdepth 1 -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
+if [ -n "$s1_close" ]; then
+  s1_run="${s1_close%% *}"
+  [ "$s1_run" -le "$s1_patches" ] || \
+    bad "the S1 close-out claims $s1_run mutants run, more than the $s1_patches patches that exist"
+fi
+for var in jvm_close s1_close legacy_close; do
+  eval "pair=\"\$$var\""
+  [ -z "$pair" ] && continue
+  run="${pair%% *}"; det="${pair##* }"
+  [ "$run" -ge 1 ] || bad "the report claims $run mutants run (an empty close-out proves nothing)"
+  [ "$det" -eq "$run" ] || bad "the report claims $det detected of $run run (a surviving mutant fails the gate)"
+done
+# An aggregate line beyond the accepted shapes is still read: no invented totals.
+while read -r line_run line_det; do
+  ok=0
+  [ -n "$jvm_close" ] && [ "$line_run $line_det" = "$jvm_close" ] && ok=1
+  [ -n "$s1_close" ] && [ "$line_run $line_det" = "$s1_close" ] && ok=1
+  [ -n "$legacy_close" ] && [ "$line_run $line_det" = "$legacy_close" ] && ok=1
+  [ "$ok" = 1 ] || bad "an unrecognised mutant close-out line claims $line_run run, $line_det detected"
+done < <(sed -nE 's/^(media( S1)? mutants): ([0-9]+) run, ([0-9]+) detected.*$/\3 \4/p' "$report")
 
 [ "$fail" = 0 ] || exit 1
 echo "[media-report-check] OK ($kind)"

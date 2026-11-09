@@ -258,6 +258,11 @@ if bash "$DIR/media-report-check.sh" "$MRPT/exit-gate-good.txt" gate >/dev/null 
 else
   echo "SELF-TEST FAIL: media-report-check rejects the good fixture exit-gate-good.txt" >&2; rc=1
 fi
+if bash "$DIR/media-report-check.sh" "$MRPT/exit-gate-split.txt" gate >/dev/null 2>&1; then
+  echo "self-test ok: media-report-check accepts exit-gate-split.txt (gate, measured JVM+S1 split)"
+else
+  echo "SELF-TEST FAIL: media-report-check rejects the good fixture exit-gate-split.txt" >&2; rc=1
+fi
 if bash "$DIR/media-report-check.sh" "$MRPT/exit-pr-good.txt" pr >/dev/null 2>&1; then
   echo "self-test ok: media-report-check accepts exit-pr-good.txt (pr)"
 else

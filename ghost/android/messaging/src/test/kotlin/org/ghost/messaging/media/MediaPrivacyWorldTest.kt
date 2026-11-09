@@ -16,50 +16,71 @@ class MediaPrivacyWorldTest {
 
     private fun pinnedSeed(): Long = 0x5eed_0001L
 
+    /**
+     * The run's seeds: `-Dghost.media.seeds=<hex,hex,…>` overrides. The gate scale runs the
+     * design's five seed pairs (media-exit-gate.sh's world step; the CI job ran them as a
+     * matrix, the local host runs them sequentially); other scales run the one pinned seed.
+     */
+    private fun seeds(scale: MediaPrivacyScale): List<Long> {
+        System.getProperty("ghost.media.seeds")?.let { prop ->
+            val list = prop.split(",").map { it.trim().toLong(16) }
+            if (list.isNotEmpty()) return list
+        }
+        return if (scale == MediaPrivacyScale.GATE) {
+            listOf(0x5eed_0001L, 0x5eed_0002L, 0x5eed_0003L, 0x5eed_0004L, 0x5eed_0005L)
+        } else {
+            listOf(pinnedSeed())
+        }
+    }
+
     @Test
     fun theMediaPrivacyWorldIsGreenWithItsJoinsAtZero() {
         val scale = MediaPrivacyScale.selected()
+        val seedList = seeds(scale)
         lateinit var results: List<MediaJoins.Result>
         lateinit var seizure: MediaSeizure.Result
         var objectCount = 0
         var storeCount = 0
         var getCount = 0
-        MediaPrivacyWorld(scale, pinnedSeed()).use { world ->
-            val joins = world.run()
-            // Floors: the world must have run at scale (a join over nothing proves nothing).
-            objectCount = world.truth.objects.size
-            storeCount = world.relay.events.count { it.op == MediaViewOp.STORE }
-            getCount = world.relay.events.count { it.op == MediaViewOp.GET }
-            assertTrue("objects: $objectCount", objectCount >= scale.clients * scale.days / 4)
-            assertTrue("stores: $storeCount", storeCount >= objectCount)
-            assertTrue("gets: $getCount", getCount > 0)
-            // The S9 review's finding 2: the two scripted off-timer anchors (one FAILED, one
-            // deadline) are the only exemptions a green stochastic run executes — they must
-            // appear in JM1's breakdown, and both drove the production paths finding 1 fixed
-            // (the FAILED-outcome arm and MEDIA-DEADLINE at TIMER_OFF).
-            val breakdown = world.truth.exemptionBreakdown()
-            assertTrue(
-                "the scripted off-timer exemptions ran: $breakdown",
-                breakdown.contains("1 FAILED") && breakdown.contains("1 deadline"),
-            )
-            results = joins.all()
-            for (r in results) {
-                assertEquals("${r.name} over the privacy world: ${r.detail}", 0, r.violations)
+        val seedWord = if (seedList.size == 1) "1 seed" else "${seedList.size} seed pairs"
+        MediaPrivacyReport.line(
+            "media privacy world: N = ${scale.clients}, ${scale.days} days, $seedWord, STANDARD",
+        )
+        for (seed in seedList) {
+            MediaPrivacyWorld(scale, seed).use { world ->
+                val joins = world.run()
+                // Floors: the world must have run at scale (a join over nothing proves nothing).
+                objectCount = world.truth.objects.size
+                storeCount = world.relay.events.count { it.op == MediaViewOp.STORE }
+                getCount = world.relay.events.count { it.op == MediaViewOp.GET }
+                assertTrue("objects: $objectCount", objectCount >= scale.clients * scale.days / 4)
+                assertTrue("stores: $storeCount", storeCount >= objectCount)
+                assertTrue("gets: $getCount", getCount > 0)
+                // The S9 review's finding 2: the two scripted off-timer anchors (one FAILED, one
+                // deadline) are the only exemptions a green stochastic run executes — they must
+                // appear in JM1's breakdown, and both drove the production paths finding 1 fixed
+                // (the FAILED-outcome arm and MEDIA-DEADLINE at TIMER_OFF).
+                val breakdown = world.truth.exemptionBreakdown()
+                assertTrue(
+                    "the scripted off-timer exemptions ran: $breakdown",
+                    breakdown.contains("1 FAILED") && breakdown.contains("1 deadline"),
+                )
+                results = joins.all()
+                for (r in results) {
+                    assertEquals("${r.name} over the privacy world: ${r.detail}", 0, r.violations)
+                }
+                seizure = MediaSeizure(world).run()
             }
-            seizure = MediaSeizure(world).run()
-        }
-        assertSeizure(seizure)
+            assertSeizure(seizure)
 
-        MediaPrivacyReport.line(
-            "media privacy world: N = ${scale.clients}, ${scale.days} days, 1 seed, STANDARD",
-        )
-        for (r in results) {
-            MediaPrivacyReport.line("${r.name}: PASS 0 ${r.detail}")
+            for (r in results) {
+                MediaPrivacyReport.line("${r.name}: PASS 0 ${r.detail}")
+            }
+            MediaPrivacyReport.line(
+                "seizure: ${seizure.opened} opened (${seizure.storedKeys} key_env values tried on " +
+                    "${seizure.archivedBlobs} archived blobs); control: ${seizure.controlOpened} live objects open",
+            )
         }
-        MediaPrivacyReport.line(
-            "seizure: ${seizure.opened} opened (${seizure.storedKeys} key_env values tried on " +
-                "${seizure.archivedBlobs} archived blobs); control: ${seizure.controlOpened} live objects open",
-        )
     }
 
     private fun assertSeizure(s: MediaSeizure.Result) {
