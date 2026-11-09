@@ -1480,6 +1480,37 @@ d4_case "refuses a drill chain in a release build" fail "$D4_FIX/drill-root" "dr
 d4_case "refuses a wrong-network chain" fail "$D4_FIX/wrong-network" "network byte"
 d4_case "refuses a failing records checker" fail "$D4_FIX/checker-refused" "checker refused"
 d4_case "refuses root records without allowed_signers" fail "$D4_FIX/missing-signers" "allowed_signers"
+# The gate's default checker path: ghost-release-ops records-check --network discovered on
+# PATH when GHOST_D4_CHECKER is unset. The shim stands in for the binary: it speaks the
+# checker's verdict vocabulary and refuses by path for the checker-refused fixture, exactly
+# like the fixtures' own checker.sh stubs.
+D4_STUB="$(mktemp -d)"
+cat >"$D4_STUB/ghost-release-ops" <<'EOF'
+#!/bin/sh
+for last do :; done
+case "$last" in
+  *checker-refused*) echo 'RECORDS_BAD stagenet' >&2; exit 1 ;;
+  *) echo 'RECORDS_OK network=stagenet roots=1 newest=1 signers=skip anchors=skip' ;;
+esac
+EOF
+chmod +x "$D4_STUB/ghost-release-ops"
+if out="$(GHOST_D4_ROOT="$D4_FIX/clean" PATH="$D4_STUB:$PATH" bash "$DIR/release-records.sh" 2>&1)"; then
+  if grep -qF "RECORDS_OK network=stagenet" <<<"$out"; then
+    echo "self-test ok: release-records uses ghost-release-ops records-check from PATH"
+  else
+    echo "SELF-TEST FAIL: release-records PATH-default checker ran without the RECORDS_OK summary" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+else
+  echo "SELF-TEST FAIL: release-records refused the PATH-default checker" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+fi
+if out="$(GHOST_D4_ROOT="$D4_FIX/checker-refused" PATH="$D4_STUB:$PATH" bash "$DIR/release-records.sh" 2>&1)"; then
+  echo "SELF-TEST FAIL: release-records accepted the refusing PATH stub" >&2; rc=1
+elif ! grep -qF "checker refused" <<<"$out"; then
+  echo "SELF-TEST FAIL: release-records PATH-default refusal without reporting" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+else
+  echo "self-test ok: release-records fails closed on the refusing PATH stub"
+fi
+rm -rf "$D4_STUB"
 # Phase 14 (G-D10, G-D3): mirror-config.sh on its fixtures; release-sums.sh on its A/B pairs.
 MC_FIX="$HARNESS/mirror-config"
 if [ -d "$MC_FIX" ]; then

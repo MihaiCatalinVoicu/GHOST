@@ -6,11 +6,12 @@
 #       anchor-mirrors.txt with >= 2 operators on mainnet. These clauses parse the GHRT
 #       documents — signature verification is Rust code's job, not bash's. The gate shells
 #       out to a checker: GHOST_D4_CHECKER names an executable called as
-#       `<checker> <network-dir>`, which must exit 0 and print a line `RECORDS_OK <net>`
-#       per clause it verified. No checker ships in the tree yet (ghost-release-ops has no
-#       records-check mode today — verified at slice time), so on the real tree these
-#       clauses SKIP WITH A PRINTED NOTICE rather than pass silently; the notice names the
-#       exact hook to make them live. Fail-closed: a checker that exits non-zero fails.
+#       `<checker> <network-dir>`, which must exit 0 and print a summary line
+#       `RECORDS_OK network=<net> ...` per network it verified. Without the hook the gate
+#       uses `ghost-release-ops records-check --network` from PATH (built from
+#       ghost/release/crates/ops); when neither exists these clauses SKIP WITH A PRINTED
+#       NOTICE rather than pass silently; the notice names the exact hook to make them
+#       live. Fail-closed: a checker that exits non-zero fails.
 #   (d) The release counter never decreases over the first-parent history of its file
 #       (protocol/release/<network>/release-counter.txt): each committed version parses as
 #       an integer no smaller than the previous. Skipped with a notice while the file (or
@@ -43,14 +44,11 @@ net_byte() { # dir name -> the GHRC network byte
   esac
 }
 
-checker="${GHOST_D4_CHECKER:-}"
-if [ -z "$checker" ]; then
-  for cand in ghost-release-ops ghost-verify; do
-    if command -v "$cand" >/dev/null 2>&1 && "$cand" records-check --help >/dev/null 2>&1; then
-      checker="$cand records-check"
-      break
-    fi
-  done
+checker=()
+if [ -n "${GHOST_D4_CHECKER:-}" ]; then
+  checker=("$GHOST_D4_CHECKER")
+elif command -v ghost-release-ops >/dev/null 2>&1; then
+  checker=(ghost-release-ops records-check --network)
 fi
 
 found=0
@@ -75,10 +73,13 @@ while IFS= read -r netdir; do
   done < <(find "$netdir" -maxdepth 1 -name '*.ghrc' -print 2>/dev/null | sort)
 
   # (a-c) the checker's clauses.
-  if [ -n "$checker" ]; then
-    if out="$($checker "$netdir" 2>&1)"; then
-      printf '%s\n' "$out" | grep -q "RECORDS_OK $net" \
-        || fail "protocol/release/$net: the checker verified but printed no RECORDS_OK line"
+  if [ "${#checker[@]}" -gt 0 ]; then
+    if out="$("${checker[@]}" "$netdir" 2>&1)"; then
+      if printf '%s\n' "$out" | grep -q "RECORDS_OK network=$net"; then
+        printf '%s\n' "$out"
+      else
+        fail "protocol/release/$net: the checker verified but printed no RECORDS_OK network=$net summary"
+      fi
     else
       fail "protocol/release/$net: the records checker refused: $(printf '%.80s' "$out")"
     fi

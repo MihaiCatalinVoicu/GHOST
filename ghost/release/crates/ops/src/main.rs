@@ -13,7 +13,7 @@ use ghost_release_ops::{apkcore, build};
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned <unsigned.apk>\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned-length <n> --expect <sha256 hex>\n  ghost-release-ops keygen --out <dir> --spec root:3,release:2,...\n  ghost-release-ops root-build --config <toml> --keys <dir> --out <path>\n  ghost-release-ops chain-build --network <n> --roots <dir> --out <path>\n  ghost-release-ops proof-build --file <logged> --log-index <i> --log-key <n> --submit-key <n> --witness <n>... [--time <unix>] --keys <dir> --out <path>\n  ghost-release-ops manifest-build --source <toml> --root <ghrt> --keys <dir> --attest-keys n1,n2 [--prev <ghrm>] --out <path>\n  ghost-release-ops export-public --tag <tag> --out <dir> [--mtime <unix>]\n  ghost-release-ops sbom --package <name> --out <path>\n  ghost-release-ops bundle --chain <ghrc> --root-proof <ghrp>... --manifest <ghrm> --manifest-proof <ghrp> --out <path>"
+        "usage:\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned <unsigned.apk>\n  ghost-release-ops apk-core --apk <signed.apk> --unsigned-length <n> --expect <sha256 hex>\n  ghost-release-ops keygen --out <dir> --spec root:3,release:2,...\n  ghost-release-ops root-build --config <toml> --keys <dir> --out <path>\n  ghost-release-ops chain-build --network <n> --roots <dir> --out <path>\n  ghost-release-ops proof-build --file <logged> --log-index <i> --log-key <n> --submit-key <n> --witness <n>... [--time <unix>] --keys <dir> --out <path>\n  ghost-release-ops manifest-build --source <toml> --root <ghrt> --keys <dir> --attest-keys n1,n2 [--prev <ghrm>] --out <path>\n  ghost-release-ops export-public --tag <tag> --out <dir> [--mtime <unix>]\n  ghost-release-ops sbom --package <name> --out <path>\n  ghost-release-ops bundle --chain <ghrc> --root-proof <ghrp>... --manifest <ghrm> --manifest-proof <ghrp> --out <path>\n  ghost-release-ops records-check --network <dir>"
     );
     exit(2)
 }
@@ -136,11 +136,18 @@ fn main() {
                 &path(&a, "out"),
             )
         }
+        "records-check" => ghost_release_ops::records::records_check(&path(&a, "network")),
         _ => usage(),
     };
     let cmd = a.cmd.to_uppercase().replace('-', "_");
     match result {
-        Ok(line) => println!("{line}"),
+        Ok(line) => {
+            println!("{line}");
+            // Multi-line verdicts (records-check): exit 0 only if the run carries its summary.
+            if a.cmd == "records-check" && !line.contains("RECORDS_OK network=") {
+                exit(1);
+            }
+        }
         Err(reason) => {
             println!("{cmd}_REFUSED {reason}");
             exit(1);

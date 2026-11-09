@@ -6,4 +6,5 @@
 pub mod apkcore;
 pub mod build;
 pub mod export;
+pub mod records;
 pub mod sbom;
