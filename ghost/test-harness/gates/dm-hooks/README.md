@@ -24,8 +24,9 @@ mapping with `GHOST_ROOT` at the real tree:
   class: a desugared lambda (`$$ExternalSyntheticLambda1`, a synthesized class with no source name
   to keep) and a class R8 removed (`-> R8$$REMOVED$$CLASS$$344`).
 - `mapping/renamed.txt`: the inverse drill — in the H-01 world a non-whitelist class that KEEPS its
-  source name (`GhostApp -> GhostApp`, no `-keep` rule justifies it) is refused, while the
-  whitelisted `DmNative` keeping its name is fine. One line.
+  source name (`MessagingRuntime -> MessagingRuntime`, no `-keep` rule justifies it) is refused,
+  while the whitelisted `DmNative` (JNI) and `GhostApp` (manifest component) keeping their names
+  are fine. One line.
 - `mapping/debug-class.txt`: the key-change hook and a lambda class of the gate instrumentation
   shipped (with their source names — debug-only classes, renaming would not make them acceptable).
   Two lines.

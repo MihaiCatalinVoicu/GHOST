@@ -2886,7 +2886,7 @@ dmhooks_case "reads annotated declarations and code after a block comment, and e
   GHOST_ROOT="$DMH/declarations" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
 dmhooks_case "refuses the device runner (src/deviceRunner) in mapping.txt" 1 "ships the debug-only class org.ghost.device.DeviceRunner" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/device-runner.txt"
-dmhooks_case "refuses an un-justified source name kept in mapping.txt (H-01 obfuscation)" 1 "keeps the source name of org.ghost.app.GhostApp" \
+dmhooks_case "refuses an un-justified source name kept in mapping.txt (H-01 obfuscation)" 1 "keeps the source name of org.ghost.messaging.engine.MessagingRuntime" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/renamed.txt"
 dmhooks_case "refuses the key-change hook and a gate lambda in mapping.txt" 2 "ships the debug-only class" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/debug-class.txt"

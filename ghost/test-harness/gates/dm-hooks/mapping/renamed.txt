@@ -1,7 +1,8 @@
 # compiler: R8
 # fixture: H-01 world — a non-whitelist GHOST class keeps its source name (no -keep rule justifies
-# it). The kept JNI class (DmNative, whitelisted by the tree's consumer rules) may keep its name;
-# GhostApp may not. One line.
+# it). The kept JNI class (DmNative, whitelisted by the tree's consumer rules) and the manifest
+# components (GhostApp, whitelisted by app/proguard-rules.pro since H1) may keep their names;
+# MessagingRuntime may not. One line.
 org.ghost.app.GhostApp -> org.ghost.app.GhostApp:
-    1:4:void onCreate():120:123 -> onCreate
 org.ghost.crypto.bridge.DmNative -> org.ghost.crypto.bridge.DmNative:
+org.ghost.messaging.engine.MessagingRuntime -> org.ghost.messaging.engine.MessagingRuntime:
