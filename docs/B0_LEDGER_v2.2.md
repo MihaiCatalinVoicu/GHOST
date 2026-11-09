@@ -35,7 +35,7 @@ la fiecare pachet închis.
 | Pachet | Rol | Stare | Blocaj |
 |---|---|---|---|
 | B0 | Reconciliere + matrice porți | **ÎNCHIS** (acest fișier) | — |
-| H0 | Design protecție APK | DESCHIS — următorul | EXEC |
+| H0 | Design protecție APK | **DESIGN REV1 COMIS** (`8c666fe8`, `docs/design/h0-apk-hardening.md`) — 4 întrebări de review (Q-H0-1..4); H1 poate porni pe valorile implicite | EXEC (review OWNER înainte de H1) |
 | M0 | Fezabilitate radio | PARȚIAL: spike-uri de laborator EXEC; matricea fizică de măsurat | DEVICE (4 modele / 2 producători / 2 fără GMS / cel mai vechi API) |
 | B1 | Închidere bază DM/storage/sync/media/metadate | PARȚIAL: porțile mari închise (STATUS); rămân rulările la scara porții F11, F12 tuning, AUDIT_SCOPE refresh | EXEC + DEVICE (runner KVM Q32, telefoane Q31) + 3P (review captură F-T1) |
 | M1 | Protocol mesh, grant-uri, design date | DESCHIS | EXEC (design + vectori + schemă), review criptografic OWNER/3P înainte de cod |
