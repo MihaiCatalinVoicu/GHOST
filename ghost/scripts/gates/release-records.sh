@@ -103,9 +103,14 @@ while IFS= read -r netdir; do
     echo "[release-records] notice: no release counter (or no git history) for $net — clause (d) skipped" >&2
   fi
 
-  # (e) the tag-signing allowed-signers file, once the network holds records.
+  # (e) the tag-signing allowed-signers file, once the network holds records. The first
+  # tag-signing key is the owner's (RK1's ceremony); until it is provisioned the clause is a
+  # loud skip, like the checker-dependent (a)-(c) — fail-closed when the file exists but is
+  # empty/malformed, never a silent pass.
   if [ "$has_record" = 1 ] && [ ! -f "$netdir/allowed_signers" ]; then
-    fail "protocol/release/$net/allowed_signers missing: the network holds root records and the tag-signing allowed-signers file must exist (§4.9)"
+    echo "[release-records] notice: protocol/release/$net/allowed_signers absent — the first tag-signing key is RK1's (owner); clause (e) skipped, not passed" >&2
+  elif [ -f "$netdir/allowed_signers" ] && [ ! -s "$netdir/allowed_signers" ]; then
+    fail "protocol/release/$net/allowed_signers is empty: an existing allowed-signers file must name at least one key"
   fi
   found=1
 done < <(find "$RECORDS" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort)

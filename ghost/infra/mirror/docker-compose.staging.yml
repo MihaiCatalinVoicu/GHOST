@@ -12,6 +12,10 @@ services:
     build: .
     container_name: mirror-a
     restart: unless-stopped
+    # No logs on disk (design §7.1, G-D10): the image links nginx's logs to stdout/stderr,
+    # which Docker's default json-file driver would otherwise store in /var/lib/docker.
+    logging:
+      driver: none
     volumes:
       - /srv/mirrors/a/www:/www:ro
       - /srv/mirrors/a/tor:/var/lib/tor
@@ -19,6 +23,8 @@ services:
     build: .
     container_name: mirror-b
     restart: unless-stopped
+    logging:
+      driver: none
     volumes:
       - /srv/mirrors/b/www:/www:ro
       - /srv/mirrors/b/tor:/var/lib/tor

@@ -31,18 +31,25 @@ cat > /etc/nginx/nginx.conf <<'NGINX'
 user nginx;
 worker_processes 1;
 pid /run/nginx.pid;
+# No-log configuration (design §7.1, gate G-D10): the image links nginx's logs to the
+# container's stdout/stderr, which Docker's json-file driver would store on disk.
+error_log /dev/stderr crit;
 events { worker_connections 128; }
 http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
   sendfile on;
+  access_log off;
   server {
     listen 127.0.0.1:8080;
     root /www;
     autoindex off;
-    # Static mirrors answer GET/HEAD only; no server tokens, no directory listing beyond index.
+    # Static mirrors answer GET/HEAD only; no server tokens, no validators, no conditional
+    # responses: freshness is the manifest's job, not the mirror's (§7.1).
     server_tokens off;
-    add_header Cache-Control "no-cache" always;
+    etag off;
+    if_modified_since off;
+    log_not_found off;
     location / { try_files $uri $uri/ =404; }
   }
   # The app fetches over HTTP/2 with prior knowledge (h2c) inside the onion stream
@@ -54,7 +61,9 @@ http {
     root /www;
     autoindex off;
     server_tokens off;
-    add_header Cache-Control "no-cache" always;
+    etag off;
+    if_modified_since off;
+    log_not_found off;
     location / { try_files $uri $uri/ =404; }
   }
 }
