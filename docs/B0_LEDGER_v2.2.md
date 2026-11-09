@@ -67,6 +67,8 @@ la fiecare pachet închis.
 | 6 | Tuning jitter/batch transporturi (rândul 12 rămas) + review independent captură metadate (F-T1, cere design propriu sau repointare L9) | 12 | loopback verde, porți G-T1-T8 | EXEC (tuning) + 3P (review independent) |
 | 7 | F11 R3: expeditorul nu-și vede propriul obiect „vezi o dată" (mai strict decât design) | 11 | înregistrat cu probes | OWNER (decizie produs) |
 | 8 | Hang load-dependent `ChannelM20CrashTest.aCrashAtEveryEventOfTheFourthWave…` | 11 | nu se reproduce izolat; reprodus 2× sub load | DEVICE/EXEC (rulare la scara gate pe runner KVM — Q32) |
+| 19b | T2 la scara porții (DM): `GHOST_T2_SCALE=gate GHOST_T2_SEEDS=<pair> cargo test --release --locked -p ghost-issuer --test t2_unlinkability t2_exit_gate -- --ignored --exact` (10 perechi) + `t2_mutants` — build release lansat în WSL (joburi capped ca să coexiste cu gate-ul media), perechea 0 ca smoke | 9 | rulează | EXEC (WSL) |
+
 | 9 | Q32 runner KVM + cotă artefacte; Q31 telefoane de referință; jumătatea Android a porților la scara PR | 10/11/13 | porțile de cod verzi | DEVICE (hardware/procurement) |
 | 10 | OA-1 live pe bridge-uri publice + WebTunnel live; OA-2 pasul arm64 pe două telefoane; confirmare scrisă prune OA-3 | 12 | mecanism deblocat, `tests/live_pt.rs` | DEVICE + OWNER (confirmare scrisă) |
 | 11 | F13: TalkBack walkthrough formal; T4 calea device-transfer (D2D); geamănul T6 cu identitate configurată | 13 | dovezi emulator parțiale | DEVICE (emulator pe runner KVM / telefoane) + 3P (evaluator uman TalkBack) |
