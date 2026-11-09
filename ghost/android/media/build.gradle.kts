@@ -59,6 +59,12 @@ dependencies {
 // the vector files and the goldens it reads are test inputs, so a regenerated file re-runs the test
 // instead of reusing a cached result (build caching is on).
 tasks.withType<Test>().configureEach {
+    // The media exit gate's cross-module close-out lines (§15.3; MediaStoreScenarioTest's SCN-ME
+    // storage half): forward the report path to the test JVM, exactly like :messaging's
+    // harnessProperties block does.
+    providers.systemProperty("ghost.media.report")
+        .orElse(providers.gradleProperty("ghost.media.report")).orNull
+        ?.let { systemProperty("ghost.media.report", it) }
     inputs.files(
         rootProject.fileTree("../protocol/test-vectors") {
             include("media_object.txt", "media_descriptor.txt", "media_sniff.txt", "media_jpeg.txt", "media-goldens/**")

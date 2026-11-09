@@ -609,6 +609,19 @@ class Migration8Test {
             assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
             assertEquals(expected.second, db.dump())
         }
+        // §15.3's SCN-MF close-out: the migration enumeration above covered every statement of
+        // v8 (the count the suite pins) plus the version bump; each left v7 byte-identical and
+        // the rerun finished the job.
+        System.getProperty("ghost.media.report")?.let { path ->
+            val file = java.io.File(path)
+            file.parentFile?.mkdirs()
+            if (!file.exists() || file.length() == 0L) {
+                file.writeText("GHOST media exit gate (Phase 11 design faza11-media.md §15.3-§15.9; slice S9)\n")
+            }
+            file.appendText(
+                "SCN-MF: ${v8.statements.size + 1} crash points (v7 to v8 migration statements and the version bump), invariants hold\n",
+            )
+        }
     }
 
     /**

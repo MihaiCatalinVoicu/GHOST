@@ -72,37 +72,44 @@ run_isolated() { # $1 = log name, rest = command
   return "$rc"
 }
 
-gradle_media() { # $1 = log name, rest = extra args
-  local log="$1"
-  shift
-  ( cd "$ANDROID_DIR" && run_isolated "$log" ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun "$@" \
+gradle_media() { # $1 = log name, $2 = module (e.g. :messaging), rest = extra args
+  local log="$1" module="$2"
+  shift 2
+  ( cd "$ANDROID_DIR" && run_isolated "$log" ./gradlew --no-daemon "$module":testDebugUnitTest --rerun "$@" \
       -Dghost.dm.native="$DM_NATIVE" -Dghost.dm.heap="$DM_HEAP" -Dghost.media.report="$REPORT" )
 }
 
 case "$cmd" in
   shard)
+    rc=0
     # Only the SCN scenario classes: the world/mutants/twins have their own steps, and rerunning
     # them per shard would multiply the gate's dominant cost. The shard properties are read by
     # MediaScenarios (scenario index i runs in shard i % shards + 1); with six scenarios and eight
     # shards, shards 7-8 take the seeded worlds when that suite lands (§15.3's remaining pieces).
-    gradle_media "shard-$shard" \
+    gradle_media "shard-$shard" :messaging \
       --tests 'org.ghost.messaging.media.MediaSendScenarioTest' \
       --tests 'org.ghost.messaging.media.MediaUploadScenarioTest' \
       --tests 'org.ghost.messaging.media.MediaReceiveScenarioTest' \
       --tests 'org.ghost.messaging.media.MediaViewOnceScenarioTest' \
       --tests 'org.ghost.messaging.media.MediaViewOnceSenderTest' \
       --tests 'org.ghost.messaging.media.MediaExpiryScenarioTest' \
-      -Dghost.media.shard="$shard" -Dghost.media.shards=8
+      -Dghost.media.shard="$shard" -Dghost.media.shards=8 || rc=1
+    # SCN-ME's storage half (:media) and SCN-MF's migration enumeration (:storage) run once —
+    # in shard 1; the media report collects their close-out lines like the messaging ones.
+    if [ "$shard" = 1 ]; then
+      gradle_media "shard-1-media-store" :media --tests 'org.ghost.media.store.MediaStoreScenarioTest' || rc=1
+      gradle_media "shard-1-migration" :storage --tests 'org.ghost.storage.Migration8Test' || rc=1
+    fi
     ;;
   world)
-    gradle_media world \
+    gradle_media world :messaging \
       --tests 'org.ghost.messaging.media.MediaPrivacyWorldTest' \
       --tests 'org.ghost.messaging.media.MediaEphemeralTest' \
       -Dghost.media.privacy=gate
     ;;
   mutants)
     rc=0
-    gradle_media mutants-jvm --tests 'org.ghost.messaging.media.MediaMutantDetectionTest' || rc=1
+    gradle_media mutants-jvm :messaging --tests 'org.ghost.messaging.media.MediaMutantDetectionTest' || rc=1
     # The Rust half of the 43 (the S1 crate's patches; the design's media_mutants). Its line is
     # `media S1 mutants:` — the report's `media mutants:` line is the JVM suites' close-out of
     # the design's 43 (§15.9's homes), which the Rust kills feed through MediaMutantDetectionTest's

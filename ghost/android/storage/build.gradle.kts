@@ -35,6 +35,11 @@ android {
 // location is not an input), and every directory the scan prunes is excluded here too. The test
 // `ChannelExpiredRowLintTest.theStorageTestTaskDeclaresTheSourcesTheLintReads` pins this block.
 tasks.withType<Test>().configureEach {
+    // The media exit gate's SCN-MF close-out (§15.3; Migration8Test's migration enumeration):
+    // forward the report path to the test JVM, exactly like :messaging's harnessProperties block.
+    providers.systemProperty("ghost.media.report")
+        .orElse(providers.gradleProperty("ghost.media.report")).orNull
+        ?.let { systemProperty("ghost.media.report", it) }
     inputs.files(
         fileTree(rootProject.projectDir) {
             include("**/src/main/**/*.kt", "**/src/main/**/*.java")

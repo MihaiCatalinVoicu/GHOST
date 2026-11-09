@@ -255,6 +255,20 @@ class MediaStoreScenarioTest {
             checkFiles(w, "erasure, point $point")
             assertEquals("point $point: the next reconcile removed what the crash left", emptyList<String>(), w.listed())
         }
+        // §15.3's SCN-ME close-out from the storage half (the messaging half is the lifecycle
+        // suite): the erasure's reconcile survived a crash at every one of its file operations.
+        reportScenario("SCN-ME", total, "erasure and reconcile file operations, storage half")
+    }
+
+    /** The media exit gate's close-out line (§15.3), written only when the job names a report. */
+    private fun reportScenario(id: String, points: Int, coverage: String) {
+        val path = System.getProperty("ghost.media.report") ?: return
+        val file = File(path)
+        file.parentFile?.mkdirs()
+        if (!file.exists() || file.length() == 0L) {
+            file.writeText("GHOST media exit gate (Phase 11 design faza11-media.md §15.3-§15.9; slice S9)\n")
+        }
+        file.appendText("$id: $points crash points ($coverage), invariants hold\n")
     }
 
     /**
