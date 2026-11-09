@@ -90,7 +90,7 @@ ANDROID_TREE="${GHOST_DM_JNI_ANDROID:-$GHOST_ROOT/android}"
 [ -f "$KOTLIN" ] || { echo "DmNative.kt not found: $KOTLIN" >&2; exit 2; }
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 # The closed list, from the Rust constant: `(n, "name", Availability::Exported)` lines.
 grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::(Exported|Declared\("[A-Za-z0-9]+"\))\)' "$SOURCE" \

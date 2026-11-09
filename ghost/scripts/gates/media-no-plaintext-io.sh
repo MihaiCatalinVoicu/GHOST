@@ -52,7 +52,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # fixture-local table (GHOST_WRITER_ALLOWLIST) so a fixture tree can be clean.
 ALLOWLIST="${GHOST_WRITER_ALLOWLIST:-$GATES_DIR/file-writer-allowlist.txt}"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 
 # (a) sinks: one label-regex per line; the regex may not contain a newline.
 cat > "$TMP/sinks" <<'EOF'

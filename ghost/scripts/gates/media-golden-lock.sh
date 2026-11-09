@@ -96,7 +96,7 @@ if [ "$changed" = 1 ]; then
   if [ "${GHOST_MEDIA_GOLDEN_NO_TESTS:-}" != 1 ]; then
     command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
     work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
+    trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
     cargo test --locked -p ghost-client-media --test goldens 2>&1 | tr -d '\r' > "$work/run" || true
     grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed;  0 ignored;' "$work/run" || \
       fail "the golden drill did not pass with 0 ignored: $(grep -E '^test result:' "$work/run" | head -1)"

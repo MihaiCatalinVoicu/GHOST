@@ -60,7 +60,7 @@ ENTRY_NAMES="run"
 [ -f "$KOTLIN" ] || { echo "MlsNative.kt not found: $KOTLIN" >&2; exit 2; }
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 # The closed list: `(n, "name", Availability::…)` lines of the Rust constant.
 grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::(Exported|Declared\("[A-Za-z0-9]+"\))\)' "$SOURCE" \

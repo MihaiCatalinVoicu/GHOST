@@ -13,7 +13,7 @@ LOCK="${GHOST_CRYPTO_PINS_LOCK:-$GHOST_ROOT/Cargo.lock}"
 [ -f "$LOCK" ] || { echo "lock file not found: $LOCK" >&2; exit 2; }
 cd "$GHOST_ROOT"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 # "name version" for every [[package]] of the lock file.
 lock_pkgs="$(awk '/^\[\[package\]\]/ {n = ""} /^name = / {gsub(/"/, "", $3); n = $3} /^version = / {gsub(/"/, "", $3); if (n != "") print n " " $3}' "$LOCK")"

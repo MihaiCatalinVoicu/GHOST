@@ -84,7 +84,7 @@ esac
 BASELINE="${GHOST_G_R8_BASELINE:-$GATES_DIR/$NAME.baseline}"
 TRIPLES="${GHOST_G_R8_TRIPLES:-aarch64-linux-android x86_64-linux-android}"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 run() { # a command whose failure fails the gate with its stderr shown
   if ! "$@" 2>"$work/err"; then

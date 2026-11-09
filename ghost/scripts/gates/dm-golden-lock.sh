@@ -127,7 +127,7 @@ echo "[dm-golden-lock] vodozemac ${vz_base:-none} -> $vz_now; libcrux $([ "$crux
 if [ "${GHOST_GOLDEN_NO_TESTS:-}" != 1 ]; then
   command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
   work="$(mktemp -d)"
-  trap 'rm -rf "$work"' EXIT
+  trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
   GOLDEN_TESTS=(golden_pickles_load_and_both_sides_continue golden_chain_positions_are_pinned
     golden_prune_outputs_are_pinned_and_the_pruned_state_continues upgrade_every_previous_pin_loads_with_the_current_pin)
   LIB_TESTS=(olm::account::tests::ghost_reencodes_vodozemacs_own_dehydrated_device

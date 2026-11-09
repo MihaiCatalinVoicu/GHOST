@@ -62,7 +62,7 @@ if [ -n "${GHOST_ES_GIT:-}" ] && [ -n "${GHOST_ES_PREDECESSOR:-}" ]; then
   echo "GHOST_ES_GIT and GHOST_ES_PREDECESSOR exclude each other" >&2; exit 2
 fi
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 # The trees the one-path and key checks skip (see the header), one path per line.
 skipped_trees() {

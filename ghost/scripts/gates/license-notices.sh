@@ -33,7 +33,7 @@ fi
 write=0
 [ "${1:-}" = --write ] && write=1
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 compare() { # $1 = part name
   local committed="$LIC/THIRD_PARTY_NOTICES-$1.txt" fresh="$work/THIRD_PARTY_NOTICES-$1.txt"

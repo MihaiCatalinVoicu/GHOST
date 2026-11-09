@@ -65,7 +65,7 @@ ANDROID="$GHOST_ROOT/android"
 ENTRY_CLASSES="DmEquivalence MlsVectors"
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 
 # `<source set> TAB <path>` for every Kotlin and Java file under android/<module>/src/<set>/.
 all_sources() {

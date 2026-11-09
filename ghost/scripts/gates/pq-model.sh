@@ -39,7 +39,7 @@ command -v timeout >/dev/null 2>&1 || { echo "coreutils timeout is required" >&2
 command -v patch >/dev/null 2>&1 || { echo "GNU patch is required (mutant models)" >&2; exit 2; }
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 mkdir -p "$work/gen"
 
 # The expectations, comments and blank lines dropped: `model|token|expected`.

@@ -47,7 +47,7 @@
 # Vacuity: the sweep must read at least one file; the sandbox package must exist.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 
 mapfile -t files < <({ android_main_files; android_gate_files; } | sort -u)
 [ "${#files[@]}" -gt 0 ] || fail "no Android production sources under $GHOST_ROOT/android"

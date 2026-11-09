@@ -10,7 +10,7 @@ APK="${1:?usage: apk-notices.sh <apk>}"
 command -v unzip >/dev/null || { echo "unzip not found" >&2; exit 2; }
 LIC="$GHOST_ROOT/licenses"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rc=$?; rm -rf "$work"; exit $rc' EXIT
 for part in apk-notices-preamble.txt THIRD_PARTY_NOTICES-android.txt THIRD_PARTY_NOTICES-client-net.txt; do
   [ -s "$LIC/$part" ] || fail "licenses/$part is missing or empty"
 done
