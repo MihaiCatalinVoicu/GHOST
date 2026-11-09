@@ -35,17 +35,17 @@ la fiecare pachet închis.
 | Pachet | Rol | Stare | Blocaj |
 |---|---|---|---|
 | B0 | Reconciliere + matrice porți | **ÎNCHIS** (acest fișier) | — |
-| H0 | Design protecție APK | **DESIGN REV1 COMIS** (`8c666fe8`, `docs/design/h0-apk-hardening.md`) — 4 întrebări de review (Q-H0-1..4); H1 poate porni pe valorile implicite | EXEC (review OWNER înainte de H1) |
+| H0 | Design protecție APK | **DESIGN REV1 COMIS** (`8c666fe8`, `docs/design/h0-apk-hardening.md`) — 4 întrebări de review rămân (Q-H0-1..4) | EXEC (review OWNER înainte de H2) |
 | M0 | Fezabilitate radio | PARȚIAL: spike-uri de laborator EXEC; matricea fizică de măsurat | DEVICE (4 modele / 2 producători / 2 fără GMS / cel mai vechi API) |
-| B1 | Închidere bază DM/storage/sync/media/metadate | PARȚIAL: porțile mari închise (STATUS); rămân rulările la scara porții F11, F12 tuning, AUDIT_SCOPE refresh | EXEC + DEVICE (runner KVM Q32, telefoane Q31) + 3P (review captură F-T1) |
-| M1 | Protocol mesh, grant-uri, design date | DESCHIS | EXEC (design + vectori + schemă), review criptografic OWNER/3P înainte de cod |
+| B1 | Închidere bază DM/storage/sync/media/metadate | PARȚIAL EXECUTAT 2026-11-09: AUDIT_SCOPE §0 revizit (`1f229663`), clasa head-1/SIGPIPE eliminată (`73c37285`, self-test final 1 209 ok / 0 FAIL / 0 skip), cargo-deny 0.20.2 instalat cu cele 14 cazuri de bans active; rămân rulările la scara porții F11 (T2/T32 — programate), tuning jitter/batch, Q31/Q32 | EXEC parțial + DEVICE (runner KVM, telefoane) + 3P (review captură F-T1) |
+| M1 | Protocol mesh, grant-uri, design date | **DESIGN REV1 COMIS** (`ddc3140f`, `docs/design/m1-mesh-protocol.md`) — framing GHM1, Noise XX, grant semnat, PRF inventory, ACK-uri, state machine, schemă, matrice adversarială; **așteaptă review criptografic** — codul M2/M3 începe abia după el | EXEC (review OWNER/3P — porță declarată a roadmap-ului) |
 | M2 | Legătură locală directă | BLOCAT DE M1/B1 | EXEC cod + DEVICE teste |
 | M3 | Store/carry/forward + gateway | BLOCAT DE M2 | EXEC cod + DEVICE teste |
 | M4 | Note vocale | BLOCAT DE M3 + poarta media B1 | EXEC |
 | C0 | Motor apel: selecție + verificare izolare | DESCHIS parțial: analiza licențelor/SBOM EXEC; experimentul de izolare cere două dispozitive | EXEC + DEVICE |
 | M5 | Apel local E2EE | BLOCAT DE C0+M2 | EXEC cod + DEVICE teste |
 | B2 | Integrare Android + privacy UX | BLOCAT DE contractele M4/M5 | EXEC |
-| H1 | Implementare hardening release | BLOCAT DE H0 | EXEC |
+| H1 | Implementare hardening release | **JUMĂTATEA 1 COMISĂ** (`e6e11bfb`): H-01 obfuscare reală (validat pe mapping real: 747 clase, 15 nume justificate) + G-DM5 rescris pe whitelist; H-02 verificat (recipe A strip-uiește .so). Rămân: H-10 (suite E2E pe release minificat), H-11 (selfcheck reproductibilitate în imagine, la rebuild) | EXEC (H-10 parțial DEVICE — emulator) |
 | B3 | Candidat distribuibil + dovezi F14 | PARȚIAL FĂCUT (F14: build reproductibil în imagine, gates, recipe unificat); rămân mediul B, tag-ul semnat, workflows | DEVICE (mediul B) + OWNER (cheie tag, token-uri) + EXEC (CI-L workflows) |
 | M6 | Validare integrată pe dispozitive | BLOCAT DE M3-M5/H1/B3 | DEVICE-heavy + QA independent |
 | H2 | Acceptare protecție APK pe candidat | BLOCAT DE H1/B3 (+M6 varianta completă) | EXEC + 3P (audit la B4) |
@@ -60,10 +60,10 @@ la fiecare pachet închis.
 | # | Poartă / item | Fază | Dovadă existentă | Clasă rămasă |
 |---|---|---|---|---|
 | 1 | Rulări la scara porții F11: lumea N=300×28 zile×5 seeds, mutanții Rust 43/43, corpus §15.7 | 11 | scripturile locale există; suitele mici verzi | EXEC (WSL) |
-| 2 | Clasa `… \| head -1` SIGPIPE (~20 gate-uri; cursa câștigată azi pe toate) | gates | `ui-notifications` fixat; restul documentat | EXEC |
-| 3 | `cargo-deny` instalat + cazurile de self-test activate (acum skip documentat) | CI local | gate-urile există | EXEC (instalare binar în runner) |
+| 2 | ~~Clasa `… \| head -1` SIGPIPE~~ **ÎNCHISĂ** (`73c37285`): 19 gate-uri convertite la `sed -n 1p`; self-test final 1 209 ok / 0 FAIL / 0 skip | gates | — | — |
+| 3 | `cargo-deny` 0.20.2 instalat în runner; cele 14 cazuri de bans rulează (self-test 2026-11-09) | CI local | — | — |
 | 4 | Rândurile G-D1/G-D2/G-D4 care scanează workflows CI | 14 | documentate ca manuale în gate-uri | EXEC (CI-L: migrarea workflows în scripturi locale, decizie ADR-58) |
-| 5 | Refresh `docs/audit/AUDIT_SCOPE.md` §0 (condiții vechi: „Fazele 9-14 fără cod în main" — depășit) | 15 | pachetul de audit există | EXEC |
+| 5 | Refresh `docs/audit/AUDIT_SCOPE.md` §0 — **făcut** (`1f229663`, revizie 2026-11-09) | 15 | — | — |
 | 6 | Tuning jitter/batch transporturi (rândul 12 rămas) + review independent captură metadate (F-T1, cere design propriu sau repointare L9) | 12 | loopback verde, porți G-T1-T8 | EXEC (tuning) + 3P (review independent) |
 | 7 | F11 R3: expeditorul nu-și vede propriul obiect „vezi o dată" (mai strict decât design) | 11 | înregistrat cu probes | OWNER (decizie produs) |
 | 8 | Hang load-dependent `ChannelM20CrashTest.aCrashAtEveryEventOfTheFourthWave…` | 11 | nu se reproduce izolat; reprodus 2× sub load | DEVICE/EXEC (rulare la scara gate pe runner KVM — Q32) |
