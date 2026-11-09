@@ -1440,6 +1440,78 @@ up_case "accepts the shipped-graph and purity clauses' clean fixture" pass "$UP_
 up_case "refuses the mutants feature in the shipped graph" fail "$UP_FIX/feature" 'feature "mutants"'
 up_case "refuses the crate leaving the shipped graph" fail "$UP_FIX/absent" "absent from the shipped client graph"
 up_case "refuses an impure source" fail "$UP_FIX/impure" "println!"
+# Phase 14 (G-D1, G-D4): release-no-secrets.sh and release-records.sh on their fixture roots
+# (test-harness/gates/release-no-secrets/README.md, .../release-records/README.md).
+D1_FIX="$HARNESS/release-no-secrets"
+d1_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain
+  local desc="$1" expect="$2" root="$3" want="$4" out got
+  if out="$(GHOST_D1_ROOT="$root" bash "$DIR/release-no-secrets.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: release-no-secrets $desc ($got)" >&2; printf '%s
+' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: release-no-secrets $desc without reporting: $want" >&2; printf '%s
+' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: release-no-secrets $desc"
+  fi
+}
+d1_case "accepts the signing-free tree" pass "$D1_FIX/clean" "OK"
+d1_case "refuses a private-key header outside the carve-outs" fail "$D1_FIX/pem-key" "private-key header"
+d1_case "refuses a JKS keystore by magic" fail "$D1_FIX/keystore-magic" "JKS"
+d1_case "refuses a release signingConfig" fail "$D1_FIX/signed-release" "release build type"
+d1_case "refuses a signer invocation in scripts" fail "$D1_FIX/signer-script" "apksigner"
+D4_FIX="$HARNESS/release-records"
+d4_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain
+  local desc="$1" expect="$2" root="$3" want="$4" out got
+  if out="$(GHOST_D4_ROOT="$root" GHOST_D4_CHECKER="$root/checker.sh" bash "$DIR/release-records.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: release-records $desc ($got)" >&2; printf '%s
+' "$out" | tail -5 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: release-records $desc without reporting: $want" >&2; printf '%s
+' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: release-records $desc"
+  fi
+}
+d4_case "accepts a consistent stagenet record" pass "$D4_FIX/clean" "OK"
+d4_case "refuses a drill chain in a release build" fail "$D4_FIX/drill-root" "drill"
+d4_case "refuses a wrong-network chain" fail "$D4_FIX/wrong-network" "network byte"
+d4_case "refuses a failing records checker" fail "$D4_FIX/checker-refused" "checker refused"
+d4_case "refuses root records without allowed_signers" fail "$D4_FIX/missing-signers" "allowed_signers"
+# Phase 14 (G-D10, G-D3): mirror-config.sh on its fixtures; release-sums.sh on its A/B pairs.
+MC_FIX="$HARNESS/mirror-config"
+if [ -d "$MC_FIX" ]; then
+  mc_out="$(GHOST_D10_ROOT="$MC_FIX/good" bash "$DIR/mirror-config.sh" 2>&1)" && echo "self-test ok: mirror-config accepts the no-log fixture" || { echo "SELF-TEST FAIL: mirror-config refused the good fixture" >&2; printf '%s
+' "$mc_out" | tail -3 >&2; rc=1; }
+  if mc_out="$(GHOST_D10_ROOT="$MC_FIX/bad-access-log" bash "$DIR/mirror-config.sh" 2>&1)"; then
+    echo "SELF-TEST FAIL: mirror-config accepted an access_log fixture" >&2; rc=1
+  elif ! grep -qF "access_log" <<<"$mc_out"; then
+    echo "SELF-TEST FAIL: mirror-config refused the access_log fixture without naming the line" >&2; rc=1
+  else
+    echo "self-test ok: mirror-config refuses a kept access log"
+  fi
+fi
+RS_FIX="$HARNESS/release-sums"
+rs_case() { # $1 = description, $2 = pass|fail, $3 = pair, $4 = text the output must contain
+  local desc="$1" expect="$2" pair="$3" want="$4" out got
+  if out="$(bash "$DIR/release-sums.sh" "$RS_FIX/$pair/A" "$RS_FIX/$pair/B" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: release-sums $desc ($got)" >&2; printf '%s
+' "$out" | tail -4 >&2; rc=1
+  elif ! grep -qF -- "$want" <<<"$out"; then
+    echo "SELF-TEST FAIL: release-sums $desc without reporting: $want" >&2; printf '%s
+' "$out" | tail -4 >&2; rc=1
+  else
+    echo "self-test ok: release-sums $desc"
+  fi
+}
+rs_case "accepts two byte-equal trees" pass pair-equal "byte-equal"
+rs_case "refuses differing SHA256SUMS" fail pair-diff "SHA256SUMS differ"
+rs_case "refuses an APK/lib mismatch" fail pair-libmismatch "the APK carries"
+rs_case "refuses a build-id drift" fail pair-buildid "build-id"
+
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
