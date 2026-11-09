@@ -44,8 +44,24 @@ internal class MediaSeizure(private val world: MediaPrivacyWorld) {
             "timer=${o.timerSeconds} commitMinute=${o.commitMinute}"
     }
 
+    /**
+     * The system's key-retention bound, not the nominal timer deadline: a message's `delete_at`
+     * is `ceilHour(deadline) + 24h` (the world's receiveDescriptor, §10.3's slack), and the sweep
+     * erases the object's key only then. An object whose nominal deadline passed but whose
+     * retention bound has not is legitimately still keyed on the client — counting it as
+     * "expired" made the seizure flag opens that the retention contract allows (found at the
+     * gate scale 2026-11-09: three week-timer objects expiring inside the slack window before
+     * the horizon, `opened=6` across the relay's two manifest slots). The later bound also cannot
+     * hide a real leak: a key erased at the earlier recipient deadline simply is not there to
+     * open anything.
+     */
+    private fun retentionSeconds(o: TruthObject): Long {
+        val deadline = MediaWorld.NOW + o.commitMinute * 60 + o.timerSeconds
+        return org.ghost.messaging.engine.DmTime.ceilHour(deadline) + 24 * 3_600L
+    }
+
     private fun expired(o: TruthObject, endSeconds: Long): Boolean =
-        o.timerSeconds > 0 && endSeconds >= MediaWorld.NOW + o.commitMinute * 60 + o.timerSeconds
+        o.timerSeconds > 0 && endSeconds >= retentionSeconds(o)
 
     fun run(): Result {
         val endSeconds = world.endSeconds()
