@@ -14,6 +14,24 @@
 
 ## 0. Read this first: the honest state, and what the audit can start from
 
+> **Revizie 2026-11-09 (starea curentă, peste snapshot-ul de mai jos).** Tabloul PC de mai jos
+> descrie commit-ul de bază `a0f3f58` (2026-10-03); el rămâne ca istoric. Starea de azi
+> (`main`, `eca412ad`): **PC-1 închis** (Faza 9 complet implementată, merguită, cu porțile de
+> ieșire închise — rândul Fazei 9 din `docs/STATUS.md`); **PC-2 închis** (Faza 10 în `main`,
+> crate `ghost-client-mls`, porți G-M verzi); **PC-3 parțial închis** (Fazele 11, 12, 13, 14 au
+> cod în `main` și dovezi locale; resturile lor sunt device/owner-bound și listate în
+> `docs/B0_LEDGER_v2.2.md` §4); **PC-4/PC-5 deschise parțial** (rulările la scara porții T2/T32
+> nu au fost reexecutate recent — programate în B1); **PC-6 parțial** (dovezi emulator API 29/35
+> locale, fără dispozitive fizice); **PC-7 închis** (staging real: issuer + 3 relay-uri + 2 oglinzi,
+> călătorii J1-J6 cu sesiuni reale — rândul Fazei 13); **PC-8 parțial** (majoritatea deciziilor
+> proprietarului închise prin ADR-44…62; rămân Q3/Q18, F11-R3); **PC-9 parțial închis** (pachetul
+> de verificabilitate ADR-38 construit în Faza 14: `ghost-verify`, recipe reproductibil validat
+> în imagine, bundle semnat pe oglinzile reale; lipsesc mediul B al doilea mediu, Sigsum live,
+> escrow — toate owner-bound); **PC-10 înlocuit** (CI local conform ADR-58; la 2026-11-09:
+> self-test integral 1 194 ok / 0 FAIL, run-all 46/46 verzi pe arborele real). Reproductibilitate:
+> build A validat în imagine, egalitatea A/B (mediul B) și auditul extern rămân porțile B3/B4.
+> Totul de mai jos rămâne neschimbat ca descriere a commit-ului de bază.
+
 GHOST is a private, closed-source Android forum and messenger: Tor-only transport, blind capability tokens bought with Monero, direct messages (DMs) with Olm from vodozemac under a GHOST-built post-quantum sealing layer (X-Wing), forum channels planned on OpenMLS. The master plan (`docs/GHOST_Master_Plan_v2.1_OPTIMIZAT.md` §6.2, row 15) makes an external audit a **release gate** ("Hardening + audit extern + retest: mobil, integrarea vodozemac și a stratului PQ DM, OpenMLS, relay, issuer/blind sig, supply chain", 6-8 weeks, exit "0 Critical/High deschise"; spec NFR-13: "0 open Critical/High at production"). Row 15 depends on rows 9-14.
 
 **Preconditions for a final audit that are not met at the base commit** (details and sources in `KNOWN_ISSUES.md` and `EVIDENCE_INDEX.md`):
