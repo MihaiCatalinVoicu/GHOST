@@ -2,10 +2,20 @@
 # comment naming the library and the reason.
 -dontwarn org.ghost.**
 
-# GHOST classes are shrunk but never renamed (Phase 9 design §2.7, §22.8.10 point 11, ADR-38;
-# slice S12). `-dontobfuscate` takes no class filter and would switch obfuscation off for every
-# library in the APK, so the names of GHOST's own classes and members are kept instead: a crash
-# report, a reviewer reading the release APK and gate G-DM5 all see the source names. G-DM5
-# (scripts/gates/apk-no-debug-hooks.sh) asserts that R8's mapping.txt maps every `org.ghost.` class
-# to itself and holds no debug hook, harness, transport seam or equivalence entry point.
--keepnames class org.ghost.** { *; }
+# H-01 (spec v2.2 §8, ADR-38 §9 amendat v2.2, design docs/design/h0-apk-hardening.md §2): GHOST's
+# names ARE obfuscated in the release. There is deliberately no global `-keepnames class
+# org.ghost.**` here — that was the pre-v2.2 rule and it is gone. The only names that survive are
+# the narrow JNI/reflection surfaces each module justifies in its own consumer-rules.pro (native
+# methods resolve by Java name; classes thrown/looked-up by name from JNI). Gate G-DM5
+# (scripts/gates/apk-no-debug-hooks.sh) reads those rules as its whitelist and refuses any other
+# org.ghost. class that keeps its source name in mapping.txt.
+
+# Manifest-referenced components (android/app/src/main/AndroidManifest.xml). AGP keeps them through
+# the merged manifest anyway; these explicit rules make the intent self-documenting, immune to AGP
+# behavior changes, and verifiable by G-DM5's whitelist (which reads exactly the tree's -keep rules).
+-keep class org.ghost.app.GhostApp
+-keep class org.ghost.app.MainActivity
+-keep class org.ghost.app.UpdateInstallReceiver
+-keep class org.ghost.media.sandbox.MediaDecodeService
+-keep class org.ghost.messaging.android.ExpiryAlarmReceiver
+-keep class org.ghost.sync.android.SyncJobService

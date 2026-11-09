@@ -2886,7 +2886,7 @@ dmhooks_case "reads annotated declarations and code after a block comment, and e
   GHOST_ROOT="$DMH/declarations" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
 dmhooks_case "refuses the device runner (src/deviceRunner) in mapping.txt" 1 "ships the debug-only class org.ghost.device.DeviceRunner" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/device-runner.txt"
-dmhooks_case "refuses a renamed org.ghost. class in mapping.txt" 1 "maps to itself" \
+dmhooks_case "refuses an un-justified source name kept in mapping.txt (H-01 obfuscation)" 1 "keeps the source name of org.ghost.app.GhostApp" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/renamed.txt"
 dmhooks_case "refuses the key-change hook and a gate lambda in mapping.txt" 2 "ships the debug-only class" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/debug-class.txt"
@@ -2899,9 +2899,9 @@ dmhooks_case "refuses the channel vector replay's test entry point (MlsVectors) 
 dmhooks_case "refuses a mapping without an org.ghost. class" 1 "lists no org.ghost. class" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/no-ghost.txt"
 if bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/positive.txt" >/dev/null 2>&1; then
-  echo "self-test ok: apk-no-debug-hooks accepts the real tree and a -keepnames mapping"
+  echo "self-test ok: apk-no-debug-hooks accepts the real tree and an obfuscated mapping (H-01)"
 else
-  echo "SELF-TEST FAIL: apk-no-debug-hooks rejects the real tree or a -keepnames mapping" >&2; rc=1
+  echo "SELF-TEST FAIL: apk-no-debug-hooks rejects the real tree or an obfuscated mapping" >&2; rc=1
 fi
 
 if command -v cargo >/dev/null; then

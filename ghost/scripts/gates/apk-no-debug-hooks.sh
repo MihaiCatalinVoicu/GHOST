@@ -4,7 +4,9 @@
 #
 #   the release variant's source sets and R8's mapping.txt contain no class of the key-change debug
 #   hook, the order-digest export, a harness package, a transport-injection seam or the
-#   equivalence-test entry point, and mapping.txt maps every `org.ghost.` class to itself
+#   equivalence-test entry point, and mapping.txt keeps no `org.ghost.` source name except the
+#   classes the tree's own -keep rules justify (H-01 obfuscation, ADR-38 §9 amendat v2.2;
+#   design docs/design/h0-apk-hardening.md §2)
 #
 # What counts as each of those is read from the tree, not listed here, so a hook added later is
 # covered the day it exists:
@@ -44,11 +46,15 @@
 #      `sourceSets["main"]` line is refused: it is how `src/deviceRunner` and `src/equivalence` are
 #      attached to the test sets, and the same line pointed at `main` would ship them.
 #   3. **R8's mapping.txt** of the release build (the CI `android` job passes it, after
-#      `assembleRelease`). Every `org.ghost.` class is mapped to its own name — `proguard-rules.pro`
-#      keeps GHOST's names (`-keepnames`, §22.8.10 point 11), so a renamed class is a rule that
-#      stopped applying — and no mapped class is debug-only, in a harness or gate package, or the
-#      equivalence entry point. A class R8 removed is not in the mapping, which is the point: what
-#      the mapping lists is what shipped.
+#      `assembleRelease`). GHOST's names are obfuscated since H-01 (v2.2): every `org.ghost.`
+#      class must appear RENAMED (`original -> a.b:`) — or gone (`R8$$REMOVED$$CLASS$$n`) / a
+#      desugared synthetic (`$$ExternalSynthetic…`) — EXCEPT the classes the tree's own `-keep`
+#      rules name (the JNI/reflection surfaces: native-method classes, classes thrown or looked up
+#      by name from JNI). The whitelist is read from `android/*/consumer-rules.pro` and
+#      `app/proguard-rules.pro`, not listed here, so a new keep rule extends the gate the day it
+#      lands. Independently of renaming, no mapped class may be debug-only, in a harness or gate
+#      package, or an equivalence entry point. A class R8 removed is not in the mapping, which is
+#      the point: what the mapping lists is what shipped.
 #
 # It refuses to pass vacuously: at least one debug-only class must be found (the gate build type
 # exists), at least 20 release sources must be read, and a mapping must list at least one
@@ -183,6 +189,13 @@ if [ -n "$MAPPING" ]; then
     fail "mapping not found or empty: $MAPPING (run :app:assembleRelease first)"
   else
     { echo "#"; awk '{print $1}' "$work/debug"; } > "$work/qualified"
+    # The whitelist of GHOST classes allowed to keep their source names: exactly the classes the
+    # tree's own -keep rules name (JNI/reflection surfaces). Read from the rules, not listed here,
+    # so a new keep rule extends the gate the day it lands.
+    grep -hoE '^-keep[a-zA-Z,]*[[:space:]].*class[[:space:]]+org\.ghost\.[A-Za-z0-9_.$]+' \
+        "$ANDROID"/*/consumer-rules.pro "$ANDROID/app/proguard-rules.pro" 2>/dev/null \
+      | grep -oE 'class[[:space:]]+org\.ghost\.[A-Za-z0-9_.$]+' | awk '{print $2}' | sort -u > "$work/whitelist"
+    [ -s "$work/whitelist" ] || fail "no -keep rule in the tree's ProGuard files names an org.ghost. class (the gate would have no whitelist; the JNI keep rules are missing)"
     # Class lines only: `original -> renamed:` at column 0; member lines are indented. The last line
     # printed is the count of `org.ghost.` classes read, so an empty mapping cannot pass.
     ghost=""
@@ -191,7 +204,8 @@ if [ -n "$MAPPING" ]; then
         COUNT\ *) ghost="${v#COUNT }" ;;
         *) [ -n "$v" ] && fail "$v" ;;
       esac
-    done < <(awk -v entries=" $ENTRY_CLASSES " '
+    done < <(awk -v entries=" $ENTRY_CLASSES " -v wlfile="$work/whitelist" '
+      BEGIN { while ((getline l < wlfile) > 0) wl[l] = 1 }
       FNR == NR { debug[$1] = 1; next }
       /^[^ #].* -> .*:$/ {
         original = $1; renamed = $3; sub(/:$/, "", renamed)
@@ -200,21 +214,22 @@ if [ -n "$MAPPING" ]; then
         # Two kinds of line carry an org.ghost. name without being a shipped source class (found on
         # the first real release mapping, slice S12): a class R8 removed is listed for retrace as
         # `-> R8$$REMOVED$$CLASS$$n` (it did not ship at all), and a class R8 or D8 *synthesized*
-        # (`$$ExternalSynthetic…`, the desugared lambdas) has no source name for -keepnames to keep.
-        # Both are still checked below for being debug-only or in a harness or gate package.
+        # (`$$ExternalSynthetic…`, the desugared lambdas) has no source name to keep. Neither ships,
+        # but both are still checked below for being debug-only or in a harness or gate package.
         synthetic = (original ~ /\$\$ExternalSynthetic/ || original ~ /\$\$Lambda/)
         removed = (index(renamed, "R8$$REMOVED$$CLASS") == 1)
-        if (original != renamed && !synthetic && !removed) print "mapping.txt renames " original " to " renamed ": every org.ghost. class maps to itself (-keepnames, G-DM5)"
         outer = original; sub(/\$.*$/, "", outer)
         simple = outer; sub(/^.*\./, "", simple)
         if (index(entries, " " simple " ") > 0) print "mapping.txt ships the " (simple == "DmEquivalence" ? "equivalence-test" : "vector-replay test") " entry point " original " (G-DM5)"
         else if (outer in debug) print "mapping.txt ships the debug-only class " original " (G-DM5)"
         else if (outer ~ /\.(harness|gate)(\.|$)/) print "mapping.txt ships " original " from a harness or gate package (G-DM5)"
+        else if (!synthetic && !removed && original == renamed && !(original in wl) && !(outer in wl))
+          print "mapping.txt keeps the source name of " original ", which no -keep rule justifies (H-01: GHOST names are obfuscated; G-DM5)"
       }
       END { print "COUNT " (n + 0) }
     ' "$work/qualified" "$MAPPING")
     [ "${ghost:-0}" -gt 0 ] || fail "mapping.txt lists no org.ghost. class (the gate would pass vacuously): $MAPPING"
-    echo "[apk-no-debug-hooks] mapping: ${ghost:-0} org.ghost. classes read"
+    echo "[apk-no-debug-hooks] mapping: ${ghost:-0} org.ghost. classes read, $(wc -l < "$work/whitelist" | tr -d ' ') -keep names whitelisted"
   fi
 else
   echo "[apk-no-debug-hooks] mapping half not run (no mapping.txt given; the CI android job passes the release build's)"

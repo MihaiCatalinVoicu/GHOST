@@ -1,13 +1,9 @@
 # compiler: R8
-# fixture: the shape of an R8 mapping with -keepnames over org.ghost.** (G-DM5 must accept it)
-androidx.core.app.CoreComponentFactory -> androidx.core.app.CoreComponentFactory:
-    1:1:void <init>():0:0 -> <init>
-androidx.lifecycle.ProcessLifecycleOwner -> a.b:
-    1:1:void a():0:0 -> a
-org.ghost.app.GhostApp -> org.ghost.app.GhostApp:
-    1:4:void onCreate():120:123 -> onCreate
-org.ghost.app.GhostApp$onCreate$1 -> org.ghost.app.GhostApp$onCreate$1:
-org.ghost.messaging.engine.MessagingRuntime -> org.ghost.messaging.engine.MessagingRuntime:
+# fixture: H-01 world — the key-change hook and a gate instrumentation lambda shipped with their
+# source names (they are debug-only; renaming them would not make them acceptable). Two lines.
+org.ghost.app.GhostApp -> a.a:
+org.ghost.app.GhostApp$onCreate$1 -> a.a$1:
+org.ghost.messaging.engine.MessagingRuntime -> a.b:
 org.ghost.crypto.bridge.DmNative -> org.ghost.crypto.bridge.DmNative:
 org.ghost.crypto.bridge.gate.GateKeyChange -> org.ghost.crypto.bridge.gate.GateKeyChange:
 org.ghost.app.gate.GateInstrumentation$run$1 -> org.ghost.app.gate.GateInstrumentation$run$1:

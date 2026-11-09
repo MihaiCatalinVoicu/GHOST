@@ -16,14 +16,19 @@ mapping with `GHOST_ROOT` at the real tree:
   line, named by a release source in an import, in plain code and in code after an inline
   `/* … */`; a block comment that names it in prose; and `BuildTwin`, declared in both `src/debug`
   and `src/release` (a build-type twin, like `DmBranch`), named without a violation. Three lines.
-- `mapping/positive.txt`: R8's shape with `-keepnames` over `org.ghost.**`; accepted. Its last two
-  lines are the two shapes the first real release mapping showed that carry an `org.ghost.` name
-  without being a shipped source class: a desugared lambda (`$$ExternalSyntheticLambda1 -> …j`, a
-  synthesized class -keepnames has no source name for) and a class R8 removed
-  (`-> R8$$REMOVED$$CLASS$$344`). Both are exempt from the identity rule only.
-- `mapping/renamed.txt`: one `org.ghost.` class renamed. One line.
+- `mapping/positive.txt`: R8's shape with H-01 obfuscation over `org.ghost.**` (v2.2, design
+  `docs/design/h0-apk-hardening.md` §2): non-whitelist GHOST classes renamed (`GhostApp -> a.a`),
+  only the tree's `-keep` JNI classes keep their names (`DmNative` identity, whitelisted by
+  `:crypto-bridge`'s consumer rules). Accepted. Its last two lines are the two shapes the first
+  real release mapping showed that carry an `org.ghost.` name without being a shipped source
+  class: a desugared lambda (`$$ExternalSyntheticLambda1`, a synthesized class with no source name
+  to keep) and a class R8 removed (`-> R8$$REMOVED$$CLASS$$344`).
+- `mapping/renamed.txt`: the inverse drill — in the H-01 world a non-whitelist class that KEEPS its
+  source name (`GhostApp -> GhostApp`, no `-keep` rule justifies it) is refused, while the
+  whitelisted `DmNative` keeping its name is fine. One line.
 - `mapping/debug-class.txt`: the key-change hook and a lambda class of the gate instrumentation
-  shipped. Two lines.
+  shipped (with their source names — debug-only classes, renaming would not make them acceptable).
+  Two lines.
 - `mapping/harness.txt`: a class of a harness package shipped. One line.
 - `mapping/device-runner.txt` (S12 review): `org.ghost.device.DeviceRunner`, the device suites'
   `Instrumentation` from `crypto-bridge/src/deviceRunner`, shipped. One line; the first version of

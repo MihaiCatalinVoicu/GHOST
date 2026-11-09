@@ -5,3 +5,10 @@
 -keepclasseswithmembernames class org.ghost.network.TorRelayTransport { native <methods>; }
 -keepclasseswithmembernames class org.ghost.network.TorIssuerTransport { native <methods>; }
 -keepclasseswithmembernames class org.ghost.network.EntitlementCrypto { native <methods>; }
+# JNI: the update surface (Phase 14 design §9.3, G-D5; slice S6) — `UpdateNative`/`TorMirrorTransport`
+# native methods are bound by name from client-core/net/src/update.rs (`CLOSED_UPDATE`/`CLOSED_MIRROR`).
+# Like MediaNative in :crypto-bridge, these keeps were masked by the pre-v2.2 global `-keepnames`
+# and surfaced on the first obfuscated build (G-DM5, 2026-11-09). `UpdateMutants` needs no rule: it
+# is compiled only into test libraries, which no release ships.
+-keepclasseswithmembernames class org.ghost.network.UpdateNative { native <methods>; }
+-keepclasseswithmembernames class org.ghost.network.TorMirrorTransport { native <methods>; }
