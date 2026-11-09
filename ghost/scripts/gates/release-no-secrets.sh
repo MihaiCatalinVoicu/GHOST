@@ -33,6 +33,11 @@ skips() { # the carve-outs and build outputs, one -path expression per line
   # .git is not the tree.
   printf '%s\n' "$ROOT/test-harness/gates" "$ROOT/.git"
   printf '%s\n' "$ROOT/android/update/build" "$ROOT/android/network/build"
+  # third_party/lyrebird's toolchain is upstream's own: the vendored Go toolchain's crypto testdata
+  # and module cache carry upstream TEST keys (Go stdlib nist-pkits certs, x/crypto ssh test keys) —
+  # signing material of the Go project, never of GHOST. Lyrebird's own integrity is pinned by
+  # pt-source-pin (G-T1); the gate looks for GHOST's signing material.
+  printf '%s\n' "$ROOT/third_party/lyrebird/toolchain" "$ROOT/third_party/lyrebird/.cache"
   find "$ROOT" -type d \( -name target -o -name build -o -name .gradle \) -not -path '*/src/*' 2>/dev/null | head -200
 }
 
