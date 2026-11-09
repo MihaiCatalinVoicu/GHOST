@@ -12,6 +12,7 @@ here="$(dirname "$0")"
 bash "$here/exact-nm" "$@" | grep -v 'DmNative_ctxOpen$'
 dm="$here/../../../../client-core/dm/src/jni.rs"
 media="$here/../../../../client-core/dm/src/jni_media.rs"
+update="$here/../../../../client-core/net/src/update.rs"
 address=65536
 while read -r name; do
   [ -n "$name" ] || continue
@@ -24,3 +25,17 @@ while read -r name; do
   address=$((address + 16))
 done < <(sed -n '/pub const MEDIA_CLOSED_LIST/,/^]/p' "$media" \
   | grep -oE '\([0-9]+, "[A-Za-z0-9]+"\)' | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
+# Slice S6 (Phase 14 design §9.3, G-D5): a shipped library carries the update surface beside the
+# DM and media lists — `CLOSED_UPDATE` and `CLOSED_MIRROR` from `client-core/net/src/update.rs`
+# itself (the same constants the gate's source half reads). §11.3's `TEST_MUTANT_SWITCHES` stays
+# out on purpose: a shipped library never carries the mutant selector (G-D5's library half).
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_network_UpdateNative_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(sed -n '/pub const CLOSED_UPDATE/,/^]/p' "$update" | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u)
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_network_TorMirrorTransport_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(sed -n '/pub const CLOSED_MIRROR/,/^]/p' "$update" | grep -oE '"[A-Za-z0-9]+"' | tr -d '"' | sort -u)

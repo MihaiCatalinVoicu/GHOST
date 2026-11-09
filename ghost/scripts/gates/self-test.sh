@@ -2911,8 +2911,8 @@ if command -v cargo >/dev/null; then
     env GHOST_RUST_ALLOWLIST="$tmp" bash "$DIR/rust-client-allowlist.sh"
   rm -f "$tmp"
   expect_fail_msg "rust-feature-policy rejects a missing required feature" \
-    "arti-client feature 'pt-client' must be enabled" \
-    env GHOST_POLICY_REQUIRE_EXTRA=pt-client bash "$DIR/rust-feature-policy.sh"
+    "arti-client feature 'no-such-feature' must be enabled" \
+    env GHOST_POLICY_REQUIRE_EXTRA=no-such-feature bash "$DIR/rust-feature-policy.sh"
   expect_fail_msg "rust-feature-policy rejects an enabled forbidden feature" \
     "arti-client feature 'tokio' is enabled without an ADR" \
     env GHOST_POLICY_FORBID_EXTRA=tokio bash "$DIR/rust-feature-policy.sh"
@@ -3356,10 +3356,17 @@ media-no-such-crate is not in ghost-client-media's graph" \
   multi_case "rust-feature-policy runs the media shipped-graph feature clause (G-M7)" 1 \
 "ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M7 allows: default" \
     env GHOST_POLICY_MEDIA_SHIPPED=ghost-client-mls bash "$DIR/rust-feature-policy.sh"
+  # S2's link is now reality (ghost-client-dm genuinely depends on the media crate), so the
+  # metadata-declared link is the gate's steady state, not a drill: a normal and an optional
+  # dependency both turn the clause on and pass with the crate in the shipped graph. The negative
+  # drill of this clause was only reachable before S2 linked the crate (a metadata declaring the
+  # link then failed with "package 'ghost-client-media' is not in the shipped client graph").
   for mp_link in normal optional; do
-    multi_case "rust-feature-policy detects S2's link from the metadata: ghost-client-dm's $mp_link dependency on the crate (G-M7)" 1 \
-"package 'ghost-client-media' is not in the shipped client graph although ghost-client-dm declares it" \
-      env GHOST_POLICY_MEDIA_METADATA="$HARNESS/media-policy/linked-$mp_link.json" bash "$DIR/rust-feature-policy.sh"
+    if env GHOST_POLICY_MEDIA_METADATA="$HARNESS/media-policy/linked-$mp_link.json" bash "$DIR/rust-feature-policy.sh" >/dev/null 2>&1; then
+      echo "self-test ok: rust-feature-policy accepts the metadata-declared $mp_link link with the crate in the shipped graph (G-M7)"
+    else
+      echo "SELF-TEST FAIL: rust-feature-policy refuses the metadata-declared $mp_link link although the shipped graph holds the crate (G-M7)" >&2; rc=1
+    fi
   done
   if GHOST_POLICY_MEDIA_METADATA="$HARNESS/media-policy/linked-dev.json" bash "$DIR/rust-feature-policy.sh" >/dev/null 2>&1; then
     echo "self-test ok: rust-feature-policy requires nothing of a dev-dependency on the media crate (G-M7)"
