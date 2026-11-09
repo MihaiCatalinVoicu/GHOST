@@ -189,6 +189,8 @@ val harnessProperties = listOf(
     "ghost.media.shard",
     "ghost.media.shards",
     "ghost.media.report",
+    // §15.4's seeded worlds count (media-exit-gate's shard 7 runs the gate's 1 000).
+    "ghost.media.seededWorlds",
 )
 
 tasks.withType<Test>().configureEach {

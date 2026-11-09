@@ -100,6 +100,12 @@ case "$cmd" in
       gradle_media "shard-1-media-store" :media --tests 'org.ghost.media.store.MediaStoreScenarioTest' || rc=1
       gradle_media "shard-1-migration" :storage --tests 'org.ghost.storage.Migration8Test' || rc=1
     fi
+    # §15.4's seeded worlds take shard 7 (MediaScenarios.owns(6)): the gate's 1 000 worlds.
+    if [ "$shard" = 7 ]; then
+      gradle_media "shard-7-seeded" :messaging \
+        --tests 'org.ghost.messaging.media.MediaSeededWorldsTest' \
+        -Dghost.media.seededWorlds=1000 || rc=1
+    fi
     ;;
   world)
     gradle_media world :messaging \
