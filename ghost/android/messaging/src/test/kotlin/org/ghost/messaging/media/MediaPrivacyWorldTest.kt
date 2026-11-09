@@ -63,7 +63,7 @@ class MediaPrivacyWorldTest {
     }
 
     private fun assertSeizure(s: MediaSeizure.Result) {
-        assertEquals("no stored key_env opens an archived blob", 0, s.opened)
+        assertEquals("no stored key_env opens an archived blob: $s", 0, s.opened)
         assertTrue("the control opened a live object (the oracle is not vacuous): $s", s.controlOpened >= 1)
         assertTrue("archived blobs: ${s.archivedBlobs}", s.archivedBlobs > 0)
         assertTrue("stored keys: ${s.storedKeys}", s.storedKeys > 0)

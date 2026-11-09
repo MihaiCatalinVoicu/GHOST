@@ -28,17 +28,29 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /** The scale of the media privacy world (Phase 11 design §15.6; the F9 PrivacyScale pattern). */
-internal enum class MediaPrivacyScale(val clients: Int, val days: Int, val mediaPerClientDay: Double) {
-    SMALL(8, 4, 0.5),
-    PR(60, 14, 0.5),
-    GATE(300, 28, 0.3),
-    ;
-
+internal class MediaPrivacyScale private constructor(
+    val clients: Int,
+    val days: Int,
+    val mediaPerClientDay: Double,
+) {
     companion object {
-        /** `-Dghost.media.privacy=gate|small` selects; anything else is the PR scale. */
+        val SMALL = MediaPrivacyScale(8, 4, 0.5)
+        val PR = MediaPrivacyScale(60, 14, 0.5)
+        val GATE = MediaPrivacyScale(300, 28, 0.3)
+
+        /**
+         * `-Dghost.media.privacy=gate|small|custom` selects; anything else is the PR scale.
+         * `custom` takes `-Dghost.media.custom.clients`/`.days` (diagnostic bisects of the gate
+         * scale; the gate evidence itself stays the fixed GATE constants).
+         */
         fun selected(): MediaPrivacyScale = when (System.getProperty("ghost.media.privacy")) {
             "gate" -> GATE
             "small" -> SMALL
+            "custom" -> MediaPrivacyScale(
+                System.getProperty("ghost.media.custom.clients")?.toIntOrNull() ?: 150,
+                System.getProperty("ghost.media.custom.days")?.toIntOrNull() ?: 14,
+                0.3,
+            )
             else -> PR
         }
     }

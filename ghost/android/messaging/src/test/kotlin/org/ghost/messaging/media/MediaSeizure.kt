@@ -20,9 +20,28 @@ internal class MediaSeizure(private val world: MediaPrivacyWorld) {
         val archivedBlobs: Int,
         val opened: Int,
         val controlOpened: Int,
+        /** Diagnostica gate-scale (2026-11-09): cine ținea cheia fiecărei deschideri și atributele obiectului. */
+        val openedDetails: List<String> = emptyList(),
+        val retainedExpiredDetails: List<String> = emptyList(),
     ) {
         override fun toString(): String =
-            "storedKeys=$storedKeys archivedBlobs=$archivedBlobs opened=$opened controlOpened=$controlOpened"
+            "storedKeys=$storedKeys archivedBlobs=$archivedBlobs opened=$opened controlOpened=$controlOpened" +
+                (if (openedDetails.isNotEmpty()) " opened: ${openedDetails.joinToString(" | ")}" else "") +
+                (if (retainedExpiredDetails.isNotEmpty()) " retainedExpired: ${retainedExpiredDetails.joinToString(" | ")}" else "")
+    }
+
+    /** One line of truth attributes for a retained key, for the diagnostic. */
+    private fun describe(device: Int, keyEnv: ByteArray, keyObjects: Map<String, TruthObject>): String {
+        val o = keyObjects[hexOf(keyEnv)]
+            ?: return "device=$device key=NOT-IN-TRUTH"
+        val side = when (device) {
+            o.sender -> "sender"
+            o.recipient -> "recipient"
+            else -> "third-party"
+        }
+        return "device=$device($side) sender=${o.sender} recipient=${o.recipient} viewOnce=${o.viewOnce} " +
+            "inRequest=${o.inRequest} exemption=${o.exemption} viewed=${o.viewed} " +
+            "timer=${o.timerSeconds} commitMinute=${o.commitMinute}"
     }
 
     private fun expired(o: TruthObject, endSeconds: Long): Boolean =
@@ -53,10 +72,27 @@ internal class MediaSeizure(private val world: MediaPrivacyWorld) {
         }
 
         var opened = 0
-        for ((_, keyEnv) in storedKeys) {
+        val openedDetails = ArrayList<String>()
+        val retainedExpiredDetails = ArrayList<String>()
+        for ((device, keyEnv) in storedKeys) {
             for (manifest in archived.filter { it.recipe is MediaRecipe.Manifest }) {
-                if (attempt(world.readers, manifest, keyEnv, archived)) opened++
+                if (attempt(world.readers, manifest, keyEnv, archived)) {
+                    opened++
+                    if (openedDetails.size < 12) {
+                        openedDetails += "device=$device manifestObject=${hexOf(manifest.recipe.objectId)} " +
+                            describe(device, keyEnv, keyObjects)
+                    }
+                }
             }
+        }
+        // Retained keys of expired objects that did NOT open (fragments missing from the archived
+        // pool, or the manifest itself archived while a chunk is not): same retention class as an
+        // open, visible even where the attempt cannot complete.
+        for ((device, keyEnv) in storedKeys) {
+            val o = keyObjects[hexOf(keyEnv)] ?: continue
+            if (!expired(o, endSeconds)) continue
+            if (openedDetails.any { it.startsWith("device=$device ") && it.contains(hexOf(keyEnv).take(16)) }) continue
+            if (retainedExpiredDetails.size < 12) retainedExpiredDetails += describe(device, keyEnv, keyObjects)
         }
         // The control: a live object's stored key opens its own (live) blobs.
         var control = 0
@@ -90,7 +126,14 @@ internal class MediaSeizure(private val world: MediaPrivacyWorld) {
                     },
             )
         }
-        return Result(storedKeys = storedKeys.size, archivedBlobs = archived.size, opened = opened, controlOpened = control)
+        return Result(
+            storedKeys = storedKeys.size,
+            archivedBlobs = archived.size,
+            opened = opened,
+            controlOpened = control,
+            openedDetails = openedDetails,
+            retainedExpiredDetails = retainedExpiredDetails,
+        )
     }
 
     /**
