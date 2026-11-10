@@ -10,6 +10,13 @@
 #       fixture log of keys the root lists — a self-consistent log world, the real Sigsum log
 #       is OA-4), the bundle and the model-mirror directory. Stops before any emulator run.
 #
+#   --fixtures --build-release --version-code <n>   (H-10, design h0-apk-hardening.md §9 item 7)
+#       Same, but the APK is built here as the R8-minified release (`:app:assembleRelease` with
+#       `-Pghost.smoke.release=true` — the one job-only exception that signs the release with the
+#       build machine's throwaway debug key, exactly the signer the fixture root lists in
+#       apk_signers). The update smoke thus runs against the same bytes H1 obfuscates, not the
+#       gate build. Gradlew runs in $GHOST/android; JAVA_HOME/SDK come from the environment.
+#
 #   (default) The emulator run itself: requires KVM (the self-hosted runners lack it — see
 #   §11.4's note on update-emulator.yml). It chain-swaps the embedded chain, builds v1 and v2
 #   gate APKs, starts the model mirror, then drives the gate instrumentation over adb:
@@ -36,16 +43,24 @@ ES_SEQ=1
 RELAY_DIR="$GHOST/protocol/entitlement/relay-directory.txt"
 
 cmd="${1:-run}"
-[ "$cmd" = "--fixtures" ] || { echo "usage: update-emulator.sh --fixtures --apk <signed.apk> --version-code <n>"; exit 2; }
-APK=""; VCODE=""
+[ "$cmd" = "--fixtures" ] || { echo "usage: update-emulator.sh --fixtures (--apk <signed.apk> | --build-release) --version-code <n>"; exit 2; }
+APK=""; VCODE=""; BUILD_RELEASE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --apk) APK="$2"; shift 2 ;;
     --version-code) VCODE="$2"; shift 2 ;;
+    --build-release) BUILD_RELEASE=1; shift ;;
     *) shift ;;
   esac
 done
-[ -n "$APK" ] && [ -n "$VCODE" ] || { echo "--fixtures needs --apk and --version-code"; exit 2; }
+if [ "$BUILD_RELEASE" = 1 ]; then
+  [ -z "$APK" ] || { echo "--build-release builds the APK itself; do not also pass --apk" >&2; exit 2; }
+  # The smoke release is signed with the debug key (build.gradle.kts's smokeRelease branch), so
+  # the fixture root's apk_signers entry stays this workstation's debug certificate.
+  ( cd "$GHOST/android" && ./gradlew --no-daemon :app:assembleRelease :app:assembleReleaseAndroidTest -Pghost.smoke.release=true ) || { echo "--build-release: gradle build failed" >&2; exit 1; }
+  APK="$GHOST/android/app/build/outputs/apk/release/app-release.apk"
+fi
+[ -n "$APK" ] && [ -n "$VCODE" ] || { echo "--fixtures needs --apk/--build-release and --version-code"; exit 2; }
 
 cd "$GHOST"
 cargo build --release --locked -p ghost-release-ops 2>&1 | tail -1

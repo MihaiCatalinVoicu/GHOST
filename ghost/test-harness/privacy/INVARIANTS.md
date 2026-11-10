@@ -1,5 +1,7 @@
 # Invarianți de confidențialitate (T1–T60)
 
+**Amendament documentar v2.2, 2026-10-31:** [spec v2.2](../../../docs/GHOST_Technical_Specification_v2.2.md) și ADR-01 definesc o excepție locală opt-in, limitată la dispozitiv/interfață autentificate, pentru mesh și apel. T6 din tabel rămâne evidența bazei existente; nu este dovadă pentru acest adaptor nou. M1/B2 trebuie să extindă contractul/captura cu trafic local autorizat și să demonstreze zero DNS/mDNS/SSDP, STUN/TURN, discovery în fundal ori fallback extern. În local-only, zero Internet GHOST. ADR-38 pct. 9 permite obfuscarea; T12/T12b trebuie demonstrate pe artefactul minificat/strip-uit, cu mappings/simboluri private auditorilor, fără reducerea reproductibilității. Nicio implementare sau rulare a harness-ului nu este efectuată prin această revizie documentară.
+
 Fiecare invariant are: ce afirmă, cum se verifică, când devine executabil, și unde trăiește codul. Un invariant fără test executabil nu poate susține o afirmație în UI (CP-10).
 
 **Faza 9 (T26–T35, rânduri adăugate în slice-ul S14, 2026-09-24).** Coloana „Verificare” a acestor rânduri spune ce **există** la commit-ul `afda7e7` (`main` după JD8, design §22.26), nu ținta designului (`docs/design/faza9-dm.md` §14.1, §15): ce e construit și rulat, ce e construit și nerulat, ce nu e construit. Poarta de ieșire a Fazei 9 **nu e îndeplinită** (design §17.2; `docs/STATUS.md`), deci niciunul dintre T26–T35 nu susține o afirmație în UI (CP-10); nota „Faza 9” de la sfârșit are starea comună.
