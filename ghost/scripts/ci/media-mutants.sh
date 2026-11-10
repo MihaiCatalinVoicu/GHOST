@@ -67,6 +67,17 @@ for p in "${patches[@]}"; do
   fi
 done
 echo "media S1 mutants: $run run, $detected detected"
+# The close-out also lands in the media exit report when the job names one (media-report-check
+# reads it there; stdout alone is lost in the gate's log). The header guard mirrors
+# MediaPrivacyReport's.
+if [ -n "${GHOST_MEDIA_REPORT:-}" ]; then
+  {
+    if [ ! -s "$GHOST_MEDIA_REPORT" ]; then
+      printf '%s\n' "GHOST media exit gate (Phase 11 design faza11-media.md §15.3-§15.9; slice S9)"
+    fi
+    printf '%s\n' "media S1 mutants: $run run, $detected detected"
+  } >> "$GHOST_MEDIA_REPORT"
+fi
 [ -z "$unbuilt" ] || { echo "not built: $unbuilt" >&2; exit 2; }
 [ -z "$unrun" ] || { echo "not run: $unrun" >&2; exit 2; }
 [ -z "$survivors" ] || { echo "surviving: $survivors" >&2; exit 1; }

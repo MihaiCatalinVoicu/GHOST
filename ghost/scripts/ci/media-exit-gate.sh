@@ -117,10 +117,26 @@ case "$cmd" in
     rc=0
     gradle_media mutants-jvm :messaging --tests 'org.ghost.messaging.media.MediaMutantDetectionTest' || rc=1
     # The Rust half of the 43 (the S1 crate's patches; the design's media_mutants). Its line is
-    # `media S1 mutants:` — the report's `media mutants:` line is the JVM suites' close-out of
-    # the design's 43 (§15.9's homes), which the Rust kills feed through MediaMutantDetectionTest's
-    # registration, not by counting patches.
-    ( cd "$ROOT" && MEDIA_MUTANTS_LOG_DIR="$LOG_DIR" bash scripts/ci/media-mutants.sh ) || rc=1
+    # `media S1 mutants:` — appended to the report by the script itself when GHOST_MEDIA_REPORT is
+    # set. The half needs a working cargo + unix (the patches and /dev/urandom-dependent tests do
+    # not run on a bare Windows shell: the first local gate run gave 'cargo exited 127' for every
+    # mutant); on this host that means the ghost-runner WSL distro and its synced tree.
+    if command -v cargo >/dev/null 2>&1; then
+      ( cd "$ROOT" && GHOST_MEDIA_REPORT="$REPORT" MEDIA_MUTANTS_LOG_DIR="$LOG_DIR" bash scripts/ci/media-mutants.sh ) || rc=1
+    elif command -v wsl.exe >/dev/null 2>&1; then
+      # The report lives on the Windows D: drive (not visible from the distro), so the S1
+      # close-out is captured from stdout and appended here.
+      if MSYS_NO_PATHCONV=1 wsl.exe -d ghost-runner -u runner -- bash -lc \
+        "cd /srv/ghost-src/ghost && MEDIA_MUTANTS_LOG_DIR=/tmp/mmut-logs bash scripts/ci/media-mutants.sh" \
+        > "$LOG_DIR/mutants-rust.out" 2>&1; then
+        grep -m1 '^media S1 mutants:' "$LOG_DIR/mutants-rust.out" >> "$REPORT" || \
+          { echo "[media-exit-gate] the Rust half printed no S1 close-out" >&2; rc=1; }
+      else
+        tail -5 "$LOG_DIR/mutants-rust.out" >&2; rc=1
+      fi
+    else
+      echo "[media-exit-gate] no cargo and no WSL for the Rust mutant half" >&2; rc=1
+    fi
     exit "$rc"
     ;;
   check)
