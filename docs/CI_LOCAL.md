@@ -29,7 +29,7 @@ Echivalentul local al unui job: un script `ghost/scripts/ci/<nume>.sh` cu pașii
 | `dm-emulator.yml` | pull_request, schedule, workflow_dispatch | `17 2 * * *` | `emulator` | 150 min | `ghost/scripts/ci/…` (de scris) |
 | `dm-fuzz.yml` | schedule, workflow_dispatch | `43 2 * * *` | `fuzz` | 150 min | `ghost/scripts/ci/dm-fuzz.sh` (exista; prima rulare locală la buget lansată 2026-11-11, lanțuită după H-11) |
 | `dm-privacy-gate.yml` | schedule, workflow_dispatch | `11 4 * * *` | `worlds`, `suite` | 300 min | `ghost/scripts/ci/dm-privacy-gate.sh` (scris 2026-11-11: ambele joburi — lumea T32 per pereche de seeduri cu host provenance + judecată `privacy-gate` per raport, apoi suita cu `privacy-suite`; relansabil cu markeri) |
-| `dm-state-models.yml` | push, pull_request, schedule, workflow_dispatch | `53 2 * * *` | `dm-state-models` | 60 min | `ghost/scripts/ci/…` (de scris) |
+| `dm-state-models.yml` | push, pull_request, schedule, workflow_dispatch | `53 2 * * *` | `dm-state-models` | 60 min | `ghost/scripts/ci/dm-state-models.sh` (scris 2026-11-11; EM-1×EM-2 la limitele ridicate, `--sends/--wire/--budget` pentru variante) |
 | `entitlement-exit-gate.yml` | push, schedule, workflow_dispatch | `41 3 * * *` | `entitlement-exit-gate` | 120 min | `ghost/scripts/ci/…` (de scris) |
 | `messaging-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `43 3 * * *` | `gate` | 480 min | `ghost/scripts/ci/…` (de scris) |
 | `mls-vendor-tests.yml` | schedule, workflow_dispatch, push | `23 4 * * 0` | `openmls`, `advisories` | 90 min | `ghost/scripts/ci/…` (de scris) |
