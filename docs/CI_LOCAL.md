@@ -37,7 +37,7 @@ Echivalentul local al unui job: un script `ghost/scripts/ci/<nume>.sh` cu pașii
 | `pq-bump.yml` | push, pull_request, workflow_dispatch | — | `pq-mutants` | 45 min | `ghost/scripts/ci/…` (de scris) |
 | `pq-model.yml` | push, pull_request, workflow_dispatch | — | `pq-model` | 100 min | `ghost/scripts/ci/…` (de scris) |
 | `signer-timing.yml` | schedule, workflow_dispatch | `41 3 * * *` | `signer-timing` | 60 min | `ghost/scripts/ci/…` (de scris) |
-| `t2-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `17 2 * * *` | `gate`, `mutants` | 240 min | `ghost/scripts/ci/…` (de scris) |
+| `t2-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `17 2 * * *` | `gate`, `mutants` | 240 min | `ghost/scripts/ci/t2-exit-gate.sh` (scris 2026-11-11: ambele joburi, raport + `t2-report-check.sh` per pereche/mutanți, relansabil cu markeri) |
 | `vendor-tests.yml` | schedule, push, pull_request, workflow_dispatch | `37 1 * * *` | `vodozemac`, `libcrux` | 90 min | `ghost/scripts/ci/vendor-tests.sh` + `mls-advisories.sh` (ambele există; media are `media-emulator.sh`/`media-exit-gate.sh`/`media-mutants.sh`, update-ul are `update-gate.sh`) |
 
 ## 5. Aplicare tehnică (acordul proprietarului 2026-10-05; **aplicată**)
