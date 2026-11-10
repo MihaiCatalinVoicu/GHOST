@@ -24,7 +24,7 @@ Echivalentul local al unui job: un script `ghost/scripts/ci/<nume>.sh` cu pașii
 
 | Fost workflow | Declanșatori (fost) | Program (cron, fost) | Joburi | Timp maxim | Echivalent local |
 |---|---|---|---|---|---|
-| `channel-state-models.yml` | push, schedule, workflow_dispatch | `29 5 * * 1` | `channel-state-models` | 90 min | `ghost/scripts/ci/…` (de scris) |
+| `channel-state-models.yml` | push, schedule, workflow_dispatch | `29 5 * * 1` | `channel-state-models` | 90 min | `ghost/scripts/ci/channel-state-models.sh` (scris 2026-11-11; EM-3 full, overflow checks în release, ulimit 24G doar pe Linux, check `full`) |
 | `ci.yml` | push, pull_request, workflow_dispatch | — | `static-gates`, `rust`, `android-native`, `android`, `sync-exit-gate`, `reproducible`, `live-tor` | 150 min | `ghost/scripts/ci/…` (de scris) |
 | `dm-emulator.yml` | pull_request, schedule, workflow_dispatch | `17 2 * * *` | `emulator` | 150 min | `ghost/scripts/ci/…` (de scris) |
 | `dm-fuzz.yml` | schedule, workflow_dispatch | `43 2 * * *` | `fuzz` | 150 min | `ghost/scripts/ci/dm-fuzz.sh` (exista; prima rulare locală la buget lansată 2026-11-11, lanțuită după H-11) |
