@@ -16,6 +16,10 @@ ledger; dovezile rămân cele din STATUS, la commit-urile menționate acolo.
   adevăr fiind acest worktree.
 - ADR-uri: aprobate 01-62 inclusiv amendamentele v2.2 documentare (ADR-01 excepție locală, ADR-38
   punct 9 înlocuit); nimic propus-nerezolvat în afara celor din §4.
+- **Atenționare de mediu 2026-11-11:** discurile Windows C: și D: sunt la 97% (33-37 GB libere) —
+  suficient pentru matricea curentă (rapoarte mici), dar orice artefact mare nou (emulator, imagini,
+  corpusuri) poate umple discul; vdisk-ul WSL (`/dev/sdd`) e la 19% (784 GB libere), docker build
+  cache are 53 GB recuperabili. Curățenia pe C:/D: cere decizia proprietarului (fișierele lui).
 
 ## 2. Clasele de blocaj folosite în matrice
 
