@@ -34,7 +34,7 @@ Echivalentul local al unui job: un script `ghost/scripts/ci/<nume>.sh` cu pașii
 | `messaging-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `43 3 * * *` | `gate` | 480 min | `ghost/scripts/ci/…` (de scris) |
 | `mls-vendor-tests.yml` | schedule, workflow_dispatch, push | `23 4 * * 0` | `openmls`, `advisories` | 90 min | `ghost/scripts/ci/…` (de scris) |
 | `monero-regtest.yml` | push, pull_request, schedule, workflow_dispatch | `23 2 * * *` | `monero-regtest` | 45 min | `ghost/scripts/ci/monero-regtest.sh` (scris 2026-11-11; linux-only — rulează în distro-ul ghost-runner WSL; digest verificat contra pin-ului la fiecare rulare) |
-| `pq-bump.yml` | push, pull_request, workflow_dispatch | — | `pq-mutants` | 45 min | `ghost/scripts/ci/…` (de scris) |
+| `pq-bump.yml` | push, pull_request, workflow_dispatch | — | `pq-mutants` | 45 min | `ghost/scripts/ci/pq-bump.sh` (scris 2026-11-11; wrapper peste poarta existentă `pq-mutants.sh`, raport păstrat) |
 | `pq-model.yml` | push, pull_request, workflow_dispatch | — | `pq-model` | 100 min | `ghost/scripts/ci/…` (de scris) |
 | `signer-timing.yml` | schedule, workflow_dispatch | `41 3 * * *` | `signer-timing` | 60 min | `ghost/scripts/ci/signer-timing.sh` (scris 2026-11-11; raport păstrat local, fără deschidere de issue — rolul ei îl joacă exit code + raportul) |
 | `t2-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `17 2 * * *` | `gate`, `mutants` | 240 min | `ghost/scripts/ci/t2-exit-gate.sh` (scris 2026-11-11: ambele joburi, raport + `t2-report-check.sh` per pereche/mutanți, relansabil cu markeri) |
