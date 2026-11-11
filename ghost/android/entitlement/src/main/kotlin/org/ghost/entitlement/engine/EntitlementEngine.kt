@@ -21,6 +21,7 @@ import org.ghost.entitlement.store.TokenStore
 import org.ghost.network.EntitlementCrypto.ScheduleSummary
 import org.ghost.network.NetworkException
 import org.ghost.sync.api.PrivacyMode
+import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncTransaction
 import org.ghost.sync.store.SyncStores
 import org.ghost.sync.store.Time
@@ -154,7 +155,10 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         val now = c.now()
         c.gc.runIfDue(now)
         c.restoreScan.resume(now)
-        c.dropSteps.sendDue(now)
+        // NI-1d fix (2026-11-11, LNK-04 / design §19.12): the invitee's drop write rides the
+        // background band only, never a foreground session's tick — its time must be a function
+        // of the drawn `dropMinute` and the background cadence alone, not of user activity.
+        if (session.kind == SessionKind.BACKGROUND) c.dropSteps.sendDue(now)
         c.dropSteps.settleSent()
         c.dropSteps.receive(now)
     }

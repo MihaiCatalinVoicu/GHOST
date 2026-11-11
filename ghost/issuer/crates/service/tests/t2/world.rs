@@ -3198,15 +3198,17 @@ impl World {
             pairs.push((ns, false, 1));
         }
         let w = self.clients[c].wall(t);
-        // The invitee's drop blob is enqueued by the tick of the first redeem-lane step at or after
-        // its time (`DropSteps.sendDue`, run before each step): in a background session at its
-        // steps, in a foreground one at its start (the world's foreground redeems as each pair
-        // comes). Before that tick the drop is no namespace, no pair and no need (review T2GAPS-4).
-        if !background {
-            self.drop_tick(c, w);
-        }
-        if let Some(d) = self.clients[c].drop_out.as_ref().filter(|d| !d.done) {
-            pairs.push((d.ns, true, 2));
+        // NI-1d fix (2026-11-11, LNK-04 / design §19.12): the invitee's drop blob rides the
+        // background band only. The enqueue tick fires at a background session's redeem-lane
+        // steps (below), never at a foreground session's start, and the drop pair is armed for
+        // background sessions only — the write's time is then a function of the `seeds.sched`
+        // background cadence and the drawn `due` alone, never of user activity (the exact
+        // coupling NI-1d's mutant exploited). Before the enqueue tick the drop is no namespace,
+        // no pair and no need (review T2GAPS-4).
+        if background {
+            if let Some(d) = self.clients[c].drop_out.as_ref().filter(|d| !d.done) {
+                pairs.push((d.ns, true, 2));
+            }
         }
         // The session's client randomness (its order of pairs, lane waits and offsets, circuit
         // labels) is keyed on the session, not on its run number (`session_key`).
@@ -3329,7 +3331,11 @@ impl World {
                     }
                     Next::Step(at, held) => {
                         let wall = self.clients[c].wall(at);
-                        self.drop_tick(c, wall);
+                        // NI-1d fix (2026-11-11): the due tick fires on the background band's
+                        // steps only; a foreground lane step never arms the drop write.
+                        if background {
+                            self.drop_tick(c, wall);
+                        }
                         // A relay that refused a period in this step is planned again at the next.
                         let mut step_refused = [false; 3];
                         let before = calls;
