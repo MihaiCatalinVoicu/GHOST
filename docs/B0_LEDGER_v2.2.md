@@ -181,3 +181,16 @@ Incident de procedură (notat ca lecție): `git stash push -- <2 fișiere>` urma
 ### Curățenie disc (decizia 15) — tier sigur executat 2026-11-12
 
 D: era la 97% (34G libere). Eliberat ~45 GB conservator: `ghost/target` integral regenerat prin `cargo clean` (43,3 GiB; cele două dll-uri `ghost_dm_host.dll` plain + provenance salvate și restaurate în loc — validat funcțional după: DmSessionsNativeTest 10/10 skipped=0 prin dll-ul restaurat), plus scratch-ul de sesiune și cache-urile Gradle (~2 GB). D: acum la 93% (72G libere). Rămâne pentru o fereastră dedicată (ambele necesită oprirea rulărilor WSL): `docker builder prune` în ghost-runner (53 GB recuperabili în vdisk) + compactarea VHDX-ului WSL (nu returnează spațiu Windows până la wsl --shutdown + Optimize-VHD). Logurile istorice din rădăcină (probe, verify, sesiuni) NU s-au atins — nu sunt regenerabile.
+
+### Revizuirea celor 8 constatări review Faza 9 — decizii privacy-maxim (2026-12-12, analiza)
+
+1. **MD-1** (lanțul cross-session al CHECK-ului own-copy): **FIX** — CHECK-ul hash-ului stocat în sesiunea k rulează tot în k (fereastra de 60 s mutată la store-time, nu la ack), eliminând lanțul temporal k→k+1. Nu se acceptă varianta „declarat".
+2. **MD-4** (MAX_CONTROLS_PER_PASS per pas, nu per sesiune → fereastră EST-START de 15 min la fiecare notice): **FIX** — plafon per SESIUNE cu re-planificare în sesiunea următoare; latența de revocare rămâne în plafonul declarat, fără multiplicarea ferestrelor.
+3. **MD-5** (retrimiterile unui depozit refuzat re-trimit aceiași bytes înghețați → relay leagă sesiunile expeditorului): **FIX** — la retry, re-sigilare cu bytes proaspeți (nonce nou), nu re-envierea op-ului înghețat; un relay ostil nu mai poate lega retry-urile. (Atinge §22.25 item 5 — coerent cu decizia.)
+4. **MD-6** (consumul inbound-ului DM pe listener în timpul bandei, cu lock-ul DB ținut peste apeluri native): **FIX** — consum inbound amânat după închiderea bandei (sau pe ferestre scurte între lane-uri), fără lock peste JNI; se elimină și canalul de timing.
+5. **MD-7** (generation counter al capabilității bumped la fiecare KEEPER refresh ~zilnic → granularitate zilnică pe DB seized): **FIX** — bump doar la rotația săptămânală de credențial și la schimbarea setului de relay-uri; refuzurile nu mai bump-uiesc. Granularitatea maximă devine săptămânală.
+6. **CRY-P9-03** (rădăcinile pair clasice trec în heap-ul JVM în clar la l0Encode): **FIX** — unwrap-ul `offer_env` se mută în nativ (rădăcina nu mai atinge heap-ul JVM) + zeroizare pe toate căile de ieșire (pattern-ul canary-probe din 3db939b4). Nu se acceptă zeroizare-singură.
+7. **A-2** (wakelock-ul alarmei eliberat înaintea sweep-ului; re-arm one-shot): **FIX** — wakelock ținut pe durata sweep-ului (goAsync corect), altfel mesajele efemere rămân reținute peste termen = retenție reală.
+8. **GATES-5** (verificarea dependențelor Gradle nu verifică binarul Linux aapt2; cargo-deny checksums): **FIX** — hash pinuit pentru aapt2 (ambele platforme) în gate-ul local de dependențe, la fel ca orice tool de build.
+
+Toate cele 8 iau varianta privacy (nicuna nu schimbă privacy contra comoditate). Implementarea se face în ordinea impactului: MD-5, CRY-P9-03, MD-7 (seizure/metadata), apoi MD-1, MD-4, MD-6, A-2, GATES-5. Fiecare cu testul/mutantul ei, conform disciplinei proiectului.
