@@ -63,6 +63,15 @@ internal object DmTimers {
     }
 
     /**
+     * The bucket a stored `ttl_seconds` names — the reverse of [bucketOf]. The pending and retry
+     * paths read the value Q27/S3b fixed with the item at its send (R-T3 already applied for a
+     * TIMER_SET), never recomputing from the L0's own timer code (§22.21 item 2, the 2026-11-11
+     * fix of the declared open defect).
+     */
+    fun bucketOfSeconds(seconds: Long): TtlBucket =
+        TtlBucket.entries.first { it.seconds.toLong() == seconds }
+
+    /**
      * R-T4 (§10.1, SC-3): `deadline = author + min(bucket, 7 d)`.
      *
      * The 7-day cap is the Phase 7 store window, and it is what makes `FRESH = 45 d` hold for a

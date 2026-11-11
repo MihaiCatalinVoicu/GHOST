@@ -876,12 +876,13 @@ dmr_case fail privacy-withhold-missing.txt privacy-pr "rejects a report without 
 dmr_case fail privacy-withhold-unreached.txt privacy-pr "rejects a JD7 withhold variant in which no establishment ran its attempts out"
 dmr_case fail privacy-old-mutant-count.txt privacy-pr "rejects S11's ten-mutant count"
 dmr_case fail privacy-pm4-one-killer.txt privacy-suite "rejects PM-4 detected by JD4 alone"
-# The S11b review: NI-DM2's declared open defect is exactly one and exactly the intro TIMER_SET's
-# TTL (a second "declared" difference appended to a PASS, or a partial fix storing another TTL, is
-# refused); the JD7 variant must show a session where an unbounded fourth attempt would fall; and
-# PM-5 and JD5 must say what they do not cover.
-dmr_case fail privacy-ni2-second-defect.txt privacy-pr "rejects an NI-DM2 PASS with a second declared difference appended"
-dmr_case fail privacy-ni2-defect-partial.txt privacy-pr "rejects an NI-DM2 declared defect that stores another TTL than declared"
+# The S11b review, restated after the 2026-11-11 R-T3 pending-path fix: the pinned NI-DM2 line
+# gates ALL 60 messages and carries no "declared" clause — a second "declared" difference appended
+# to a PASS, or an exemption-count line (59 of 60) standing in for gating twins, is refused; the
+# JD7 variant must show a session where an unbounded fourth attempt would fall; and PM-5 and JD5
+# must say what they do not cover.
+dmr_case fail privacy-ni2-second-defect.txt privacy-pr "rejects an NI-DM2 PASS with a declared-difference clause appended"
+dmr_case fail privacy-ni2-defect-partial.txt privacy-pr "rejects an NI-DM2 line whose 59-of-60 count claims an exemption from gating"
 dmr_case fail privacy-withhold-no-room.txt privacy-pr "rejects a JD7 withhold variant with no session where a fourth attempt would fall"
 dmr_case fail privacy-pm5-whole.txt privacy-pr "rejects a PM-5 line that does not say only its day-rounding half is built"
 dmr_case fail privacy-jd5-no-split.txt privacy-pr "rejects a JD5 line that does not say which TIMER_SET path it covered"

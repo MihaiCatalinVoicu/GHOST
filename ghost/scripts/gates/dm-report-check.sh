@@ -293,11 +293,11 @@ privacy_suite() {
   # establishment decides it), and M sealed in **every** mode and of **every** kind the twins name —
   # so a run whose twins never left one state (and so compared a message with itself) cannot pass.
   # The line must **end** with the one declared open defect, pinned word for word: exactly one, the
-  # TTL of the intro TIMER_SET and nothing else (NiDm2 fails a declared defect that differs in any
-  # other field, or no longer differs), so no second "declared" difference can ride on a PASS and a
-  # partial fix cannot pass as the declared defect.
-  grep -qE "^dm NI-DM2: PASS 15 twins at 8 body lengths \(0, 17, 2220, 2221, 3000, 14508, 14509, 15000\); 59 of their 60 messages gate: A's stores of M into B's inbox equal at each length over [1-9][0-9]* comparisons, and at the same second after t0 over [1-9][0-9]* comparisons among the [1-9][0-9]* messages whose state needs no establishment \(an intro's or a reset's store waits for the bundle, whose timing is the relay's, §21\.7 point 6\); M sealed \{INTRO=[1-9][0-9]*, PAIR=[1-9][0-9]*, PROVISIONAL=[1-9][0-9]*\}, kinds \{CONTROL=[1-9][0-9]*, QUOTED=[1-9][0-9]*, REACTION=[1-9][0-9]*, TEXT=[1-9][0-9]*, TIMER_SET=[1-9][0-9]*\}, TLVs that rode \{[^}]*\}; sizes by length \{[^}]*\}; 1 declared open defect, not gated, reproduced exactly as declared: INTRO/TIMER_SET at 0 stores ttl=86400 where the other twins store ttl=604800, every other field equal, at 3 relays — R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, not the larger of the old and the new \(§22.21\)\$" "$report" \
-    || bad "no NI-DM2 PASS over the fifteen twins at the eight lengths, 59 of 60 messages gating, with M sealed in every mode and of every kind, ending with exactly the one declared open defect (the intro TIMER_SET's TTL)"
+  # The pinned line ends at "sizes by length": no "declared" clause may follow, so a second
+  # difference cannot ride on a PASS. (R-T3 pending-path defect fixed 2026-11-11: the
+  # INTRO/TIMER_SET twin gates with the others, all 60 messages gate.)
+  grep -qE "^dm NI-DM2: PASS 15 twins at 8 body lengths \(0, 17, 2220, 2221, 3000, 14508, 14509, 15000\); 60 of their 60 messages gate: A's stores of M into B's inbox equal at each length over [1-9][0-9]* comparisons, and at the same second after t0 over [1-9][0-9]* comparisons among the [1-9][0-9]* messages whose state needs no establishment \(an intro's or a reset's store waits for the bundle, whose timing is the relay's, §21\.7 point 6\); M sealed \{INTRO=[1-9][0-9]*, PAIR=[1-9][0-9]*, PROVISIONAL=[1-9][0-9]*\}, kinds \{CONTROL=[1-9][0-9]*, QUOTED=[1-9][0-9]*, REACTION=[1-9][0-9]*, TEXT=[1-9][0-9]*, TIMER_SET=[1-9][0-9]*\}, TLVs that rode \{[^}]*\}; sizes by length \{[^}]*\}\$" "$report" \
+    || bad "no NI-DM2 PASS over the fifteen twins at the eight lengths, 60 of 60 messages gating, with M sealed in every mode and of every kind, and no declared open defect remaining (R-T3 pending-path fix 2026-11-11)"
   if grep -qE '^dm NI-DM2: FAIL' "$report"; then bad "NI-DM2 failed"; fi
   # JD7's WITHHOLD_ALL_BUNDLES variant (§21.7 point 6): no read outside an attempt window, and a world
   # that put the bound to the test — an establishment that reached its third window with a later

@@ -161,28 +161,19 @@ internal object NiDm2 {
     }
 
     /**
-     * Twins that reproduce an open engine defect this check found and the S11b slice did not fix
-     * (§22.21 item 2). They are compared apart from the rest, each against its exact declaration
+     * Twins that would reproduce an open engine defect this check found and the S11b slice did not
+     * fix (§22.21 item 2) are compared apart from the rest, each against its exact declaration
      * ([OpenDefect]), and the report line prints what each reproduced.
      *
-     * **INTRO/TIMER_SET**: a TIMER_SET sent before a session exists waits as a pending item, and
-     * `SendStep`'s flush at `EST-READY` (and its FAILED retry) takes the TTL from the L0's timer
-     * code — the **new** bucket — where the send path takes R-T3's larger of the old and the new
-     * (`DmTimers.timerSetBucket`). A first-flight change from 7 d to 1 d is stored for a day, where
-     * the same body as a text is stored for seven: the relay reads the kind off the TTL (P-4), and a
-     * recipient offline for more than a day never learns of the change (R-T3). By the same code (read,
-     * not run here), a new timer of 1 h makes the flush's deadline check fail the item as expired
-     * once an establishment takes more than an hour, where R-T4 gives it seven days.
+     * **Empty since the 2026-11-11 fix of R-T3 on the pending path**: `SendStep`'s `EST-READY`
+     * flush and the FAILED retry read the bucket fixed with the item at its send (the larger of
+     * the old and the new for a TIMER_SET, Q27/S3b) instead of recomputing the TTL from the L0's
+     * own timer code (the new timer alone). The declaration mechanism stays: a future open defect
+     * is declared here, exactly, never excused as "any difference".
      */
     val OPEN_DEFECTS: List<OpenDefect> = listOf(
-        OpenDefect(
-            variant = "INTRO/TIMER_SET",
-            length = 0,
-            gatedTtl = 604_800,
-            reproducedTtl = 86_400,
-            what = "R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, " +
-                "not the larger of the old and the new (§22.21)",
-        ),
+        // 2026-11-11: INTRO/TIMER_SET at 0 (ttl=86400 vs the twins' 604800) fixed; it gates with
+        // the others now. Kept in git history as the declaration's exemplar.
     )
 
     /** The compared window after `t0`: A's session, `EST-READY` and the flush all fall inside it. */

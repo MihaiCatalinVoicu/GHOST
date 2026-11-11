@@ -416,7 +416,10 @@ internal class SendStep(
                 // the minute grid, so `ceil_hour(deadline)` can be up to 59 minutes past it, and
                 // `Outbox.enqueue` requires `deadline > now` with an `IllegalArgumentException`
                 // that no caller on this path catches (Phase 7 `OutboxStore`).
-                val ttl = DmTimers.bucketOf(decoded.content.timerCode)
+                // §22.21 item 2 (R-T3 on the pending path, 2026-11-11): the TTL is the bucket fixed
+                // with the item at its send (the larger of old and new for a TIMER_SET), never the
+                // L0's own timer code — that is the new timer alone.
+                val ttl = DmTimers.bucketOfSeconds(item.ttlSeconds)
                 val authorMinute = decoded.content.authorMinute * DmTime.MINUTE
                 if (now >= DmTimers.deadlineSeconds(authorMinute, ttl)) {
                     return@transaction Sent(Outcome.DEADLINE_PASSED, false)
@@ -1579,7 +1582,10 @@ internal class SendStep(
                     ?: return@transaction false
                 val decoded = envelopes.decodeContent(contactId, l0)
                 if (decoded !is DmContent.DecodeResult.Ok) return@transaction false
-                val ttl = DmTimers.bucketOf(decoded.content.timerCode)
+                // §22.21 item 2 (R-T3 on the pending path, 2026-11-11): read the bucket fixed with
+                // the item at its send — the larger of old and new for a TIMER_SET (Q27/S3b) — not
+                // the L0's own timer code, the new timer alone.
+                val ttl = DmTimers.bucketOfSeconds(item.ttlSeconds)
                 val authorMinute = decoded.content.authorMinute * DmTime.MINUTE
                 if (now >= DmTimers.deadlineSeconds(authorMinute, ttl)) {
                     messages.failPending(tx, itemId)

@@ -146,9 +146,25 @@ class DmPrivacyCheckSelfTest {
     private val intro = NiDm2.State.INTRO
     private val timerSet = NiDm2.Kind.TIMER_SET
 
+    /**
+     * The retired R-T3 pending-path declaration (fixed 2026-11-11, so [NiDm2.OPEN_DEFECTS] is
+     * empty): these three tests exercise the declaration *machinery*, which outlives the defect,
+     * so they declare it explicitly — a fixed defect must not take the machinery's coverage with it.
+     */
+    private val introTimerSetDefect = NiDm2.OpenDefect(
+        variant = "INTRO/TIMER_SET",
+        length = 0,
+        gatedTtl = 604_800,
+        reproducedTtl = 86_400,
+        what = "R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, " +
+            "not the larger of the old and the new (§22.21; fixed 2026-11-11)",
+    )
+
+    private fun declared(slots: List<NiDm2.Slot>): NiDm2.Result = NiDm2.Result(slots, listOf(introTimerSetDefect))
+
     @Test
     fun niDm2PassesADeclaredDefectOnlyWhenItReproducesExactlyAsDeclared() {
-        val exact = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, seconds = 700))
+        val exact = declared(gating() + m(intro, timerSet, ttl = 86_400, seconds = 700))
         assertTrue(exact.line(), exact.passed)
         assertTrue(
             exact.line(),
@@ -162,35 +178,35 @@ class DmPrivacyCheckSelfTest {
         assertEquals(2, exact.comparisons)
         assertEquals(1, exact.timedComparisons)
 
-        val fixed = NiDm2.Result(gating() + m(intro, timerSet))
+        val fixed = declared(gating() + m(intro, timerSet))
         assertFalse(fixed.line(), fixed.passed)
         assertTrue(fixed.line(), fixed.line().contains("no longer reproduces"))
 
-        val partial = NiDm2.Result(gating() + m(intro, timerSet, ttl = 2_592_000))
+        val partial = declared(gating() + m(intro, timerSet, ttl = 2_592_000))
         assertFalse(partial.line(), partial.passed)
         assertTrue(partial.line(), partial.line().contains("otherwise than declared"))
 
-        val size = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, size = 16_384))
+        val size = declared(gating() + m(intro, timerSet, ttl = 86_400, size = 16_384))
         assertFalse(size.line(), size.passed)
         assertTrue(size.line(), size.line().contains("otherwise than declared"))
 
-        val relays = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2)))
+        val relays = declared(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2)))
         assertFalse(relays.line(), relays.passed)
         assertTrue(relays.line(), relays.line().contains("otherwise than declared"))
 
-        val extra = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2, 3)))
+        val extra = declared(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2, 3)))
         assertFalse(extra.line(), extra.passed)
 
         // The other twins no longer store the declared TTL: the declaration describes another world.
-        val moved = NiDm2.Result(gating(ttl = 2_592_000) + m(intro, timerSet, ttl = 86_400))
+        val moved = declared(gating(ttl = 2_592_000) + m(intro, timerSet, ttl = 86_400))
         assertFalse(moved.line(), moved.passed)
         assertTrue(moved.line(), moved.line().contains("not the declared ttl=604800"))
 
-        val missing = NiDm2.Result(gating())
+        val missing = declared(gating())
         assertFalse(missing.line(), missing.passed)
         assertTrue(missing.line(), missing.line().contains("declared, but no such twin ran"))
 
-        val unreached = NiDm2.Result(gating() + m(intro, timerSet, stores = false))
+        val unreached = declared(gating() + m(intro, timerSet, stores = false))
         assertFalse(unreached.line(), unreached.passed)
         assertTrue(unreached.line(), unreached.line().contains("so nothing was reproduced"))
     }
@@ -198,13 +214,13 @@ class DmPrivacyCheckSelfTest {
     @Test
     fun niDm2FailsOnAGatingDifferenceAndNeverComparesATwinThatDidNotReachItsState() {
         val split = gating().toMutableList().also { it[1] = m(NiDm2.State.PAIR, NiDm2.Kind.TIMER_SET, ttl = 86_400) }
-        val differs = NiDm2.Result(split + m(intro, timerSet, ttl = 86_400))
+        val differs = declared(split + m(intro, timerSet, ttl = 86_400))
         assertFalse(differs.line(), differs.passed)
         assertTrue(differs.line(), differs.line().contains("differ at body length 0: "))
         assertTrue(differs.line(), differs.line().contains("no single view of the other twins"))
 
         val empty = gating().toMutableList().also { it[0] = m(NiDm2.State.PROVISIONAL, NiDm2.Kind.QUOTED, stores = false) }
-        val notReached = NiDm2.Result(empty + m(intro, timerSet, ttl = 86_400))
+        val notReached = declared(empty + m(intro, timerSet, ttl = 86_400))
         assertFalse(notReached.line(), notReached.passed)
         assertTrue(notReached.line(), notReached.line().contains("did not reach their variable"))
         // The empty twin is not compared: no "no store" view can pass for a difference a mutant made.
@@ -214,11 +230,11 @@ class DmPrivacyCheckSelfTest {
     @Test
     fun niDm2ComparesTheSecondOnlyWhereNoEstablishmentDecidesIt() {
         // The provisional twin stored a minute later than the pair twin: a state-dependent delay.
-        val late = NiDm2.Result(gating(seconds = 120) + m(intro, timerSet, ttl = 86_400))
+        val late = declared(gating(seconds = 120) + m(intro, timerSet, ttl = 86_400))
         assertFalse(late.line(), late.passed)
         assertTrue(late.line(), late.line().contains("store seconds after t0 differ at body length 0"))
         // The reset's and the intro's seconds (400 and 700 above) never gate.
-        val establishing = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, seconds = 5))
+        val establishing = declared(gating() + m(intro, timerSet, ttl = 86_400, seconds = 5))
         assertTrue(establishing.line(), establishing.passed)
     }
 
