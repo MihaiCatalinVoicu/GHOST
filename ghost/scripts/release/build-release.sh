@@ -32,7 +32,8 @@ for arg in "$@"; do [ "$arg" = "--android-only" ] && ANDROID_ONLY=1; done
 # (the guard would compare the archive against itself and never re-exec — measured).
 CALLER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
-REPO="$(git rev-parse --show-toplevel)"
+REPO="${REPO:-$(git rev-parse --show-toplevel)}"
+export REPO
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
