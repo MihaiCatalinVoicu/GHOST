@@ -53,10 +53,27 @@ class ReleaseSmokeTest {
             val aliceCard = requireNotNull(DmSessions.ownCard(alice, 0)) { "ownCard" }
             val generation = requireNotNull(DmSessions.bundleCreate(bob, 0, 2_870L, 0, 0x51_4f_00_01)) { "bundleCreate" }
             val contact = bytes(0x31, 16)
+            // S2 (Phase 11) made function 3 validate the canonical L0 envelope (M labels, R-C4):
+            // a raw body is refused NON_CANONICAL (surfacing as Encrypted.StateCorrupt) — the S12
+            // era smoke predates that. Encode through the production content facade, exactly like
+            // DmSessionsNativeTest's textL0 (DmContent has production callers, so R8 keeps it).
+            val l0 = DmContent.encode(
+                handle = alice,
+                kind = DmContent.Kind.TEXT,
+                messageId = bytes(0x41, 16),
+                authorMinute = 0x10_00_00L + 0x41,
+                minuteIndex = 0,
+                timerCode = 0,
+                timerVersion = 0,
+                quoteRef = null,
+                body = "smoke".toByteArray(),
+            )
+            assertTrue("l0Encode: $l0", l0 is DmContent.Encoded.Ok)
+            l0 as DmContent.Encoded.Ok
             val outbound = DmSessions.outbound(alice, contact, bobCard.olmIdentity, generation.fallbackPublic, 100)
             assertTrue("outbound: $outbound", outbound is DmSessions.Outbound.Ok)
             outbound as DmSessions.Outbound.Ok
-            val first = DmSessions.encrypt(alice, contact, DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv), "smoke".toByteArray(), 100)
+            val first = DmSessions.encrypt(alice, contact, DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv), l0.l0, 100)
             assertTrue("encrypt: $first", first is DmSessions.Encrypted.Ok)
             first as DmSessions.Encrypted.Ok
             val inbound = DmSessions.inbound(
@@ -71,7 +88,7 @@ class ReleaseSmokeTest {
             )
             assertTrue("inbound: $inbound", inbound is DmSessions.Inbound.Ok)
             inbound as DmSessions.Inbound.Ok
-            assertArrayEquals("smoke".toByteArray(), inbound.plaintext)
+            assertArrayEquals("the L0 record returns whole", l0.l0, inbound.plaintext)
             DeviceRunner.report("dm-smoke: release library, one in-process Olm session, no transport")
         } finally {
             DmSessions.closeContext(alice)
