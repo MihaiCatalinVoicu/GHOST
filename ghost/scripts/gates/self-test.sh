@@ -2828,6 +2828,32 @@ verdict_case dm-fuzz.sh --verdict fail "FAIL timeout" "rejects a timeout" "$FUZZ
 verdict_case dm-fuzz.sh --verdict fail "FAIL out-of-memory" "rejects an out-of-memory" "$FUZZV/oom.txt" 71
 verdict_case dm-fuzz.sh --verdict fail "FAIL zero executions" "rejects a run that executed nothing" "$FUZZV/zero.txt" 0
 verdict_case dm-fuzz.sh --verdict fail "FAIL no statistics (the run did not finish: exit 137)" "rejects a run killed before its statistics" "$FUZZV/truncated.txt" 137
+# The CI-L local equivalents (docs/CI_LOCAL.md §4, 2026-11-11): every migrated script must fail
+# closed on an unknown argument (exit 2) — the cheap half of their self-test; the job-running half
+# is the nightly calendar. dm-emulator.sh gets its api argument first, so its probe passes one.
+cil_case() { # $1 = script, $2 = description, $3 = optional first argument before the bogus flag
+  local out status
+  out="$(bash "$DIR/../ci/$1" ${3:+"$3"} --bogus-self-test-arg 2>&1)"
+  status=$?
+  if [ "$status" = 2 ]; then
+    echo "self-test ok: $1 $2"
+  else
+    echo "SELF-TEST FAIL: $1 $2 (exit $status: $out)" >&2; rc=1
+  fi
+}
+cil_case ci-local.sh "fails closed on an unknown argument"
+cil_case dm-privacy-gate.sh "fails closed on an unknown argument"
+cil_case t2-exit-gate.sh "fails closed on an unknown argument"
+cil_case signer-timing.sh "fails closed on an unknown argument"
+cil_case monero-regtest.sh "fails closed on an unknown argument"
+cil_case dm-state-models.sh "fails closed on an unknown argument"
+cil_case channel-state-models.sh "fails closed on an unknown argument"
+cil_case entitlement-exit-gate.sh "fails closed on an unknown argument"
+cil_case messaging-exit-gate.sh "fails closed on an unknown argument"
+cil_case mls-vendor-tests.sh "fails closed on an unknown argument"
+cil_case pq-bump.sh "fails closed on an unknown argument"
+cil_case pq-model.sh "fails closed on an unknown argument"
+cil_case dm-emulator.sh "fails closed on an unknown argument" 35
 VTV="$HARNESS/vendor-tests"
 verdict_case vendor-tests.sh --suite-verdict pass "PASS 3" "accepts a suite and sums its binaries and doc-tests" "$VTV/suite-pass.txt" 0
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL exit 101" "rejects a passing log from a run that exited non-zero" "$VTV/suite-pass.txt" 101
