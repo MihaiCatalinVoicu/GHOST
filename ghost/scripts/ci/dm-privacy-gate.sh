@@ -65,7 +65,8 @@ rc=0
 mkdir -p "$MARKERS"
 
 run_pair() { # index
-  local i="$1" report="$REPORTS/privacy-t32-pair$i.txt"
+  local i="$1"
+  local report="$REPORTS/privacy-t32-pair$i.txt"
   if [ -f "$MARKERS/pair-$i.done" ]; then
     echo "dm-privacy-gate: pair $i already done (marker $(cat "$MARKERS/pair-$i.done")), skipping"
     [ "$(cat "$MARKERS/pair-$i.done")" = 0 ] || rc=1
