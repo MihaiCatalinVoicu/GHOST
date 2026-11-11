@@ -43,6 +43,7 @@ case "$cmd" in worlds|suite|all) ;; *) echo "usage: dm-privacy-gate.sh [worlds|s
 # the workflow's first step in both jobs. cargo clean of the libcrux crates first, exactly as CI,
 # so the AES/portable check below sees a fresh build of those packages.
 if [ -z "$NATIVE" ]; then
+  mkdir -p "$MARKERS"
   ( cd "$GHOST" && \
     cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release 2>/dev/null || true; \
     cargo build -p ghost-dm-host --release --locked --features provenance \
