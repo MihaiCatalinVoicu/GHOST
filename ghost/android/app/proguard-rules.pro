@@ -32,17 +32,8 @@
     public static final org.ghost.crypto.bridge.DmNative INSTANCE;
     public final boolean isAvailable();
 }
--keep class org.ghost.crypto.bridge.DmSessions {
-    public static *** openContext(...);
-    public static *** ownCard(...);
-    public static *** bundleCreate(...);
-    public static *** outbound(...);
-    public static *** encrypt(...);
-    public static *** inbound(...);
-    public static *** closeContext(...);
-    public static final org.ghost.crypto.bridge.DmSessions$Companion Companion;
-}
--keep class org.ghost.crypto.bridge.DmSessions$Companion {
+-keepclassmembers class org.ghost.crypto.bridge.DmSessions {
+    public static final org.ghost.crypto.bridge.DmSessions INSTANCE;
     public final *** openContext(...);
     public final *** ownCard(...);
     public final *** bundleCreate(...);
