@@ -127,3 +127,23 @@ Un singur integrator (agentul), un singur writer per worktree, un singur flux de
 unul de verificare; fiecare pachet produce: obiectiv, checkout/SHA, fișiere modificate, decizii,
 comenzi, exit codes, număr/scop teste, rezultate negative, hash-uri, limite, următorul gate.
 Nicio fază istorică nu primește PASS retroactiv. Verificări locale conform ADR-58.
+
+## Decizii proprietar 2026-11-11 (delegare explicită către agent, criteriu: privacy-maxim)
+
+Proprietarul a delegat alegerea tuturor deciziilor deschise agentului, cu criteriul „cel mai optim în spiritul orientat privacy al proiectului”. Înregistrate aici ca decizii ale proprietarului:
+
+1. **NI-1d → FIX (a)**: se implementează scrierea drop-ului la t_drop (bandă de fundal dedicată), nu amendament de design — cuplajul write-time↔activitate-client e o scurgere reală de metadate, iar designul LNK-04 spune „scrie exact atunci". Item EXEC prioritar (Faza 8).
+2. **NI-1/NI-2 (perechea 9) → caracterizare întâi (a)**: agentul caracterizează mecanismul exact (gate/world), apoi fixul se decide pe evidențe. Item EXEC prioritar.
+3. **R-T3 → FIX (a)**: SendStep EST-READY flush ia max(old TTL, new TTL) — TTL corect = retenție corectă; fix mic, înainte de audit.
+4. **Cele 8 constatări review Faza 9 (MD-1, MD-4…7, CRY-P9-03, A-2, GATES-5) → revizuire de către agent cu criteriu privacy-maxim**: se acceptă mitigările care păstrează sau cresc privacy; orice variantă care schimbă privacy contra comoditate de inginerie ia varianta privacy. Fiecare decizie se înregistrează individual la executare.
+5. **G-DM3 → confirmă allowlist-ul (a)**: lista motivată (43 de situri justificate, verificată de poarta G-DM3 în CI) e acceptată ca stare de audit; tipurile de cheie dedicate rămân hardening opțional pre-audit, nu blocaj.
+6. **H-10 → keep rule (a)**: regula R8 păstrează singletonul DmNative (INSTANCE) și membrii apelați de ReleaseSmokeTest; cost mic de APK, fără fațadă nouă.
+7. **Q3/Q18 → aprobate**: id-ul aplicației sub domeniul proiectului (proprietarul înregistrează domeniul) + verificarea dezvoltatorilor Google înainte de beta — impliciturile de design rămân.
+8. **Canale distribuție → oglindă onion + Sigsum live + escrow (activare acum) + repo propriu F-Droid (self-hosted, secundar); Accrescent respins** — distribuție prin terți incompatibilă cu ADR-37 (sursă închisă).
+9. **K1 → programat după auditul extern, înainte de alpha (B5)** — fereastra de expunere a cheii reale se minimizează; candidații B3 rămân pe chei stagenet.
+10. **Semnare commit-uri (FR-8.1) → DA**: cheia GPG se configurează pe repo (comenzile pregătite de agent; proprietarul confirmă identitatea cheii).
+11. **Auditor → RFQ trimis după închiderea B1** — ofertele cer o dată de start reală; contractarea efectivă la B3/B4.
+12. **Push GitHub → ACUM** — repo privat, risc zero, valoare de backup mare (~100 de commituri).
+13. **Curățenia pre-distribuție → DA**: ecran licențe, SBOM per release, ștergerea artefactelor din perioada publică — agentul demarează (revizuirea juridică rămâne de parte proprietarului).
+14. **Sync WSL → sursă unică de adevăr D:\Forum; propagare prin origin (push-pull)**; commitul local WCL 96a744e58f se retrage la prima sincronizare (conținutul e deja în commiturile D: 576a26df+fe7f255c).
+15. **Curățenia discurilor → agentul șterge conservator doar artefacte regenerabile de build** (cu lista publicată înainte); fișierele personale nu se ating.
