@@ -202,7 +202,7 @@ bash scripts/gates/public-identity-scrub.sh "$OUT"
 # mode the android subset gets its own SHA256SUMS-ANDROID (the android selfcheck's shape).
 cd "$OUT"
 if [ "$ANDROID_ONLY" = 1 ]; then
-  sha256sum apk/* lib/*/*.so lib/native-libs.sha256 symbols/*/*.so > SHA256SUMS-ANDROID
+  sha256sum apk/* lib/*/*.so lib/native-libs.sha256 symbols/*/*.so.debug > SHA256SUMS-ANDROID
   ADIGEST="$(sha256sum "$APK_OUT" | cut -c1-16)"
   echo "ANDROID_BUILD_OK tag=$TAG apk_digest=$ADIGEST"
 else
