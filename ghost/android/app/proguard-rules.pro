@@ -34,13 +34,7 @@
 }
 -keepclassmembers class org.ghost.crypto.bridge.DmSessions {
     public static final org.ghost.crypto.bridge.DmSessions INSTANCE;
-    public final *** openContext(...);
-    public final *** ownCard(...);
-    public final *** bundleCreate(...);
-    public final *** outbound(...);
-    public final *** encrypt(...);
-    public final *** inbound(...);
-    public final *** closeContext(...);
+    <methods>;
 }
 -keep class org.ghost.crypto.bridge.DmSessions$* {
     <fields>;
