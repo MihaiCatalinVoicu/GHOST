@@ -19,3 +19,39 @@
 -keep class org.ghost.media.sandbox.MediaDecodeService
 -keep class org.ghost.messaging.android.ExpiryAlarmReceiver
 -keep class org.ghost.sync.android.SyncJobService
+
+# H-10 (design docs/design/h0-apk-hardening.md §9 item 7; decision 2026-11-11): the release smoke
+# (ReleaseSmokeTest, app/src/androidTest) runs against the R8-shrunk release APK and calls the
+# crypto-bridge seam BY NAME. H1's minification profile otherwise renames every member and inlines
+# the DmNative singleton's INSTANCE away entirely (measured 2026-11-11: smoke failed with
+# "No field INSTANCE"; mapping.txt showed isAvailable kept only as inlined copies). Names survive
+# only for this exact test seam; mapping.txt is auditor-private (ADR-38), so the residual surface
+# is the decompiled readability of one facade — accepted against §15.9 item 3's whole point (the
+# smoke must exercise the shipped, shrunk library). G-DM5 reads these rules as its whitelist.
+-keepclassmembers class org.ghost.crypto.bridge.DmNative {
+    public static final org.ghost.crypto.bridge.DmNative INSTANCE;
+    public final boolean isAvailable();
+}
+-keep class org.ghost.crypto.bridge.DmSessions {
+    public static *** openContext(...);
+    public static *** ownCard(...);
+    public static *** bundleCreate(...);
+    public static *** outbound(...);
+    public static *** encrypt(...);
+    public static *** inbound(...);
+    public static *** closeContext(...);
+    public static final org.ghost.crypto.bridge.DmSessions$Companion Companion;
+}
+-keep class org.ghost.crypto.bridge.DmSessions$Companion {
+    public final *** openContext(...);
+    public final *** ownCard(...);
+    public final *** bundleCreate(...);
+    public final *** outbound(...);
+    public final *** encrypt(...);
+    public final *** inbound(...);
+    public final *** closeContext(...);
+}
+-keep class org.ghost.crypto.bridge.DmSessions$* {
+    <fields>;
+    <methods>;
+}
