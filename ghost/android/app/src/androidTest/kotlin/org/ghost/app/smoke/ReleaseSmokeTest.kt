@@ -1,5 +1,6 @@
 package org.ghost.app.smoke
 
+import org.ghost.crypto.bridge.DmContent
 import org.ghost.crypto.bridge.DmNative
 import org.ghost.crypto.bridge.DmSessions
 import org.ghost.device.DeviceRunner
