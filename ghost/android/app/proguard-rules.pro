@@ -40,3 +40,16 @@
     <fields>;
     <methods>;
 }
+# Same H-10 seam: the smoke encodes its L0 through DmContent (the production encoder). In the
+# current release graph the media send path that calls DmContent.encode is not yet reachable from
+# a kept entry point (the Faza 11 facade work is exactly what wires it), so R8 removes DmContent
+# entirely (usage.txt 2026-11-11) — the smoke needs it kept until the facade lands, after which
+# this rule is a no-op the gate still accepts.
+-keepclassmembers class org.ghost.crypto.bridge.DmContent {
+    public static final org.ghost.crypto.bridge.DmContent INSTANCE;
+    <methods>;
+}
+-keep class org.ghost.crypto.bridge.DmContent$* {
+    <fields>;
+    <methods>;
+}
