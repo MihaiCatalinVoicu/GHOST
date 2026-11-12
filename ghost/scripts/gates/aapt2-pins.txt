@@ -1,0 +1,13 @@
+# GATES-5 (review Faza 9, 2026-11-12): pinned sha256 of the SDK's aapt2 binaries, one line per
+# installed build-tools version. Gradle's dependency verification does not cover this binary (a
+# trust regex does, ADR-06 Anexa D), so the local gate pins it exactly: a changed or replaced
+# binary fails the gate, and a build-tools version without a pin entry fails until it is pinned
+# deliberately here.
+#
+# Semantics: integrity pinning (tamper/supply-chain-swap detection), trust-on-first-use — the
+# values below were recorded from this workstation's SDK on 2026-11-12. Provenance (matching
+# Google's build) is the SDK manager's signature check, not this file.
+# format: <build-tools version> <platform> <sha256>
+35.0.0 windows cbfe5deda5f7074ce47b6f33818b456ee8046a076a11af13e29c837d3c80c564
+36.0.0 windows babf3122e515ddb954c5ac4669e085ce990536c035e3072de30127bddd6e3608
+37.0.0 windows 4b09f89d449cc4498fcf5076a4ad6b28f079e565d2737f7881a674580960c8df

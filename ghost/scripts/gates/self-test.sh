@@ -1141,6 +1141,30 @@ mp_case() { # $1 = case, $2 = pass|fail, $3 = text the output must contain
   fi
 }
 mp_case positive pass "[monero-pin] OK"
+
+# GATES-5 (review Faza 9, 2026-11-12): aapt2-pin.sh pins the SDK's aapt2 binaries (integrity,
+# trust-on-first-use). A fixture SDK exercises the two refusal reasons; the real SDK, when this
+# machine has one, must pass.
+AP_SDK="$(mktemp -d)"
+mkdir -p "$AP_SDK/build-tools/37.0.0" "$AP_SDK/build-tools/99.0.0"
+printf 'tampered' > "$AP_SDK/build-tools/37.0.0/aapt2"; printf 'tampered' > "$AP_SDK/build-tools/37.0.0/aapt2.exe"
+printf 'unpinned' > "$AP_SDK/build-tools/99.0.0/aapt2"; printf 'unpinned' > "$AP_SDK/build-tools/99.0.0/aapt2.exe"
+ap_out="$(bash "$DIR/aapt2-pin.sh" "$AP_SDK" 2>&1)" && ap_got=pass || ap_got=fail
+rm -rf "$AP_SDK"
+if [ "$ap_got" != "fail" ] || ! grep -qF "does not match the pin" <<<"$ap_out" || ! grep -qF "no pin entry" <<<"$ap_out"; then
+  echo "SELF-TEST FAIL: aapt2-pin fixture (got=$ap_got)" >&2; printf '%s
+' "$ap_out" | tail -5 >&2; rc=1
+else
+  echo "self-test ok: aapt2-pin refuses a tampered and an unpinned binary"
+fi
+if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/build-tools" ]; then
+  if ap_out="$(bash "$DIR/aapt2-pin.sh" 2>&1)" && grep -qF "[aapt2-pin] OK" <<<"$ap_out"; then
+    echo "self-test ok: aapt2-pin accepts the real SDK"
+  else
+    echo "SELF-TEST FAIL: aapt2-pin on the real SDK" >&2; printf '%s
+' "$ap_out" | tail -5 >&2; rc=1
+  fi
+fi
 mp_case no-pin fail "monero-release.pin missing"
 mp_case malformed fail "malformed SHA-256"
 mp_case no-linux fail "no linux-x64 archive"
