@@ -282,3 +282,7 @@ Design §13.4 tabel (linia 1518): „Deposit verification (`check` cu credential
 ### Suita :messaging+:app completă VERDE (2026-11-12, 2h21m sub contendență)
 
 BUILD SUCCESSFUL, 0 eșecuri — cu toate schimbările nopții incluse: R-T3 (engine + NiDm2 + gate + fixture-uri), MD-4+MD-6 (bracketing sesiune), MD-7 (generation), QueuedOpsTest actualizat, mock-urile :app reparate. Cu asta, baza JVM e complet verde pe `main` la finalul sesiunii.
+
+### CRY-P9-03 FIX executat 2026-11-12
+
+Zeroizare pe ambele căi ale L0-ului (care poartă rădăcina pair clasică în clar): `SendStep` — `finally` pe tranzacția de send (`l0.l0.fill(0)` după ultima utilizare: l0_env sigilat + op-ul sesiunii au copiat ce trebuiau; retry-ul citește l0Env-ul sigilat, nu array-ul șters); `ReceiveStep` — `plaintext.fill(0)` imediat după `decodeContent` (l0Decode nativ întoarce array-uri fresh, deci ștergerea e sigură pe toate căile, inclusiv cele de eroare). Verificat: QueuedOpsTest, DmResidueTest, TrustFlowTest verzi. Notă: expunerea reziduală (window-ul nativ↔JVM în interiorul apelului) rămâne declarată — zeroizarea acoperă tot ce atinge heap-ul Kotlin.
