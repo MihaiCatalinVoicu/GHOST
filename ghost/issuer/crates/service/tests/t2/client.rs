@@ -342,7 +342,7 @@ impl Client {
             ns_rng,
             circuit_key: super::rng::derive32(seeds.ns, &[b"circuit", &idb]),
             user_key: super::rng::derive32(seeds.user, &[b"activity", &idb]),
-            draw_key: super::rng::derive32(seeds.user, &[b"draws", &idb]),
+            draw_key: super::rng::derive32(seeds.sched, &[b"draws", &idb]),
             runs: 0,
             process: 0,
             process_ordinal: 0,
