@@ -21,6 +21,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The **DM actor** (Phase 9 design §13.7, §21.9): one process-wide single-thread executor that
@@ -145,6 +146,21 @@ internal class DmActor(
 
     /** A wake that arrived while a pass was running; coalesced, because hints carry no payload. */
     private val pending = AtomicBoolean(false)
+
+    /** MD-6 (review Faza 9): a relay session or quiet run has its lanes on the runtime's threads;
+     * while it is set, a listener hint must not run a pass whose `consumeInbox` would hold the
+     * database lock across native calls while the lanes run (§13.3 item 6, P-3, SC-7 — the
+     * session's close time must not depend on inbound volume). The hint defers to the session's
+     * tail pass (or to the pass [sessionEnd] posts). */
+    private val inSession = AtomicBoolean(false)
+
+    /** MD-6: a listener hint that arrived during a session; [sessionEnd] turns it into one pass. */
+    private val deferredHint = AtomicBoolean(false)
+
+    /** MD-4 (review Faza 9): the scheduled controls the current session has already sent, shared
+     * across the session's passes — the cap was per pass, and two passes inside one session could
+     * each send one, which is the multiplication §22.13 item 15's spread exists to thin. */
+    private val sessionControls = AtomicInteger(0)
 
     /** When a bundle candidate was first stored, so `EST-READY` waits two minutes (§21.7 point 4). */
     private val candidateSince = HashMap<List<Byte>, Long>()
@@ -392,11 +408,31 @@ internal class DmActor(
     }
 
     private fun wake(timeTriggered: Boolean, sessionStart: Boolean = false) {
+        if (!timeTriggered && inSession.get()) {
+            // MD-6: no mid-session pass; the session's tail pass consumes what arrived.
+            deferredHint.set(true)
+            return
+        }
         if (!pending.compareAndSet(false, true) && !timeTriggered) return
         post {
             pending.set(false)
             runPass(timeTriggered, deadlineMonotonicMillis = null, sessionStart = sessionStart)
         }
+    }
+
+    /**
+     * MD-6/MD-4 (review Faza 9): the runtime brackets a relay session or quiet run with
+     * [sessionBegin]/[sessionEnd] (MessagingWiring's session hooks). Begin resets the session's
+     * control budget; end releases a deferred listener hint as one pass.
+     */
+    fun sessionBegin() {
+        inSession.set(true)
+        sessionControls.set(0)
+    }
+
+    fun sessionEnd() {
+        inSession.set(false)
+        if (deferredHint.getAndSet(false)) wake(timeTriggered = false)
     }
 
     /**
@@ -509,7 +545,12 @@ internal class DmActor(
             // §21.9 rule 1 names "due scheduled controls" among the time-triggered steps, and this
             // is the whole of PM-30 for them: a card holder must not be able to deposit a probe
             // during this device's session and watch a reconnect or revocation notice follow.
-            scheduledSteps.runDue()
+            // MD-4: the budget is the session's, shared across its passes (review Faza 9 MD-4) —
+            // the start pass and the tail pass of one session cannot each send a control.
+            val controlBudget = (
+                ScheduledSteps.MAX_CONTROLS_PER_PASS - sessionControls.get()
+                ).coerceAtLeast(0)
+            sessionControls.addAndGet(scheduledSteps.runDue(controlBudget))
             // §6.4's deadline: time-triggered, like the steps above.
             media?.runDeadline()
             // §7.5's `MEDIA-GC`: declared losses, pooled retention, unnamed sealed garbage.

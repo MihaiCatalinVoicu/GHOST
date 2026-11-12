@@ -40,6 +40,11 @@ internal interface DmStack : AutoCloseable {
      */
     fun onTimeTrigger(sessionStart: Boolean = false)
 
+    /** MD-6/MD-4 (review Faza 9): the runtime's brackets around a relay session or quiet run. */
+    fun sessionBegin() = Unit
+
+    fun sessionEnd() = Unit
+
     /** Posts: the context reopened from [root] in one actor turn, if [wanted] still holds there. */
     fun open(root: () -> RootEntropy?, wanted: () -> Boolean)
 
@@ -81,6 +86,10 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
     override val consumerTail: ConsumerTail get() = runtime.consumerTail
 
     override fun onTimeTrigger(sessionStart: Boolean) = runtime.onTimeTrigger(sessionStart)
+
+    override fun sessionBegin() = runtime.sessionBegin()
+
+    override fun sessionEnd() = runtime.sessionEnd()
 
     override fun open(root: () -> RootEntropy?, wanted: () -> Boolean) = runtime.requestUnlock(root, wanted)
 
@@ -397,10 +406,25 @@ internal class MessagingWiring(
     fun sessionHooks(participant: SessionParticipant): SessionParticipant = object : SessionParticipant {
         override fun onRelaySession(session: ParticipantSession) {
             onRelaySessionStart()
-            participant.onRelaySession(session)
+            // MD-6/MD-4 (review Faza 9): bracket the session so the DM actor defers listener
+            // hints (no mid-session pass whose consume would hold the database lock across the
+            // lanes) and budgets scheduled controls per session, not per pass.
+            ensureStack()?.sessionBegin()
+            try {
+                participant.onRelaySession(session)
+            } finally {
+                ensureStack()?.sessionEnd()
+            }
         }
 
-        override fun onQuietRun(session: ParticipantSession) = participant.onQuietRun(session)
+        override fun onQuietRun(session: ParticipantSession) {
+            ensureStack()?.sessionBegin()
+            try {
+                participant.onQuietRun(session)
+            } finally {
+                ensureStack()?.sessionEnd()
+            }
+        }
 
         override fun toString(): String = "MessagingSessionHooks"
     }

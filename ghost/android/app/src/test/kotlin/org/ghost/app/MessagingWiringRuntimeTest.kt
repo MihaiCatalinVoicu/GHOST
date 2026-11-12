@@ -308,6 +308,8 @@ class MessagingWiringRuntimeTest {
         override fun onWipe() = Unit
         override fun setParticipant(p: org.ghost.sync.api.SessionParticipant?) = Unit
         override fun setConsumerTail(tail: org.ghost.sync.api.ConsumerTail?) = Unit
+        override fun setUpdater(u: org.ghost.sync.api.UpdateParticipant?) = Unit
+        override fun runUserUpdateCall(block: (org.ghost.sync.api.UpdateSession) -> Unit) = Unit
         override fun runUserIssuerCall(block: (org.ghost.sync.api.ParticipantSession) -> Unit) = Unit
         override fun onPaymentScreenShown() = Unit
         override fun onPaymentScreenHidden() = Unit

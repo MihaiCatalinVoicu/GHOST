@@ -122,6 +122,8 @@ class MessagingWiringTest {
     }
 
     private class RecordingController(private val log: MutableList<String>) : SyncController {
+        override fun setUpdater(u: org.ghost.sync.api.UpdateParticipant?) { log.add("setUpdater") }
+        override fun runUserUpdateCall(block: (org.ghost.sync.api.UpdateSession) -> Unit) { log.add("runUserUpdateCall") }
         var tail: ConsumerTail? = null
 
         override fun onAppForeground() = Unit

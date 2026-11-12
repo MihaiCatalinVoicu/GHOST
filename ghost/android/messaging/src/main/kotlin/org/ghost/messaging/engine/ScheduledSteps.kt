@@ -178,12 +178,12 @@ internal class ScheduledSteps(
      * **FAILED** control (one that was enqueued and failed) is an outcome and therefore OUTCOME's;
      * it is still deferred (§22.13 item 9).
      */
-    fun runDue(): Int {
+    fun runDue(limit: Int = MAX_CONTROLS_PER_PASS): Int {
         contexts.get() ?: return 0
         val now = clock.nowEpochSeconds()
         val nowMinute = DmTime.floorMinute(now)
         val due = database.transaction { tx ->
-            scheduled.due(tx.sql, nowMinute, MAX_CONTROLS_PER_PASS)
+            scheduled.due(tx.sql, nowMinute, limit)
         }
         var sent = 0
         for (row in due) {

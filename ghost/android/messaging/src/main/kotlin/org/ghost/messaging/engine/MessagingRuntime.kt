@@ -406,6 +406,15 @@ class MessagingRuntime(
         triggers.onTimeTrigger(sessionStart)
     }
 
+    /** MD-6/MD-4: bracket a relay session or quiet run so listener hints defer to its tail. */
+    fun sessionBegin() {
+        triggers.sessionBegin()
+    }
+
+    fun sessionEnd() {
+        triggers.sessionEnd()
+    }
+
     /** One hint, as the listener would deliver it; for a caller that holds a [SyncChange] alone. */
     fun onChange(change: SyncChange) {
         triggers.onChange(change)

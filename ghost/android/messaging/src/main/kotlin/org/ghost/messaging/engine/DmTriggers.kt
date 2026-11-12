@@ -84,6 +84,15 @@ internal class DmTriggers(
         actor?.onTimeTrigger(sessionStart)
     }
 
+    /** MD-6/MD-4: the runtime's brackets around a relay session or quiet run (MessagingWiring). */
+    fun sessionBegin() {
+        actor?.sessionBegin()
+    }
+
+    fun sessionEnd() {
+        actor?.sessionEnd()
+    }
+
     /** One hint, as [listener] would deliver it. Posts. */
     fun onChange(change: SyncChange) {
         actor?.onChange(change)

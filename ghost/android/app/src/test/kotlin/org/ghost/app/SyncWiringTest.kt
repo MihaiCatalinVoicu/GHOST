@@ -31,6 +31,8 @@ class SyncWiringTest {
     }
 
     private class RecordingController(private val events: Events) : SyncController {
+        override fun setUpdater(u: org.ghost.sync.api.UpdateParticipant?) = Unit
+        override fun runUserUpdateCall(block: (org.ghost.sync.api.UpdateSession) -> Unit) = Unit
         override fun onAppForeground() {
             events.log += "foreground"
         }
@@ -89,6 +91,9 @@ class SyncWiringTest {
     /** [posted] receives the moment readers handed to the runtime thread (the runtime runs them in order). */
     private fun wiring(events: Events, key: Boolean, moment: Long? = null, posted: MutableList<() -> Long?> = ArrayList()) = SyncWiring(
         keyExists = { key },
+        updater = object : org.ghost.sync.api.UpdateParticipant {
+            override fun onUpdateRun(session: org.ghost.sync.api.UpdateSession) = Unit
+        },
         controller = RecordingController(events),
         ensurePeriodic = { events.log += "ensurePeriodic" },
         databaseAvailable = { events.log += "available" },
