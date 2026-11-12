@@ -80,9 +80,10 @@ class MessagingWiringTest {
         /** The kind of every time trigger, in order: true for a relay session start. */
         val sessionStarts = ArrayList<Boolean>()
 
-        override fun onTimeTrigger(sessionStart: Boolean) {
+        override fun onTimeTrigger(sessionStart: Boolean, onDone: () -> Unit) {
             sessionStarts += sessionStart
             log += "$tag.timeTrigger"
+            onDone()
         }
 
         private fun openNow(root: () -> RootEntropy?, wanted: () -> Boolean): DmKeys.Opened? {
@@ -183,7 +184,7 @@ class MessagingWiringTest {
     private val built = ArrayList<RecordingStack>()
     private var identityPresent = true
     private val controller = RecordingController(log)
-    private var alarmHandler: (() -> Unit)? = null
+    private var alarmHandler: (((onDone: () -> Unit) -> Unit))? = null
     private val postedOpens = ArrayList<() -> Unit>()
     private val hookExecutor: ExecutorService = InlineExecutor()
 
@@ -455,11 +456,11 @@ class MessagingWiringTest {
         val w = wiring(runPosted = false)
         w.onProcessStart(keyExists = false)
         log.clear()
-        alarmHandler!!.invoke()
+        alarmHandler!!.invoke {}
         assertEquals(listOf("whenStoresOpen"), log)
         postedOpens.removeAt(0).invoke()
         log.clear()
-        alarmHandler!!.invoke()
+        alarmHandler!!.invoke {}
         assertEquals(listOf("stack1.timeTrigger"), log)
     }
 

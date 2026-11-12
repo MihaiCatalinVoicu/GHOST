@@ -402,8 +402,8 @@ class MessagingRuntime(
      * true for the first alone (see [DmActor.onTimeTrigger]); the in-process timer's wake is bound in
      * [DmTriggers] and is no session start either.
      */
-    fun onTimeTrigger(sessionStart: Boolean = false) {
-        triggers.onTimeTrigger(sessionStart)
+    fun onTimeTrigger(sessionStart: Boolean = false, onDone: () -> Unit = {}) {
+        triggers.onTimeTrigger(sessionStart, onDone)
     }
 
     /** MD-6/MD-4: bracket a relay session or quiet run so listener hints defer to its tail. */

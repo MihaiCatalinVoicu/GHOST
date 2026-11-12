@@ -37,8 +37,9 @@ internal interface DmStack : AutoCloseable {
     /**
      * Posts a time-triggered pass (§21.9 rule 1). [sessionStart] is true for a relay session start
      * alone: the one trigger that may open the next bundle-fetch attempt (§21.7 point 5).
+     * [onDone] runs on the actor thread after the pass (A-2: the alarm's wakelock).
      */
-    fun onTimeTrigger(sessionStart: Boolean = false)
+    fun onTimeTrigger(sessionStart: Boolean = false, onDone: () -> Unit = {})
 
     /** MD-6/MD-4 (review Faza 9): the runtime's brackets around a relay session or quiet run. */
     fun sessionBegin() = Unit
@@ -85,7 +86,7 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
     override val listener: SyncListener get() = runtime.listener
     override val consumerTail: ConsumerTail get() = runtime.consumerTail
 
-    override fun onTimeTrigger(sessionStart: Boolean) = runtime.onTimeTrigger(sessionStart)
+    override fun onTimeTrigger(sessionStart: Boolean, onDone: () -> Unit) = runtime.onTimeTrigger(sessionStart, onDone)
 
     override fun sessionBegin() = runtime.sessionBegin()
 
@@ -172,7 +173,7 @@ internal class MessagingWiring(
      */
     private val primeSchedule: () -> Unit,
     /** Installs (or, with null, removes) the alarm receiver's hand-off (`ExpiryAlarmReceiver.onAlarm`). */
-    private val setAlarmHandler: ((() -> Unit)?) -> Unit,
+    private val setAlarmHandler: (((onDone: () -> Unit) -> Unit)?) -> Unit,
     /**
      * Cancels the one inexact alarm (`ExpiryAlarm.wakeIn(null)`) whether or not a stack exists: an
      * alarm set by an earlier process is in the system's table before this one built anything, and
@@ -353,9 +354,17 @@ internal class MessagingWiring(
      * and returns: with no stack yet — a process started for the broadcast — the database open it
      * triggers runs the same pass. A stack that is being stopped drops the trigger.
      */
-    fun onAlarm() {
+    fun onAlarm(onDone: () -> Unit = {}) {
         val current = stack
-        if (current != null) current.onTimeTrigger() else if (!wiped) whenStoresOpen(::onDatabaseOpen)
+        if (current != null) {
+            // A-2 (review Faza 9): the receiver holds the wakelock until the sweep's pass ends.
+            current.onTimeTrigger(onDone = onDone)
+        } else {
+            if (!wiped) whenStoresOpen(::onDatabaseOpen)
+            // No stack: the open's pass is queued on the actor of the fresh stack; the process is
+            // alive from the broadcast, and the sweep that pass runs is the database open's own.
+            onDone()
+        }
     }
 
     /**

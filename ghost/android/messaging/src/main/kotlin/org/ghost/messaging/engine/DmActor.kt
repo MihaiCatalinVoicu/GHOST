@@ -359,8 +359,8 @@ internal class DmActor(
      * list `P_c` in it, and three such windows made a contact unreachable and failed its first
      * message about 13 hours after the send, whatever its 7-day deadline.
      */
-    fun onTimeTrigger(sessionStart: Boolean = false) {
-        wake(timeTriggered = true, sessionStart = sessionStart)
+    fun onTimeTrigger(sessionStart: Boolean = false, onDone: () -> Unit = {}) {
+        wake(timeTriggered = true, sessionStart = sessionStart, onDone = onDone)
     }
 
     /**
@@ -407,16 +407,26 @@ internal class DmActor(
         }
     }
 
-    private fun wake(timeTriggered: Boolean, sessionStart: Boolean = false) {
+    private fun wake(timeTriggered: Boolean, sessionStart: Boolean = false, onDone: () -> Unit = {}) {
         if (!timeTriggered && inSession.get()) {
             // MD-6: no mid-session pass; the session's tail pass consumes what arrived.
             deferredHint.set(true)
+            onDone()
             return
         }
-        if (!pending.compareAndSet(false, true) && !timeTriggered) return
+        if (!pending.compareAndSet(false, true) && !timeTriggered) {
+            // A pass is already queued; the alarm's wake (A-2) is answered by it.
+            onDone()
+            return
+        }
         post {
             pending.set(false)
-            runPass(timeTriggered, deadlineMonotonicMillis = null, sessionStart = sessionStart)
+            try {
+                runPass(timeTriggered, deadlineMonotonicMillis = null, sessionStart = sessionStart)
+            } finally {
+                // A-2 (review Faza 9): the alarm's wakelock is held until the sweep's pass ends.
+                onDone()
+            }
         }
     }
 

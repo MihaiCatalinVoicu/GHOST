@@ -80,8 +80,8 @@ internal class DmTriggers(
      * A relay session start ([sessionStart] true, `MessagingWiring.onRelaySessionStart`), the alarm
      * or a database open (false): a time trigger (§21.9 rule 1). Posts.
      */
-    fun onTimeTrigger(sessionStart: Boolean = false) {
-        actor?.onTimeTrigger(sessionStart)
+    fun onTimeTrigger(sessionStart: Boolean = false, onDone: () -> Unit = {}) {
+        actor?.onTimeTrigger(sessionStart, onDone) ?: onDone()
     }
 
     /** MD-6/MD-4: the runtime's brackets around a relay session or quiet run (MessagingWiring). */
