@@ -290,3 +290,7 @@ Zeroizare pe ambele căi ale L0-ului (care poartă rădăcina pair clasică în 
 ### NI-1d FIX #2 (pe baza forensicii) — `e2a0cd18`, verificare perechea 2 în curs
 
 Forensicul a arătat exact: prima scriere drop diferă cu **2 secunde** între gemeni (A t=…017, B t=…015, același relay, aceeași lungime). Cauza: `background_offset` — prf pe `circuit_key` (seeds.ns, twin-different by design, T19) — se adaugă la timpul evenimentelor din sesiune; view-ul relay îl rotunjește (de aceea NI-1 trece), dar digest-ul drop înregistrează secunda exactă. **Fix**: evenimentul perechii drop (write_drop) nu mai primește offset (`off = 0`) — timpul său devine sched-invariant (timpul de bază al sesiunii). Verificare: perechea 2 gate-scale în curs (`/tmp/ni1d-fix2-p2.log`). Dacă trece, se re-rulează 2 și 3, apoi matricea completă.
+
+### NI-1d fix #2 CONFIRMAT la scara gate — perechea 2 PASS (2026-11-12, 6984s)
+
+`T2 RESULT: PASS` pe `e2a0cd18` (offset 0 pe evenimentul drop): **NI-1d: PASS — 9 drop writes identice (timp, relay, lungime)**. Forensicul + fixul țintit funcționează. Lansată perechea 3 pentru confirmarea simetrică; matricea continuă pe perechile 8-9 (deja pe codul cu fixul #2, perechea 6 PASS pe el).
