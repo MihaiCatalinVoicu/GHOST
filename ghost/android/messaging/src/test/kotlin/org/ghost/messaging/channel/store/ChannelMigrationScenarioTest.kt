@@ -184,7 +184,7 @@ class ChannelMigrationScenarioTest {
             // is again a fresh install's.
             val dmRows = { db.dump().filterKeys { it.startsWith("dm_") || it.startsWith("olm_") } }
             val dmBeforeV8 = dmRows()
-            assertEquals(listOf(8, 9, 10), MigrationRunner(db).migrate())
+            assertEquals(listOf(8, 9, 10, 11), MigrationRunner(db).migrate())
             MigrationRunner(db).verifyIntegrity()
             assertEquals(dmBeforeV8, dmRows())
             assertEquals(1L, db.queryLong("SELECT count(*) FROM dm_reaction"))
@@ -208,7 +208,7 @@ class ChannelMigrationScenarioTest {
     fun scnCiThenScnCaOnTheUpgradedDatabaseKeepsEveryDmRow() {
         assumeTrue("ghost-dm-host is not loaded (-Dghost.dm.native)", ChannelWorld.nativeAvailable())
         populatedV5().use { db ->
-            assertEquals(listOf(6, 7, 8, 9, 10), MigrationRunner(db).migrate())
+            assertEquals(listOf(6, 7, 8, 9, 10, 11), MigrationRunner(db).migrate())
             val dmTables = setOf("dm_self", "dm_contact", "dm_conversation", "dm_message", "dm_reaction", "olm_session", "dm_seen")
             val before = db.dump().filterKeys { it in dmTables }
             assertEquals(dmTables, before.keys)
