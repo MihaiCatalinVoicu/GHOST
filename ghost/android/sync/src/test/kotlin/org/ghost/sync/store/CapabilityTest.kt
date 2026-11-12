@@ -48,6 +48,27 @@ class CapabilityTest {
     }
 
     @Test
+    fun anIdenticalPutKeepsTheGenerationAndARealChangeBumpsIt(): Unit = SyncWorld().use { w ->
+        // MD-7 (review Faza 9): the generation guards rejections; it must not age on KEEPER's
+        // daily re-put of the same credential.
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays)
+        w.capability(relays[0], ns, seed = 3, expiresAt = SyncWorld.T0 + 5 * HOUR)
+        assertEquals(1L, w.long("SELECT generation FROM relay_capability"))
+        // The identical credential re-installed: no bump, still usable.
+        w.capability(relays[0], ns, seed = 3, expiresAt = SyncWorld.T0 + 5 * HOUR)
+        assertEquals(1L, w.long("SELECT generation FROM relay_capability"))
+        // A different token: bump (the race guard must still advance on every real change).
+        w.capability(relays[0], ns, seed = 4, expiresAt = SyncWorld.T0 + 5 * HOUR)
+        assertEquals(2L, w.long("SELECT generation FROM relay_capability"))
+        // A refused row re-armed with the SAME token still bumps: the state change is real.
+        w.raw("UPDATE relay_capability SET state = 'rejected'")
+        w.capability(relays[0], ns, seed = 4, expiresAt = SyncWorld.T0 + 5 * HOUR)
+        assertEquals(3L, w.long("SELECT generation FROM relay_capability"))
+        assertEquals("usable", w.string("SELECT state FROM relay_capability"))
+    }
+
+    @Test
     fun readingPrefersTheReadTokenAndFallsBackToWrite(): Unit = SyncWorld().use { w ->
         val relays = w.relays(1, 2)
         val ns = w.namespace(1, relays)

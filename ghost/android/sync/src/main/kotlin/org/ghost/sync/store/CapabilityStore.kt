@@ -54,8 +54,17 @@ internal class CapabilityStore {
                 1,
                 "INSERT INTO relay_capability(relay_id, namespace_id, kind, token, expires_hour, state, generation) " +
                     "VALUES (?1, ?2, ?3, ?4, ?5, 'usable', 1) " +
+                    // MD-7 (review Faza 9, 2026-11-12): the generation is the rejection-race guard,
+                    // not an age counter — KEEPER's daily re-put of the identical credential and
+                    // every refusal used to bump it, giving a seized database the contact's active
+                    // days. It now counts only real changes: identical (token, expiry, usable)
+                    // content keeps the generation.
                     "ON CONFLICT(relay_id, namespace_id, kind) DO UPDATE SET token = excluded.token, " +
-                    "expires_hour = excluded.expires_hour, state = 'usable', generation = relay_capability.generation + 1",
+                    "expires_hour = excluded.expires_hour, state = 'usable', " +
+                    "generation = CASE WHEN relay_capability.token IS excluded.token " +
+                    "AND relay_capability.expires_hour IS excluded.expires_hour " +
+                    "AND relay_capability.state = 'usable' " +
+                    "THEN relay_capability.generation ELSE relay_capability.generation + 1 END",
                 listOf(relay.value, ns.raw, kind.code, token, expiresHour),
             )
         }
@@ -64,14 +73,20 @@ internal class CapabilityStore {
     }
 
     /**
-     * The registration capability of the pair: an UPDATE of the row that exists (a new generation, usable
-     * again), else an INSERT at generation 1. Two statements, because the table's REPLACE guard refuses
-     * every insert of an existing key, upserts included; the UPDATE keeps the generation counting up,
-     * which the rejection race guard of [refuse] relies on.
+     * The registration capability of the pair: an UPDATE of the row that exists (a new generation
+     * when the content actually changes, usable again), else an INSERT at generation 1. Two
+     * statements, because the table's REPLACE guard refuses every insert of an existing key,
+     * upserts included; the conditional generation bump (MD-7, as in [put]) still advances on every
+     * real change, which is what the rejection race guard of [refuse] relies on.
      */
     private fun putRegister(sql: SqlExecutor, relay: RelayId, ns: NamespaceId, token: ByteArray, expiresHour: Long?) {
+        // MD-7: same conditional bump as [put] — the generation guards rejections, it does not age.
         val updated = sql.execUpdate(
-            "UPDATE relay_register_capability SET token = ?1, expires_hour = ?2, state = 'usable', generation = generation + 1 " +
+            "UPDATE relay_register_capability SET token = ?1, expires_hour = ?2, state = 'usable', " +
+                "generation = CASE WHEN relay_register_capability.token IS ?1 " +
+                "AND relay_register_capability.expires_hour IS ?2 " +
+                "AND relay_register_capability.state = 'usable' " +
+                "THEN relay_register_capability.generation ELSE relay_register_capability.generation + 1 END " +
                 "WHERE relay_id = ?3 AND namespace_id = ?4",
             listOf(token, expiresHour, relay.value, ns.raw),
         )
