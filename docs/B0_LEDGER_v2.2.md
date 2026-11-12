@@ -194,3 +194,12 @@ D: era la 97% (34G libere). Eliberat ~45 GB conservator: `ghost/target` integral
 8. **GATES-5** (verificarea dependențelor Gradle nu verifică binarul Linux aapt2; cargo-deny checksums): **FIX** — hash pinuit pentru aapt2 (ambele platforme) în gate-ul local de dependențe, la fel ca orice tool de build.
 
 Toate cele 8 iau varianta privacy (nicuna nu schimbă privacy contra comoditate). Implementarea se face în ordinea impactului: MD-5, CRY-P9-03, MD-7 (seizure/metadata), apoi MD-1, MD-4, MD-6, A-2, GATES-5. Fiecare cu testul/mutantul ei, conform disciplinei proiectului.
+
+### Verdict gate-scale perechea 9 (2026-11-12, 5650s): NI-1d confirmat, NI-2 rămâne — semnătură distinctă reală
+
+`T2 RESULT: FAIL (seed pair 0: NI-1 across cells, seed pair 0: NI-2)` — dar descompunerea pe clauze arată o situație mult mai bună decât azi-noapte:
+- **NI-1d: PASS** (9 drop writes identice) — fixul ține la scara gate.
+- **NI-1: PASS cu rezervă** — 4 854 finalizări în celulă, dar **19 clienți cu câte una împinsă peste granulă** (sub prag, însă de urmărit).
+- **NI-2: FAIL — mecanism distinct**: „issuer view differs: client 72: call 51 at 1819877795, B at ...806" — un apel de issuer al clientului 72 ajunge cu 11 secunde diferit între gemeni. Alta decât cuplajul drop (care e mort): o programare a unui apel issuer legată de structura sesiunilor/activității. PR-scale nu-l declanșa (de aceea perechea 9 părea verde la PR).
+- NI-3 PASS, restul porții PASS.
+**Concluzie**: fixul NI-1d e validat la scara gate pe propria clauză; perechea 9 rămâne roșie pe NI-2 (și marginal NI-1) — caracterizarea (client 72, call 51, diferența de 11 s) e itemul EXEC următor. Matricea completă gate-scale se re-rulează nocturn pe noul cod (perechile 2/3 așteptate verzi — confirmare la prima rerulare).
