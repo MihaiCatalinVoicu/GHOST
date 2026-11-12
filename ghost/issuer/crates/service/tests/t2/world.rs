@@ -2914,7 +2914,18 @@ impl World {
                     self.clients[c].received.remove(idx);
                     self.log.count("refreshes lost");
                 } else {
-                    let u = self.draw(c, b"refresh-retry", instance);
+                    // NI-2 (2026-11-12): the retry draw is keyed on `seeds.sched`, like the
+                    // Request retry above — a per-client draw here leaked the twin difference
+                    // into the issuer view (pair 9, client 72, an 11 s call-time shift).
+                    let u = Rng::new(
+                        self.cfg.seeds.sched,
+                        &[
+                            b"refresh-retry",
+                            &self.clients[c].id.to_be_bytes(),
+                            &instance.to_be_bytes(),
+                        ],
+                    )
+                    .uniform();
                     self.clients[c].received[idx].retry =
                         policy::next_due_after_send(0, None, w, u);
                 }
