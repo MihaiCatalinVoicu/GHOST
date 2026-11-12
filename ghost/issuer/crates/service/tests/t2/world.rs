@@ -3314,7 +3314,15 @@ impl World {
                             .get(&(k, ns))
                             .is_some_and(|cp| cp.expiry as i64 > est)
                 })
-                .map(|(i, &(_, ns, _, _, k))| (t + self.background_offset(c, sk, &ns, k), i))
+                .map(|(i, &(_, ns, write_drop, _, k))| {
+                    // NI-1d (2026-11-12, forensic: the first drop write differed by 2 s across
+                    // twins): the drop write's time must be sched-invariant — the per-pair
+                    // background offset is circuit-keyed (T19) and would leak the twin difference
+                    // at second granularity (the relay view rounds it away; the drop digest does
+                    // not). The drop pair's event carries no offset.
+                    let off = if write_drop { 0 } else { self.background_offset(c, sk, &ns, k) };
+                    (t + off, i)
+                })
                 .collect();
             let mut session = Background::new(t, events, self.lane_first_wait(c, sk), armed);
             self.log.count("background sessions");
