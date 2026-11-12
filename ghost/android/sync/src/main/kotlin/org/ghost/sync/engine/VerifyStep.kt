@@ -91,7 +91,15 @@ internal object CheckRound {
                 val readToken = ctx.stores.capabilityStore.usable(tx, pair.relayId, pair.namespace, CapabilityKind.READ, now)
                 // Listing verifies for free; only write-only pairs and pairs without a read token check after 60 s.
                 val minAge = if (!namespace.listening || readToken == null) ctx.policy.verifyAckAgeSeconds else ctx.policy.verifyFallbackSeconds
-                val verify = ctx.steps.verify.select(ctx, tx, pair, now, minAge, batch)
+                val verify = if (namespace.consumer == org.ghost.sync.api.Consumer.DM) {
+                    // MD-1 (review Faza 9, 2026-11-12): for DM pairs the validated receipt IS the
+                    // verification — the 60-second check chained a sender's deposits across
+                    // sessions at the relay under one static deposit scope (L7-D5), and the
+                    // availability question it answered stays covered by the ≥2-relay write set.
+                    emptyList()
+                } else {
+                    ctx.steps.verify.select(ctx, tx, pair, now, minAge, batch)
+                }
                 val resolve = ctx.steps.resolve.select(ctx, tx, pair, now, batch - verify.size)
                 Plan(relay, token, verify, resolve)
             }

@@ -407,4 +407,25 @@ class MediaFairnessTest {
         assertEquals(2, checks.size)
         for (check in checks) assertEquals(40_000, check.deadlineMillis)
     }
+
+    /**
+     * MD-1 (review Faza 9, 2026-11-12): for DM pairs the validated receipt is the verification.
+     * A write-only DM pair whose stores were acked past the verify age is never checked — the
+     * 60-second check only chained a sender's deposits across sessions at the relay (L7-D5).
+     * The availability question stays covered by the two-relay write set.
+     */
+    @Test
+    fun aDmPairsAckedStoresAreVerifiedByTheReceiptAlone() =
+        EngineWorld(TrafficPolicy(verifyAckAgeSeconds = 5)).use { w ->
+            val relays = w.relays(1, 2)
+            val dm = w.namespace(1, relays, listen = false, consumer = org.ghost.sync.api.Consumer.DM)
+            relays.forEach { w.capability(it, dm) }
+            for (i in 1..3) w.enqueue(100 + i, dm)
+            w.net.latency = { 5 * SECOND }
+            val (_, driver) = w.session(SessionKind.BACKGROUND)
+            driver.runUntilFinished(30 * MINUTE)
+
+            assertEquals(6, w.net.callsOf(TestRelays.Kind.STORE).size)
+            assertTrue("no check ran on the DM pair", w.net.callsOf(TestRelays.Kind.CHECK).isEmpty())
+        }
 }
