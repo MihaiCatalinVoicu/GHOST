@@ -286,3 +286,7 @@ BUILD SUCCESSFUL, 0 eșecuri — cu toate schimbările nopții incluse: R-T3 (en
 ### CRY-P9-03 FIX executat 2026-11-12
 
 Zeroizare pe ambele căi ale L0-ului (care poartă rădăcina pair clasică în clar): `SendStep` — `finally` pe tranzacția de send (`l0.l0.fill(0)` după ultima utilizare: l0_env sigilat + op-ul sesiunii au copiat ce trebuiau; retry-ul citește l0Env-ul sigilat, nu array-ul șters); `ReceiveStep` — `plaintext.fill(0)` imediat după `decodeContent` (l0Decode nativ întoarce array-uri fresh, deci ștergerea e sigură pe toate căile, inclusiv cele de eroare). Verificat: QueuedOpsTest, DmResidueTest, TrustFlowTest verzi. Notă: expunerea reziduală (window-ul nativ↔JVM în interiorul apelului) rămâne declarată — zeroizarea acoperă tot ce atinge heap-ul Kotlin.
+
+### NI-1d FIX #2 (pe baza forensicii) — `e2a0cd18`, verificare perechea 2 în curs
+
+Forensicul a arătat exact: prima scriere drop diferă cu **2 secunde** între gemeni (A t=…017, B t=…015, același relay, aceeași lungime). Cauza: `background_offset` — prf pe `circuit_key` (seeds.ns, twin-different by design, T19) — se adaugă la timpul evenimentelor din sesiune; view-ul relay îl rotunjește (de aceea NI-1 trece), dar digest-ul drop înregistrează secunda exactă. **Fix**: evenimentul perechii drop (write_drop) nu mai primește offset (`off = 0`) — timpul său devine sched-invariant (timpul de bază al sesiunii). Verificare: perechea 2 gate-scale în curs (`/tmp/ni1d-fix2-p2.log`). Dacă trece, se re-rulează 2 și 3, apoi matricea completă.
