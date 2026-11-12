@@ -294,3 +294,7 @@ Forensicul a arătat exact: prima scriere drop diferă cu **2 secunde** între g
 ### NI-1d fix #2 CONFIRMAT la scara gate — perechea 2 PASS (2026-11-12, 6984s)
 
 `T2 RESULT: PASS` pe `e2a0cd18` (offset 0 pe evenimentul drop): **NI-1d: PASS — 9 drop writes identice (timp, relay, lungime)**. Forensicul + fixul țintit funcționează. Lansată perechea 3 pentru confirmarea simetrică; matricea continuă pe perechile 8-9 (deja pe codul cu fixul #2, perechea 6 PASS pe el).
+
+### MD-1 FIX executat 2026-11-12
+
+`CheckRound.run` sare peste selecția de verificare pentru namespace-urile cu `Consumer.DM`: recipisa validată (ack) este verificarea pentru perechile DM — check-ul de 60s nu mai rulează, eliminând lanțul cross-session al depozitelor unui expeditor la relay (L7-D5, §13.4 linia 1518). Rezolvarea copiilor ambigue (INDETERMINATE) rămâne neatinsă (corectitudine, nu disponibilitate). Disponibilitatea rămâne acoperită de setul ≥2 relay-uri; riscul rezidual (un relay abandonează un blob acked fără check) se declară în LIMITE la revizuire. Test nou `aDmPairsAckedStoresAreVerifiedByTheReceiptAlone` (pereche DM write-only: store-urile ajung, zero apeluri CHECK) + MediaFairnessTest 11/11 + DecisionTest 14/14 verzi.
