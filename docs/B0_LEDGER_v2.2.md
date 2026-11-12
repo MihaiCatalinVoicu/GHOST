@@ -298,3 +298,7 @@ Forensicul a arătat exact: prima scriere drop diferă cu **2 secunde** între g
 ### MD-1 FIX executat 2026-11-12
 
 `CheckRound.run` sare peste selecția de verificare pentru namespace-urile cu `Consumer.DM`: recipisa validată (ack) este verificarea pentru perechile DM — check-ul de 60s nu mai rulează, eliminând lanțul cross-session al depozitelor unui expeditor la relay (L7-D5, §13.4 linia 1518). Rezolvarea copiilor ambigue (INDETERMINATE) rămâne neatinsă (corectitudine, nu disponibilitate). Disponibilitatea rămâne acoperită de setul ≥2 relay-uri; riscul rezidual (un relay abandonează un blob acked fără check) se declară în LIMITE la revizuire. Test nou `aDmPairsAckedStoresAreVerifiedByTheReceiptAlone` (pereche DM write-only: store-urile ajung, zero apeluri CHECK) + MediaFairnessTest 11/11 + DecisionTest 14/14 verzi.
+
+### A-2 FIX executat 2026-11-12
+
+Lanț complet de completare pentru wakelock-ul alarmei: `ExpiryAlarmReceiver.onAlarm` devine `((onDone) -> Unit)?` — receiver-ul amână `pending.finish()` până la onDone (cu eliberare la excepție și la sistem-timeout); `MessagingWiring.onAlarm(onDone)` îl propagă pe calea cu stack; `DmActor.wake(..., onDone)` îl rulează în `finally` pe firul actorului după runPass (căile coalescate îl apelează imediat — pass-ul deja era programat). Calea fără stack: onDone după postarea open-ului (procesul e viu din broadcast). Mock-urile de test actualizate; wiring tests 25/8s/6 verzi. Sweep-ul de mesaje expirate nu mai poate fi omorât de sleep între alarmă și pass.
