@@ -1023,10 +1023,13 @@ pub fn ni1d(f: &mut Findings, a: &Outcome, b: &Outcome) {
                 .zip(db.iter())
                 .position(|(x, y)| x != y)
                 .unwrap_or(da.len().min(db.len()));
+            // The first differing write, both worlds: the forensic detail of the leak.
+            let wa = da.get(k).map(|w| format!("t={} relay={} len={}", w.0, w.1, w.2));
+            let wb = db.get(k).map(|w| format!("t={} relay={} len={}", w.0, w.1, w.2));
             format!(
-                "drop writes differ at write {k} ({} and {} writes)",
+                "drop writes differ at write {k} ({} and {} writes): A {wa:?} vs B {wb:?}",
                 da.len(),
-                db.len()
+                db.len(),
             )
         },
     );
