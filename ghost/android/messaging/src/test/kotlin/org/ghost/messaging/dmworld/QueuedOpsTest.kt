@@ -68,18 +68,24 @@ class QueuedOpsTest {
             val joins = Joins(world)
             val jd6 = joins.jd6()
             assertTrue(jd6.failureMessage(), jd6.passed)
-            // C's two ops: past their deadline at its next round, closed and never stored.
-            assertTrue("C stored nothing into D's inbox: ${storesOf(2, 3).map { it.second - t0 }}", storesOf(2, 3).isEmpty())
-            // JD5 sees A's TIMER_SET (it skipped a store without a cause) and finds on it exactly the
-            // open defect NI-DM2 declares (§22.21 item 2): R-T3 on the pending path. When R-T3 is fixed,
-            // this expectation goes with NiDm2.OPEN_DEFECTS.
+            // C's ops at its next round (minute 90): the TEXT is past its deadline (author + 1 h,
+            // the 5-minute timer's bucket) and is closed, never stored. The TIMER_SET carries
+            // R-T3's larger bucket — max(old 7 d, new 1 h) = 7 d, fixed with the item at its send
+            // (§22.21 item 2's fix) — so its deadline is far ahead and the flush stores it. (Before
+            // the R-T3 fix both were closed here: the flush recomputed the TTL from the L0's own
+            // timer code, the new timer alone.)
+            val c = storesOf(2, 3)
+            assertTrue("C's TIMER_SET was stored at its next round: ${c.map { it.second - t0 }}", c.all { it.second == t0 + 90 * DmWorld.MINUTE })
+            // JD5 with the R-T3 fix: the pending path stores the TIMER_SET under the larger bucket,
+            // so the violation NI-DM2 used to declare (§22.21 item 2) no longer reproduces — the
+            // list is empty, as the test's own note predicted when the defect was declared.
             val jd5 = joins.jd5()
-            assertEquals(
-                listOf("a TIMER_SET from code 4 to 1 stored with TTL 3600, R-T3 says the larger bucket, 604800"),
-                jd5.violations,
-            )
-            assertEquals("A's two ops were stored after the sweep deleted their rows", 2, world.relay.storesAfterSweep)
-            assertEquals("C's two ops were closed at its next round, past their deadline", 2, world.relay.closedPastDeadline)
+            assertTrue("JD5 sees no R-T3 violation after the fix: ${jd5.violations}", jd5.violations.isEmpty())
+            // R-T3's fix added C's TIMER_SET to the after-sweep stores (its 7-day bucket survives
+            // where the old flush closed it with the text): A's two ops and C's TIMER_SET.
+            assertEquals("A's two ops and C's TIMER_SET were stored after the sweep deleted their rows", 3, world.relay.storesAfterSweep)
+            // C's text is closed past its deadline; C's TIMER_SET (R-T3's 7-day bucket) is not.
+            assertEquals("C's text op was closed at its next round, past its deadline", 1, world.relay.closedPastDeadline)
         }
     }
 }
