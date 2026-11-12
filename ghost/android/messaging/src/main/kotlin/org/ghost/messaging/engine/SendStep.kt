@@ -1165,6 +1165,11 @@ internal class SendStep(
             Sent(Outcome.NO_REPLICAS, establish = false)
         } catch (e: StorageFullException) {
             Sent(Outcome.STORAGE_FULL, establish = false)
+        } finally {
+            // CRY-P9-03 (review Faza 9): the L0 carries the classical pair root in clear — it must
+            // not outlive the send's transaction in the JVM heap. Every use above (the sealed
+            // l0_env, the session-sealed op) copied what it needed; the array is dead here.
+            l0.l0.fill(0)
         }
     }
 

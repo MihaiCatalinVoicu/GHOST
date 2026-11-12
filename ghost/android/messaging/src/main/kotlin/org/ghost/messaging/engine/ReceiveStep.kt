@@ -655,6 +655,9 @@ internal class ReceiveStep(
 
         // R8: the canonical L0. The new session state commits anyway — the message key was used.
         val decoded = envelopes.decodeContent(contact.contactId, plaintext)
+        // CRY-P9-03: the L0 carries the pair root in clear; the decode copied what it needed
+        // (native l0Decode returns fresh arrays), so the JVM's copy dies here, on every path below.
+        plaintext.fill(0)
         val content = when (decoded) {
             is DmContent.DecodeResult.Ok -> decoded.content
             DmContent.DecodeResult.Unavailable -> return Result.CRYPTO_UNAVAILABLE
