@@ -1305,7 +1305,24 @@ pub fn variant(
     population_check(&mut f, &w_test, scale);
     e30(&mut f, &w_test);
     joins(&mut f, &w_test);
-    let (attackers, _, _) = train(&w_train, seeds.0);
+    let (attackers, inv_tr, clu_tr) = train(&w_train, seeds.0);
+    // S2 twin control (2026-11-13, pair-3 S2 investigation): the same statistic on the train
+    // world — identical invoice ids (NI-2), other token crypto. A dependence present in both
+    // worlds is structural (values differ per twin); one present only in the test world is a
+    // value-level fluke of that realization. Diagnostic only: stderr + target/t2/s2-train.txt.
+    let s2_train = stats::s2(&inv_tr, &clu_tr, seeds.0);
+    eprintln!(
+        "S2 train-world control: n={} max-T {:.2} ({}), exceeded {} of {}",
+        s2_train.n, s2_train.t_max, s2_train.strongest, s2_train.exceeded, stats::B
+    );
+    {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/t2/s2-train.txt");
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let _ = std::fs::write(&path, &s2_train.dump);
+    }
     let s4 = statistics(&mut f, &attackers, &w_test, seeds.1);
     ni1(&mut f, &w_test, &w_ni1);
     ni1_cells(&mut f, &w_test, &w_ni1x, &moved);

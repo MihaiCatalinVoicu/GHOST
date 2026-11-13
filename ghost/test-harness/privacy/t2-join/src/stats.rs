@@ -956,16 +956,18 @@ pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
         strongest: format!("{} x {}", x_names[pairs[at].0], y_names[pairs[at].1]),
         dump: String::new(),
     };
-    if exceeded == 0 {
-        out.dump = s2_dump(&xs, &ys, &x_names, &y_names, &pairs, &obs, &mean, &sd, &groups, &sel);
-    }
+    // Always populated: the twin-world control (the gate prints the train world's table too)
+    // needs the per-pair t-values even when the check passes.
+    out.dump = s2_dump(&xs, &ys, &x_names, &y_names, &pairs, &obs, &mean, &sd, &groups, &sel, clusters);
     out
 }
 
-/// The S2 failure diagnostic: enough to tell a real dependence from a permutation artefact without
+/// The S2 diagnostic: enough to tell a real dependence from a permutation artefact without
 /// re-running the world — the per-pair t table (is the strongest pair alone elevated?), the
 /// strongest pair's contingency (which cells carry the dependence?), the stratum-size histogram
-/// (does the null have enough exchangeability?) and the raw rows as CSV for offline re-analysis.
+/// (does the null have enough exchangeability?) and the raw rows as CSV for offline re-analysis
+/// (with each invoice's jacobi(em) (plus, n), its jacobi(B) z-bin and its namespace count, so the
+/// vehicle — values vs counts vs client properties — is decidable offline).
 #[allow(clippy::too_many_arguments)]
 fn s2_dump(
     xs: &[Vec<u32>],
@@ -978,6 +980,7 @@ fn s2_dump(
     sd: &[f64],
     groups: &BTreeMap<(u64, u64), Vec<usize>>,
     sel: &[&InvoiceFacts],
+    clusters: &[ClusterFacts],
 ) -> String {
     let k = pairs.len();
     let mut d = String::new();
@@ -1027,7 +1030,7 @@ fn s2_dump(
             .collect::<Vec<_>>()
             .join(" ")
     ));
-    d.push_str("csv: stratum,base,d_act,client,x,y,t_sig\n");
+    d.push_str("csv: base,d_act,client,x,y,zj,plus,n,ns,t_sig\n");
     let mut stratum_of = vec![(0u64, 0u64); sel.len()];
     for (key, members) in groups {
         for &m in members {
@@ -1036,11 +1039,17 @@ fn s2_dump(
     }
     for (m, i) in sel.iter().enumerate() {
         let (base, d_act) = stratum_of[m];
+        let c = &clusters[i.client as usize];
+        let (plus, n_red) = jac_em_counts(c, i.base);
         d.push_str(&format!(
-            "{base},{d_act},{},{},{},{}\n",
+            "{base},{d_act},{},{},{},{},{},{},{},{}\n",
             i.client,
             xs[xa][m],
             ys[yb][m],
+            z_bin(i.jac_b_counts),
+            plus,
+            n_red,
+            (c.namespaces as u32).min(8),
             i.t_sig.unwrap_or(0)
         ));
     }
