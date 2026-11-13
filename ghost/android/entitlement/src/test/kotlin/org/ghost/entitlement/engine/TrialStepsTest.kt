@@ -32,10 +32,11 @@ class TrialStepsTest {
         assertEquals(listOf("call"), w.userCalls.log)
         val call = w.issuer.named("redeemInvite").single()
         assertEquals(WEEK0.toString(), call.args[2])
-        assertEquals("12", call.args[4])
+        // NI-1d fix #3 (2026-11-13): 12 trial tokens + 15 drop-window tokens (3 slots × 5 weeks).
+        assertEquals("27", call.args[4])
         assertEquals(ActivationState.ACTIVE, w.engine.activationState())
         val access = w.tokenRows("access")
-        assertEquals(12, access.size)
+        assertEquals(27, access.size)
         assertTrue(access.all { it.eligibleMinute == Time.floorMinute(T0) })
         assertEquals(1L, w.count("SELECT count(*) FROM invite_nonces"))
         val invite = Invite.parseAndVerify(text, T0, { 739L }, Invite.InMemoryNonceStore())

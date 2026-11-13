@@ -174,6 +174,17 @@ internal class TestCrypto : TokenCryptoPort {
         return EntitlementCrypto.Layout(TestBytes.sha256("layout:$product:$index".toByteArray()), positions)
     }
 
+    // NI-1d fix #3 (2026-11-13): the trial layout with the invitee's drop window — the REAL digest
+    // (the HarnessCalls `layout` helper checks it against `Batch.layoutDigest` of the drop-aware
+    // layout); every other product keeps the fake digest above.
+    override fun layout(product: Int, index: Long, dropSlots: List<Int>): EntitlementCrypto.Layout {
+        if (product == EntitlementCrypto.PRODUCT_TRIAL && dropSlots.isNotEmpty()) {
+            val positions = Layouts.trialWithDrop(scheduleSummary(), index, dropSlots)
+            return EntitlementCrypto.Layout(org.ghost.entitlement.harness.Batch.layoutDigest(positions), positions.size)
+        }
+        return layout(product, index)
+    }
+
     override fun verifyToken(token: ByteArray, kind: Int): EntitlementCrypto.VerifiedToken? = known[token.toList()]?.takeIf { it.kind == kind }
 
     fun register(token: ByteArray, kind: Int, epoch: Long, slot: Int? = null) {
