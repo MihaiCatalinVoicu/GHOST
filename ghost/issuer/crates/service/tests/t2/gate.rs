@@ -302,6 +302,17 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
         ),
     );
     let s2 = stats::s2(&inv, &clu, seed);
+    if s2.exceeded == 0 && !s2.dump.is_empty() {
+        // Failure diagnostic (NI-1d fix #3 regression watch): stderr for the log and a file next
+        // to the report for offline analysis.
+        eprintln!("{}", s2.dump);
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/t2/s2-dump.csv");
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let _ = std::fs::write(&path, &s2.dump);
+    }
     f.check(
         "S2",
         s2.exceeded > 0 && s2.n >= FLOOR_S12,

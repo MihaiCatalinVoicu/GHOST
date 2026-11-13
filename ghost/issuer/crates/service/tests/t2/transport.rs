@@ -376,6 +376,10 @@ impl IssuerRpc for IssuerLink<'_> {
         let mut request = vec![f("invite_token", &req.invite_token)];
         request.extend(blocks("blinded", &req.blinded));
         let mut ints = vec![("base_week", req.base_week)];
+        // NI-1d fix #3 (2026-11-13): the invitee's drop window, so the harness reconstructs the
+        // drop-aware trial layout (J5c). Ints, not byte fields: a 4-byte slot value would join
+        // relay-side windows by chance in J1-J4.
+        ints.extend(req.drop_slots.iter().map(|&s| ("drop_slot", u64::from(s))));
         match &r {
             Ok(resp) => {
                 ints.push(("result", resp.result as u64));

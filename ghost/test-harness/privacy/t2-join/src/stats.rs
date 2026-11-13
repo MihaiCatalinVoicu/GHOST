@@ -822,6 +822,9 @@ pub struct S2 {
     pub exceeded: usize,
     pub p: f64,
     pub strongest: String,
+    /// Failure diagnostic (populated when `exceeded == 0`): the per-pair t table, the strongest
+    /// pair's contingency, the stratum-size histogram and the raw (stratum, x, y) rows as CSV.
+    pub dump: String,
 }
 
 pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
@@ -945,13 +948,103 @@ pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
     };
     let (t_obs, at) = t(&obs);
     let exceeded = perm_mi.iter().filter(|m| t(m).0 >= t_obs).count();
-    S2 {
+    let mut out = S2 {
         n,
         t_max: t_obs,
         exceeded,
         p: (1 + exceeded) as f64 / (1 + B) as f64,
         strongest: format!("{} x {}", x_names[pairs[at].0], y_names[pairs[at].1]),
+        dump: String::new(),
+    };
+    if exceeded == 0 {
+        out.dump = s2_dump(&xs, &ys, &x_names, &y_names, &pairs, &obs, &mean, &sd, &groups, &sel);
     }
+    out
+}
+
+/// The S2 failure diagnostic: enough to tell a real dependence from a permutation artefact without
+/// re-running the world — the per-pair t table (is the strongest pair alone elevated?), the
+/// strongest pair's contingency (which cells carry the dependence?), the stratum-size histogram
+/// (does the null have enough exchangeability?) and the raw rows as CSV for offline re-analysis.
+#[allow(clippy::too_many_arguments)]
+fn s2_dump(
+    xs: &[Vec<u32>],
+    ys: &[Vec<u32>],
+    x_names: &[&str; 5],
+    y_names: &[&str; 5],
+    pairs: &[(usize, usize)],
+    obs: &[f64],
+    mean: &[f64],
+    sd: &[f64],
+    groups: &BTreeMap<(u64, u64), Vec<usize>>,
+    sel: &[&InvoiceFacts],
+) -> String {
+    let k = pairs.len();
+    let mut d = String::new();
+    let mut ranked: Vec<(f64, usize)> = (0..k)
+        .map(|p| (((obs[p] - mean[p]) / sd[p]), p))
+        .collect();
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    d.push_str("S2 failure diagnostic\npair t-values (descending):\n");
+    for (t, p) in &ranked {
+        d.push_str(&format!(
+            "  {:+.2}  {} x {}\n",
+            t, x_names[pairs[*p].0], y_names[pairs[*p].1]
+        ));
+    }
+    let (xa, yb) = pairs[ranked[0].1];
+    let mut cont = [[0usize; 9]; 9];
+    for (&x, &y) in xs[xa].iter().zip(&ys[yb]) {
+        cont[x as usize][y as usize] += 1;
+    }
+    d.push_str(&format!(
+        "contingency (rows: {}, cols: {}):\n",
+        x_names[xa], y_names[yb]
+    ));
+    for row in cont.iter().take(9) {
+        if row.iter().all(|&c| c == 0) {
+            continue;
+        }
+        d.push_str(&format!(
+            "  {}\n",
+            row.iter()
+                .map(|c| format!("{c:5}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let mut sizes: Vec<usize> = groups.values().map(|g| g.len()).collect();
+    sizes.sort_unstable();
+    let mut hist: BTreeMap<usize, usize> = BTreeMap::new();
+    for s in &sizes {
+        *hist.entry((*s).min(10)).or_insert(0) += 1;
+    }
+    d.push_str(&format!(
+        "strata: {} total, sizes (capped at 10): {:?}\n",
+        sizes.len(),
+        hist.iter()
+            .map(|(s, c)| format!("{s}:{c}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    d.push_str("csv: stratum,base,d_act,client,x,y,t_sig\n");
+    let mut stratum_of = vec![(0u64, 0u64); sel.len()];
+    for (key, members) in groups {
+        for &m in members {
+            stratum_of[m] = *key;
+        }
+    }
+    for (m, i) in sel.iter().enumerate() {
+        let (base, d_act) = stratum_of[m];
+        d.push_str(&format!(
+            "{base},{d_act},{},{},{},{}\n",
+            i.client,
+            xs[xa][m],
+            ys[yb][m],
+            i.t_sig.unwrap_or(0)
+        ));
+    }
+    d
 }
 
 // -------------------------------------------------------------------------------------------------

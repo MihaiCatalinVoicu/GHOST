@@ -42,8 +42,8 @@ pub fn invoices(acc: &Accumulator) -> HashMap<Vec<u8>, (u64, bool)> {
 type SignWork = (Layout, Vec<Vec<u8>>, Vec<Vec<u8>>, String);
 
 /// J5 c and J7 c: every blind signature the issuer returned is `s'^e ≡ B (mod n)` under the ES key of
-/// its position (the layout of the invoice's base week, the trial's base week, the refreshed
-/// credit's epoch).
+/// its position (the layout of the invoice's base week, the trial's base week — with the invitee's
+/// drop window when the request names its drop slots, NI-1d fix #3 —, the refreshed credit's epoch).
 pub fn j5c(acc: &Accumulator) -> Vec<Hit> {
     let inv = invoices(acc);
     let mut work: Vec<SignWork> = Vec::new();
@@ -65,9 +65,23 @@ pub fn j5c(acc: &Accumulator) -> Vec<Hit> {
                 .req("invoice_id")
                 .and_then(|id| inv.get(id))
                 .and_then(|&(base, xmr)| Layout::pack(&acc.schedule, base, xmr).ok()),
-            IssuerOp::RedeemInvite => r
-                .int("base_week")
-                .and_then(|b| Layout::trial(&acc.schedule, b).ok()),
+            IssuerOp::RedeemInvite => {
+                // NI-1d fix #3 (2026-11-13): the trial layout with the invitee's drop window when
+                // the request names its drop slots (recorded as ints by the T2 transport).
+                let slots: Vec<u8> = r
+                    .ints
+                    .iter()
+                    .filter(|(n, _)| *n == "drop_slot")
+                    .map(|(_, v)| *v as u8)
+                    .collect();
+                r.int("base_week").and_then(|b| {
+                    if slots.is_empty() {
+                        Layout::trial(&acc.schedule, b).ok()
+                    } else {
+                        Layout::trial_with_drop(&acc.schedule, b, &slots).ok()
+                    }
+                })
+            }
             IssuerOp::RefreshCredit => r
                 .req("credit")
                 .and_then(|c| Token::parse(c).ok())
