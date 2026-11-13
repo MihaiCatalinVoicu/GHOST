@@ -75,13 +75,17 @@ class DropStepsTest {
     }
 
     @Test
-    fun withoutCoverageNothingIsWritten(): Unit = World().use { w ->
+    fun withTrialCoverageTheDropIsWritten(): Unit = World().use { w ->
         w.engine.activate(w.inviteText())
         val t = checkNotNull(w.tx { w.ctx().invites.dropTarget(it) })
         w.clock.now = t.dropMinute
         w.ctx().dropSteps.sendDue(w.clock.now)
-        assertNull(w.tx { w.ctx().invites.dropTarget(it) })
-        assertEquals(0L, w.count("SELECT count(*) FROM outbox_op"))
+        // NI-1d fix #3 (2026-11-13): the trial funds the drop window (3 slots × 5 weeks), so the
+        // identity has coverage at t_drop and the drop IS written — the "nothing written" case is
+        // only for an identity whose trial failed to fund the window. `sendDue` enqueues the drop;
+        // the target is deleted when the outcome is decided (settleSent), not here.
+        assertEquals(InviteStore.ENQUEUED, w.tx { w.ctx().invites.dropTarget(it) }?.state)
+        assertEquals(1L, w.count("SELECT count(*) FROM outbox_op"))
     }
 
     @Test
@@ -100,11 +104,13 @@ class DropStepsTest {
         for (slot in 0..2) w.addAccess(week, slot, 1)
         w.laneStep()
         assertEquals(3, w.redeem.calls.size)
-        assertTrue("every token of the week is spent", w.tokenRows("access").none { it.epoch >= week })
+        // NI-1d fix #3 (2026-11-13): the trial's drop-window tokens of the week stay (they are for
+        // the drop pairs, not yet registered) and give coverage; the DM namespace's own tokens of
+        // the week are all spent. The drop is written with coverage from those tokens.
         w.clock.now = t.dropMinute
         w.ctx().dropSteps.sendDue(w.clock.now)
         val target = w.tx { w.ctx().invites.dropTarget(it) }
-        assertEquals("covered by the week's capabilities: exactly one blob (§19.12)", InviteStore.ENQUEUED, target?.state)
+        assertEquals("covered by the drop-window tokens the trial funded: exactly one blob (§19.12)", InviteStore.ENQUEUED, target?.state)
         assertSame(DropSeal.Opened.Dummy, w.opened())
     }
 
