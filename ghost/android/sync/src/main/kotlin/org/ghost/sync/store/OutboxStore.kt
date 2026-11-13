@@ -349,6 +349,20 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
                 "WHERE operation_id = ?2 AND relay_id = ?3 AND inflight = 1 AND state IN ('pending', 'wait_capability')",
             listOf(Time.floorMinute(now), operationId.raw, relay.value),
         )
+        // MD-1 (2026-11-13, completion found by the JD8 control): for a DM namespace the validated
+        // receipt IS the verification — the acked delivery is promoted at once. The 60-second check
+        // that would have verified it only chained the sender's deposits across sessions at the
+        // relay (L7-D5); without this promotion the op never reached 'sent' (D1 counts 'verified'
+        // deliveries only) and no DM message ever showed SENT. The availability question the check
+        // answered stays covered by the two-relay write set.
+        if (acked == 1) {
+            sql.execUpdate(
+                "UPDATE outbox_delivery SET state = 'verified' WHERE operation_id = ?1 AND relay_id = ?2 AND state = 'acked' " +
+                    "AND EXISTS (SELECT 1 FROM outbox_op o JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
+                    "WHERE o.operation_id = outbox_delivery.operation_id AND n.consumer = ?3)",
+                listOf(operationId.raw, relay.value, Consumer.DM.code),
+            )
+        }
         val late = if (acked == 0) {
             sql.execUpdate(
                 "UPDATE outbox_delivery SET inflight = 0, copy_hour = COALESCE(copy_hour, lease_hour) " +

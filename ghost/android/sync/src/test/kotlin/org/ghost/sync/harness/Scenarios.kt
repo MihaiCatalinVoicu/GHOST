@@ -587,9 +587,11 @@ internal class ScenarioG : Scenario("S-G") {
         val c = w.relay("C", 3)
         val d = w.relay("D", 4, hostile = Hostile.MALFORMED_STORE)
         val erin = subject(w, "erin")
-        val ns1 = erin.namespace("dm1", listOf(a, b, c, d), listen = false)
+        // MD-1 (2026-11-13): on a DM pair the receipt verifies at once and no check follows, so
+        // the ack-and-drop strike path this scenario exercises runs on CHANNEL pairs.
+        val ns1 = erin.namespace("dm1", listOf(a, b, c, d), listen = false, consumer = Consumer.CHANNEL)
         listOf(a, b, c, d).forEach { erin.capability(it, ns1) }
-        val ns2 = erin.namespace("dm2", listOf(a, b), listen = false)
+        val ns2 = erin.namespace("dm2", listOf(a, b), listen = false, consumer = Consumer.CHANNEL)
         listOf(a, b).forEach { erin.capability(it, ns2) }
         w.at(0, "enqueue op1") { erin.enqueue("op1", ns1) }
         w.at(0, "enqueue op2") { erin.enqueue("op2", ns2) }

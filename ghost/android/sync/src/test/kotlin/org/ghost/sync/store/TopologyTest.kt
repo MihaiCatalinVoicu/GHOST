@@ -56,8 +56,10 @@ class TopologyTest {
     fun removingARelayFailsItsOpenDeliveriesAndKeepsTheirCopyHours(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.standardSet()
         val op = w.enqueue(1, ns)
+        // A copy that may exist on relay 0 (MD-1, 2026-11-13: a receipt-verified delivery is no
+        // longer open, so the open-delivery case is the ambiguous one).
         w.tx { w.outbox.lease(it, op, relays[0], w.now, 60) }
-        w.tx { w.outbox.recordReceipt(it, op, relays[0], w.now + 7 * DAY, w.now) }
+        w.tx { w.outbox.recordAmbiguous(it, op, relays[0], w.now) }
         w.tx { w.outbox.parkWithoutCapability(it, w.now) }
         w.raw("UPDATE relay_capability SET state = 'rejected' WHERE relay_id = ?", relays[1])
         w.tx { w.outbox.parkWithoutCapability(it, w.now) }
@@ -159,7 +161,11 @@ class TopologyTest {
 
     @Test
     fun progressCountsAcknowledgedAndVerifiedOperators(): Unit = SyncWorld().use { w ->
-        val (ns, relays) = w.standardSet()
+        // MD-1 (2026-11-13): on a DM pair the receipt verifies at once, so the acked/verified
+        // distinction this test counts runs on a CHANNEL pair.
+        val relays = w.relays(1, 2, 3)
+        val ns = w.namespace(1, relays, consumer = Consumer.CHANNEL)
+        relays.forEach { w.capability(it, ns) }
         val op = w.enqueue(1, ns)
         val p0 = w.stores.outbox.progress(op)!!
         assertEquals(0, p0.acknowledgedOperators)

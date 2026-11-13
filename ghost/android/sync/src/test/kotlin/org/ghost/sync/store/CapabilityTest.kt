@@ -301,9 +301,10 @@ class CapabilityTest {
     fun anAcknowledgedDeliveryWithoutAWriteTokenAsksForOne(): Unit = SyncWorld().use { w ->
         // Seeded world 18694: an ack awaiting verification on a relay whose write token is gone
         // must ask for a new token; otherwise no check can ever verify or strike it and its op
-        // stays undecided for ever.
+        // stays undecided for ever. (MD-1, 2026-11-13: on a DM pair the receipt verifies at once,
+        // so the case runs on a CHANNEL pair, where the ack still awaits the check.)
         val relays = w.relays(1, 2)
-        val writeOnly = w.namespace(2, relays, listen = false)
+        val writeOnly = w.namespace(2, relays, listen = false, consumer = Consumer.CHANNEL)
         relays.forEach { w.capability(it, writeOnly, CapabilityKind.WRITE) }
         val op = w.enqueue(1, writeOnly)
         w.tx { w.outbox.lease(it, op, relays[0], w.now, 60) }

@@ -186,7 +186,8 @@ class SessionTest {
         assertEquals(1, w.net.callsOf(TestRelays.Kind.STORE).size)
         val stored = relays.filter { w.net.holds(w.address(it), ns, w.hashOf(1)) }
         assertEquals(1, stored.size)
-        assertEquals("acked", w.state(op, stored.single()))
+        // MD-1 (2026-11-13): the receipt verifies a DM delivery at once (receipt-as-verification).
+        assertEquals("verified", w.state(op, stored.single()))
         assertEquals(0L, w.count("outbox_delivery", "inflight = 1"))
         // A new session may start once the previous one finished.
         w.engine.startSession(SessionKind.FOREGROUND)
@@ -229,7 +230,8 @@ class SessionTest {
         w.clock.wallOffsetSeconds = -86_400
         driver.runUntil(2 * MINUTE)
         assertEquals(6, w.net.callsOf(TestRelays.Kind.STORE).size)
-        for (r in relays) assertEquals("acked", w.state(op, r))
+        // MD-1 (2026-11-13): the receipt verifies a DM delivery at once (receipt-as-verification).
+        for (r in relays) assertEquals("verified", w.state(op, r))
     }
 
     @Test

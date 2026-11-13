@@ -197,6 +197,10 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
             // blob longer than the TTL it was given, its clock allowed for.
             if (receipt.expiry > ModelRelay.ceilHour(now + ttlSeconds) + RetentionPolicy.SKEW_SECONDS) fail("malformed_response")
             if (receipt.expiry + RetentionPolicy.SKEW_SECONDS < now + ttlSeconds) fail("not_stored")
+            // MD-1 (2026-11-13): a validated receipt is the relay showing the hash — for a DM pair
+            // it is the verification itself (receipt-as-verification), so OUT-4's "verified" must
+            // accept it beside a list or a check.
+            world.records.inventory(client.name, node.name, ns, hash)
             event(EventKind.RELAY_AFTER_RESPONSE, info, node, capability)?.let { fail(it) }
             call.result = "receipt@${world.clock.millis}"
             return StoreReceipt(receipt.hash, receipt.expiry)

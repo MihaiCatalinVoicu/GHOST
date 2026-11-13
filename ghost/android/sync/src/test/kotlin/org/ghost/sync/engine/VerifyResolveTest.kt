@@ -1,6 +1,7 @@
 package org.ghost.sync.engine
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.StatusFlag
 import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.engine.EngineWorld.Companion.HOUR
@@ -24,7 +25,11 @@ class VerifyResolveTest {
 
     @Test
     fun anAckAndDropRelayIsRepairedOnceThenFailedAtTheSecondStrike(): Unit = EngineWorld().use { w ->
-        val (ns, relays) = w.standardSet(listen = false)
+        // MD-1 (2026-11-13): on a DM pair the receipt verifies at once and no check follows, so
+        // the ack-and-drop strike path runs on a CHANNEL pair, where the ack still awaits the check.
+        val relays = w.relays(1, 2, 3)
+        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.CHANNEL)
+        relays.forEach { w.capability(it, ns) }
         val dropper = w.address(relays[0])
         val h = w.hashOf(1)
         // The relay acknowledges every store and has dropped the blob by the time anyone checks.

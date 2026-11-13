@@ -1,5 +1,6 @@
 package org.ghost.sync.store
 
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.Outcome
@@ -30,9 +31,22 @@ class DecisionTest {
     private fun SyncWorld.list(relay: RelayId, ns: NamespaceId, vararg seeds: Int) =
         tx { inbox.commitPage(it, relay, ns, seeds.map { s -> hashOf(s) }, ByteArray(0), ByteArray(0), now) }
 
+    /**
+     * MD-1 (2026-11-13): a validated receipt verifies a DM delivery at once (receipt-as-
+     * verification), so the acked-then-verified mechanics some of these tests exercise no longer
+     * exist on a DM pair; those run on a CHANNEL pair, where the receipt acks and a later list or
+     * check verifies.
+     */
+    private fun SyncWorld.channelSet(listen: Boolean = true): Pair<NamespaceId, List<RelayId>> {
+        val relays = relays(1, 2, 3)
+        val ns = namespace(1, relays, listen, consumer = Consumer.CHANNEL)
+        relays.forEach { capability(it, ns) }
+        return Pair(ns, relays)
+    }
+
     @Test
     fun listingVerifiesIdleOwnDeliveriesOfUndecidedOpsOnly(): Unit = SyncWorld().use { w ->
-        val (ns, relays) = w.standardSet()
+        val (ns, relays) = w.channelSet()
         val op = w.enqueue(1, ns)
         w.ack(op, relays[0])
         w.tx { w.outbox.lease(it, op, relays[1], w.now, 60) } // in flight: not promoted
@@ -72,7 +86,7 @@ class DecisionTest {
 
     @Test
     fun checkVerificationAndTwoStrikes(): Unit = SyncWorld().use { w ->
-        val (ns, relays) = w.standardSet(listen = false)
+        val (ns, relays) = w.channelSet(listen = false)
         val op = w.enqueue(1, ns)
         w.ack(op, relays[0])
         // Not yet 60 s old.
@@ -101,7 +115,7 @@ class DecisionTest {
 
     @Test
     fun ackAgeUsesTheFallbackAndTheClockClamp(): Unit = SyncWorld().use { w ->
-        val (ns, relays) = w.standardSet()
+        val (ns, relays) = w.channelSet()
         val op = w.enqueue(1, ns)
         w.ack(op, relays[0])
         w.clock.advance(9 * MINUTE)
@@ -147,13 +161,22 @@ class DecisionTest {
         val b = w.enqueue(2, ns)
         relays.forEach { r -> w.tx { w.outbox.failDelivery(it, b, r, w.now) } }
         assertEquals("failed", w.outcome(b))
-        // indeterminate: an acked copy on a relay that then left the set.
+        // indeterminate: a copy that may exist on a relay that then left the set, unresolvable by
+        // the time it could be settled. (MD-1, 2026-11-13: an acked copy is verified at the
+        // receipt now, so the undecided case is the ambiguous one — a store that may have landed,
+        // never acknowledged — and the op waits for the resolution check until the copy's window
+        // passes.)
         val c = w.enqueue(3, ns)
-        w.ack(c, relays[0])
+        w.ambiguous(c, relays[0])
         w.tx { w.outbox.failDelivery(it, c, relays[1], w.now) }
         w.tx { w.outbox.failDelivery(it, c, relays[2], w.now) }
         assertEquals("pending", w.outcome(c))
         w.tx { w.stores.namespaces.setRelays(it, ns, setOf(relays[1], relays[2])) }
+        // The failed copy is still resolvable (its window is open): a check can settle it.
+        assertEquals("pending", w.outcome(c))
+        // copy_hour + ttl − σ = T0 + 4 d: no longer resolvable, so D2 decides.
+        w.clock.now = SyncWorld.T0 + 4 * DAY
+        assertTrue(w.tx { w.outbox.decide(it, c, w.now) })
         assertEquals("indeterminate", w.outcome(c))
         assertFalse(w.hasPayload(c))
         // Decided once: D1/D2 never touch it again.
@@ -234,12 +257,14 @@ class DecisionTest {
         assertEquals("wait_capability", w.state(op, relays[2]))
         w.clock.now = SyncWorld.T0 + 7 * DAY
         // Window expired; relay 1's unacked copy is no longer resolvable (copy_hour + ttl − σ = T0 + 4 d < now) and
-        // relay 0 is acked (never resolvable), so both open deliveries close.
+        // relay 0 is verified (MD-1, 2026-11-13: verified at the receipt, never resolvable), so both open deliveries close.
         assertEquals(2, w.tx { w.outbox.close(it, w.now) })
         assertEquals("closed", w.state(op, relays[1]))
         assertEquals("closed", w.state(op, relays[2]))
-        assertEquals("acked", w.state(op, relays[0]))
-        assertEquals("pending", w.outcome(op))
+        assertEquals("verified", w.state(op, relays[0]))
+        // MD-1: with relay 0 verified and nothing live, D2 decides degraded (one verified operator
+        // of the required two) instead of holding the op pending for a verification that no longer comes.
+        assertEquals("degraded", w.outcome(op))
     }
 
     @Test

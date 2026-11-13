@@ -1,6 +1,7 @@
 package org.ghost.sync.store
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.store.SyncWorld.Companion.DAY
 import org.ghost.sync.store.SyncWorld.Companion.HOUR
@@ -116,7 +117,8 @@ class StoreAttemptTest {
         val expiry = SyncWorld.T0 + 7 * DAY + HOUR
         w.hints.clear()
         assertEquals(ReceiptResult.ACKED, w.tx { w.outbox.recordReceipt(it, op, relays[0], expiry, w.now) })
-        assertEquals("acked", w.state(op, relays[0]))
+        // MD-1 (2026-11-13): the receipt verifies a DM delivery at once (receipt-as-verification).
+        assertEquals("verified", w.state(op, relays[0]))
         assertEquals(0L, w.delivery(op, relays[0], "inflight"))
         assertEquals(SyncWorld.T0, w.copyHour(op, relays[0]))
         assertEquals(Time.floorMinute(w.now), w.delivery(op, relays[0], "ack_minute"))
@@ -203,7 +205,11 @@ class StoreAttemptTest {
 
     @Test
     fun anAckedCopyIsNeverForgotten(): Unit = SyncWorld().use { w ->
-        val (ns, relays) = w.standardSet()
+        // MD-1 (2026-11-13): on a DM pair the receipt verifies at once, so the acked-then-struck
+        // flow runs on a CHANNEL pair, where the ack still awaits the check.
+        val relays = w.relays(1, 2, 3)
+        val ns = w.namespace(1, relays, consumer = Consumer.CHANNEL)
+        relays.forEach { w.capability(it, ns) }
         val op = w.enqueue(1, ns)
         w.tx { w.outbox.lease(it, op, relays[0], w.now, 60) }
         w.tx { w.outbox.recordReceipt(it, op, relays[0], w.now + 7 * DAY, w.now) }
