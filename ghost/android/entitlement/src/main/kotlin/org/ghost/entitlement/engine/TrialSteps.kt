@@ -35,6 +35,7 @@ internal class TrialSteps(private val c: EngineContext) {
         val base: Long,
         val digest: ByteArray,
         val positions: Int,
+        val dropSlots: List<Int>,
     )
 
     private sealed class Outcome {
@@ -60,16 +61,11 @@ internal class TrialSteps(private val c: EngineContext) {
         if (c.identity.hasIdentity()) return ActivationResult.ALREADY_ACTIVE
         val base = Grid.week(now)
         if (!c.covers(base, Layouts.TRIAL_WEEKS)) return ActivationResult.UNAVAILABLE
-        val layout = try {
-            c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, base)
-        } catch (e: NetworkException) {
-            return ActivationResult.UNAVAILABLE
-        }
         val id = c.random.bytes(EngineContext.ID_BYTES)
         val seed = c.random.bytes(EngineContext.SECRET_BYTES)
         val dropMinute = Time.floorMinute(Grid.start(base + DROP_FIRST_WEEK) + minOf(DROP_SPAN - 1, (c.random.uniform() * DROP_SPAN).toLong()))
         val invite = try {
-            c.tx { tx -> record(tx, text, now, id, seed, base, layout.digest(), dropMinute) }
+            c.tx { tx -> record(tx, text, now, id, seed, base, dropMinute) }
         } catch (e: Invite.Rejection) {
             return refusal(e)
         } catch (e: NetworkException) {
@@ -81,15 +77,18 @@ internal class TrialSteps(private val c: EngineContext) {
         return ActivationResult.PENDING
     }
 
-    private fun record(tx: SyncTransaction, text: String, now: Long, id: ByteArray, seed: ByteArray, base: Long, digest: ByteArray, dropMinute: Long): Invite {
+    private fun record(tx: SyncTransaction, text: String, now: Long, id: ByteArray, seed: ByteArray, base: Long, dropMinute: Long): Invite {
         // The nonce is recorded inside this transaction (§19.20 point 6): a rolled-back activation keeps it unused.
         val invite = Invite.parseAndVerify(text, now, InviteTokenCheck(c.crypto), TransactionNonceStore(tx, Grid.day(now) * Grid.DAY))
         // A target left by an earlier activation that failed has no identity behind it any more.
         c.invites.deleteDropTarget(tx)
         // So has a restore a crash left owed: the identity created next is the invitee's (§19.26 point 15).
         c.state.dropRestoreScan(tx)
+        // The trial layout with the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13): the
+        // drop write's capability is funded by the invite, never by a pack.
+        val layout = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, base, invite.dropSlots)
         c.purchases.insert(
-            tx, id, PurchaseStore.TRIAL, PurchaseStore.INVITE, seed, null, invite.inviteToken, base, c.summary.seq, digest, Time.floorHour(now), null,
+            tx, id, PurchaseStore.TRIAL, PurchaseStore.INVITE, seed, null, invite.inviteToken, base, c.summary.seq, layout.digest(), Time.floorHour(now), null,
         )
         c.invites.insertDropTarget(tx, invite.dropNamespace, invite.dropKey, invite.dropSlots, dropMinute, invite.expiryDay + INVITER_LISTEN_DAYS)
         return invite
@@ -139,8 +138,12 @@ internal class TrialSteps(private val c: EngineContext) {
             return@flight
         }
         val call = c.tx { tx -> prepare(tx, id, now) } ?: return@flight
+        val dropSlots = c.tx { tx -> c.invites.dropTarget(tx)?.dropSlots ?: emptyList() }
         val outcome = try {
-            val answer = issuer.redeemInvite(call.token, call.seed, call.base, call.digest, call.positions)
+            val answer = issuer.redeemInvite(
+                call.token, call.seed, call.base, call.digest, call.positions,
+                ByteArray(dropSlots.size) { dropSlots[it].toByte() },
+            )
             when (answer.result) {
                 TorIssuerTransport.TRIAL_OK -> Outcome.Ok(answer.tokens)
                 TorIssuerTransport.TRIAL_REPLAYED -> Outcome.Refused
@@ -168,7 +171,7 @@ internal class TrialSteps(private val c: EngineContext) {
             val week = Grid.week(now)
             if (base != week) {
                 if (!c.covers(week, Layouts.TRIAL_WEEKS)) return null
-                val layout = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, week)
+                val layout = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, week, c.invites.dropTarget(tx)?.dropSlots ?: emptyList())
                 c.purchases.refreshUnsent(tx, id, week, c.summary.seq, layout.digest())
                 base = week
                 digest = layout.digest()
@@ -179,8 +182,8 @@ internal class TrialSteps(private val c: EngineContext) {
         val onboarding = p.nextDueMinute == null
         val nextDue = if (onboarding) null else RetryPolicy.nextDueAfterSend(p.attempt, p.nextDueMinute, now, c.random::uniform)
         c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, nextDue)
-        val positions = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, base).positions
-        return TrialCall(onboarding, p.attempt + 1, p.inputToken(), p.seed(), base, digest, positions)
+        val positions = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, base, c.invites.dropTarget(tx)?.dropSlots ?: emptyList()).positions
+        return TrialCall(onboarding, p.attempt + 1, p.inputToken(), p.seed(), base, digest, positions, c.invites.dropTarget(tx)?.dropSlots ?: emptyList())
     }
 
     /** An onboarding trial retries at each foreground, the user present (§8.3); a revocation retries once (§19.11, §19.14). */
@@ -189,7 +192,8 @@ internal class TrialSteps(private val c: EngineContext) {
     private fun apply(id: ByteArray, call: TrialCall, outcome: Outcome, now: Long) {
         when (outcome) {
             is Outcome.Ok -> {
-                val order = Layouts.trial(c.summary, call.base)
+                val dropSlots = c.tx { tx -> c.invites.dropTarget(tx)?.dropSlots ?: emptyList() }
+                val order = Layouts.trialWithDrop(c.summary, call.base, dropSlots)
                 if (order.size != outcome.tokens.size) {
                     malformed(id, call.onboarding, now)
                     return

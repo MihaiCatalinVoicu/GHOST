@@ -1552,7 +1552,11 @@ impl World {
         }
         let base = *trial.base.get_or_insert(policy::week(w) as u64);
         let (instance, seed, invite) = (trial.instance, trial.seed, trial.invite.clone());
-        let digest = Product::Trial.layout(self.schedule, base).unwrap().digest();
+        // NI-1d fix #3 (2026-11-13): the trial layout with the invitee's drop window — the drop
+        // write's capability is funded by the invite, never by a pack (a pack's timing is
+        // purchase-dependent, and a purchase-flow fault would move the drop write's time).
+        let drop_slots = [0u8, 1, 2];
+        let digest = Product::Trial.layout_with_drop(self.schedule, base, &drop_slots).unwrap().digest();
         let schedule = self.schedule;
         self.truth.clients[c]
             .user_calls
@@ -1570,7 +1574,7 @@ impl World {
             Vec::new(),
             |link| {
                 transport::block_on(issuer_flow::redeem_invite(
-                    link, schedule, &invite, &seed, base, &digest,
+                    link, schedule, &invite, &seed, base, &digest, &drop_slots,
                 ))
             },
         );
@@ -1581,7 +1585,7 @@ impl World {
                 self.store_tokens(
                     c,
                     a.tokens,
-                    &Layout::trial(self.schedule, base).unwrap(),
+                    &Layout::trial_with_drop(self.schedule, base, &drop_slots).unwrap(),
                     instance,
                     eligible,
                 );
@@ -2964,7 +2968,7 @@ impl World {
             Vec::new(),
             |link| {
                 transport::block_on(issuer_flow::redeem_invite(
-                    link, schedule, &token, &seed, base, &digest,
+                    link, schedule, &token, &seed, base, &digest, &[],
                 ))
             },
         );

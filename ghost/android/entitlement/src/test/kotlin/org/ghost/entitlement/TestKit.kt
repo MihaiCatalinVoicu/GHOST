@@ -313,7 +313,7 @@ internal class FakeIssuer(private val crypto: TestCrypto, private val clock: Man
         return TorIssuerTransport.StatusAnswer(statusState, credited, seen)
     }
 
-    override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int): TorIssuerTransport.TrialAnswer {
+    override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int, dropSlots: ByteArray): TorIssuerTransport.TrialAnswer {
         record("redeemInvite", inviteToken, seed, baseWeek, layoutDigest, positions)
         return TorIssuerTransport.TrialAnswer(trialResult, if (trialResult == TorIssuerTransport.TRIAL_OK) issued(seed, positions, "trial") else emptyList())
     }

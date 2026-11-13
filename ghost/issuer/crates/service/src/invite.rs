@@ -71,7 +71,7 @@ impl Issuer {
         let digest = batch::trial_digest(&nullifier, req.base_week, &req.blinded);
         // 4. Idempotency before validity.
         if let Some(stored) = store::invite_nullifier(&*self.store.read()?, epoch, &nullifier)? {
-            return self.reserve_trial(stored == digest, req.base_week, &req.blinded);
+            return self.reserve_trial(stored == digest, req.base_week, &req.blinded, &req.drop_slots);
         }
         // 5. New redemptions only: the acceptance window, revocation, closed epochs, base week.
         let e_now = invite_epoch(week(now));
@@ -85,8 +85,10 @@ impl Issuer {
         if !base_week_ok(req.base_week, now) {
             return Ok(answer(wire::RedeemInviteResult::WrongPeriod, Vec::new()));
         }
-        // 6. The trial layout and ranges.
-        let layout = Layout::trial(&self.schedule, req.base_week).map_err(|_| unavailable())?;
+        // 6. The trial layout and ranges (with the invitee's drop window when the request names
+        //    its drop slots, §19.12; NI-1d fix #3, 2026-11-13).
+        let layout = trial_layout(&self.schedule, req.base_week, &req.drop_slots)
+            .map_err(|_| unavailable())?;
         self.check_blocks(&layout, &req.blinded)?;
         // 7. Sign, then one decided transaction; a loser of the re-check continues at step 4.
         let sigs = self
@@ -96,7 +98,7 @@ impl Issuer {
         if let Some(stored) = store::invite_nullifier(&*tx, epoch, &nullifier)? {
             drop(tx);
             drop(sigs);
-            return self.reserve_trial(stored == digest, req.base_week, &req.blinded);
+            return self.reserve_trial(stored == digest, req.base_week, &req.blinded, &req.drop_slots);
         }
         // A sweep that closed the epoch since step 5 refuses the new redemption (§19.10).
         if store::meta(&*tx, MetaKey::ClosedThroughInviteEpoch)?.is_some_and(|c| epoch <= c) {
@@ -123,12 +125,13 @@ impl Issuer {
         same: bool,
         base_week: u64,
         blinded: &[u8],
+        drop_slots: &[u32],
     ) -> Result<wire::RedeemInviteResponse, Status> {
         let replayed = || Ok(answer(wire::RedeemInviteResult::Replayed, Vec::new()));
         if !same {
             return replayed();
         }
-        let Ok(layout) = Layout::trial(&self.schedule, base_week) else {
+        let Ok(layout) = trial_layout(&self.schedule, base_week, drop_slots) else {
             return replayed();
         };
         let held = {
@@ -147,4 +150,22 @@ impl Issuer {
             Err(e) => Err(e.status()),
         }
     }
+}
+
+/// The trial layout, with the invitee's drop window when the request names its drop slots
+/// (§19.12; NI-1d fix #3, 2026-11-13): the plain trial for an empty list, the drop-aware one
+/// otherwise.
+fn trial_layout(
+    schedule: &Schedule,
+    base_week: u64,
+    drop_slots: &[u32],
+) -> Result<Layout, batch::BatchError> {
+    if drop_slots.is_empty() {
+        return Layout::trial(schedule, base_week);
+    }
+    let slots: Vec<u8> = drop_slots
+        .iter()
+        .map(|&s| u8::try_from(s).map_err(|_| batch::BatchError::Layout))
+        .collect::<Result<_, _>>()?;
+    Layout::trial_with_drop(schedule, base_week, &slots)
 }

@@ -90,6 +90,12 @@ message RedeemInviteRequest {
   bytes invite_token = 2;       // 354 bytes, kind INVITE (challenge origin "issuer-invite")
   uint64 base_week = 3;         // the client's week; validated with the ±4 h tolerance of RequestInvoice (§19.4)
   bytes blinded = 4;            // exactly trial layout N_t x 256 bytes (§4.3)
+  // The invite's 3 drop slots (§19.12; NI-1d fix #3, 2026-11-13): the trial layout gains one
+  // ACCESS position per slot per week of the drop window [base+3, base+8), so the drop write's
+  // capability is funded by the invite, never by a pack (a pack's timing is purchase-dependent).
+  // The issuer checks only that each slot is listed in the schedule for those weeks; it cannot
+  // verify the slots are the invite's own (the abuse is bounded to one window per invite).
+  repeated uint32 drop_slots = 5;
 }
 
 enum RedeemInviteResult {

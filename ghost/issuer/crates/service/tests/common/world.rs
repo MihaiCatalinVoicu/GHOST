@@ -830,6 +830,7 @@ impl World {
             invite_token: token.as_bytes().to_vec(),
             base_week,
             blinded: blinded.clone(),
+            drop_slots: Vec::new(),
         };
         let r = self.call(|i, now| i.redeem_invite_at(req.clone(), now))?;
         if r.result == wire::RedeemInviteResult::Ok as i32 {

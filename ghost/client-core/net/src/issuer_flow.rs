@@ -95,13 +95,15 @@ fn credit_values(schedule: &Schedule, credits: &[VerifiedToken]) -> Result<Vec<u
 }
 
 /// The layout of `product` at `index`, which must match the digest stored at purchase time.
+/// [drop_slots] is the invitee's drop window for a trial (§19.12; NI-1d fix #3, 2026-11-13).
 fn frozen_layout(
     schedule: &Schedule,
     product: Product,
     index: u64,
     layout_digest: &[u8; 32],
+    drop_slots: &[u8],
 ) -> Result<Layout, IssuerError> {
-    let layout = product.layout(schedule, index).map_err(invalid)?;
+    let layout = product.layout_with_drop(schedule, index, drop_slots).map_err(invalid)?;
     if layout.len() > MAX_LAYOUT_POSITIONS {
         return Err(IssuerError::InvalidArgument);
     }
@@ -302,7 +304,7 @@ pub async fn blind_sign<R: IssuerRpc>(
     if !matches!(product, Product::PackXmr | Product::PackCredits) {
         return Err(IssuerError::InvalidArgument);
     }
-    let layout = frozen_layout(schedule, product, base_week, layout_digest)?;
+    let layout = frozen_layout(schedule, product, base_week, layout_digest, &[])?;
     let blinded = batch::blind(schedule, seed, &layout).map_err(invalid)?;
     let answer = rpc
         .blind_sign(wire::BlindSignRequest {
@@ -407,7 +409,8 @@ impl fmt::Debug for TrialAnswer {
 }
 
 /// `RedeemInvite` (design §8.3 step 4): the invite token must verify offline under the ES before
-/// the call; the trial request is recomputed from the seed.
+/// the call; the trial request is recomputed from the seed. [drop_slots] is the invitee's drop
+/// window (§19.12; NI-1d fix #3, 2026-11-13).
 pub async fn redeem_invite<R: IssuerRpc>(
     rpc: &mut R,
     schedule: &Schedule,
@@ -415,11 +418,12 @@ pub async fn redeem_invite<R: IssuerRpc>(
     seed: &[u8; SEED_LEN],
     base_week: u64,
     layout_digest: &[u8; 32],
+    drop_slots: &[u8],
 ) -> Result<TrialAnswer, IssuerError> {
     schedule
         .verify_token(invite_token, Expect::Invite)
         .map_err(invalid)?;
-    let layout = frozen_layout(schedule, Product::Trial, base_week, layout_digest)?;
+    let layout = frozen_layout(schedule, Product::Trial, base_week, layout_digest, drop_slots)?;
     let blinded = batch::blind(schedule, seed, &layout).map_err(invalid)?;
     let answer = rpc
         .redeem_invite(wire::RedeemInviteRequest {
@@ -427,6 +431,7 @@ pub async fn redeem_invite<R: IssuerRpc>(
             invite_token: invite_token.as_bytes().to_vec(),
             base_week,
             blinded,
+            drop_slots: drop_slots.iter().map(|&s| u32::from(s)).collect(),
         })
         .await?;
     let result = wire::RedeemInviteResult::try_from(answer.result).map_err(malformed)?;
@@ -555,7 +560,7 @@ pub async fn refresh_credit<R: IssuerRpc>(
     let credit = schedule
         .verify_token(received_credit, Expect::Credit)
         .map_err(invalid)?;
-    let layout = frozen_layout(schedule, Product::Refresh, credit.epoch, layout_digest)?;
+    let layout = frozen_layout(schedule, Product::Refresh, credit.epoch, layout_digest, &[])?;
     let blinded = batch::blind(schedule, seed, &layout).map_err(invalid)?;
     let answer = rpc
         .refresh_credit(wire::RefreshCreditRequest {

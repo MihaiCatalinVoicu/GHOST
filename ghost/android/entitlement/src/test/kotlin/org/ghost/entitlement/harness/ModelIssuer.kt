@@ -363,7 +363,7 @@ internal class ModelIssuer(
         State.EXPIRED -> TorIssuerTransport.STATE_EXPIRED
     }
 
-    fun redeemInvite(inviteToken: ByteArray, baseWeek: Long, blinded: ByteArray, now: Long): Reply<TrialAnswer> = reply {
+    fun redeemInvite(inviteToken: ByteArray, baseWeek: Long, blinded: ByteArray, now: Long, dropSlots: List<Int> = emptyList()): Reply<TrialAnswer> = reply {
         if (inviteToken.size != TestSchedule.TOKEN_BYTES || blinded.isEmpty() || blinded.size % BLOCK != 0 || blinded.size > MAX_LAYOUT_POSITIONS * BLOCK) {
             throw Refusal(REJECTED)
         }
@@ -372,14 +372,14 @@ internal class ModelIssuer(
         val digest = Batch.trialDigest(v.nullifier, baseWeek, blinded)
         val key = "${v.epoch}:${Bytes.hex(v.nullifier)}"
         inviteUse[key]?.let { stored ->
-            val positions = schedule.positions(EntitlementCrypto.PRODUCT_TRIAL, baseWeek)
+            val positions = schedule.positionsWithDrop(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, dropSlots)
             val same = stored == Bytes.hex(digest) && positions != null && blinded.size == positions.size * BLOCK
             return@reply if (same) TrialAnswer(TorIssuerTransport.TRIAL_OK, signAll(checkNotNull(positions), blinded)) else TrialAnswer(TorIssuerTransport.TRIAL_REPLAYED, ByteArray(0))
         }
         val eNow = Grid.inviteEpoch(Grid.week(now))
         if (!(v.epoch == eNow || v.epoch + 1 == eNow) || schedule.isRevoked(EntitlementCrypto.KIND_INVITE, v.epoch)) throw Refusal(UNAUTHORIZED)
         if (!baseWeekOk(baseWeek, now)) return@reply TrialAnswer(TorIssuerTransport.TRIAL_WRONG_PERIOD, ByteArray(0))
-        val positions = schedule.positions(EntitlementCrypto.PRODUCT_TRIAL, baseWeek) ?: throw Refusal(UNAVAILABLE)
+        val positions = schedule.positionsWithDrop(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, dropSlots) ?: throw Refusal(UNAVAILABLE)
         if (!blocksOk(positions, blinded)) throw Refusal(REJECTED)
         val sigs = signAll(positions, blinded)
         inviteUse[key] = Bytes.hex(digest)

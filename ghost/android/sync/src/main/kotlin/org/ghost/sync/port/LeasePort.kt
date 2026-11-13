@@ -82,6 +82,7 @@ interface EntitlementCalls {
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray = ByteArray(0),
         deadlineMillis: Int,
     ): TorIssuerTransport.TrialAnswer
 

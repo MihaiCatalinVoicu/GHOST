@@ -374,6 +374,7 @@ impl Section {
             invite_token: self.tokens[l.names[0]].clone(),
             base_week,
             blinded: batch::blind(&self.w.schedule, &s, &layout).unwrap(),
+            drop_slots: Vec::new(),
         };
         let r = match self.w.call(|i, now| i.redeem_invite_at(req.clone(), now)) {
             Err(e) => return assert_eq!(category(&e), *word, "line {}", l.no),

@@ -69,6 +69,17 @@ internal object Layouts {
         }
         return out
     }
+
+    /** The trial layout with the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13): the
+     *  trial's own weeks base..base+1 for every slot, plus one ACCESS position per drop slot per
+     *  week of the drop window [base + 3, base + 8) — mirrors `batch::Layout::trial_with_drop`. */
+    fun trialWithDrop(s: ScheduleSummary, base: Long, dropSlots: List<Int>): List<Position> {
+        val out = ArrayList(trial(s, base))
+        for (w in base + 3 until base + 8) {
+            for (slot in dropSlots) out += Position(EntitlementCrypto.KIND_ACCESS, w, slot)
+        }
+        return out
+    }
 }
 
 /**

@@ -90,7 +90,7 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         return decodeStatus(native.run { nativeInvoiceStatus(it, flow, invoiceId, claimKey, deadlineMillis) })
     }
 
-    /** `RedeemInvite` for a trial of [positions] positions (the invite token is verified offline natively first). */
+    /** `RedeemInvite` for a trial of [positions] positions (the invite token is verified offline natively first). [dropSlots] is the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13). */
     fun redeemInvite(
         flow: ByteArray,
         inviteToken: ByteArray,
@@ -98,6 +98,7 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray = ByteArray(0),
         deadlineMillis: Int = MAX_SIGNING_DEADLINE_MILLIS,
     ): TrialAnswer {
         requireFlow(flow)
@@ -106,7 +107,7 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         }
         require(baseWeek >= 0 && positions in 1..MAX_LAYOUT_POSITIONS) { "base week or positions out of range" }
         requireDeadline(deadlineMillis, MAX_SIGNING_DEADLINE_MILLIS)
-        val raw = native.run { nativeRedeemInvite(it, flow, inviteToken, seed, baseWeek, layoutDigest, deadlineMillis) }
+        val raw = native.run { nativeRedeemInvite(it, flow, inviteToken, seed, baseWeek, layoutDigest, dropSlots, deadlineMillis) }
         return decodeTrial(raw, positions)
     }
 
@@ -371,7 +372,7 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         ): ByteArray
         @JvmStatic private external fun nativeRedeemInvite(
             id: Long, flow: ByteArray, inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray,
-            deadlineMs: Int,
+            dropSlots: ByteArray, deadlineMs: Int,
         ): ByteArray
         @JvmStatic private external fun nativeClaimPayout(
             id: Long, flow: ByteArray, claimId: ByteArray, credits: ByteArray, address: String, deadlineMs: Int,

@@ -78,6 +78,22 @@ impl Product {
             Product::Refresh => Layout::refresh(schedule, index),
         }
     }
+
+    /// The frozen layout with the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13): the
+    /// trial layout plus one ACCESS position per drop slot per week of the drop window, so the
+    /// drop write's capability is funded by the invite, never by a pack. Only meaningful for
+    /// [Product::Trial]; every other product ignores [drop_slots].
+    pub fn layout_with_drop(
+        self,
+        schedule: &Schedule,
+        index: u64,
+        drop_slots: &[u8],
+    ) -> Result<Layout, BatchError> {
+        match self {
+            Product::Trial if !drop_slots.is_empty() => Layout::trial_with_drop(schedule, index, drop_slots),
+            _ => self.layout(schedule, index),
+        }
+    }
 }
 
 /// `digest(32) || N(4)`: the layout digest Kotlin stores at purchase time and the number of

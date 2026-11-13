@@ -16,6 +16,8 @@ class NativeTokenCrypto : TokenCryptoPort {
 
     override fun layout(product: Int, index: Long): EntitlementCrypto.Layout = EntitlementCrypto.layout(product, index)
 
+    override fun layout(product: Int, index: Long, dropSlots: List<Int>): EntitlementCrypto.Layout = EntitlementCrypto.layout(product, index, dropSlots)
+
     override fun verifyToken(token: ByteArray, kind: Int): EntitlementCrypto.VerifiedToken? = EntitlementCrypto.verifyToken(token, kind)
 
     override fun validateAddress(address: String, purpose: Int): EntitlementCrypto.AddressInfo? = EntitlementCrypto.validateAddress(address, purpose)

@@ -30,6 +30,10 @@ pub const SEED_LEN: usize = 32;
 pub const PACK_WEEKS: u64 = 5;
 /// A trial covers the base week and the next one.
 pub const TRIAL_WEEKS: u64 = 2;
+/// The drop window's first week after the base week (§19.12: the drop write falls in weeks 3–7).
+pub const DROP_FIRST_WEEK: u64 = 3;
+/// The drop window's span in weeks (§19.12: weeks base+3..base+8).
+pub const DROP_SPAN_WEEKS: u64 = 5;
 /// Positions are numbered with a u16.
 pub const MAX_POSITIONS: usize = 1 << 16;
 /// Rejection-sampling budget for r (failure probability about 2^-256).
@@ -136,6 +140,35 @@ impl Layout {
             schedule,
             access_positions(schedule, base_week, TRIAL_WEEKS, per_slot)?,
         )
+    }
+
+    /// The trial layout with the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13): the
+    /// trial's own weeks base..base+1 for every slot, plus one ACCESS position per drop slot per
+    /// week of the drop window [base + DROP_FIRST_WEEK, base + DROP_FIRST_WEEK + DROP_SPAN_WEEKS).
+    /// The drop write's capability is funded by the invite, never by a pack: a pack's timing is
+    /// purchase-dependent, and a purchase-flow fault would move the drop write's time — the leak
+    /// NI-1d catches (pair 3: B's first pack finalized after the drop's due and the write moved
+    /// 2.28 days, then partially and retried).
+    pub fn trial_with_drop(
+        schedule: &Schedule,
+        base_week: u64,
+        drop_slots: &[u8],
+    ) -> Result<Self, BatchError> {
+        let per_slot = schedule.constants().trial_per_slot;
+        let mut positions = access_positions(schedule, base_week, TRIAL_WEEKS, per_slot)?;
+        for week in (base_week + DROP_FIRST_WEEK)..(base_week + DROP_FIRST_WEEK + DROP_SPAN_WEEKS) {
+            for &slot in drop_slots {
+                if !schedule.slots_in_week(week).contains(&slot) {
+                    return Err(BatchError::Layout);
+                }
+                positions.push(Position {
+                    kind: Kind::Access,
+                    epoch: week,
+                    slot: Some(slot),
+                });
+            }
+        }
+        Self::from_positions(schedule, positions)
     }
 
     /// One CREDIT position of `credit_epoch` (`RefreshCredit`, design §19.8).

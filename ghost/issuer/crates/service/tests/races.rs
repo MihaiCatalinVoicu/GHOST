@@ -248,6 +248,7 @@ fn race_two_trials(failure: Failure) {
                         invite_token: invites[i].as_bytes().to_vec(),
                         base_week: BASE_WEEK,
                         blinded: trials[i].clone(),
+            drop_slots: Vec::new(),
                     };
                     let (issuer, race) = (&issuer, &race);
                     scope.spawn(move || {

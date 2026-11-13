@@ -46,6 +46,7 @@ async fn signing_answers_leave_at_the_quantum() {
             invite_token: vec![0; 10],
             base_week: 0,
             blinded: Vec::new(),
+            drop_slots: Vec::new(),
         })
         .await;
     assert_eq!(r.unwrap_err().code(), Code::InvalidArgument);

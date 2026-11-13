@@ -63,8 +63,9 @@ internal class TorEntitlementCalls(private val transport: RelayTransport) : Enti
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray,
         deadlineMillis: Int,
-    ): TorIssuerTransport.TrialAnswer = issuer().redeemInvite(flow, inviteToken, seed, baseWeek, layoutDigest, positions, deadlineMillis)
+    ): TorIssuerTransport.TrialAnswer = issuer().redeemInvite(flow, inviteToken, seed, baseWeek, layoutDigest, positions, dropSlots, deadlineMillis)
 
     override fun claimPayout(flow: ByteArray, claimId: ByteArray, credits: List<ByteArray>, payoutAddress: String, deadlineMillis: Int): TorIssuerTransport.ClaimAnswer =
         issuer().claimPayout(flow, claimId, credits, payoutAddress, deadlineMillis)

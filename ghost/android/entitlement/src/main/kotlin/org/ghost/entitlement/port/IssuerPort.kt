@@ -25,7 +25,7 @@ interface IssuerPort {
 
     fun invoiceStatus(invoiceId: ByteArray, claimKey: ByteArray): TorIssuerTransport.StatusAnswer
 
-    fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int): TorIssuerTransport.TrialAnswer
+    fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int, dropSlots: ByteArray = ByteArray(0)): TorIssuerTransport.TrialAnswer
 
     fun claimPayout(claimId: ByteArray, credits: List<ByteArray>, payoutAddress: String): TorIssuerTransport.ClaimAnswer
 

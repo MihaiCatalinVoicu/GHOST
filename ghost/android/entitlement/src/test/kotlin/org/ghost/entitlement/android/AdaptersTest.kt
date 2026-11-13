@@ -58,6 +58,7 @@ class AdaptersTest {
             baseWeek: Long,
             layoutDigest: ByteArray,
             positions: Int,
+            dropSlots: ByteArray,
             deadlineMillis: Int,
         ): TorIssuerTransport.TrialAnswer {
             calls += "redeemInvite"
@@ -93,8 +94,8 @@ class AdaptersTest {
 
         override fun invoiceStatus(invoiceId: ByteArray, claimKey: ByteArray, deadlineMillis: Int) = issuer.invoiceStatus(invoiceId, claimKey)
 
-        override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int, deadlineMillis: Int) =
-            issuer.redeemInvite(inviteToken, seed, baseWeek, layoutDigest, positions)
+        override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int, dropSlots: ByteArray, deadlineMillis: Int) =
+            issuer.redeemInvite(inviteToken, seed, baseWeek, layoutDigest, positions, dropSlots)
 
         override fun claimPayout(claimId: ByteArray, credits: List<ByteArray>, payoutAddress: String, deadlineMillis: Int) =
             issuer.claimPayout(claimId, credits, payoutAddress)

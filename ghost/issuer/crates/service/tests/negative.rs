@@ -234,6 +234,7 @@ fn forged_invites_every_byte_flipped_and_bad_authenticators() {
         invite_token: bytes,
         base_week: BASE_WEEK,
         blinded: blinded.clone(),
+            drop_slots: Vec::new(),
     };
     for i in 0..invite.as_bytes().len() {
         let mut bytes = invite.as_bytes().to_vec();

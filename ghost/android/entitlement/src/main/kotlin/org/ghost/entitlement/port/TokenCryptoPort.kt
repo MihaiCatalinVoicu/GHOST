@@ -18,6 +18,11 @@ interface TokenCryptoPort {
     /** The frozen layout of [product] at [index] (base week, or the credit epoch of a refresh). */
     fun layout(product: Int, index: Long): EntitlementCrypto.Layout
 
+    /** The frozen layout of [product] at [index] with the invitee's drop window (§19.12; NI-1d fix
+     *  #3, 2026-11-13): the trial layout plus one ACCESS position per drop slot per week of the
+     *  drop window, so the drop write's capability is funded by the invite, never by a pack. */
+    fun layout(product: Int, index: Long, dropSlots: List<Int>): EntitlementCrypto.Layout = layout(product, index)
+
     /** The offline check of [token] as [kind], or null when the schedule refuses it. */
     fun verifyToken(token: ByteArray, kind: Int): EntitlementCrypto.VerifiedToken?
 

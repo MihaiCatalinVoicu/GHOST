@@ -143,9 +143,9 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         return out
     }
 
-    /** The positions of [product] at [index] if they match [layoutDigest] and [positions] (checked before any I/O). */
-    private fun layout(product: Int, index: Long, layoutDigest: ByteArray, positions: Int): List<Position> {
-        val list = schedule.positions(product, index) ?: fail("invalid_argument")
+    /** The positions of [product] at [index] if they match [layoutDigest] and [positions] (checked before any I/O). [dropSlots] is the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13). */
+    private fun layout(product: Int, index: Long, layoutDigest: ByteArray, positions: Int, dropSlots: List<Int> = emptyList()): List<Position> {
+        val list = schedule.positionsWithDrop(product, index, dropSlots) ?: fail("invalid_argument")
         if (list.size != positions || !Batch.layoutDigest(list).contentEquals(layoutDigest)) fail("invalid_argument")
         return list
     }
@@ -223,12 +223,13 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray,
         deadlineMillis: Int,
     ): TorIssuerTransport.TrialAnswer {
-        val list = layout(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, layoutDigest, positions)
+        val list = layout(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, layoutDigest, positions, dropSlots.toList())
         ent.records.secrets += Bytes.hex(seed)
         val blinded = Batch.blind(schedule, seed, list)
-        return issuer("redeemInvite", flow, TestSchedule.TOKEN_BYTES + 8 + blinded.size, { now -> ent.issuer.redeemInvite(inviteToken, baseWeek, blinded, now) }) { a ->
+        return issuer("redeemInvite", flow, TestSchedule.TOKEN_BYTES + 8 + blinded.size, { now -> ent.issuer.redeemInvite(inviteToken, baseWeek, blinded, now, dropSlots.toList()) }) { a ->
             if (a.result == TorIssuerTransport.TRIAL_OK) {
                 val tokens = Batch.finalize(schedule, seed, list, a.signatures) ?: fail("malformed_response")
                 TorIssuerTransport.TrialAnswer(a.result, issued(list, tokens, null))

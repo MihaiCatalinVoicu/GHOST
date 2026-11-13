@@ -337,6 +337,20 @@ internal class TestSchedule(
         return list
     }
 
+    /**
+     * The positions of a product with the invitee's drop window (§19.12; NI-1d fix #3, 2026-11-13):
+     * the trial layout plus one ACCESS position per drop slot per week of the drop window, so the
+     * drop write's capability is funded by the invite, never by a pack.
+     */
+    fun positionsWithDrop(product: Int, index: Long, dropSlots: List<Int>): List<Position>? {
+        if (product != EntitlementCrypto.PRODUCT_TRIAL || dropSlots.isEmpty()) return positions(product, index)
+        val list = Layouts.trialWithDrop(summary, index, dropSlots)
+        val weeks = index until index + Layouts.TRIAL_WEEKS
+        if (weeks.any { slotsInWeek(it).isEmpty() }) return null
+        if (list.isEmpty() || list.any { key(it.kind, it.epoch) == null }) return null
+        return list
+    }
+
     /** One verified token: its key's (kind, epoch), its challenge slot and its nullifier. */
     class Verified(val kind: Int, val epoch: Long, val slot: Int?, val nullifier: ByteArray)
 

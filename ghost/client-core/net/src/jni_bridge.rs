@@ -804,7 +804,8 @@ pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeInvoiceSt
 
 /// `RedeemInvite` on flow `flow16`: the invite token (354, verified offline first), `seed` (32),
 /// `baseWeek` and the stored `layoutDigest`. Returns `result(1)` followed on OK by
-/// `N_t x (nullifier(32) || token(354))`.
+/// `N_t x (nullifier(32) || token(354))`. [drop_slots] is the invitee's drop window (§19.12;
+/// NI-1d fix #3, 2026-11-13).
 #[no_mangle]
 pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRedeemInvite(
     mut env: JNIEnv,
@@ -815,6 +816,7 @@ pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRedeemInv
     seed: JByteArray,
     base_week: jlong,
     layout_digest: JByteArray,
+    drop_slots: JByteArray,
     deadline_ms: jint,
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
@@ -823,9 +825,10 @@ pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRedeemInv
         let seed = fixed::<32>(env, &seed)?;
         let base_week = unsigned(base_week)?;
         let layout_digest = fixed::<32>(env, &layout_digest)?;
+        let drop_slots = bytes(env, &drop_slots)?;
         let deadline = positive_millis(deadline_ms)?;
         let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
-            issuer_flow::redeem_invite(&mut c, s, &invite, &seed, base_week, &layout_digest).await
+            issuer_flow::redeem_invite(&mut c, s, &invite, &seed, base_week, &layout_digest, &drop_slots).await
         })?;
         to_java(env, &answer.pack())
     })
@@ -929,6 +932,32 @@ pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeLayoutDige
         let layout = entitlement::layout_digest(schedule()?, product, index)
             .map_err(|_| cat::INVALID_ARGUMENT)?;
         to_java(env, &layout)
+    })
+}
+
+/// `digest(32) || N(4)` of `product` at `index` with the invitee's drop window (§19.12; NI-1d
+/// fix #3, 2026-11-13): the trial layout plus one ACCESS position per drop slot per week of the
+/// drop window, so the drop write's capability is funded by the invite, never by a pack.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeLayoutDigestWithDrop(
+    mut env: JNIEnv,
+    _class: JClass,
+    product: jint,
+    index: jlong,
+    drop_slots: JByteArray,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let product = Product::from_code(product).ok_or(cat::INVALID_ARGUMENT)?;
+        let index = unsigned(index)?;
+        let drop_slots = bytes(env, &drop_slots)?;
+        let layout = product
+            .layout_with_drop(schedule()?, index, &drop_slots)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        let n = u32::try_from(layout.len()).map_err(|_| cat::INVALID_ARGUMENT)?;
+        let mut out = [0u8; entitlement::LAYOUT_BYTES];
+        out[..32].copy_from_slice(&layout.digest());
+        out[32..].copy_from_slice(&n.to_be_bytes());
+        to_java(env, &out)
     })
 }
 

@@ -26,8 +26,8 @@ class TorIssuerPort(private val access: IssuerAccess) : IssuerPort {
     override fun invoiceStatus(invoiceId: ByteArray, claimKey: ByteArray): TorIssuerTransport.StatusAnswer =
         access.invoiceStatus(invoiceId, claimKey)
 
-    override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int): TorIssuerTransport.TrialAnswer =
-        access.redeemInvite(inviteToken, seed, baseWeek, layoutDigest, positions)
+    override fun redeemInvite(inviteToken: ByteArray, seed: ByteArray, baseWeek: Long, layoutDigest: ByteArray, positions: Int, dropSlots: ByteArray): TorIssuerTransport.TrialAnswer =
+        access.redeemInvite(inviteToken, seed, baseWeek, layoutDigest, positions, dropSlots)
 
     override fun claimPayout(claimId: ByteArray, credits: List<ByteArray>, payoutAddress: String): TorIssuerTransport.ClaimAnswer =
         access.claimPayout(claimId, credits, payoutAddress)

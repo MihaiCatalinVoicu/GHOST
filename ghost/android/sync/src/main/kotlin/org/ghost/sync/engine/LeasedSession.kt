@@ -110,9 +110,10 @@ internal class LeasedSession(
             baseWeek: Long,
             layoutDigest: ByteArray,
             positions: Int,
+            dropSlots: ByteArray,
             deadlineMillis: Int,
         ): TorIssuerTransport.TrialAnswer =
-            once(deadlineMillis) { c, flow, d -> c.redeemInvite(flow, inviteToken, seed, baseWeek, layoutDigest, positions, d) }
+            once(deadlineMillis) { c, flow, d -> c.redeemInvite(flow, inviteToken, seed, baseWeek, layoutDigest, positions, dropSlots, d) }
 
         override fun claimPayout(claimId: ByteArray, credits: List<ByteArray>, payoutAddress: String, deadlineMillis: Int): TorIssuerTransport.ClaimAnswer =
             once(deadlineMillis) { c, flow, d -> c.claimPayout(flow, claimId, credits, payoutAddress, d) }

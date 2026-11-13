@@ -181,6 +181,7 @@ interface IssuerAccess {
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray = ByteArray(0),
         deadlineMillis: Int = TorIssuerTransport.MAX_SIGNING_DEADLINE_MILLIS,
     ): TorIssuerTransport.TrialAnswer
 

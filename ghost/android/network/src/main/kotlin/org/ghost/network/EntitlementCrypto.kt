@@ -52,6 +52,18 @@ object EntitlementCrypto {
     }
 
     /**
+     * The frozen layout of [product] at [index] with the invitee's drop window (§19.12; NI-1d fix
+     * #3, 2026-11-13): the trial layout plus one ACCESS position per drop slot per week of the
+     * drop window, so the drop write's capability is funded by the invite, never by a pack.
+     */
+    fun layout(product: Int, index: Long, dropSlots: List<Int>): Layout {
+        require(product in PRODUCT_PACK_XMR..PRODUCT_REFRESH) { "unknown product" }
+        require(index >= 0) { "index must not be negative" }
+        NativeLibrary.ensureLoaded()
+        return decodeLayout(nativeLayoutDigestWithDrop(product, index, ByteArray(dropSlots.size) { dropSlots[it].toByte() }))
+    }
+
+    /**
      * The offline check of a token under the embedded ES for [kind] (access: any slot of its week),
      * or null when the schedule refuses it (unknown or revoked key, another kind, a wrong
      * challenge or authenticator). The acceptance window of the epoch is the caller's check.
@@ -280,6 +292,7 @@ object EntitlementCrypto {
 
     @JvmStatic private external fun nativeScheduleSummary(): ByteArray
     @JvmStatic private external fun nativeLayoutDigest(product: Int, index: Long): ByteArray
+    @JvmStatic private external fun nativeLayoutDigestWithDrop(product: Int, index: Long, dropSlots: ByteArray): ByteArray
     @JvmStatic private external fun nativeVerifyToken(token: ByteArray, kind: Int): ByteArray
     @JvmStatic private external fun nativeValidateAddress(address: String, purpose: Int): Int
     @JvmStatic private external fun nativePaymentUri(subaddress: String, amountAtomic: Long): String

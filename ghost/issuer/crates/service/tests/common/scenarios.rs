@@ -139,6 +139,7 @@ fn race_redeem_invite(w: &mut World) {
         invite_token: invite.as_bytes().to_vec(),
         base_week: BASE_WEEK,
         blinded: t.to_vec(),
+            drop_slots: Vec::new(),
     };
     let (ra, rb) = (request(&trials[0]), request(&trials[1]));
     let (a, b) = w.race(

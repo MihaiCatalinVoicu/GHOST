@@ -69,6 +69,7 @@ internal class RecordingCalls : EntitlementCalls {
         baseWeek: Long,
         layoutDigest: ByteArray,
         positions: Int,
+        dropSlots: ByteArray,
         deadlineMillis: Int,
     ): TorIssuerTransport.TrialAnswer = call("redeemInvite", flow, deadlineMillis) { TorIssuerTransport.TrialAnswer(TorIssuerTransport.TRIAL_REPLAYED, emptyList()) }
 
