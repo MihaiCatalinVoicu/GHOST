@@ -169,10 +169,11 @@ internal class ByteDictionary {
 }
 
 /**
- * The exact joins JD1, JD2, JD3, JD4, JD5, JD6, JD7 and JD9 of Phase 9 design §15.6 over a finished
- * [PrivacyWorld]. JD8 and JD10 are not here: JD10 is deferred (§22.16 item 10), and JD8 runs on
- * the entitlement world's twins, which have the real redeem lane this world lacks (`entworld/
- * EntDmJd8.kt`, §22.26).
+ * The exact joins JD1, JD2, JD3, JD4, JD5, JD6, JD7, JD9 and JD11 of Phase 9 design §15.6 over a
+ * finished [PrivacyWorld]. JD8 and JD10 are not here: JD10 is deferred (§22.16 item 10), and JD8
+ * runs on the entitlement world's twins, which have the real redeem lane this world lacks
+ * (`entworld/EntDmJd8.kt`, §22.26). JD11 is MD-5's harness join (2026-11-13), post-design: no check
+ * names a hash stored in another session — the regression MD-1 removed.
  *
  * **Every oracle is the world's or the recorder's, never the engine's own record of the property
  * checked**: JD5's timers come from the users' timer changes and the relay view, JD6's user actions
@@ -807,6 +808,51 @@ internal class Joins(private val world: PrivacyWorld) {
             if (slots != sets[ns]) violations += "a blob of ${ns.take(12)} stored at $slots, set(ns) = ${sets[ns]}"
         }
         return JoinResult("JD9", n, violations, "relay events (registrations included) over ${sets.size} namespaces")
+    }
+
+    // ------------------------------------------------------------------ JD11
+
+    /**
+     * JD11 (MD-5's harness join, 2026-11-13): **no check names a hash stored in another session.** A
+     * `check` naming a stored hash links the checking session to the storing one at the relay under
+     * the static deposit scope (L7-D5) — the chain MD-1 removed by making the validated receipt the
+     * verification of a DM deposit. A clean world therefore makes no check at all, and this join's
+     * violations can only come from a regression (PM-40's world, the pre-MD-1 lane): its role is
+     * detection, and its kill is the proof the lane records what a regression would do. The
+     * denominator is not the checks (0 since MD-1) but what a pre-MD-1 engine would have verified —
+     * [ViewRelay.ackedEligible], every distinct deposit that reached ack + 60 s in a round of its
+     * storer — so a world that acked nothing cannot pass it, and the line's `0 checks` is itself
+     * the report-level proof that no DM check was made.
+     */
+    fun jd11(): JoinResult {
+        val storeCircuits = HashMap<Triple<Int, String, GroundTruth.Key>, MutableSet<String>>()
+        for (e in events) {
+            if (e.op != ViewOp.STORE) continue
+            storeCircuits.getOrPut(Triple(e.relaySlot, hex(e.namespace), GroundTruth.Key(e.blobHash!!))) { HashSet() } += e.circuit
+        }
+        val violations = ArrayList<String>()
+        var checks = 0L
+        for (e in events) {
+            if (e.op != ViewOp.CHECK) continue
+            checks++
+            val key = Triple(e.relaySlot, hex(e.namespace), GroundTruth.Key(e.blobHash!!))
+            val stored = storeCircuits[key]
+            if (stored == null) {
+                violations += "c${e.client} checked a hash no store of this world placed at slot ${e.relaySlot} " +
+                    "of ${hex(e.namespace).take(12)}"
+            } else if (e.circuit !in stored) {
+                violations += "c${e.client} checked a blob of ${hex(e.namespace).take(12)} at ${e.second} in " +
+                    "${e.circuit}, which this world stored in ${stored.sorted().joinToString()}: a check names " +
+                    "a hash stored in another session (MD-5)"
+            }
+        }
+        val eligible = world.relay.ackedEligible
+        return JoinResult(
+            "JD11", eligible.toLong(), violations,
+            "$checks checks over $eligible acknowledged deposits a pre-MD-1 engine would have verified " +
+                "(MD-1: the validated receipt is the verification, so a clean engine makes none); " +
+                "every check names a hash stored in its own session",
+        )
     }
 
     companion object {

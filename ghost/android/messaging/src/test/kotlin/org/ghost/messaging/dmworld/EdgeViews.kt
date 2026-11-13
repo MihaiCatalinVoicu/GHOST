@@ -143,6 +143,9 @@ internal class EdgeViews(
                     else -> "a read of a namespace no card names"
                 }
                 ViewOp.REGISTER -> if (own) null else "a registration of a namespace not the registrar's"
+                // No LD category: a check names a stored hash to the relay (a clean world makes
+                // none since MD-1, so this fires only in PM-40's).
+                ViewOp.CHECK -> "a check naming a stored hash"
             }
             if (category != null && !keepOutside(seq)) continue
             fullOut += EdgeEvent(

@@ -56,6 +56,8 @@ class DmPrivacyMutantTest {
 
     @Test fun pm39AProvisionalKeyPastItsAnchorBoundIsDetected() = kill(PrivacyMutants.PM39)
 
+    @Test fun pm40ACrossSessionDepositCheckIsDetected() = kill(PrivacyMutants.PM40)
+
     /** The registry is well formed, and the report's lines are armed to be written from the kills. */
     @Test
     fun theRegistryAndTheKillsAgree() {
@@ -135,7 +137,7 @@ internal object Checks {
 
     fun run(check: PrivacyCheck, mutant: PrivacyMutant?): String? = when (check) {
         PrivacyCheck.JD1, PrivacyCheck.JD2, PrivacyCheck.JD4, PrivacyCheck.JD5, PrivacyCheck.JD6, PrivacyCheck.JD7,
-        PrivacyCheck.JD9,
+        PrivacyCheck.JD9, PrivacyCheck.JD11,
         -> {
             val result = small(mutant).getValue(check)
             if (result.passed) null else result.failureMessage()
@@ -174,6 +176,7 @@ internal object Checks {
                     PrivacyCheck.JD6 to joins.jd6(),
                     PrivacyCheck.JD7 to joins.jd7(),
                     PrivacyCheck.JD9 to joins.jd9(),
+                    PrivacyCheck.JD11 to joins.jd11(),
                 )
                 // PM-4 lives in R-B1's 16 KiB class, so a control world that drew no body there
                 // could not tell a live JD4 from a dead one; PM-5 lives in the 1-hour bucket, so a
@@ -186,6 +189,9 @@ internal object Checks {
                             e.cause?.messageRef?.let { Joins.hex(it) in world.userTexts } == true
                     }
                     check(hourTexts > 0) { "the SMALL control stored no user text in the 1-hour bucket" }
+                    // PM-40's kill needs a control that acked deposits a pre-MD-1 engine would have
+                    // verified — JD11's denominator — or a dead lane would read as a clean one.
+                    check(world.relay.ackedEligible > 0) { "the SMALL control acked no deposit eligible for a check" }
                 }
                 out
             }

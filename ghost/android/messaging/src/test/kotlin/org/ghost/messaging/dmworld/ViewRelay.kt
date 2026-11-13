@@ -5,7 +5,7 @@ import org.ghost.messaging.DmWorld
 import java.security.MessageDigest
 
 /** The operations a relay sees in a DM privacy world (§1.1's effective view, per relay). */
-internal enum class ViewOp { STORE, LIST, GET, REGISTER }
+internal enum class ViewOp { STORE, LIST, GET, REGISTER, CHECK }
 
 /**
  * One event of the effective relay view (Phase 9 design §1.1: "op; namespace; blob hash; size
@@ -23,8 +23,9 @@ internal class ViewEvent(
     val circuit: String,
     val namespace: ByteArray,
     val second: Long,
-    /** STORE: the stored blob; GET: the blob served. */
+    /** STORE: the stored blob; GET: the blob served. CHECK names a hash and carries no bytes. */
     val bytes: ByteArray? = null,
+    /** STORE: the stored blob's hash; GET: the served blob's; CHECK: the hash the check named. */
     val blobHash: ByteArray? = null,
     val ttlSeconds: Long? = null,
     /** The credential presented (a write capability or a bearer credential v3), if any. */
@@ -94,7 +95,10 @@ internal class StoreCause(
  * bounds the attempts (§21.7 point 6, PM-31; §22.21). **Send delays are honoured since S11 of
  * Phase 10** ([delayedStores]; a HIGH-mode world passes `DmDevice.HarnessOverride.privacyMode`,
  * §19.10's debt) — the pair-event gating itself is the sync engine's, proven by `:sync`'s
- * `SendDelayTest`, not replayed by this model.
+ * `SendDelayTest`, not replayed by this model. **The check round is MD-1's** ([checkRound]): a DM
+ * deposit's verification is its validated receipt, so the lane counts the deposits a pre-MD-1
+ * engine would have verified and makes no check — CHECK events exist only in PM-40's world, the
+ * regression JD11 exists to catch (MD-5's harness, 2026-11-13).
  */
 internal class ViewRelay(private val now: () -> Long) {
 
@@ -106,10 +110,16 @@ internal class ViewRelay(private val now: () -> Long) {
         val storedAt: Long,
         val ttl: Long,
         val from: Int,
+        /** The slot and namespace hex of [stored]'s key, so [checkRound] scans one storer's own. */
+        val slot: Int,
+        val nsHex: String,
     )
 
     /** `(slot, namespace hex)` → blobs, in store order. */
     private val stored = HashMap<Pair<Int, String>, MutableList<Stored>>()
+
+    /** Each storer's own blobs, in store order: [checkRound] scans these, never the whole world's. */
+    private val byStorer = HashMap<Int, MutableList<Stored>>()
 
     /**
      * `(client, namespace hex + stored hash hex)` → the hash of the bytes served to that client for
@@ -263,8 +273,9 @@ internal class ViewRelay(private val now: () -> Long) {
                     cause = cause,
                     deadlineSecond = deadline,
                 )
-                stored.getOrPut(slot to hex(namespace)) { ArrayList() } +=
-                    Stored(hash, blob, now(), ttl, client)
+                val entry = Stored(hash, blob, now(), ttl, client, slot, hex(namespace))
+                stored.getOrPut(slot to hex(namespace)) { ArrayList() } += entry
+                byStorer.getOrPut(client) { ArrayList() } += entry
             }
             release(device, operation)
             n++
@@ -520,6 +531,60 @@ internal class ViewRelay(private val now: () -> Long) {
         return n
     }
 
+    // ------------------------------------------------------------------ checks
+
+    /**
+     * The work lane's check round (design §13.4: one `check` per pair event, "compară inventarul")
+     * as MD-1 left it: for a DM pair the validated receipt IS the verification, so a clean engine
+     * makes no check. The eligible deposits — this client's own stores at least
+     * [VERIFY_ACK_AGE_SECONDS] old, what a pre-MD-1 engine's `VerifyStep.select` would have
+     * returned — are still counted, one per distinct (client, relay, namespace, hash)
+     * ([ackedEligible], the join JD11's denominator); only a device whose harness runs the pre-MD-1
+     * lane ([DmDevice.HarnessOverride.dmDepositChecks], PM-40's seam) emits the CHECK events, each
+     * naming the stored hash with the deposit credential, once per blob — a `check` without a
+     * usable write capability is not made, as `CheckRound.run` returns without one.
+     */
+    fun checkRound(client: Int, device: DmDevice): Int {
+        val relayOf = HashMap<Int, Long>()
+        for ((relay, slot) in slotMap(device)) relayOf[slot] = relay
+        var n = 0
+        for (blob in byStorer[client].orEmpty()) {
+            if (blob.storedAt + VERIFY_ACK_AGE_SECONDS > now()) continue
+            val key = "$client:${blob.slot}:${blob.nsHex}:${hex(blob.hash)}"
+            ackedEligibleSet.add(key)
+            if (device.harness?.dmDepositChecks != true) continue
+            if (key in checkedBlobs) continue
+            val relay = relayOf[blob.slot] ?: continue
+            val namespace = unhex(blob.nsHex)
+            val credential = capability(device, relay, namespace, "write") ?: continue
+            checkedBlobs.add(key)
+            events += ViewEvent(
+                op = ViewOp.CHECK,
+                relaySlot = blob.slot,
+                client = client,
+                circuit = circuit(client, namespace),
+                namespace = namespace,
+                second = now(),
+                blobHash = blob.hash,
+                credential = credential,
+            )
+            n++
+        }
+        return n
+    }
+
+    /**
+     * The distinct deposits of this world that reached ack + [VERIFY_ACK_AGE_SECONDS] in a round of
+     * their storer — what a pre-MD-1 engine would have verified, and the join JD11's denominator
+     * (its checks are 0 since MD-1).
+     */
+    val ackedEligible: Int get() = ackedEligibleSet.size
+
+    private val ackedEligibleSet = HashSet<String>()
+
+    /** The blobs this world's check lane already named (a delivery is verified once, §3.4). */
+    private val checkedBlobs = HashSet<String>()
+
     // ------------------------------------------------------------------ helpers
 
     private fun capability(device: DmDevice, relay: Long, namespace: ByteArray, kind: String): ByteArray? {
@@ -544,6 +609,9 @@ internal class ViewRelay(private val now: () -> Long) {
         }.distinctBy { hex(sha256(it.second)) }
 
     companion object {
+        /** §13.4's `verifyAckAgeSeconds`: a deposit is checked at a pair event at least this long after its ack. */
+        const val VERIFY_ACK_AGE_SECONDS = 60L
+
         fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
         fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }

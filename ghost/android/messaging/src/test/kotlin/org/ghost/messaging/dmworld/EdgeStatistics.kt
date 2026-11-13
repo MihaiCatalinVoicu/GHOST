@@ -332,6 +332,8 @@ internal object EdgeStatistics {
         ViewOp.LIST, ViewOp.GET -> e.role == 'X'
         ViewOp.REGISTER -> true
         ViewOp.STORE -> e.role == 'P'
+        // A check is the storer's own work-lane call, read like the store it verifies (none since MD-1).
+        ViewOp.CHECK -> e.role == 'P'
     }
 
     // ------------------------------------------------------------------------------ S-DM4

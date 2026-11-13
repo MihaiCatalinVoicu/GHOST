@@ -471,6 +471,16 @@ class DmDevice(
          * the schedule without the owner's term.
          */
         val wiring: Wiring? = null,
+        /**
+         * PM-40's seam (MD-5's regression harness, 2026-11-13): true makes the device behave as the
+         * engine before MD-1 — an acknowledged DM deposit is verified by a `check` naming the stored
+         * hash at a pair event ≥ ack + 60 s (design §13.4's check round), which the privacy world's
+         * relay model records as CHECK events; JD11 fails on any that names a hash stored in another
+         * session. False (every world but PM-40's): MD-1's receipt-as-verification — the model's
+         * check lane still runs and counts what a pre-MD-1 engine would have verified (JD11's
+         * denominator), and makes no check.
+         */
+        var dmDepositChecks: Boolean = false,
     )
 
     /**

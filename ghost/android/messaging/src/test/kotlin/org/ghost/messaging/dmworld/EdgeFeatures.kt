@@ -182,6 +182,9 @@ internal object EdgeFeatures {
             ViewOp.LIST, ViewOp.GET -> r.role == 'X'
             ViewOp.REGISTER -> true
             ViewOp.STORE -> r.role == 'P'
+            // A check is the storer's own work-lane call, read like the store it verifies (a clean
+            // world makes none since MD-1; the branch keeps the when total over ViewOp).
+            ViewOp.CHECK -> r.role == 'P'
         }
         val owns = requests.filter(::own).sortedWith(compareBy({ it.second }, { it.seq }))
         val inbound = requests.filter { !own(it) }

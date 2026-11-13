@@ -74,6 +74,7 @@ internal enum class PrivacyCheck(val label: String) {
     JD7("JD7 (SMALL world)"),
     JD7_WITHHOLD("JD7 WITHHOLD_ALL_BUNDLES (SMALL world)"),
     JD9("JD9 (SMALL world)"),
+    JD11("JD11 (SMALL world)"),
     NI_DM1("NI-DM1 (twin worlds)"),
     NI_DM2("NI-DM2 (twin worlds)"),
     NI_DM3("NI-DM3 (twin worlds)"),
@@ -85,9 +86,11 @@ internal enum class PrivacyCheck(val label: String) {
 
 /**
  * The privacy mutants registered: ten of §15.7's forty from slice S11, PM-5 and PM-31 from the
- * S11b slice (with NI-DM2 as PM-4's second killer), and PM-1, PM-1b and PM-26 — killed by JD8 in the
- * entitlement world's twins (§22.26) — each with the checks that kill it. §22.16 lists what the
- * others need, §22.21 what S11b changed of that list, and §22.26 what JD8 changed of it.
+ * S11b slice (with NI-DM2 as PM-4's second killer), PM-1, PM-1b and PM-26 — killed by JD8 in the
+ * entitlement world's twins (§22.26) — and PM-40, the pre-MD-1 deposit check killed by JD11
+ * (MD-5's regression harness, 2026-11-13, post-design), each with the checks that kill it.
+ * §22.16 lists what the others need, §22.21 what S11b changed of that list, and §22.26 what JD8
+ * changed of it.
  */
 internal object PrivacyMutants {
 
@@ -534,6 +537,41 @@ internal object PrivacyMutants {
         },
     )
 
+    /**
+     * **PM-40 — the pre-MD-1 deposit check (MD-5's regression harness, 2026-11-13).** Two halves,
+     * each named: (a) the device runs the pre-MD-1 check lane ([DmDevice.HarnessOverride
+     * .dmDepositChecks]) — an acknowledged DM deposit is verified by `check` at a pair event
+     * ≥ ack + 60 s, naming the stored hash under the static deposit scope; (b) the world's plans
+     * never schedule the case the leak needs — every drawn burst sends at minute 0 of a 3-minute
+     * session, so a store never sits in a session's last minute and the first eligible round is
+     * always the store's own session (measured: 582 checks, 0 cross-session). The hook supplies
+     * the missing everyday case — a send in the last minute of a foreground period, the user
+     * closing the app right after writing — through the world's own facade, so the store is an
+     * ordinary one. The check then names the hash in the NEXT session, the chain L7-D5 names, and
+     * JD11 fails on it. The harness has no other CHECK source — a clean world makes none — so the
+     * kill is also the proof that the lane records what an engine regression would put on the wire.
+     */
+    val PM40 = PrivacyMutant(
+        id = "PM-40",
+        defeats = "MD-1, L7-D5: a DM deposit's verification is its validated receipt — no check names the stored hash after ack",
+        detectedBy = "JD11 (the MD-5 harness join, 2026-11-13); here",
+        killers = listOf(PrivacyMutant.Killer(PrivacyCheck.JD11, "stored in another session")),
+        configure = { device -> device.harness?.dmDepositChecks = true },
+        afterWake = hook@{ world, c ->
+            val client = world.clients[c]
+            if (!client.activated) return@hook
+            val until = client.visibleUntil
+            val now = world.now
+            // The last minute of a foreground period only (a background wake runs hidden).
+            if (until <= now || until - now > 60) return@hook
+            val peer = world.acceptedEdges.firstOrNull { it.first == c || it.second == c }
+                ?.let { if (it.first == c) it.second else it.first }
+                ?: return@hook
+            if (world.trustOf(c, peer) !in setOf("unverified", "verified")) return@hook
+            world.userSend(c, peer, 12)
+        },
+    )
+
     // ------------------------------------------------------------------ the entitlement world (§22.26)
 
     /**
@@ -659,5 +697,5 @@ internal object PrivacyMutants {
         ),
     )
 
-    fun all(): List<PrivacyMutant> = listOf(PM1, PM1B, PM2, PM3, PM4, PM5, PM6, PM8, PM13, PM19, PM24, PM26, PM31, PM36, PM39)
+    fun all(): List<PrivacyMutant> = listOf(PM1, PM1B, PM2, PM3, PM4, PM5, PM6, PM8, PM13, PM19, PM24, PM26, PM31, PM36, PM39, PM40)
 }

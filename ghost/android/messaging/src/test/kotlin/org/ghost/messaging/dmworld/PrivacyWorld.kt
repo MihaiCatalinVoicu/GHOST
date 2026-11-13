@@ -559,6 +559,9 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         if (relay.serve(c, client.device, ownNamespaces(c), contactBundles) > 0) commit(c, SyncChange.INBOX)
         store(c)
         relay.register(c, client.device)
+        // The work lane's check round (§13.4), MD-1's: counts what a pre-MD-1 engine would have
+        // verified; CHECK events only in PM-40's world.
+        relay.checkRound(c, client.device)
         count("relay rounds")
         decidePending(c)
         config.mutant?.afterWake?.invoke(this, c)

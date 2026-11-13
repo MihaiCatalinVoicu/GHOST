@@ -66,6 +66,8 @@
 # PM-4's second killer), §22.26 what the JD8 slice added (JD8 over the entitlement world's
 # twins, and PM-1, PM-1b and PM-26's later-weeks half, each killed by it), and §22.30 what the
 # statistics slice added (S-DM1, S-DM2 and S-DM4 with their controls and recorded baselines).
+# PM-40 (2026-11-13) is the one registered mutant beyond §15.7's forty: MD-5's regression
+# harness — the pre-MD-1 deposit check, killed by the JD11 join this script pins per seed pair.
 set -euo pipefail
 
 report="${1:-}"
@@ -116,7 +118,7 @@ jd7_triggers() {
 
 # The per-world half: one line of each kind per seed pair the header names.
 privacy_worlds() {
-  local scale="$1" clients="$2" days="$3" pairs worlds join n
+  local scale="$1" clients="$2" days="$3" pairs worlds join n line scanned named
   grep -qE "^scale: ${scale}, seed pairs [1-9][0-9]*, STANDARD\$" "$report" \
     || bad "the report is not of the expected scale (${scale})"
   pairs="$(sed -nE "s/^scale: ${scale}, seed pairs ([0-9]+), STANDARD\$/\\1/p" "$report" | sed -n '1p')"
@@ -141,6 +143,19 @@ privacy_worlds() {
   [ "$n" = "$pairs" ] || bad "JD5: $n lines that say which TIMER_SET path they covered for $pairs seed pairs"
   # JD7's trigger clause on every world (its establishments get their bundle, so it may count none).
   jd7_triggers '^dm JD7: PASS ' "$pairs" "JD7" 0
+  # JD11 (MD-5's harness join, 2026-11-13): no check names a hash stored in another session. MD-1
+  # made the validated receipt the verification of a DM deposit, so a clean engine makes no check:
+  # the line's denominator is what a pre-MD-1 engine would have verified (non-empty — the world
+  # acked deposits), the pinned check count is exactly 0, and the teeth are PM-40's kill below.
+  n="$(grep -cE "^dm JD11: PASS 0 over [1-9][0-9]*; 0 checks over [1-9][0-9]* acknowledged deposits a pre-MD-1 engine would have verified " "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "JD11: $n PASS lines with 0 checks over a non-empty sample for $pairs seed pairs"
+  if grep -qE "^dm JD11: FAIL" "$report"; then bad "JD11 failed"; fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    scanned="$(printf '%s\n' "$line" | sed -nE 's/^dm JD11: PASS 0 over ([0-9]+); 0 checks over ([0-9]+) acknowledged.*/\1/p')"
+    named="$(printf '%s\n' "$line" | sed -nE 's/^dm JD11: PASS 0 over ([0-9]+); 0 checks over ([0-9]+) acknowledged.*/\2/p')"
+    [ "$scanned" = "$named" ] || bad "JD11 prints $named acknowledged deposits over a scanned $scanned"
+  done <<<"$(grep -E '^dm JD11: ' "$report" || true)"
   # S-DM3 (gating): PASS, the n >= 100 floor, no namespace of the view named by the dictionary (the
   # only part of the statistic the world decides, §22.16), and the colluders' control exact,
   # non-empty and rejected by the statistic (the interval test can fail when the attacker knows).
@@ -392,8 +407,10 @@ privacy_suite() {
   # The privacy mutants: the count this slice registers, one detection line each, none undetected.
   # Both numbers are written from what the run recorded (`PrivacyKills`): a mutant is "run" when a
   # mutated world ran for every check its entry names, and "detected" when every one killed it.
-  grep -qxF 'dm privacy mutants: 15 run, 15 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 15 run, 15 detected'"
-  for mutant in PM-1 PM-1b PM-2 PM-3 PM-4 PM-5 PM-6 PM-8 PM-13 PM-19 PM-24 PM-26 PM-31 PM-36 PM-39; do
+  # Sixteen since 2026-11-13: PM-40, MD-5's regression harness — the pre-MD-1 deposit check, killed
+  # by JD11; post-§15.7, registered under the same rule (a named check kills it).
+  grep -qxF 'dm privacy mutants: 16 run, 16 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 16 run, 16 detected'"
+  for mutant in PM-1 PM-1b PM-2 PM-3 PM-4 PM-5 PM-6 PM-8 PM-13 PM-19 PM-24 PM-26 PM-31 PM-36 PM-39 PM-40; do
     grep -qE "^dm privacy mutant ${mutant}: detected by .+" "$report" || bad "no detection line for privacy mutant $mutant"
   done
   # PM-1, PM-1b and PM-26 are killed by JD8 in the entitlement world (§22.26), and PM-26's line must

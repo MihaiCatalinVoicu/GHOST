@@ -51,7 +51,7 @@ class DmPrivacyWorldTest {
                 )
                 if (world.acceptedEdges.isEmpty() || sends == 0) failures += "$tag: the world did nothing"
                 val joins = Joins(world)
-                for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9())) {
+                for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9(), joins.jd11())) {
                     PrivacyReport.line(result.line() + " $tag")
                     if (!result.passed) failures += "$tag ${result.failureMessage()}"
                     if (result.scanned == 0L) failures += "$tag ${result.id} scanned nothing"
@@ -158,7 +158,7 @@ class DmPrivacyWorldTest {
             assertTrue("HIGH mode's delays were exercised", world.relay.delayedStores > 0)
             val failures = ArrayList<String>()
             val joins = Joins(world)
-            for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9())) {
+            for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9(), joins.jd11())) {
                 if (!result.passed) failures += result.failureMessage()
                 if (result.scanned == 0L) failures += "${result.id} scanned nothing"
             }
@@ -167,7 +167,7 @@ class DmPrivacyWorldTest {
                 "N=${world.config.clients}, ${world.config.days} days: ${world.relay.delayedStores} distinct ops delayed by " +
                 "not_before and stored by a later round (flushed past the delay), " +
                 "${byOp[ViewOp.STORE] ?: 0} stores, ${byOp[ViewOp.GET] ?: 0} gets, " +
-                "${byOp[ViewOp.REGISTER] ?: 0} registrations; JD1 … JD7, JD9 ${if (failures.isEmpty()) "green" else failures.joinToString("; ")}"
+                "${byOp[ViewOp.REGISTER] ?: 0} registrations; JD1 … JD7, JD9, JD11 ${if (failures.isEmpty()) "green" else failures.joinToString("; ")}"
             PrivacyReport.line(line)
             assertTrue(line, failures.isEmpty())
         }
