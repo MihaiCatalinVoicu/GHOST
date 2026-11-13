@@ -556,6 +556,11 @@ internal class TestTokenCrypto(val schedule: TestSchedule) : TokenCryptoPort {
         return EntitlementCrypto.Layout(Batch.layoutDigest(positions), positions.size)
     }
 
+    override fun layout(product: Int, index: Long, dropSlots: List<Int>): EntitlementCrypto.Layout {
+        val positions = schedule.positionsWithDrop(product, index, dropSlots) ?: throw NetworkException("invalid_argument")
+        return EntitlementCrypto.Layout(Batch.layoutDigest(positions), positions.size)
+    }
+
     override fun verifyToken(token: ByteArray, kind: Int): EntitlementCrypto.VerifiedToken? {
         val v = schedule.verify(token, kind) ?: return null
         return EntitlementCrypto.VerifiedToken(v.kind, v.epoch, v.slot, v.nullifier)
