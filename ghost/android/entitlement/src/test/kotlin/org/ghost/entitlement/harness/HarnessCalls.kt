@@ -226,10 +226,10 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         dropSlots: ByteArray,
         deadlineMillis: Int,
     ): TorIssuerTransport.TrialAnswer {
-        val list = layout(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, layoutDigest, positions, dropSlots.toList())
+        val list = layout(EntitlementCrypto.PRODUCT_TRIAL, baseWeek, layoutDigest, positions, dropSlots.map { it.toInt() })
         ent.records.secrets += Bytes.hex(seed)
         val blinded = Batch.blind(schedule, seed, list)
-        return issuer("redeemInvite", flow, TestSchedule.TOKEN_BYTES + 8 + blinded.size, { now -> ent.issuer.redeemInvite(inviteToken, baseWeek, blinded, now, dropSlots.toList()) }) { a ->
+        return issuer("redeemInvite", flow, TestSchedule.TOKEN_BYTES + 8 + blinded.size, { now -> ent.issuer.redeemInvite(inviteToken, baseWeek, blinded, now, dropSlots.map { it.toInt() }) }) { a ->
             if (a.result == TorIssuerTransport.TRIAL_OK) {
                 val tokens = Batch.finalize(schedule, seed, list, a.signatures) ?: fail("malformed_response")
                 TorIssuerTransport.TrialAnswer(a.result, issued(list, tokens, null))
