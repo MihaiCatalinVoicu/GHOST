@@ -487,6 +487,9 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
     /** The running relay session's redeem hold (Q29): the production [RedeemHold], as SyncRuntime keeps it. */
     private var hold: Pair<Session, RedeemHold>? = null
 
+    /** The running relay session's first-pass marker: the engine's first lane pass has not run yet. */
+    private var firstPass: Pair<Session, java.util.concurrent.atomic.AtomicBoolean>? = null
+
     /**
      * The K20 hook of Phase 9 design §13.4, as `:app` wires it (`EntitlementWiring.activationHook`):
      * read by the engine through a supplier at every call, so a world that adds a messaging layer
@@ -497,11 +500,16 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
 
     /**
      * [s], whose lanes have finished, stays the client's session (SyncRuntime's `held`): its hold is
-     * armed, no lane step yet, before the job's deadline, its transport online, no foreground waiting.
+     * armed, no lane step yet, before the job's deadline, its transport online, no foreground waiting —
+     * or its engine's first pass has not run yet (a job-band session outlives its idle sync loop until
+     * the lane's first step, which the invitee's drop write rides, LNK-04).
      */
     fun holds(s: Session): Boolean {
         val (session, h) = hold ?: return false
-        return session === s && !c.foregroundPending && s.online && h.holds(w.clock.millis)
+        if (session !== s || c.foregroundPending || !s.online) return false
+        if (h.holds(w.clock.millis)) return true
+        val first = firstPass
+        return first != null && first.first === s && !first.second.get()
     }
 
     fun boot() {
@@ -512,6 +520,7 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         flows = 0
         flowIndex.clear()
         hold = null
+        firstPass = null
         val stores = c.stores
         val deps = EngineDeps(
             ent.enginePort, HarnessEntClock(w), SiteRandom(key), identity, HarnessSeal(this, key), userCalls,
@@ -689,37 +698,44 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         val h = if (foreground) RedeemHold.none() else RedeemHold.background(RedeemHold.pendingWriteNeeds(c.stores), deadline)
         hold = s to h
         if (h.armed) w.driver.scheduleProcess(deadline, c, "redeem-hold-deadline:${c.name}") { }
+        // An idle background session finishes at once; the engine's first pass still runs (the
+        // invitee's drop write rides it, LNK-04) — [holds] keeps the session and this lease until
+        // that first pass, as SyncRuntime's job band keeps a session for the lane's first step.
+        val passed = java.util.concurrent.atomic.AtomicBoolean(false)
+        firstPass = s to passed
         val lease = HarnessLease(this) { c.session !== s || (s.isFinished() && !holds(s)) }
         val session = scheduler.session(
             if (foreground) ParticipantKind.FOREGROUND else ParticipantKind.BACKGROUND, lease, deadline,
             { c.engine.clockTrusted() }, { c.stores.database.inTransaction }, { h.stepDone() },
         )
-        awaitReady(s, e, ParticipantSessionPort(session), lease)
+        awaitReady(s, e, ParticipantSessionPort(session), lease, passed)
     }
 
-    private fun awaitReady(s: Session, e: EntitlementEngine, port: SessionPort, lease: HarnessLease) {
+    private fun awaitReady(s: Session, e: EntitlementEngine, port: SessionPort, lease: HarnessLease, passed: java.util.concurrent.atomic.AtomicBoolean) {
         w.driver.scheduleProcess(w.clock.millis + READY_POLL_MILLIS, c, "participant-ready:${c.name}") {
             if (lease.closed || engine !== e) return@scheduleProcess
             if (!s.online) {
-                awaitReady(s, e, port, lease)
+                awaitReady(s, e, port, lease, passed)
                 return@scheduleProcess
             }
             val lane = e.redeemLane()
             if (lane == null) {
                 // An inert engine runs no lane: its pass reports the empty step at once (onRelaySession).
                 e.relayPass(port)
+                passed.set(true)
                 return@scheduleProcess
             }
-            pass(e, port, lane.firstWait())
+            pass(e, port, lane.firstWait(), passed)
         }
     }
 
-    private fun pass(e: EntitlementEngine, port: SessionPort, wait: Long) {
+    private fun pass(e: EntitlementEngine, port: SessionPort, wait: Long, passed: java.util.concurrent.atomic.AtomicBoolean) {
         w.driver.scheduleProcess(w.clock.millis + wait, c, "redeem-lane:${c.name}") {
             if (port.closed || engine !== e) return@scheduleProcess
             e.relayPass(port)
+            passed.set(true)
             val lane = e.redeemLane() ?: return@scheduleProcess
-            pass(e, port, lane.nextWait())
+            pass(e, port, lane.nextWait(), passed)
         }
     }
 

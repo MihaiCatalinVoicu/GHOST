@@ -403,6 +403,11 @@ internal class ScenarioEG : EntScenario("E-G") {
             val blob = DropSeal.sealCredit(credit, mine.drop.publicKey, mine.dropNamespace, seeded("drop blob|${w.seed}"))
             for (r in relays.take(2)) r.model.inject(NamespaceId(mine.dropNamespace), blob, TtlBucket.DAYS_30.seconds.toLong(), w.relayNow(r))
         }
+        // NI-1d (LNK-04, fix 2026-11-11): the identity's own drop write rides the background band
+        // only — a foreground tick never sends it, so the scenario scripts the background session
+        // that carries it. The due (minute + 3_600 engine seconds) is one virtual hour after the
+        // start; the session opens ten minutes later.
+        w.backgroundAt(HOUR + 10 * MINUTE)
         w.foreground(e.c, 2 * HOUR, 2 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 9 * HOUR, 9 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 26 * HOUR, 26 * HOUR + 15 * MINUTE)
