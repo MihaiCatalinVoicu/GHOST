@@ -366,3 +366,7 @@ Mutantul M5b (blinding pătrat — detectat prin S2) rămâne detectat cu regula
 ### Perechea 3 la gate cu noua regulă S2 (2026-11-14, 5 440 s): PASS — matricea finală lansată
 
 Re-rularea perechii 3 pe codul cu regula ambii-gemeni: **`T2 RESULT: PASS`** — linia S2 raportează transparent ambele verdicturi: `S2: PASS n=2144 max-T 6.19 (invoice id byte x jacobi(em)), permuted maxima at or above it 0 of 999 (p=0.001); train control: n=2191 max-T 2.69 (invoice id byte x redemptions b..b+4), 197 of 999` — flag-ul lumii-test e raportat, controlul linistit explică trecerea. J5 PASS 0 hits, NI-1d PASS 12 drop writes. **Ambele perechi istoric roșii (2 și 3) sunt acum verzi la scara gate pe codul final.** Matricea finală completă (10 perechi + mutanții, ~20h) rulează detașat în WSL (`/tmp/t2-matrix-final.log`, markere în `/tmp/t2-matrix-final/pairs/`).
+
+### Incident de rulare (2026-11-14): prima lansare a matricei finale a sărit toate perechile pe markere stale
+
+Prima lansare (`--work /tmp/t2-matrix-final`) a găsit markere `.done` din rularea veche de matrice (12 nov, pre-NI-1d #3 — /tmp WSL fiind tmpfs dar neatins de o repornire) și a sărit direct la mutanți — rezultat invalid pentru codul final. Oprită manual (atenție: `pkill -f` își omoară propria comandă — folosit PID-uri explicite), directorul de lucru șters, relansată curată pe `/tmp/t2-matrix-v2` (perechea 0 rulează). Lecție: la relansarea unei matrice rezumabile, work-dir-ul trebuie verificat gol sau folosit unul proaspăt.
