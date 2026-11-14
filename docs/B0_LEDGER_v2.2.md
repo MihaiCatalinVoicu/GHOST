@@ -370,3 +370,7 @@ Re-rularea perechii 3 pe codul cu regula ambii-gemeni: **`T2 RESULT: PASS`** —
 ### Incident de rulare (2026-11-14): prima lansare a matricei finale a sărit toate perechile pe markere stale
 
 Prima lansare (`--work /tmp/t2-matrix-final`) a găsit markere `.done` din rularea veche de matrice (12 nov, pre-NI-1d #3 — /tmp WSL fiind tmpfs dar neatins de o repornire) și a sărit direct la mutanți — rezultat invalid pentru codul final. Oprită manual (atenție: `pkill -f` își omoară propria comandă — folosit PID-uri explicite), directorul de lucru șters, relansată curată pe `/tmp/t2-matrix-v2` (perechea 0 rulează). Lecție: la relansarea unei matrice rezumabile, work-dir-ul trebuie verificat gol sau folosit unul proaspăt.
+
+### Matricea finală T2 (2026-11-14, /tmp/t2-matrix-v2, pe codul final fa30d7a6+)
+
+Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 0: PASS la scara gate** (primul verdict pe codul cu NI-1d #3 + regula S2). Perechea 1 rulează.
