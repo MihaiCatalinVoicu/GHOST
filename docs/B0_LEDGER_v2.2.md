@@ -362,3 +362,7 @@ Re-rularea completă după fixul EntDmWorldTest (`64062373`): **BUILD SUCCESSFUL
 ### M5b confirmat sub noua regulă (2026-11-14, 2 453 s)
 
 Mutantul M5b (blinding pătrat — detectat prin S2) rămâne detectat cu regula ambii-gemeni: bug-ul de cod afectează ambele lumi, deci ambele semnalează (așa cum trebuie pentru orice scurgere structurală). Confirmarea perechii 3 cu noua regulă rulează în continuare în lanț (`/tmp/m5b-p3.log`).
+
+### Perechea 3 la gate cu noua regulă S2 (2026-11-14, 5 440 s): PASS — matricea finală lansată
+
+Re-rularea perechii 3 pe codul cu regula ambii-gemeni: **`T2 RESULT: PASS`** — linia S2 raportează transparent ambele verdicturi: `S2: PASS n=2144 max-T 6.19 (invoice id byte x jacobi(em)), permuted maxima at or above it 0 of 999 (p=0.001); train control: n=2191 max-T 2.69 (invoice id byte x redemptions b..b+4), 197 of 999` — flag-ul lumii-test e raportat, controlul linistit explică trecerea. J5 PASS 0 hits, NI-1d PASS 12 drop writes. **Ambele perechi istoric roșii (2 și 3) sunt acum verzi la scara gate pe codul final.** Matricea finală completă (10 perechi + mutanții, ~20h) rulează detașat în WSL (`/tmp/t2-matrix-final.log`, markere în `/tmp/t2-matrix-final/pairs/`).
