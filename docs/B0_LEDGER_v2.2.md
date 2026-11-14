@@ -377,3 +377,4 @@ Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 
 **Perechea 1: PASS la scara gate.** Perechea 2 rulează.
 **Perechea 2: PASS la scara gate** (1h14m). Perechea 3 rulează.
 **Perechea 3: PASS la scara gate** (a treia semnătură roșie istorică vindecată). Perechea 4 rulează.
+**Perechea 4: PASS la scara gate.** Perechea 5 rulează.
