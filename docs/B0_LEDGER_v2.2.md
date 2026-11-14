@@ -383,3 +383,7 @@ Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 
 **Perechea 7: PASS la scara gate.** Perechea 8 rulează.
 **Perechea 8: PASS la scara gate.** Perechea 9 rulează (ultima).
 **Perechea 9: PASS la scara gate** (a doua semnătură istorică roșie — NI-1/NI-2 — vindecată la a treia ei re-rulare pe codul final). **Gate-ul matricei: 10/10 PASS la scara gate pe codul final (NI-1d #3 + regula S2)**. Rulează mutanții M1–M24.
+
+### Matricea T2 finală COMPLETĂ (2026-11-14, ~17h): 10/10 PASS la scara gate + toți mutanții M1–M24 detectați
+
+`t2-exit-gate.sh all` pe codul final (`fa30d7a6`+NI-1d #3+regula S2): **`t2-exit-gate: PASS (all)`, MATRIX EXIT: 0.** Toate cele trei semnături roșii istorice (NI-1d ×2, NI-1/NI-2 ×1) sunt vindecatate și confirmate la scara gate pe cele 10 perechi pinned, plus mutanții. Verdictul curat al sesiunilor NI-1d/NI-2 e acum dovedit pe întreaga matrice a gate-ului.
