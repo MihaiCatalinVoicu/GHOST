@@ -173,8 +173,8 @@ fn small() -> &'static Control {
         gate::ni2(&mut c.ni2, &a, &outs[2]);
         gate::ni3(&mut c.ni3, &a, &outs[3]);
         gate::ni1d(&mut c.ni1d, &a, &outs[4]);
-        let (attackers, _, _) = gate::train(&outs[5], SEEDS.0);
-        gate::statistics(&mut c.stats, &attackers, &a, SEEDS.1);
+        let (attackers, inv_tr, clu_tr) = gate::train(&outs[5], SEEDS.0);
+        gate::statistics(&mut c.stats, &attackers, (&inv_tr, &clu_tr), &a, SEEDS.1);
         println!(
             "control (small):\n{}{}{}{}{}{}{}",
             c.joins.text(),
@@ -219,8 +219,8 @@ fn pr() -> &'static Control {
         };
         gate::joins(&mut c.joins, &a);
         gate::ni1(&mut c.ni1, &a, &outs[0]);
-        let (attackers, _, _) = gate::train(&outs[1], SEEDS.0);
-        gate::statistics(&mut c.stats, &attackers, &a, SEEDS.1);
+        let (attackers, inv_tr, clu_tr) = gate::train(&outs[1], SEEDS.0);
+        gate::statistics(&mut c.stats, &attackers, (&inv_tr, &clu_tr), &a, SEEDS.1);
         println!(
             "control (PR):\n{}{}{}",
             c.joins.text(),
@@ -300,9 +300,9 @@ fn statistics(mutant: Mutant, scale: Scale) -> Findings {
         0,
     );
     let (_, te) = world(&format!("{mutant:?}-test"), scale, SEEDS.1, mutant, true, 0);
-    let (attackers, _, _) = gate::train(&tr, SEEDS.0);
+    let (attackers, inv_tr, clu_tr) = gate::train(&tr, SEEDS.0);
     let mut f = Findings::default();
-    gate::statistics(&mut f, &attackers, &te, SEEDS.1);
+    gate::statistics(&mut f, &attackers, (&inv_tr, &clu_tr), &te, SEEDS.1);
     f
 }
 
@@ -464,9 +464,9 @@ mutant_test!(m9_session_issuer_calls, {
     );
     let (_, te) = world("m9-test", population::SMALL, SEEDS.1, m, true, 0);
     let (_, tr) = world("m9-train", population::SMALL, SEEDS.0, m, true, 0);
-    let (attackers, _, _) = gate::train(&tr, SEEDS.0);
+    let (attackers, inv_tr, clu_tr) = gate::train(&tr, SEEDS.0);
     let mut f = Findings::default();
-    gate::statistics(&mut f, &attackers, &te, SEEDS.1);
+    gate::statistics(&mut f, &attackers, (&inv_tr, &clu_tr), &te, SEEDS.1);
     detected(&f, &small().stats, "S3a", &["co-presence"], m);
 });
 
@@ -618,9 +618,9 @@ mutant_test!(m19_pay_inside_session, {
     let m = Mutant::M19PayInsideSession;
     let (_, tr) = world("m19-train", population::SMALL, SEEDS.0, m, true, 0);
     let (_, te) = world("m19-test", population::SMALL, SEEDS.1, m, true, 0);
-    let (attackers, _, _) = gate::train(&tr, SEEDS.0);
+    let (attackers, inv_tr, clu_tr) = gate::train(&tr, SEEDS.0);
     let mut f = Findings::default();
-    gate::statistics(&mut f, &attackers, &te, SEEDS.1);
+    gate::statistics(&mut f, &attackers, (&inv_tr, &clu_tr), &te, SEEDS.1);
     detected(&f, &small().stats, "S3d", &["payment co-presence"], m);
 });
 
