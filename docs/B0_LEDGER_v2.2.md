@@ -374,3 +374,4 @@ Prima lansare (`--work /tmp/t2-matrix-final`) a găsit markere `.done` din rular
 ### Matricea finală T2 (2026-11-14, /tmp/t2-matrix-v2, pe codul final fa30d7a6+)
 
 Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 0: PASS la scara gate** (primul verdict pe codul cu NI-1d #3 + regula S2). Perechea 1 rulează.
+**Perechea 1: PASS la scara gate.** Perechea 2 rulează.
