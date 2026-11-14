@@ -380,3 +380,4 @@ Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 
 **Perechea 4: PASS la scara gate.** Perechea 5 rulează.
 **Perechea 5: PASS la scara gate.** Perechea 6 rulează.
 **Perechea 6: PASS la scara gate.** Perechea 7 rulează.
+**Perechea 7: PASS la scara gate.** Perechea 8 rulează.
