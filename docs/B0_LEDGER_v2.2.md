@@ -358,3 +358,7 @@ Re-rularea instrumentată a perechii 3 (cu controlul pe lumea-train) a dat răsp
 ### Suita :messaging+:app completă VERDE (2026-11-14, 2h04m)
 
 Re-rularea completă după fixul EntDmWorldTest (`64062373`): **BUILD SUCCESSFUL, 722 teste, 0 eșecuri** — acoperind MD-1 (receipt⇒verified), A-2, CRY-P9-03, MD-5 harness, NI-1d #3 (grantul drop) și fixul EntDmWorldTest.
+
+### M5b confirmat sub noua regulă (2026-11-14, 2 453 s)
+
+Mutantul M5b (blinding pătrat — detectat prin S2) rămâne detectat cu regula ambii-gemeni: bug-ul de cod afectează ambele lumi, deci ambele semnalează (așa cum trebuie pentru orice scurgere structurală). Confirmarea perechii 3 cu noua regulă rulează în continuare în lanț (`/tmp/m5b-p3.log`).
