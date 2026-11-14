@@ -205,12 +205,14 @@ internal abstract class EntDmScenario(name: String) : EntScenario(name) {
  * covers weeks 2975 and 2976 (`Grid.TRIAL_WEEKS`), so the planner renews every own namespace's
  * capability with a week-2976 trial token at its PRF time in the last 23 h of week 2975 (the
  * EXPIRING row of Phase 8 §12.4), and REGROWS has the work lane register the renewed capability's
- * `c + 1` rows (week 2977). No token of week 2977 exists: from Monday 00:00 of week 2977 neither
- * client holds a capability, and every registration made with the Friday capability (weeks 2975 and
- * 2976) is dead from `start(2978) + 1 h` (`valid_until = start(p + 2) + 1 h`, §4.4). At
+ * `c + 1` rows (week 2977). No token of week 2977 exists — the trial's drop window (weeks
+ * 2978..2983, NI-1d fix #3) holds no week-2977 token either: from Monday 00:00 of week 2977
+ * neither client holds a capability, and every registration made with the Friday capability (weeks
+ * 2975 and 2976) is dead from `start(2978) + 1 h` (`valid_until = start(p + 2) + 1 h`, §4.4). At
  * `start(2978) + 2 h` alice writes once more: that deposit can only be charged to a week-2977
  * registration, which only the renewal made. [refuseBobRenewal] is its control: the same run with
- * bob's week-2976 redemptions — and only those — refused before the relay.
+ * bob's redemptions of every token of week 2977 or later — and only those — refused before the
+ * relay (the drop window would otherwise fund a week-2978 renewal).
  *
  * [fairyAt] is the negative control of the checks themselves: at that time a "redeem fairy" (the
  * Phase 7 helper `Client.capability`, the core world's shortcut) installs a relay-minted write
@@ -240,8 +242,11 @@ internal class EntDmConversation(
         twoDmClients(w, armBob = armBob)
         if (refuseBobRedemptions || refuseBobRenewal) {
             w.relayHook = { client, kind, info ->
+                // refuseBobRenewal: every redemption of a token of week ≥ WEEK0+1 — since NI-1d
+                // fix #3 (2026-11-13) the trial also funds the drop window (weeks base+3..base+8),
+                // so week-2978+ tokens exist and would renew bob past the lapse just the same.
                 val refused = client === bob.c && info.kind == CallKind.REDEEM && kind == EventKind.RELAY_BEFORE_SEND &&
-                    (refuseBobRedemptions || tokenWeek(info.hashes.single()) == WEEK0 + 1)
+                    (refuseBobRedemptions || tokenWeek(info.hashes.single()) >= WEEK0 + 1)
                 if (refused) "relay_unavailable" else null
             }
         }
