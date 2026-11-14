@@ -382,3 +382,4 @@ Verdicturi pe măsură ce se termină (rulare estimată ~20h total): **perechea 
 **Perechea 6: PASS la scara gate.** Perechea 7 rulează.
 **Perechea 7: PASS la scara gate.** Perechea 8 rulează.
 **Perechea 8: PASS la scara gate.** Perechea 9 rulează (ultima).
+**Perechea 9: PASS la scara gate** (a doua semnătură istorică roșie — NI-1/NI-2 — vindecată la a treia ei re-rulare pe codul final). **Gate-ul matricei: 10/10 PASS la scara gate pe codul final (NI-1d #3 + regula S2)**. Rulează mutanții M1–M24.
