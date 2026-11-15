@@ -34,8 +34,18 @@ class MainActivity : SecureActivity() {
         super.onCreate(savedInstanceState)
         LinkIntake.take(this)
         setContent {
-            GhostRoot(clipboardOwner = null) {
-                DemoScreen()
+            val app = this.app ?: return@setContent
+            val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+            val windowSizeClass = androidx.window.core.layout.WindowSizeClass.compute(
+                configuration.screenWidthDp.toFloat(),
+                configuration.screenHeightDp.toFloat(),
+            )
+            org.ghost.ui.shell.GhostRoot(
+                clipboardOwner = androidx.compose.runtime.remember {
+                    org.ghost.app.ui.AppClipboardOwner(this, org.ghost.app.ui.SettingsStore { app.openDatabaseDirectly() })
+                },
+            ) {
+                org.ghost.app.ui.AppNav(app, windowSizeClass)
             }
         }
     }

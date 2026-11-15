@@ -23,6 +23,8 @@ interface GatewaySet {
     fun identity(): IdentityGateway
     fun settings(): SettingsGateway
     fun update(): UpdateGateway?
+    fun access(): org.ghost.ui.gateway.AccessGateway
+    fun dm(): org.ghost.ui.gateway.DmGateway
 }
 
 /** The seams the adapters need, provided by GhostApp. */
@@ -30,6 +32,7 @@ class GatewayDeps(
     val executor: () -> SqlExecutor?,
     val identity: () -> IdentityManager,
     val entitlement: () -> Entitlement?,
+    val messaging: () -> org.ghost.messaging.api.Messaging?,
     val createDatabaseKey: () -> ByteArray,
     val genesisPolicyOn: Boolean,
     val strongBox: Boolean,
@@ -49,12 +52,20 @@ class GatewayDeps(
         nowUnixSeconds = nowUnixSeconds,
         random = java.security.SecureRandom(),
     )
+    val accessGateway: AccessGatewayAdapter = AccessGatewayAdapter(entitlement)
+    val dmGateway: DmGatewayAdapter = DmGatewayAdapter(messaging)
 }
 
-/** The real set: the release and debug halves construct exactly this and nothing else. */
+/**
+ * The real set: the release and debug halves construct exactly this and nothing else.
+ * Phase A of the navigation slice (2026-11-15) exposes identity/lock/settings/access/dm; the
+ * channel/media/wipe adapters stay unexposed until their facades wire into the composition root.
+ */
 class RealGatewaySet(private val deps: GatewayDeps) : GatewaySet {
     override fun lock(): LockGateway = deps.lock
     override fun identity(): IdentityGateway = deps.identityGateway
     override fun settings(): SettingsGateway = SettingsGatewayAdapter(deps.settingsStore)
     override fun update(): UpdateGateway? = null
+    override fun access(): org.ghost.ui.gateway.AccessGateway = deps.accessGateway
+    override fun dm(): org.ghost.ui.gateway.DmGateway = deps.dmGateway
 }

@@ -341,6 +341,7 @@ dependencies {
     implementation(libs.androidx.media3.common)
 
     implementation(libs.androidx.core.ktx)
+    implementation("androidx.window:window-core:1.5.0")
     implementation(libs.androidx.lifecycle.runtime.ktx)
     // GhostApp: ProcessLifecycleOwner drives the sync foreground session (design §11.2 #21, ADR-20).
     implementation(libs.androidx.lifecycle.process)

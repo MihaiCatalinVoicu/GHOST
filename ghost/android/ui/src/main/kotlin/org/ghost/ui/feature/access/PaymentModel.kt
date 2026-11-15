@@ -2,6 +2,7 @@ package org.ghost.ui.feature.access
 
 import org.ghost.ui.gateway.AccessGateway
 import org.ghost.ui.gateway.PurchaseState
+import org.ghost.ui.gateway.PaymentView
 import org.ghost.ui.gateway.PurchaseView
 import org.ghost.ui.gateway.UserAction
 
@@ -37,4 +38,7 @@ class PaymentModel(private val access: AccessGateway) {
     }
 
     suspend fun purchases(): List<PurchaseView> = access.purchases()
+
+    /** The instruction view for the screen's rendering (D35's read; the shown-mark lives in [onOpenInstructions]). */
+    suspend fun view(purchaseId: String): PaymentView? = access.paymentInstructions(purchaseId)
 }

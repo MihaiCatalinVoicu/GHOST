@@ -59,6 +59,32 @@ class GhostApp : Application(), SyncHost {
     /** The entitlement facade for Phase 13 (design §11.2). */
     val entitlement: Entitlement get() = entitlementWiring.entitlement
 
+    /** The IdentityManager for the UI composition root (§3.1: the app is the composition root). */
+    internal val identityManager: IdentityManager get() = identity
+
+    /**
+     * The gateway set the UI's navigation reaches the engines through (§3.1, §3.2). Built lazily
+     * on the first frame that needs it; the adapters themselves stay stateless.
+     */
+    val uiGateways: org.ghost.app.ui.GatewaySet by lazy {
+        org.ghost.app.ui.GatewaySetProvider.forDeps(
+            org.ghost.app.ui.GatewayDeps(
+                executor = { database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) },
+                identity = { identity },
+                entitlement = { entitlement },
+                messaging = { messaging },
+                createDatabaseKey = ::createDatabaseKey,
+                // Q21: genesis onboarding exists only in the bootstrap build — this repository
+                // builds the stagenet bootstrap; a distributed mainnet build turns this off.
+                genesisPolicyOn = true,
+                strongBox = packageManager.hasSystemFeature(
+                    android.content.pm.PackageManager.FEATURE_STRONGBOX_KEYSTORE,
+                ),
+                nowUnixSeconds = { System.currentTimeMillis() / 1000L },
+            ),
+        )
+    }
+
     /**
      * The DM layer (Phase 9 design §13.7 "Wiring"; slice S12). Every Android port of the DM stack
      * is chosen here and nowhere else: the Keystore wrappers of the two device keys with the
@@ -432,6 +458,7 @@ class GhostApp : Application(), SyncHost {
         presence.onLocked()
         messagingWiring.onLock()
         notifier?.cancelAll() // §4.6: nothing waits on the lock screen
+        org.ghost.app.ui.SessionLock.locked = true
     }
 
     /** The app unlocked: presence becomes INTERACTIVE when the activity also resumes (X-U14). */
