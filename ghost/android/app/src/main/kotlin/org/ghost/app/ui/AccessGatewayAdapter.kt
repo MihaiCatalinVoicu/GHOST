@@ -59,6 +59,10 @@ class AccessGatewayAdapter(
         entitlement()?.startPurchase(PayWith.valueOf(packId))
     }
 
+    override suspend fun requestInvoiceNow(purchaseId: String): Unit = onIo {
+        entitlement()?.requestInvoiceNow(PurchaseId(hex(purchaseId)))
+    }
+
     override suspend fun revokeInvite(index: Int): Unit = onIo {
         entitlement()?.revokeInvite(index)
     }

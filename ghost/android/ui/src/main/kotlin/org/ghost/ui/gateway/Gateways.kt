@@ -126,6 +126,10 @@ interface AccessGateway {
     @UserAction
     suspend fun startPurchase(packId: String)
 
+    /** "Get invoice now": the purchase's RequestInvoice as a user call (STANDARD mode only). */
+    @UserAction
+    suspend fun requestInvoiceNow(purchaseId: String)
+
     /** Revokes an invite (traffic). */
     @UserAction
     suspend fun revokeInvite(index: Int)

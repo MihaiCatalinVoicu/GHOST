@@ -423,7 +423,28 @@ private fun AccessRoute(backStack: BackStack, gateways: GatewaySet, appScope: ko
     AccessScreen(
         purchases = purchases,
         invites = invites,
-        onBuyXmr = { appScope.launch { access.startPurchase("XMR") } },
+        onBuyXmr = {
+            appScope.launch {
+                // Reuse an open flow if one exists; a fresh tap otherwise. Either way, ask for
+                // the invoice now (the user call of §8.3; STANDARD mode only — in HIGH the
+                // invoice arrives at the next quiet run by design).
+                val open = access.purchases().firstOrNull {
+                    it.state == org.ghost.ui.gateway.PurchaseState.PREPARED ||
+                        it.state == org.ghost.ui.gateway.PurchaseState.INVOICE_PENDING ||
+                        it.state == org.ghost.ui.gateway.PurchaseState.READY ||
+                        it.state == org.ghost.ui.gateway.PurchaseState.UNDERPAID
+                }
+                if (open == null) {
+                    access.startPurchase("XMR")
+                    delay(1_000)
+                    access.purchases()
+                        .firstOrNull { it.state == org.ghost.ui.gateway.PurchaseState.PREPARED }
+                        ?.let { access.requestInvoiceNow(it.id) }
+                } else {
+                    access.requestInvoiceNow(open.id)
+                }
+            }
+        },
         onOpenPurchase = { backStack.push(Route.Purchase(it)) },
         onRevokeInvite = { index -> appScope.launch { access.revokeInvite(index) } },
     )
