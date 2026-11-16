@@ -45,6 +45,7 @@ class PaymentModelTest {
         override suspend fun paymentScreenShown(purchaseId: String) = log.add("shown:$purchaseId").let { }
         override suspend fun paymentScreenHidden(purchaseId: String) = log.add("hidden:$purchaseId").let { }
         override suspend fun startPurchase(packId: String) = log.add("start:$packId").let { }
+        override suspend fun requestInvoiceNow(purchaseId: String) = log.add("invoice:$purchaseId").let { }
         override suspend fun revokeInvite(index: Int) = log.add("revoke:$index").let { }
     }
 

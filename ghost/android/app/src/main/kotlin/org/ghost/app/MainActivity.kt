@@ -30,6 +30,17 @@ class MainActivity : SecureActivity() {
     /** The app; null only under a test application that wires nothing. */
     private val app: GhostApp? get() = application as? GhostApp
 
+    /**
+     * The Q5 lock-timeout setting, read from the `ui_settings` row. The read is a single indexed
+     * SQLite lookup; §3.5 wants the lock decision before the next frame, so it happens here on the
+     * main thread rather than through the `ghost-ui-io` dispatcher (the adapters keep that path
+     * for the settings screen). While no database exists the store answers the migration default
+     * (60 s), matching the previous hardcoded behaviour.
+     */
+    private val settingsStore: org.ghost.app.ui.SettingsStore? by lazy {
+        app?.let { org.ghost.app.ui.SettingsStore { it.openDatabaseDirectly() } }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LinkIntake.take(this)
@@ -61,9 +72,10 @@ class MainActivity : SecureActivity() {
         val app = this.app ?: return
         app.presence.onWindowShown()
         // §3.5: a hide at least as long as the timeout locks before the next frame (a Compose
-        // state change made here is applied before the frame that follows). The timeout value
-        // arrives with S2's LockController wiring; 0 locks at onStop.
-        val timeoutMs = 60_000L
+        // state change made here is applied before the frame that follows). Q5's choice applies
+        // (0 locks at onStop, as before the S2 wiring); the store answers 60 s until the database
+        // exists, matching the pre-wiring behaviour.
+        val timeoutMs = (settingsStore?.lockTimeoutSeconds() ?: 60L) * 1_000L
         if (hiddenAtMs != 0L && SystemClock.elapsedRealtime() - hiddenAtMs >= timeoutMs) {
             app.onLock()
         }
