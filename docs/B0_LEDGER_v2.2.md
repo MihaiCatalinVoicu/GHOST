@@ -415,3 +415,7 @@ Laptopul nou (mediul B) a raportat pregătirea (builder 24.04-5, repo clonat, re
 ### Build-A pentru rehearsal complet (2026-11-16, ~25 min): 20 fișiere, 368 MB
 
 `run-in-image.sh ab-rehearsal-2026-11-16` pe mediul A: BUILD_OK (files=20, b_digest=c6e2f192ca09fc01), public-identity-scrub OK, ghost-verify cross skipped (fără GHOST_RELEASE_CROSS — conform design §6.1 kinds 19-22, cross targets intră doar cu flag). Directorul complet copiat pe Windows la `D:\Forumuild-A` (și originar în WSL `/srv/build-A`) pentru transferul pe mediul B. Următorii pași rămân pe mediul B: build-B pe același tag → compararea SHA256SUMS (pre-verificare) → release-sums.sh cu directoarele complete.
+
+### EGALITATEA A/B DEMONSTRATĂ (2026-11-16): 20/20 fișiere byte-identice pe două mașini independente
+
+Rezultatul rehearsal-ului mediul A (laptopul de dezvoltare) vs mediul B (laptopul nou, independent) pe tagul semnat `ab-rehearsal-2026-11-16`: **toate cele 20 de SHA-256-uri identice** (APK nesemnat, 5 binare, lib-urile native pe ambele ABI, native-libs.sha256, 4 notices, recipe Dockerfile+pins, 3 SBOM-uri, 2 fișiere de simboluri). Rămâne doar verificarea formală `release-sums.sh` cu directoarele complete (copierea lui `D:\Forumuild-A` pe mediul B). Aceasta e dovada practică a promisiunii Fazei 14: oricine poate reproduce byte-cu-byte release-ul din surse + tag, pe mașini independente. La ceremonia RK1 reală se repetă pe tagul de release cu cheia de tag a proprietarului și cheile de pe token.
