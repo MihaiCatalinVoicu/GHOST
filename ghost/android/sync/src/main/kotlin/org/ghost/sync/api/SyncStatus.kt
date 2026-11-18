@@ -58,6 +58,16 @@ class SyncCounts(
     }
 }
 
+/** Privacy-safe local diagnostic of the most recent user issuer call. */
+enum class DiagnosticStage { IDLE, QUEUED, BOOTSTRAP, ISSUER_CALL, CLOSED, UNAVAILABLE, FAILED }
+
+/** Fixed stage and error category only; no ids, addresses, amounts, free text or event times. */
+data class SyncDiagnostic(val stage: DiagnosticStage, val lastError: String?) {
+    companion object {
+        val EMPTY = SyncDiagnostic(DiagnosticStage.IDLE, null)
+    }
+}
+
 /** What [SyncController.status] reports: counts and enums only (design §7.3). */
 class SyncStatus(
     val transport: TransportStatus,

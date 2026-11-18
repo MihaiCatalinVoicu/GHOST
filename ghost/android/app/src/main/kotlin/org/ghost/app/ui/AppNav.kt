@@ -80,6 +80,9 @@ internal object SessionLock {
     var locked by mutableStateOf(false)
 }
 
+/** Payment instruction reads are local; even a stuck database call must reach a terminal UI state. */
+private const val PAYMENT_READ_TIMEOUT_MILLIS = 10_000L
+
 @Composable
 fun AppNav(app: GhostApp, windowSizeClass: WindowSizeClass) {
     val gateways = remember { app.uiGateways }
@@ -225,7 +228,7 @@ fun AppNav(app: GhostApp, windowSizeClass: WindowSizeClass) {
 
             is Route.Purchase -> PurchaseRoute(current.purchaseId, backStack, paymentModel, gateways, appScope)
 
-            is Route.PaymentInstructions -> PaymentInstructionsRoute(current.purchaseId, paymentModel, appScope)
+            is Route.PaymentInstructions -> PaymentInstructionsRoute(current.purchaseId, backStack, paymentModel, appScope)
 
             Route.About -> AboutRoute(app, backStack)
 
@@ -423,31 +426,37 @@ private fun AccessRoute(backStack: BackStack, gateways: GatewaySet, appScope: ko
     AccessScreen(
         purchases = purchases,
         invites = invites,
-        onBuyXmr = {
-            appScope.launch {
-                // Reuse an open flow if one exists; a fresh tap otherwise. Either way, ask for
-                // the invoice now (the user call of §8.3; STANDARD mode only — in HIGH the
-                // invoice arrives at the next quiet run by design).
-                val open = access.purchases().firstOrNull {
-                    it.state == org.ghost.ui.gateway.PurchaseState.PREPARED ||
-                        it.state == org.ghost.ui.gateway.PurchaseState.INVOICE_PENDING ||
-                        it.state == org.ghost.ui.gateway.PurchaseState.READY ||
-                        it.state == org.ghost.ui.gateway.PurchaseState.UNDERPAID
-                }
-                if (open == null) {
-                    access.startPurchase("XMR")
-                    delay(1_000)
-                    access.purchases()
-                        .firstOrNull { it.state == org.ghost.ui.gateway.PurchaseState.PREPARED }
-                        ?.let { access.requestInvoiceNow(it.id) }
-                } else {
-                    access.requestInvoiceNow(open.id)
-                }
-            }
-        },
+        onBuyXmr = { appScope.launch { startOrResumeXmrPurchase(access) } },
         onOpenPurchase = { backStack.push(Route.Purchase(it)) },
         onRevokeInvite = { index -> appScope.launch { access.revokeInvite(index) } },
     )
+}
+
+/** A pending request must resend the identical invoice request; only an issued invoice has status. */
+internal suspend fun startOrResumeXmrPurchase(access: org.ghost.ui.gateway.AccessGateway) {
+    val open = access.purchases().firstOrNull {
+        it.state in setOf(
+            org.ghost.ui.gateway.PurchaseState.PREPARED,
+            org.ghost.ui.gateway.PurchaseState.INVOICE_PENDING,
+            org.ghost.ui.gateway.PurchaseState.READY,
+            org.ghost.ui.gateway.PurchaseState.PAYMENT_UNVERIFIED,
+            org.ghost.ui.gateway.PurchaseState.UNDERPAID,
+            org.ghost.ui.gateway.PurchaseState.CONFIRMING,
+        )
+    }
+    when (open?.state) {
+        null -> {
+            access.startPurchase("XMR")
+            delay(1_000)
+            access.purchases()
+                .firstOrNull { it.state == org.ghost.ui.gateway.PurchaseState.PREPARED }
+                ?.let { access.requestInvoiceNow(it.id) }
+        }
+        org.ghost.ui.gateway.PurchaseState.PREPARED,
+        org.ghost.ui.gateway.PurchaseState.INVOICE_PENDING,
+        -> access.requestInvoiceNow(open.id)
+        else -> access.checkNow(open.id)
+    }
 }
 
 @Composable
@@ -476,42 +485,91 @@ private fun PurchaseRoute(
                 }
             }
         },
+        onCheckNow = { appScope.launch { paymentModel.onCheckNow(purchaseId) } },
     )
 }
 
-/** The instructions read: marks the screen shown (D35) and renders the sensitive view. */
+/** Disclosures, then the instruction read; null and failed reads end in an explicit retry/back state. */
 @Composable
 private fun PaymentInstructionsRoute(
     purchaseId: String,
+    backStack: BackStack,
     paymentModel: PaymentModel,
     appScope: kotlinx.coroutines.CoroutineScope,
 ) {
     var payment by remember { mutableStateOf<PaymentView?>(null) }
-    LaunchedEffect(purchaseId) {
-        paymentModel.onOpenInstructions(purchaseId)
-        payment = paymentModel.view(purchaseId)
+    var disclosures by remember { mutableStateOf<Set<org.ghost.ui.gateway.PaymentDisclosure>?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    var attempt by remember { mutableStateOf(0) }
+    val shown = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    LaunchedEffect(purchaseId, attempt) {
+        payment = null
+        failed = false
+        disclosures = null
+        var loadedDisclosures: Set<org.ghost.ui.gateway.PaymentDisclosure>? = null
+        val loaded = kotlinx.coroutines.withTimeoutOrNull(PAYMENT_READ_TIMEOUT_MILLIS) {
+            val required = paymentModel.requiredDisclosures(purchaseId)
+            loadedDisclosures = required
+            if (required.isEmpty()) {
+                runCatching { paymentModel.onOpenInstructions(purchaseId) }.getOrNull()
+            } else {
+                null
+            }
+        }
+        val required = loadedDisclosures
+        disclosures = required
+        when {
+            required == null -> failed = true
+            required.isNotEmpty() -> Unit
+            loaded == null -> failed = true
+            else -> {
+                payment = loaded
+                shown.set(true)
+            }
+        }
     }
     DisposableEffect(purchaseId) {
         onDispose {
-            // §3.3/§3.5: the leave (hide, back, lock) ends the shown-marked window.
-            appScope.launch { paymentModel.onInstructionsClosed(purchaseId) }
+            if (shown.getAndSet(false)) {
+                // §3.3/§3.5: only a real instruction showing brackets the payment-screen hold.
+                appScope.launch { paymentModel.onInstructionsClosed(purchaseId) }
+            }
         }
     }
+    val required = disclosures
     val p = payment
-    if (p == null) {
-        ActivatingScreen()
-    } else {
-        PaymentInstructionsScreen(payment = p)
+    when {
+        required == null -> ActivatingScreen()
+        required.isNotEmpty() -> org.ghost.ui.feature.access.PaymentDisclosuresScreen(
+            disclosures = required,
+            onConfirm = {
+                appScope.launch {
+                    paymentModel.onDisclosuresConfirmed(purchaseId)
+                    disclosures = emptySet()
+                    attempt++
+                }
+            },
+        )
+        failed -> org.ghost.ui.feature.access.PaymentInstructionsUnavailableScreen(
+            onRetry = { attempt++ },
+            onBack = { backStack.pop() },
+        )
+        p == null -> ActivatingScreen()
+        else -> PaymentInstructionsScreen(payment = p)
     }
 }
+
+internal fun sourceSummary(version: String, commit: String, dirty: Boolean): String =
+    version + "\nsource=" + commit + (if (dirty) " (modified)" else "")
 
 /** ABOUT: the version line and the three reference doors (the sub-screens land next slice). */
 @Composable
 private fun AboutRoute(app: GhostApp, backStack: BackStack) {
     val version = remember {
-        runCatching {
+        val packageVersion = runCatching {
             app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: ""
         }.getOrDefault("")
+        sourceSummary(packageVersion, org.ghost.app.BuildConfig.SOURCE_COMMIT, org.ghost.app.BuildConfig.SOURCE_DIRTY)
     }
     AboutScreen(
         version = version,

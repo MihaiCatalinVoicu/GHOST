@@ -83,6 +83,9 @@ for dir in "${SRC_DIRS[@]}"; do
     case "$rel" in
       android/ui/src/main/kotlin/org/ghost/ui/protect/SensitiveClipboard.kt) continue ;;
       android/ui/src/main/kotlin/org/ghost/ui/shell/GhostRoot.kt) continue ;;
+      # The app's ClipboardOwner implementation: every write is delegated to SensitiveClipboard;
+      # its platform types are required by the Compose interface, and its getters never read clips.
+      android/app/src/main/kotlin/org/ghost/app/ui/AppClipboardOwner.kt) continue ;;
     esac
     if grep -qE "$CLIP_RE" "$f"; then
       fail "$rel: clipboard reference outside SensitiveClipboard.kt/GhostRoot.kt"

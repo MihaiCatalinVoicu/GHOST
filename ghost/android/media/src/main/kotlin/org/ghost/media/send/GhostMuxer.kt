@@ -44,6 +44,7 @@ import java.nio.ByteBuffer
  *
  * Runs on the media worker thread (§13.7); no logging, no clock (§13.1).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class GhostMuxer(
     private val channel: SealingChannel,
     private val sourceDurationUs: Long,
@@ -192,6 +193,7 @@ class GhostMuxer(
  * The `Muxer.Factory` Transformer requires: [create] ignores the path (nothing may ever write a
  * plaintext file, V-M1) and hands back the one [GhostMuxer] over the caller's [SealingChannel].
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class GhostMuxerFactory(
     private val channel: SealingChannel,
     private val sourceDurationUs: Long,

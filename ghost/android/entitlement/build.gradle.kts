@@ -102,5 +102,11 @@ tasks.withType<Test>().configureEach {
     maxHeapSize = "2g"
     // K/R counts, mutant results and timings of this run (the entitlement-exit-gate job summary).
     val harnessReport = layout.buildDirectory.dir("harness")
-    doFirst { harnessReport.get().asFile.deleteRecursively() }
+    // The outer shard runner keeps its open log, reports and done-markers in this directory.
+    // Delete only this run's stale report; deleting the directory makes the runner fail after Gradle.
+    doFirst {
+        val directory = harnessReport.get().asFile
+        directory.mkdirs()
+        directory.resolve("report.txt").delete()
+    }
 }

@@ -317,8 +317,8 @@ fn collect_src(root: &Path, dir: &Path, member: &str, out: &mut Vec<String>) -> 
         let rel = path
             .strip_prefix(root)
             .map_err(|_| "PATH_TRAVERSAL a source path is outside the workspace")?
-            .display()
-            .to_string();
+            .to_string_lossy()
+            .replace('\\', "/");
         if path.is_dir() {
             collect_src(root, &path, member, out)?;
         } else {

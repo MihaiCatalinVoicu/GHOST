@@ -59,6 +59,10 @@ fn write(path: &Path, text: impl AsRef<[u8]>) {
     std::fs::write(path, text).unwrap();
 }
 
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn root_config(version: u32, onion_a: &str, onion_b: &str) -> String {
     format!(
         r#"network = 2
@@ -128,12 +132,12 @@ onion = "{relay}"
 operator = "{rop}"
 "#,
         issued_after = issued + 30,
-        apk = rel.join("app.apk").display(),
-        unsigned = rel.join("app-unsigned.apk").display(),
+        apk = toml_path(&rel.join("app.apk")),
+        unsigned = toml_path(&rel.join("app-unsigned.apk")),
         salt = hex16_of(0x33),
         commit = "ab".repeat(20),
-        es = rel.join("es.json").display(),
-        escrow = rel.join("escrow.tar.gz").display(),
+        es = toml_path(&rel.join("es.json")),
+        escrow = toml_path(&rel.join("escrow.tar.gz")),
         mirror = mirror_onion,
         mop = hex16_of(0x44),
         relay = relay_onion,

@@ -38,6 +38,12 @@ internal enum class Failure {
  * A `WRONG_PERIOD` re-prepare (§5.3, §8.3) is the flow's retry, not a new flow: the new row keeps the
  * invite token or presents the same credits, so it inherits the attempt count and the pre-drawn retry
  * time (`PurchaseSteps.rePrepare`), and a flow whose cap is spent fails instead.
+ *
+ * Recovery amendment for the live discovery: a transient XMR `RequestInvoice`/`BlindSign` failure
+ * makes the same capped attempt eligible at the next quiet run instead of stranding it for the next
+ * long window. Quiet-run draws still depend only on the process key and job index; no extra attempt
+ * is granted, non-final issuer answers keep their pre-drawn times, and CREDITS/auto-renewal timing
+ * is unchanged.
  */
 internal object RetryPolicy {
     const val BLIND_SIGN_ATTEMPTS = 5

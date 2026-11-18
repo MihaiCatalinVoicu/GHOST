@@ -68,6 +68,8 @@ internal object Counters {
  * `ENTITLEMENT_NEEDED` arose, the GC pace and counters. A restart forgets all of it, which costs at
  * most identical retries.
  */
+internal data class PaymentSyncMetadata(val lastSuccess: Long?, val issuerUnavailable: Boolean)
+
 internal class EngineMemory {
     val clock = ClockEstimate()
     val trialCall = AtomicBoolean()
@@ -79,6 +81,20 @@ internal class EngineMemory {
     private val retryAfter = ConcurrentHashMap<List<Byte>, Long>()
     private val firstSeen = ConcurrentHashMap<CapabilityNeed, Long>()
     private val counters = ConcurrentHashMap<String, AtomicLong>()
+    private val paymentSync = ConcurrentHashMap<List<Byte>, PaymentSyncMetadata>()
+
+    /** Last issuer contact known by this process; null after restart means honestly local-only. */
+    fun paymentSync(id: ByteArray): PaymentSyncMetadata? = paymentSync[id.toList()]
+
+    fun paymentSucceeded(id: ByteArray, now: Long) {
+        paymentSync[id.toList()] = PaymentSyncMetadata(now, issuerUnavailable = false)
+    }
+
+    fun paymentFailed(id: ByteArray) {
+        paymentSync.compute(id.toList()) { _, old ->
+            PaymentSyncMetadata(old?.lastSuccess, issuerUnavailable = true)
+        }
+    }
 
     @Volatile
     private var neededSince: Long? = null

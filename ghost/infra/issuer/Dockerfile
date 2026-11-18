@@ -19,7 +19,7 @@ FROM rust:1.98.1-bookworm AS build
 RUN apt-get update -q && apt-get install -y -q --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p ghost-issuer --bin ghost-issuer --locked
+RUN cargo build --release -p ghost-issuer --bin ghost-issuer --bin ghost-wallet-watchdog --locked
 
 FROM build AS ops-build
 RUN cargo build --release -p ghost-issuer-ops --bin ghost-issuer-ops --locked
@@ -49,10 +49,12 @@ RUN apt-get update -q && apt-get install -y -q --no-install-recommends tor && rm
     && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ghost-issuer \
     && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin monero
 COPY --from=build /src/target/release/ghost-issuer /usr/local/bin/ghost-issuer
+COPY --from=build /src/target/release/ghost-wallet-watchdog /usr/local/bin/ghost-wallet-watchdog
 COPY --from=monero-release /monero/bin/ /usr/local/bin/
 COPY infra/issuer/torrc /etc/tor/torrc
 COPY infra/issuer/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh \
+COPY infra/issuer/wallet-rpc-supervisor.sh /usr/local/bin/wallet-rpc-supervisor.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/wallet-rpc-supervisor.sh \
     && mkdir -p /var/lib/tor/state /var/lib/tor/ghost-issuer /var/lib/monerod /var/lib/monero-wallet \
        /var/lib/ghost-issuer/data /var/lib/ghost-issuer/export /var/lib/ghost-issuer/sealed-keys \
        /etc/ghost /etc/ghost-issuer

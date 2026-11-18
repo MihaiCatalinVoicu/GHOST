@@ -96,9 +96,13 @@ class TransportLeaseTest {
         @Volatile
         var callHold: CountDownLatch? = null
 
+        @Volatile
+        var failureOnNew: String? = null
+
         val factory = EntitlementCallsFactory { t ->
             val tor = t as FakeTor
             RecordingCalls().also { rc ->
+                rc.failure = { failureOnNew }
                 byTransport[t] = rc
                 rc.during = {
                     tor.nativeCalls.incrementAndGet()
@@ -251,7 +255,7 @@ class TransportLeaseTest {
         val h = TorTransportHolder(f, RealClock, Daemons, c.factory)
         assertEquals(TransportState.READY, h.ensureReady(deadline(5_000)))
         val lease = h.openLease()
-        val categories = ErrorPolicy.CATEGORIES.keys.toList()
+        val categories = ErrorPolicy.CATEGORIES.keys.filterNot { it == "onion_service_not_found" }
         var n = 0
         val calls = c.byTransport.getValue(f.made[0])
         calls.failure = { categories[n++] }
@@ -264,6 +268,30 @@ class TransportLeaseTest {
         redeem(lease)
         assertEquals("every call reached the one transport", categories.size + 1, c.on(f.made[0]))
         assertEquals(0, f.overlaps.get())
+    }
+
+    @Test
+    fun aMissingDescriptorRecreatesTheDirectoryAndRetriesOnlyOnce() {
+        val f = Factory()
+        val c = Calls()
+        val h = TorTransportHolder(f, RealClock, Daemons, c.factory)
+        assertEquals(TransportState.READY, h.ensureReady(deadline(5_000)))
+        val lease = h.openLease()
+        c.byTransport.getValue(f.made[0]).failure = { "onion_service_not_found" }
+        redeem(lease)
+        assertEquals("a fresh Arti client over the same configuration", 2, f.made.size)
+        assertTrue(f.made[0].closed)
+        assertEquals(1, c.on(f.made[1]))
+        assertEquals(0, f.overlaps.get())
+
+        c.byTransport.getValue(f.made[1]).failure = { "onion_service_not_found" }
+        c.failureOnNew = "onion_service_not_found"
+        assertEquals("onion_service_not_found", category { redeem(lease) })
+        assertEquals("the failed recovery made and retired exactly one new transport", 3, f.made.size)
+        assertTrue(f.made[1].closed && f.made[2].closed)
+        c.failureOnNew = null
+        assertEquals(TransportState.READY, h.ensureReady(deadline(5_000)))
+        assertEquals(4, f.made.size)
     }
 
     @Test

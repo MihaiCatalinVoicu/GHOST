@@ -80,6 +80,7 @@ if [ "$ANDROID_ONLY" = 1 ]; then
 else
   build_one ghost-relay-node ghost-relay
   build_one ghost-issuer ghost-issuer
+  install -m 0755 "$WORK/target/release/ghost-wallet-watchdog" "$OUT/bin/ghost-wallet-watchdog"
   build_one ghost-issuer-ops ghost-issuer-ops
   build_one ghost-release-ops ghost-release-ops
   build_one ghost-verify ghost-verify

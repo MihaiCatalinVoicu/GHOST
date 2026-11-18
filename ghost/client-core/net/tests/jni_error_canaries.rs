@@ -137,7 +137,7 @@ async fn issuer_error_paths_carry_categories_only() {
         ),
         (
             "redeem_invite, wrong layout",
-            issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &wrong)
+            issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &wrong, &[])
                 .await
                 .unwrap_err(),
         ),
@@ -235,6 +235,7 @@ async fn issuer_error_paths_carry_categories_only() {
         &SEED,
         FIRST_WEEK,
         &d(Product::Trial, FIRST_WEEK),
+        &[],
     )
     .await
     .unwrap_err();
@@ -284,6 +285,7 @@ async fn issuer_error_paths_carry_categories_only() {
         &SEED,
         FIRST_WEEK,
         &d(Product::Trial, FIRST_WEEK),
+        &[],
     )
     .await
     .unwrap();

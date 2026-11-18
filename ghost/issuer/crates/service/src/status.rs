@@ -35,7 +35,10 @@ pub const POOL_LOW_BELOW: usize = 16;
 pub const OPEN_INVOICES_BUCKET: u64 = 100;
 
 /// Every key of the status object, in output order.
-pub const KEYS: [&str; 17] = [
+pub const KEYS: [&str; 20] = [
+    "STATUS_GENERATED_AT",
+    "LAST_RPC_SUCCESS_AT",
+    "RPC_ERRORS_CONSECUTIVE",
     "SCANNER",
     "KEYS_READY_UNTIL_WEEK",
     "ES_HORIZON_WEEKS",
@@ -146,6 +149,12 @@ impl ReconciliationCode {
 /// One status snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusReport {
+    /// Unix seconds when this snapshot was generated; readers compare it with their own clock.
+    pub generated_at: u64,
+    /// Unix seconds of the last valid rail answer, or 0 before the first one in this process.
+    pub last_rpc_success_at: u64,
+    /// Consecutive scanner ticks whose rail call failed.
+    pub rpc_errors_consecutive: u64,
     pub scanner: ScannerCode,
     /// Last access week from the current one whose keys (with the invite and credit keys of those
     /// weeks) are all held; 0 when the current week is not ready.
@@ -185,6 +194,9 @@ impl StatusReport {
     pub fn to_json(&self) -> String {
         let s = |code: &str| format!("\"{code}\"");
         let values = [
+            self.generated_at.to_string(),
+            self.last_rpc_success_at.to_string(),
+            self.rpc_errors_consecutive.to_string(),
             s(self.scanner.code()),
             self.keys_ready_until_week.to_string(),
             self.es_horizon_weeks.to_string(),
@@ -230,7 +242,15 @@ impl Issuer {
     /// The status at `now` (§6.5).
     pub fn status_at(&self, now: u64) -> Result<StatusReport, StoreError> {
         let w = week(now);
-        let (scanner, sign_fault, keys_missing, payout_acks_refused, refresh_refused) = {
+        let (
+            scanner,
+            last_rpc_success_at,
+            rpc_errors_consecutive,
+            sign_fault,
+            keys_missing,
+            payout_acks_refused,
+            refresh_refused,
+        ) = {
             let v = self.volatile();
             let scanner = match v.last_tick {
                 None => ScannerCode::Stalled,
@@ -245,6 +265,8 @@ impl Issuer {
             };
             (
                 scanner,
+                v.last_rpc_success_at.unwrap_or(0),
+                v.consecutive_rpc_errors,
                 v.sign_faults,
                 v.keys_missing,
                 v.payout_acks_refused,
@@ -252,7 +274,8 @@ impl Issuer {
             )
         };
         let tx = self.store.read()?;
-        let open = store::invoices(&*tx)?
+        let invoices = store::invoices(&*tx)?;
+        let open = invoices
             .iter()
             .filter(|(_, r)| {
                 matches!(
@@ -260,6 +283,12 @@ impl Issuer {
                     InvoiceState::Created | InvoiceState::Seen | InvoiceState::Confirmed
                 )
             })
+            .count() as u64;
+        // Operational alarm: current confirmed rows with no issuance stamp, not the historical
+        // purge counter of the current week. The reconciliation counter remains unchanged.
+        let confirmed_unissued = invoices
+            .iter()
+            .filter(|(_, r)| r.state == InvoiceState::Confirmed && r.issued_height == 0)
             .count() as u64;
         let counters = reconcile::all(&*tx)?;
         let this_week = |id: CounterId| counters.get(&(id, w)).copied().unwrap_or(0);
@@ -270,6 +299,9 @@ impl Issuer {
             .map(|(_, b)| b.week)
             .collect();
         Ok(StatusReport {
+            generated_at: now,
+            last_rpc_success_at,
+            rpc_errors_consecutive,
             scanner,
             keys_ready_until_week: self.keys().ready_until_week(w).unwrap_or(0),
             es_horizon_weeks: self
@@ -285,7 +317,7 @@ impl Issuer {
                 ReconciliationCode::Mismatch
             },
             reorg_after_issue: this_week(CounterId::ReorgAfterIssue),
-            confirmed_unissued: this_week(CounterId::ConfirmedUnissued),
+            confirmed_unissued,
             pool_reconciled: this_week(CounterId::PoolReconciled),
             sign_fault,
             keys_missing,

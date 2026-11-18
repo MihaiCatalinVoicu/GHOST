@@ -49,6 +49,7 @@ class GhostNotifier(
         executor.execute { manager.cancel(NOTIFICATION_ID) }
     }
 
+    @android.annotation.SuppressLint("NotificationPermission") // Android drops it when the optional permission is absent
     private fun postOrCancel(count: Int) {
         if (count <= 0 || interactive()) {
             manager.cancel(NOTIFICATION_ID)

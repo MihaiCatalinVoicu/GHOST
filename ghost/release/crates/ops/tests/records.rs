@@ -1,8 +1,7 @@
 //! `records-check` (G-D4 clauses (a)–(c)) over a synthetic network directory: the two-root
 //! chain verifies, the committed certificate's digest is in the newest root's `apk_signers`,
 //! and the committed `anchor-mirrors.txt` equals the root's mirror set. Every clause also gets
-//! one mutation that must fail closed. Software keys only (keygen reads /dev/urandom, so the
-//! suite runs where the other ops tests do).
+//! one mutation that must fail closed. Software keys only, seeded from the host OS RNG.
 
 use std::path::Path;
 

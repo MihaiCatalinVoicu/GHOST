@@ -17,7 +17,18 @@ async fn dials_the_embedded_issuer_and_requests_an_invoice() {
     if let Ok(level) = std::env::var("GHOST_LIVE_LOG") {
         let _ = tracing_subscriber::fmt().with_env_filter(level).try_init();
     }
-    let dir = std::env::temp_dir().join("ghost-live-issuer-test");
+    // Isolated by default: a stale shared /tmp cache made consecutive runs non-deterministic.
+    // Set GHOST_LIVE_ISSUER_CACHE to reuse an explicit Tor state/cache directory for cache testing.
+    let dir = std::env::var_os("GHOST_LIVE_ISSUER_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("ghost-live-issuer-{}-{unique}", std::process::id()))
+        });
+    eprintln!("Tor state/cache directory: {}", dir.display());
     let cfg = TransportConfig {
         state_dir: dir.join("state"),
         cache_dir: dir.join("cache"),
@@ -38,8 +49,8 @@ async fn dials_the_embedded_issuer_and_requests_an_invoice() {
 
     let mut client = IssuerClient::over_tor(&transport, [0x42; 16]).expect("issuer client");
     let claim_hash = [7u8; ghost_issuer_api::CLAIM_BYTES];
-    match issuer_flow::request_invoice(&mut client, schedule, &claim_hash, &[], base_week).await {
-        Ok(answer) => eprintln!("INVOICE ANSWER (privacy-safe debug): {answer:?}"),
-        Err(e) => eprintln!("ISSUER ERROR: {e}"),
-    }
+    let answer = issuer_flow::request_invoice(&mut client, schedule, &claim_hash, &[], base_week)
+        .await
+        .unwrap_or_else(|e| panic!("ISSUER ERROR: {e}"));
+    eprintln!("INVOICE ANSWER (privacy-safe debug): {answer:?}");
 }

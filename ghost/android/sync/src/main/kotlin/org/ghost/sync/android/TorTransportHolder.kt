@@ -273,10 +273,35 @@ internal class TorTransportHolder(
 
         override fun <T> use(block: (EntitlementCalls) -> T): T {
             val slot = enter() ?: throw NetworkException(CLOSED)
-            try {
+            val failure = try {
                 return block(slot.calls)
+            } catch (e: NetworkException) {
+                e
             } finally {
                 release(slot)
+            }
+            if (failure.category != ONION_SERVICE_NOT_FOUND) throw failure
+            return retryWithFreshDirectory(slot, failure, block)
+        }
+
+        /** Recreate Arti's DirMgr from the same state/cache and retry once, never under the old call's use count. */
+        private fun <T> retryWithFreshDirectory(
+            stale: Slot,
+            original: NetworkException,
+            block: (EntitlementCalls) -> T,
+        ): T {
+            bootstrapPlan?.reset()
+            retire(stale)
+            val state = ensureReady(clock.monotonicMillis() + DIRECTORY_RECOVERY_BOOTSTRAP_MILLIS)
+            if (state != TransportState.READY) throw original
+            val refreshed = enter() ?: throw original
+            try {
+                return block(refreshed.calls)
+            } catch (e: NetworkException) {
+                if (e.category == ONION_SERVICE_NOT_FOUND) retire(refreshed)
+                throw e
+            } finally {
+                release(refreshed)
             }
         }
 
@@ -310,6 +335,8 @@ internal class TorTransportHolder(
 
     companion object {
         private const val CLOSED = "closed"
+        private const val ONION_SERVICE_NOT_FOUND = "onion_service_not_found"
+        private const val DIRECTORY_RECOVERY_BOOTSTRAP_MILLIS = 180_000L
 
         /** The exhausted plan's category: `BootstrapSpent`'s mapping (design §6.5 point 4). */
         private const val PLAN_SPENT = "tor_bootstrap"

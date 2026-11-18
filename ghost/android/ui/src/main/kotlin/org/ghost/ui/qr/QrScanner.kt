@@ -92,6 +92,7 @@ private class ScannerState(
     private val handler = android.os.Handler(handlerThread.looper)
     private var busy = false
 
+    @android.annotation.SuppressLint("MissingPermission") // checked immediately before openCamera
     fun start(context: Context, view: TextureView, previewSurface: Surface, width: Int, height: Int) {
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             onRefused()

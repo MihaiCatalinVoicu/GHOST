@@ -21,15 +21,35 @@ class PaymentModel(private val access: AccessGateway) {
     /** The payment screens' only legal entry: READY or UNDERPAID, never anything else. */
     suspend fun mayOpenInstructions(purchaseId: String): Boolean {
         val purchase = access.purchases().firstOrNull { it.id == purchaseId } ?: return false
-        return purchase.state == PurchaseState.READY || purchase.state == PurchaseState.UNDERPAID
+        return purchase.state == PurchaseState.READY ||
+            purchase.state == PurchaseState.PAYMENT_UNVERIFIED ||
+            purchase.state == PurchaseState.UNDERPAID
     }
 
-    /** CS-U3/PM-U32: shown at the instruction read, hidden at leave/hide/lock. */
+    /** CS-U3/PM-U32: shown only after a real instruction read, hidden at leave/hide/lock. */
     @UserAction
-    suspend fun onOpenInstructions(purchaseId: String) {
+    suspend fun onOpenInstructions(purchaseId: String): PaymentView? {
         check(mayOpenInstructions(purchaseId)) { "instructions open only for READY or UNDERPAID (D35)" }
-        access.paymentInstructions(purchaseId)
+        val payment = access.paymentInstructions(purchaseId) ?: return null
         access.paymentScreenShown(purchaseId)
+        return payment
+    }
+
+    /** The disclosures still required before the instruction read; no traffic and no sensitive data. */
+    suspend fun requiredDisclosures(purchaseId: String): Set<org.ghost.ui.gateway.PaymentDisclosure> =
+        access.requiredDisclosures(purchaseId)
+
+    /** J2 step 4: an explicit user acknowledgement, never an implicit side effect of opening a route. */
+    @UserAction
+    suspend fun onDisclosuresConfirmed(purchaseId: String) {
+        val required = access.requiredDisclosures(purchaseId)
+        if (required.isNotEmpty()) access.acknowledgeDisclosures(purchaseId, required)
+    }
+
+    /** J2 step 6: one declared InvoiceStatus call. BlindSign remains quiet-run work. */
+    @UserAction
+    suspend fun onCheckNow(purchaseId: String) {
+        access.checkNow(purchaseId)
     }
 
     @UserAction

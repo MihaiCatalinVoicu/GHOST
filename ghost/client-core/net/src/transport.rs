@@ -76,6 +76,8 @@ pub enum TransportError {
     /// A connection was requested before a successful bootstrap. Connections never start a
     /// bootstrap implicitly (Arti runs in manual bootstrap mode).
     NotBootstrapped,
+    /// The current Tor directory has no descriptor for the requested service; a fresh client may refresh it.
+    OnionServiceNotFound,
     Connect(String),
 }
 
@@ -96,6 +98,7 @@ impl std::fmt::Display for TransportError {
                 f.write_str("tor bootstrap already failed on this client; create a new one")
             }
             TransportError::NotBootstrapped => f.write_str("tor is not bootstrapped"),
+            TransportError::OnionServiceNotFound => f.write_str("Onion Service not found"),
             TransportError::Connect(m) => write!(f, "onion connect: {m}"),
         }
     }
@@ -457,10 +460,19 @@ pub(crate) async fn connect_isolated(
     client
         .connect_with_prefs((addr.host(), addr.port()), &prefs)
         .await
-        .map_err(|e| match e.kind() {
-            ErrorKind::BootstrapRequired => TransportError::NotBootstrapped,
-            _ => TransportError::Connect(format!("{e}")),
-        })
+        .map_err(onion_connect_error)
+}
+
+fn should_refresh_directory(kind: ErrorKind) -> bool {
+    kind == ErrorKind::OnionServiceNotFound
+}
+
+fn onion_connect_error(e: arti_client::Error) -> TransportError {
+    match e.kind() {
+        ErrorKind::BootstrapRequired => TransportError::NotBootstrapped,
+        kind if should_refresh_directory(kind) => TransportError::OnionServiceNotFound,
+        _ => TransportError::Connect(format!("{e}")),
+    }
 }
 
 #[cfg(test)]
@@ -493,6 +505,19 @@ mod tests {
     const WEBTUNNEL_LINE: &str =
         "webtunnel 192.0.2.11:443 0123456789ABCDEF0123456789ABCDEF01234567 \
         url=https://192.0.2.11/abcdefghijklmnop ver=abcdef0123";
+
+    #[test]
+    fn only_a_missing_onion_service_refreshes_the_directory() {
+        assert!(should_refresh_directory(ErrorKind::OnionServiceNotFound));
+        for kind in [
+            ErrorKind::OnionServiceNotRunning,
+            ErrorKind::OnionServiceConnectionFailed,
+            ErrorKind::BootstrapRequired,
+            ErrorKind::RemoteHostNotFound,
+        ] {
+            assert!(!should_refresh_directory(kind), "{kind:?}");
+        }
+    }
 
     #[test]
     fn config_builds_with_and_without_plain_bridges() {

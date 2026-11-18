@@ -57,6 +57,7 @@ class PickedVideo(private val context: Context, private val uri: Uri) : VideoSou
  * `android.net.Uri`, which G-DM1 bans from `:media` (GhostTranscoder takes this as a constructor
  * argument).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object NoBitmapsLoader : BitmapLoader {
     override fun supportsMimeType(mimeType: String): Boolean = false
     override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> =

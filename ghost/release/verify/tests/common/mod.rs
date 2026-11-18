@@ -63,6 +63,10 @@ pub fn write(path: &std::path::Path, text: impl AsRef<[u8]>) {
     std::fs::write(path, text).unwrap();
 }
 
+fn toml_path(path: impl AsRef<std::path::Path>) -> String {
+    path.as_ref().to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 pub struct World {
     pub dir: tempfile::TempDir,
     pub keys: PathBuf,
@@ -360,12 +364,12 @@ file = "{escrow}"
                 permille = rel.permille,
                 salt = hex16(rel.salt),
                 commit = "ab".repeat(20),
-                es_file = es_file.display(),
-                lib = lib.display(),
-                sym = sym.display(),
-                escrow = escrow.display(),
-                apk = apk.display(),
-                unsigned = unsigned.display(),
+                es_file = toml_path(&es_file),
+                lib = toml_path(&lib),
+                sym = toml_path(&sym),
+                escrow = toml_path(&escrow),
+                apk = toml_path(&apk),
+                unsigned = toml_path(&unsigned),
             ));
         }
         let src = dir.join("manifest.toml");

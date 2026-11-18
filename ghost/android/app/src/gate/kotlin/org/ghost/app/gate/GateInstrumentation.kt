@@ -270,6 +270,52 @@ class GateInstrumentation : Instrumentation() {
                 UpdateLoopback.set(app, if (endpoint == "off") null else endpoint)
                 out.putString("update.loopback", endpoint)
             }
+            "purchase-status" -> {
+                // Read-only payment drill: fixed states only, never purchase ids, addresses or amounts.
+                val opened = java.util.concurrent.CountDownLatch(1)
+                app.syncController.runWhenStoresOpen {
+                    out.putString(
+                        "purchase.states",
+                        app.entitlement.openPurchases().joinToString(",") { it.state.name + ":" + it.sync.name },
+                    )
+                    val schedule = ArrayList<String>()
+                    app.openDatabaseDirectly()?.query(
+                        "SELECT state, attempt, next_due_minute FROM ent_purchase ORDER BY purchase_id",
+                    ) { row ->
+                        schedule += row.string(0) + ":" + row.long(1) + ":" + (if (row.isNull(2)) "none" else row.long(2).toString())
+                    }
+                    out.putString("purchase.schedule", schedule.joinToString(","))
+                    opened.countDown()
+                }
+                check(opened.await(WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "the database did not open" }
+                val diagnostic = app.syncController.diagnostics()
+                out.putString("purchase.diagnostic", diagnostic.stage.name + ":" + (diagnostic.lastError ?: "none"))
+            }
+            "purchase-request" -> {
+                // The same user RequestInvoice path as the UI, followed by the still-live diagnostic.
+                val requested = java.util.concurrent.CountDownLatch(1)
+                app.syncController.runWhenStoresOpen {
+                    val purchase = app.entitlement.openPurchases().firstOrNull {
+                        it.state == org.ghost.entitlement.api.PurchaseUiState.PREPARED ||
+                            it.state == org.ghost.entitlement.api.PurchaseUiState.INVOICE_PENDING
+                    }
+                    if (purchase != null) app.entitlement.requestInvoiceNow(purchase.id)
+                    requested.countDown()
+                }
+                check(requested.await(WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "the database did not open" }
+                app.syncController.awaitIdle(UPDATE_IDLE_WAIT_MILLIS)
+                val read = java.util.concurrent.CountDownLatch(1)
+                app.syncController.runWhenStoresOpen {
+                    out.putString(
+                        "purchase.states",
+                        app.entitlement.openPurchases().joinToString(",") { it.state.name + ":" + it.sync.name },
+                    )
+                    read.countDown()
+                }
+                check(read.await(WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "the result could not be read" }
+                val diagnostic = app.syncController.diagnostics()
+                out.putString("purchase.diagnostic", diagnostic.stage.name + ":" + (diagnostic.lastError ?: "none"))
+            }
             "probe" -> {
                 // One-shot diagnostic for the drill's onboarding prerequisite: the state before
                 // and, with activate=true, after ensureDatabaseKey + activate, in the same process.

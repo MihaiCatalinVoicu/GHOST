@@ -81,6 +81,11 @@ fun AccessScreen(
     }
 }
 
+/** The stored timestamp is epoch seconds, rounded down to a minute; convert exactly once. */
+internal fun formatSyncTime(epochSeconds: Long, zone: java.time.ZoneId): String =
+    java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochSecond(epochSeconds), zone)
+        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
 /**
  * A single purchase's progress (§6.3): the state read-model polled while the flow advances; the
  * instructions door opens only in READY / UNDERPAID (the [PaymentModel] re-checks, D35).
@@ -89,6 +94,7 @@ fun AccessScreen(
 fun PurchaseProgressScreen(
     purchase: PurchaseView?,
     onOpenInstructions: () -> Unit,
+    onCheckNow: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -101,9 +107,34 @@ fun PurchaseProgressScreen(
             text = stringResource(R.string.purchase_state, purchase?.state?.name ?: ""),
             style = MaterialTheme.typography.bodyLarge,
         )
-        if (purchase != null && (purchase.state == PurchaseState.READY || purchase.state == PurchaseState.UNDERPAID)) {
+        purchase?.let { p ->
+            Text(
+                text = stringResource(
+                    when (p.sync) {
+                        org.ghost.ui.gateway.PurchaseSyncState.LIVE -> R.string.purchase_sync_live
+                        org.ghost.ui.gateway.PurchaseSyncState.STALE -> R.string.purchase_sync_stale
+                        org.ghost.ui.gateway.PurchaseSyncState.ISSUER_UNAVAILABLE -> R.string.purchase_sync_unavailable
+                        org.ghost.ui.gateway.PurchaseSyncState.LOCAL_ONLY -> R.string.purchase_sync_local
+                    },
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            p.lastSyncedMinute?.let { minute ->
+                val formatted = formatSyncTime(minute, java.time.ZoneId.systemDefault())
+                Text(
+                    text = stringResource(R.string.purchase_last_sync, formatted),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        if (purchase != null && purchase.state in setOf(PurchaseState.READY, PurchaseState.PAYMENT_UNVERIFIED, PurchaseState.UNDERPAID)) {
             Button(onClick = onOpenInstructions) {
                 Text(text = stringResource(R.string.purchase_open_payment))
+            }
+        }
+        if (purchase != null && purchase.state in setOf(PurchaseState.READY, PurchaseState.PAYMENT_UNVERIFIED, PurchaseState.UNDERPAID, PurchaseState.CONFIRMING)) {
+            Button(onClick = onCheckNow) {
+                Text(text = stringResource(R.string.purchase_check_now))
             }
         }
     }

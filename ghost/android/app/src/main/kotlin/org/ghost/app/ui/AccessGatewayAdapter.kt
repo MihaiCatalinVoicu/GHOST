@@ -27,6 +27,8 @@ class AccessGatewayAdapter(
                 id = p.id.toByteArray().joinToString("") { "%02x".format(it) },
                 payWith = p.payWith.name,
                 state = PurchaseState.valueOf(p.state.name),
+                sync = org.ghost.ui.gateway.PurchaseSyncState.valueOf(p.sync.name),
+                lastSyncedMinute = p.lastSyncedMinute,
             )
         }
     }
@@ -45,6 +47,25 @@ class AccessGatewayAdapter(
             amount = org.ghost.ui.protect.SensitiveText(formatAtomic(p.outstandingAtomic)),
             deadlineDay = Math.floorDiv(p.deadlineMinute, 1440).toInt(),
         )
+    }
+
+    override suspend fun requiredDisclosures(purchaseId: String): Set<org.ghost.ui.gateway.PaymentDisclosure> = onIo {
+        val e = entitlement() ?: return@onIo emptySet()
+        e.requiredDisclosures(PurchaseId(hex(purchaseId))).mapTo(mutableSetOf()) {
+            org.ghost.ui.gateway.PaymentDisclosure.valueOf(it.name)
+        }
+    }
+
+    override suspend fun acknowledgeDisclosures(
+        purchaseId: String,
+        disclosures: Set<org.ghost.ui.gateway.PaymentDisclosure>,
+    ): Unit = onIo {
+        val mapped = disclosures.mapTo(mutableSetOf()) { org.ghost.entitlement.api.Disclosure.valueOf(it.name) }
+        entitlement()?.acknowledge(PurchaseId(hex(purchaseId)), mapped)
+    }
+
+    override suspend fun checkNow(purchaseId: String): Unit = onIo {
+        entitlement()?.checkNow(PurchaseId(hex(purchaseId)))
     }
 
     override suspend fun paymentScreenShown(purchaseId: String): Unit = onIo {

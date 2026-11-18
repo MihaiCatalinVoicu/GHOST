@@ -13,6 +13,7 @@ use ghost_issuer::config::{Config, ConfigError};
 const TEMPLATE: &str = include_str!("../../../../infra/issuer/config.stagenet.toml");
 const TORRC: &str = include_str!("../../../../infra/issuer/torrc");
 const ENTRYPOINT: &str = include_str!("../../../../infra/issuer/entrypoint.sh");
+const SUPERVISOR: &str = include_str!("../../../../infra/issuer/wallet-rpc-supervisor.sh");
 const COMPOSE: &str = include_str!("../../../../infra/issuer/docker-compose.stagenet.yml");
 const ADDRESSES: &str = include_str!("../../../../protocol/test-vectors/monero_addresses.txt");
 
@@ -93,18 +94,19 @@ fn the_monero_endpoints_are_the_ports_the_entrypoint_binds() {
     let c = host_copy();
     let (wallet, daemon) = (c.wallet_rpc.addr(), c.daemon_rpc.addr());
     assert!(wallet.ip().is_loopback() && daemon.ip().is_loopback());
+    let deployment = [ENTRYPOINT, SUPERVISOR].concat();
     for needle in [
         format!("--rpc-bind-port {}", wallet.port()),
         format!("--rpc-bind-port {}", daemon.port()),
         format!("--daemon-address {daemon}"),
         "--wallet-file ".to_string(),
     ] {
-        assert!(ENTRYPOINT.contains(&needle), "entrypoint.sh lacks {needle}");
+        assert!(deployment.contains(&needle), "deployment lacks {needle}");
     }
     assert!(
-        !ENTRYPOINT.contains("--wallet-dir"),
+        !deployment.contains("--wallet-dir"),
         "never --wallet-dir (§7.1)"
     );
-    assert!(!ENTRYPOINT.contains("--restricted-rpc"));
-    assert!(!ENTRYPOINT.contains("--disable-rpc-login"));
+    assert!(!deployment.contains("--restricted-rpc"));
+    assert!(!deployment.contains("--disable-rpc-login"));
 }

@@ -17,6 +17,7 @@ pub const TOR_BOOTSTRAP: &str = "tor_bootstrap";
 pub const TOR_BOOTSTRAP_TIMEOUT: &str = "tor_bootstrap_timeout";
 pub const NOT_BOOTSTRAPPED: &str = "not_bootstrapped";
 pub const TRANSPORT: &str = "transport";
+pub const ONION_SERVICE_NOT_FOUND: &str = "onion_service_not_found";
 pub const TIMEOUT: &str = "timeout";
 pub const UNAUTHORIZED: &str = "unauthorized";
 pub const QUOTA: &str = "quota";
@@ -49,6 +50,7 @@ pub const ALL: &[&str] = &[
     TOR_BOOTSTRAP_TIMEOUT,
     NOT_BOOTSTRAPPED,
     TRANSPORT,
+    ONION_SERVICE_NOT_FOUND,
     TIMEOUT,
     UNAUTHORIZED,
     QUOTA,
@@ -79,6 +81,7 @@ pub fn for_transport(e: &TransportError) -> &'static str {
         TransportError::BootstrapTimeout => TOR_BOOTSTRAP_TIMEOUT,
         TransportError::BootstrapSpent => TOR_BOOTSTRAP,
         TransportError::NotBootstrapped => NOT_BOOTSTRAPPED,
+        TransportError::OnionServiceNotFound => ONION_SERVICE_NOT_FOUND,
         TransportError::Connect(_) => TRANSPORT,
     }
 }
@@ -217,9 +220,8 @@ mod tests {
     #[test]
     fn issuer_outcomes_use_existing_categories_only() {
         use tonic::Code;
-        // Design §5.7: no new issuer category. The four Phase 12 PT categories (§8.3) join ALL;
-        // ErrorPolicyTest (sync) pins the same total.
-        assert_eq!(ALL.len(), 24);
+        // The transport-level missing-descriptor category joins the existing 24.
+        assert_eq!(ALL.len(), 25);
         let table = [
             (Code::InvalidArgument, REJECTED),
             (Code::PermissionDenied, UNAUTHORIZED),

@@ -40,6 +40,12 @@ dependencies {
 
 // (sourceSets moved inside android {} above)
 
+// This source set contains the resumable CLI harness, not JUnit tests. Gradle 9.7 otherwise fails
+// the aggregate `build` merely because this intentionally test-less source set discovers no tests.
+tasks.withType<Test>().configureEach {
+    failOnNoDiscoveredTests = false
+}
+
 // The harness entry point lives in the unit-test source set so it rides the same runtime the
 // engine worlds use (JVM + the host native libraries). Run:
 //   ./gradlew :tools:staging-harness:stagingRun --args='activate --state /srv/harness/alice'

@@ -14,6 +14,9 @@ interface SyncController {
     /** Counts and enums only. */
     fun status(): SyncStatus
 
+    /** The latest user-call stage and fixed error category; a safe default for non-Android controllers. */
+    fun diagnostics(): SyncDiagnostic = SyncDiagnostic.EMPTY
+
     /** The local data was wiped: cancel the periodic job and stop every session (design §11.2 #17). */
     fun onWipe()
 

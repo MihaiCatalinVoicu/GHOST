@@ -40,4 +40,5 @@ dependencies {
     implementation("androidx.window:window-core:1.5.0")
     // §4.7 (Q12, ADR-57): QR encode/decode — Apache-2.0, no runtime dependency.
     implementation(libs.zxing.core)
+    testImplementation(libs.junit)
 }

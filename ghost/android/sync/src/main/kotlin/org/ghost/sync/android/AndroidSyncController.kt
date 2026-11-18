@@ -11,6 +11,7 @@ import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.UpdateSession
 import org.ghost.sync.api.UpdateParticipant
 import org.ghost.sync.api.SyncController
+import org.ghost.sync.api.SyncDiagnostic
 import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.engine.KeyedRandomSources
 import org.ghost.sync.engine.TrafficPolicy
@@ -46,6 +47,8 @@ class AndroidSyncController internal constructor(
     val privacyMode: PrivacyMode get() = runtime.privacyMode
 
     override fun status(): SyncStatus = runtime.status()
+
+    override fun diagnostics(): SyncDiagnostic = runtime.diagnostics()
 
     /** Cancels the periodic job at once, then stops every session and drops the engine (§11.2 #17). */
     override fun onWipe() {

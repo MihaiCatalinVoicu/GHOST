@@ -221,7 +221,7 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     override fun requiredDisclosures(id: PurchaseId): Set<Disclosure> {
         val c = ready() ?: return emptySet()
         val p = c.tx { tx -> c.purchases.get(tx, id.toByteArray()) } ?: return emptySet()
-        return if (p.kind == PurchaseStore.PACK && p.payWith == PurchaseStore.XMR && p.live) Disclosure.entries.toSet() else emptySet()
+        return if (p.kind == PurchaseStore.PACK && p.payWith == PurchaseStore.XMR && p.live && !p.disclosed) Disclosure.entries.toSet() else emptySet()
     }
 
     override fun acknowledge(id: PurchaseId, disclosures: Set<Disclosure>) {
@@ -239,9 +239,14 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         val subaddress = p.subaddress ?: return null
         val amount = p.amountAtomic ?: return null
         val deadline = (p.receiptMinute ?: return null) + PAYMENT_WINDOW
-        if (now >= deadline) return null
         val outstanding = p.outstandingAtomic ?: amount
-        val uri = if (outstanding > 0) {
+        val fullyPaid = outstanding == 0L && p.prevState in setOf(
+            org.ghost.network.TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS,
+            org.ghost.network.TorIssuerTransport.STATE_SIGNED,
+        )
+        // A fully observed payment remains readable for recovery after the unpaid-invoice window.
+        if (now >= deadline && !fullyPaid) return null
+        val uri = if (outstanding > 0 && now < deadline) {
             try {
                 c.crypto.paymentUri(subaddress, outstanding)
             } catch (e: NetworkException) {
@@ -270,7 +275,11 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         val raw = id.toByteArray()
         deps.userCalls.runUserIssuerCall { session ->
             val issuer = session.issuer
-            if (issuer != null && !session.closed) c.purchaseSteps.invoiceStatus(issuer, raw)
+            if (issuer != null && !session.closed) {
+                c.purchaseSteps.invoiceStatus(issuer, raw, c.now())
+            } else {
+                c.memory.paymentFailed(raw)
+            }
         }
     }
 
@@ -280,15 +289,25 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     }
 
     override fun openPurchases(): List<org.ghost.entitlement.api.OpenPurchase> {
-        // §3.6: pure reads over stored rows; READY is recomputed through paymentReady, never the
-        // stored `invoiced` alone (PM-U31's predicate test drives this mapping).
+        // Financial state comes from the stored issuer answer; freshness is independent process-local metadata.
         val c = ready() ?: return emptyList()
         val now = c.now()
         return c.tx { tx -> c.purchases.all(tx).map { p ->
+            val metadata = c.memory.paymentSync(p.id())
+            val lastSuccess = metadata?.lastSuccess
+            val freshness = when {
+                metadata == null -> org.ghost.entitlement.api.PurchaseSyncState.LOCAL_ONLY
+                metadata.issuerUnavailable -> org.ghost.entitlement.api.PurchaseSyncState.ISSUER_UNAVAILABLE
+                lastSuccess == null -> org.ghost.entitlement.api.PurchaseSyncState.LOCAL_ONLY
+                now - lastSuccess !in 0L..PAYMENT_SYNC_FRESH_FOR -> org.ghost.entitlement.api.PurchaseSyncState.STALE
+                else -> org.ghost.entitlement.api.PurchaseSyncState.LIVE
+            }
             org.ghost.entitlement.api.OpenPurchase(
                 id = org.ghost.entitlement.api.PurchaseId(p.id()),
                 payWith = if (p.payWith == PurchaseStore.XMR) org.ghost.entitlement.api.PayWith.XMR else org.ghost.entitlement.api.PayWith.CREDITS,
                 state = uiState(p, now),
+                sync = freshness,
+                lastSyncedMinute = lastSuccess?.let(Time::floorMinute),
             )
         } }
     }
@@ -305,14 +324,22 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         } }
     }
 
-    /** §3.6's state set over a stored row; CONFIRMING has no stored counterpart yet (documented). */
+    /** An outstanding amount alone is not underpayment: only STATE_UNDERPAID may produce that UI state. */
     private fun uiState(p: PurchaseRow, now: Long): org.ghost.entitlement.api.PurchaseUiState = when (p.state) {
         PurchaseStore.PREPARED -> org.ghost.entitlement.api.PurchaseUiState.PREPARED
-        PurchaseStore.INVOICED -> when {
-            paymentReady(p, now) -> org.ghost.entitlement.api.PurchaseUiState.READY
-            p.shown && (p.outstandingAtomic ?: 0L) > 0L && now < (p.receiptMinute ?: 0L) + PAYMENT_WINDOW ->
-                org.ghost.entitlement.api.PurchaseUiState.UNDERPAID
-            else -> org.ghost.entitlement.api.PurchaseUiState.INVOICE_PENDING
+        PurchaseStore.INVOICED -> when (p.prevState) {
+            org.ghost.network.TorIssuerTransport.STATE_UNDERPAID -> org.ghost.entitlement.api.PurchaseUiState.UNDERPAID
+            org.ghost.network.TorIssuerTransport.STATE_SIGNED,
+            org.ghost.network.TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS,
+            -> org.ghost.entitlement.api.PurchaseUiState.CONFIRMING
+            org.ghost.network.TorIssuerTransport.STATE_EXPIRED ->
+                if (p.shown) org.ghost.entitlement.api.PurchaseUiState.EXPIRED_SEEN
+                else org.ghost.entitlement.api.PurchaseUiState.EXPIRED_UNPAID
+            else -> when {
+                p.shown -> org.ghost.entitlement.api.PurchaseUiState.PAYMENT_UNVERIFIED
+                paymentReady(p, now) -> org.ghost.entitlement.api.PurchaseUiState.READY
+                else -> org.ghost.entitlement.api.PurchaseUiState.INVOICE_PENDING
+            }
         }
         PurchaseStore.FINALIZED -> org.ghost.entitlement.api.PurchaseUiState.FINALIZED
         PurchaseStore.EXPIRED ->
@@ -416,6 +443,7 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         const val PAYMENT_WINDOW: Long = 24 * Grid.HOUR
         const val PAYMENT_READY_MIN: Long = Grid.HOUR
         const val PAYMENT_READY_SPAN: Long = 5 * Grid.HOUR
+        const val PAYMENT_SYNC_FRESH_FOR: Long = 15 * 60L
         const val NEED_SURFACE_SPAN: Long = 12 * Grid.HOUR
     }
 }

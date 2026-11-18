@@ -9,6 +9,7 @@ import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.ConsumerTail
+import org.ghost.sync.api.DiagnosticStage
 import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
@@ -1368,6 +1369,31 @@ class SessionParticipantTest {
         assertTrue(w.job().await(30, TimeUnit.SECONDS))
         assertTrue(w.runtime.awaitIdle(5_000))
         assertEquals(emptyList<TailRun>(), tail.runs.toList())
+    }
+
+    @Test
+    fun userIssuerCallDiagnosticsExposeStagesAndClosedWithoutSensitiveData(): Unit = World(Draws({ false }, hold = 0.5)).use { w ->
+        w.controller.onPaymentScreenShown()
+        w.controller.onAppForeground()
+        val inside = CompletableFuture<DiagnosticStage>()
+        w.controller.runUserIssuerCall { s ->
+            inside.complete(w.controller.diagnostics().stage)
+            category { invoiceStatus(s) }
+        }
+        assertEquals(DiagnosticStage.ISSUER_CALL, inside.get(10, TimeUnit.SECONDS))
+        assertTrue(w.controller.awaitIdle(10_000))
+        assertEquals(DiagnosticStage.IDLE, w.controller.diagnostics().stage)
+        assertNull(w.controller.diagnostics().lastError)
+
+        w.controller.onAppBackground()
+        val closed = CompletableFuture<Unit>()
+        w.controller.runUserIssuerCall { closed.complete(Unit) }
+        assertTrue(closed.get(10, TimeUnit.SECONDS) == Unit)
+        assertTrue(w.controller.awaitIdle(10_000))
+        val diagnostic = w.controller.diagnostics()
+        assertEquals(DiagnosticStage.CLOSED, diagnostic.stage)
+        assertEquals("closed", diagnostic.lastError)
+        assertEquals("SyncDiagnostic(stage=CLOSED, lastError=closed)", diagnostic.toString())
     }
 
     private companion object {

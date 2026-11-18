@@ -65,6 +65,29 @@ fn height_answer(c: &Call) -> Option<Reply> {
 }
 
 #[test]
+fn the_wallet_watchdog_binary_accepts_a_live_rpc_and_refuses_bad_credentials() {
+    let e = emulator(Options::default(), height_answer);
+    let binary = env!("CARGO_BIN_EXE_ghost-wallet-watchdog");
+    let url = format!("http://{}", e.endpoint().addr());
+    let ok = std::process::Command::new(binary)
+        .env("GHOST_WALLET_RPC_URL", &url)
+        .env("RPC_LOGIN", format!("{}:{}", epee::USER, epee::PASSWORD))
+        .output()
+        .unwrap();
+    assert!(ok.status.success());
+    assert!(ok.stdout.is_empty() && ok.stderr.is_empty());
+    assert_eq!(e.calls().len(), 1);
+
+    let refused = std::process::Command::new(binary)
+        .env("GHOST_WALLET_RPC_URL", &url)
+        .env("RPC_LOGIN", format!("{}:wrong", epee::USER))
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(refused.stdout.is_empty() && refused.stderr.is_empty());
+}
+
+#[test]
 fn digest_is_kept_per_connection_and_nc_counts_on_it() {
     let e = emulator(Options::default(), height_answer);
     let c = client(&e);

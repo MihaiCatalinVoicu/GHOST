@@ -127,16 +127,32 @@ class PurchaseStepsTest {
         assertEquals(PurchaseStore.PREPARED, afterFailure.state)
         assertTrue(afterFailure.sent)
         assertEquals(1, afterFailure.attempt)
-        // The retry's time was drawn when the first attempt left, 20–28 h later; no answer moves it.
-        val retry = checkNotNull(afterFailure.nextDueMinute)
-        assertTrue(retry >= T0 + 20 * Grid.HOUR && retry <= T0 + 28 * Grid.HOUR + 60)
+        assertEquals("a transient failure is eligible at the next quiet run", Time.ceilMinute(T0), afterFailure.nextDueMinute)
         w.quiet()
-        assertEquals("not due yet", 1, w.issuer.calls.size)
-        w.nextAttempt(id)
         val requests = w.issuer.named("requestInvoice")
         assertEquals(2, requests.size)
         assertEquals(requests[0].args, requests[1].args)
         assertEquals(PurchaseStore.INVOICED, checkNotNull(w.purchase(id)).state)
+    }
+
+    @Test
+    fun anInterruptedBlindSignIsRetriedAtTheNextQuietRunWithoutAnotherLongWindow(): Unit = World().use { w ->
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
+        w.quiet()
+        val invoiced = checkNotNull(w.purchase(id))
+        w.clock.now = checkNotNull(invoiced.nextDueMinute)
+        w.issuer.failOnce = "closed"
+        w.quiet()
+        val interrupted = checkNotNull(w.purchase(id))
+        assertEquals(1, interrupted.attempt)
+        assertEquals(Time.ceilMinute(w.clock.now), interrupted.nextDueMinute)
+
+        w.quiet()
+        val signs = w.issuer.named("blindSign")
+        assertEquals(2, signs.size)
+        assertEquals(signs[0].args, signs[1].args)
+        assertEquals("the first attempt kept its 3–5 h window", invoiced.nextDueMinute, signs[0].at)
+        assertEquals(PurchaseStore.FINALIZED, checkNotNull(w.purchase(id)).state)
     }
 
     @Test
@@ -327,6 +343,7 @@ class PurchaseStepsTest {
         val id = checkNotNull(w.engine.startPurchase(PayWith.XMR))
         assertEquals(Disclosure.entries.toSet(), w.engine.requiredDisclosures(id))
         w.engine.acknowledge(id, Disclosure.entries.toSet())
+        assertEquals("an acknowledged pack does not gate the next instruction read", emptySet<Disclosure>(), w.engine.requiredDisclosures(id))
         assertNull("not invoiced yet", w.engine.paymentInstructions(id))
         w.quiet()
         w.engine.acknowledge(id, setOf(Disclosure.NO_REFUND))
@@ -347,6 +364,21 @@ class PurchaseStepsTest {
         assertFalse("shown: no more cancel", w.engine.cancel(id))
         w.clock.now = instructions.deadlineMinute
         assertNull(w.engine.paymentInstructions(id))
+    }
+
+    @Test
+    fun aFullyPaidInvoiceRemainsRecoverableAfterTheLocalPaymentWindow(): Unit = World().use { w ->
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR))
+        w.engine.acknowledge(id, Disclosure.entries.toSet())
+        w.quiet()
+        w.issuer.statusState = TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS
+        w.issuer.credited = TestCrypto.PRICE
+        w.engine.checkNow(id)
+        val before = checkNotNull(w.engine.paymentInstructions(id))
+        w.clock.now = before.deadlineMinute + 3600
+        val after = checkNotNull(w.engine.paymentInstructions(id))
+        assertEquals(0L, after.outstandingAtomic)
+        assertNull("no new payment is solicited after the deadline", after.uri)
     }
 
     @Test
@@ -395,7 +427,7 @@ class PurchaseStepsTest {
     }
 
     @Test
-    fun aStallingIssuerGetsAtMostTwoIdenticalRequestInvoicesAtPreDrawnTimes(): Unit = World().use { w ->
+    fun aStallingXmrIssuerGetsAtMostTwoIdenticalRequestInvoicesAtTheNextQuietRuns(): Unit = World().use { w ->
         w.issuer.fail = "timeout"
         val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
         w.quietRuns(100)
@@ -403,7 +435,7 @@ class PurchaseStepsTest {
         assertEquals("one planned attempt and one identical retry (J9)", 2, requests.size)
         assertEquals(1, requests.map { it.args }.toSet().size)
         val gap = requests[1].at - requests[0].at
-        assertTrue("the retry waits for its pre-drawn time", gap >= 20 * Grid.HOUR && gap < 30 * Grid.HOUR + 60)
+        assertTrue("the transient retry does not wait 20–28 h", gap in 0L..2 * Grid.HOUR)
         assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id)).state)
     }
 

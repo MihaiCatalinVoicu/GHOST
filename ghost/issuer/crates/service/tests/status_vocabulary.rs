@@ -76,6 +76,9 @@ fn every_reachable_status_uses_the_fixed_vocabulary() {
                 for &n in &numbers {
                     for flag in [false, true] {
                         check(&StatusReport {
+                            generated_at: n,
+                            last_rpc_success_at: n,
+                            rpc_errors_consecutive: n,
                             scanner,
                             keys_ready_until_week: n,
                             es_horizon_weeks: n,
@@ -137,6 +140,9 @@ fn a_live_issuer_status_is_in_the_vocabulary_and_written_atomically() {
     assert_eq!(report.scanner, ScannerCode::Ok);
     assert_eq!(report.reconciliation, ReconciliationCode::Ok);
     assert_eq!(report.pool, PoolCode::Low);
+    assert_eq!(report.generated_at, now);
+    assert_eq!(report.last_rpc_success_at, now);
+    assert_eq!(report.rpc_errors_consecutive, 0);
     check(&report);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("status.json");
@@ -147,19 +153,35 @@ fn a_live_issuer_status_is_in_the_vocabulary_and_written_atomically() {
 
     w.chain.set_failure(Some(RailError::Transport));
     w.tick();
-    assert_eq!(
-        w.issuer().status_at(now).unwrap().scanner,
-        ScannerCode::WalletUnreachable
-    );
+    let failed = w.issuer().status_at(now).unwrap();
+    assert_eq!(failed.scanner, ScannerCode::WalletUnreachable);
+    assert_eq!(failed.rpc_errors_consecutive, 1);
+    assert_eq!(failed.last_rpc_success_at, now);
     w.chain.set_failure(Some(RailError::ReorgDepth));
     w.tick();
     let report = w.issuer().status_at(now).unwrap();
     assert_eq!(report.scanner, ScannerCode::ReorgDepth);
+    assert_eq!(report.rpc_errors_consecutive, 2);
     check(&report);
     w.chain.set_failure(None);
     w.tick();
-    assert_eq!(
-        w.issuer().status_at(now + 301).unwrap().scanner,
-        ScannerCode::Stalled
-    );
+    let recovered = w.issuer().status_at(now + 301).unwrap();
+    assert_eq!(recovered.scanner, ScannerCode::Stalled);
+    assert_eq!(recovered.rpc_errors_consecutive, 0);
+    assert_eq!(recovered.last_rpc_success_at, now);
+}
+
+#[test]
+fn confirmed_unissued_counts_current_rows_not_the_weekly_purge_counter() {
+    let mut w = World::new(true);
+    w.request("confirmed", common::world::BASE_WEEK, &[])
+        .unwrap();
+    w.pay("confirmed", common::world::PRICE);
+    w.mine(10);
+    let report = w.issuer().status_at(w.now).unwrap();
+    assert_eq!(report.confirmed_unissued, 1);
+    check(&report);
+
+    w.sign("confirmed").unwrap();
+    assert_eq!(w.issuer().status_at(w.now).unwrap().confirmed_unissued, 0);
 }

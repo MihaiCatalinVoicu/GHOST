@@ -273,6 +273,10 @@ pub(crate) struct LastTick {
 #[derive(Debug, Default)]
 pub(crate) struct Volatile {
     pub(crate) last_tick: Option<LastTick>,
+    /// Last tick for which the rail answered (synced, unsynced or incomplete), never an error.
+    pub(crate) last_rpc_success_at: Option<u64>,
+    /// Consecutive ticks whose rail call failed; reset by every valid wallet answer.
+    pub(crate) consecutive_rpc_errors: u64,
     /// Wallet height of the last tick that reached the rail.
     pub(crate) last_wallet_height: Option<u64>,
     /// The week the scanner's last tick saw and the first tick of their unbroken run in it (the
@@ -958,6 +962,15 @@ impl Issuer {
             outcome,
             height,
         });
+        match outcome {
+            TickOutcome::Failed(_) => {
+                v.consecutive_rpc_errors = v.consecutive_rpc_errors.saturating_add(1);
+            }
+            TickOutcome::Synced | TickOutcome::Unsynced | TickOutcome::WalletIncomplete => {
+                v.last_rpc_success_at = Some(now);
+                v.consecutive_rpc_errors = 0;
+            }
+        }
         if let Some(h) = height {
             v.last_wallet_height = Some(h.wallet);
         }

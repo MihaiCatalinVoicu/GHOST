@@ -37,8 +37,8 @@ class ErrorPolicyTest {
     fun everyReadmeCategoryHasAnExplicitMapping() {
         val documented = readmeCategories()
         assertEquals("the README lists each category once", documented.size, documented.toSet().size)
-        // categories.rs ALL (24, the four Phase 12 PT categories included) plus native_missing.
-        assertEquals("categories.rs ALL (24) plus native_missing", 25, documented.size)
+        // categories.rs ALL (25, including the missing-descriptor transport category) plus native_missing.
+        assertEquals("categories.rs ALL (25) plus native_missing", 26, documented.size)
         val unmapped = documented.filter { it !in ErrorPolicy.CATEGORIES }
         assertEquals("categories without an explicit mapping", emptyList<String>(), unmapped)
         val undocumented = ErrorPolicy.CATEGORIES.keys.filter { it !in documented }
@@ -58,6 +58,7 @@ class ErrorPolicyTest {
             "native_missing" to ErrorClass.LOCAL_FATAL,
             "bridge_config" to ErrorClass.CONFIG,
             "transport" to ErrorClass.RELAY_TRANSIENT,
+            "onion_service_not_found" to ErrorClass.NEW_TRANSPORT,
             "timeout" to ErrorClass.RELAY_TRANSIENT_AMBIGUOUS,
             "relay_unavailable" to ErrorClass.RELAY_TRANSIENT_AMBIGUOUS,
             "internal" to ErrorClass.RELAY_TRANSIENT_AMBIGUOUS,

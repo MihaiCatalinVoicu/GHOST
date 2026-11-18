@@ -13,41 +13,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Phase 13 §3.6 (PM-U31's predicate test): `openPurchases`' UI state is NEVER the stored
- * `invoiced` alone — an invoiced pack inside its U[1 h, 6 h] delay is INVOICE_PENDING; READY
- * appears only when `paymentReady` holds; a shown purchase with an outstanding amount before its
- * deadline is UNDERPAID; terminal states map as §3.6 fixes.
+ * PM-U31 plus the discovery regression: outstanding != underpaid. The issuer's actual InvoiceState
+ * drives UNDERPAID/CONFIRMING, while freshness is exposed independently and failures change no
+ * financial state.
  */
 class OpenPurchasesTest {
     @Test
-    fun theUiStateFollowsThePaymentReadyPredicateNeverTheStoredInvoiced(): Unit = World().use { w ->
+    fun theUiStateFollowsTheIssuerStateAndExposesFreshness(): Unit = World().use { w ->
         val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
-        // PREPARED at intent.
         assertEquals(listOf(PurchaseUiState.PREPARED), w.engine.openPurchases().map { it.state })
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.LOCAL_ONLY, w.engine.openPurchases().single().sync)
 
         w.quiet()
         assertEquals(PurchaseStore.INVOICED, checkNotNull(w.purchase(id)).state)
-        // Inside the delay: INVOICE_PENDING, never READY (PM-U31: instructions cannot open early).
         assertEquals(listOf(PurchaseUiState.INVOICE_PENDING), w.engine.openPurchases().map { it.state })
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.LIVE, w.engine.openPurchases().single().sync)
+        assertEquals(org.ghost.sync.store.Time.floorMinute(w.clock.now), w.engine.openPurchases().single().lastSyncedMinute)
 
-        // Past the delay's far end: READY exactly when paymentReady holds.
         w.clock.now += 7 * 3600L
         assertEquals(listOf(PurchaseUiState.READY), w.engine.openPurchases().map { it.state })
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.STALE, w.engine.openPurchases().single().sync)
 
-        // A shown purchase with an outstanding amount before its deadline is UNDERPAID.
+        // Merely showing the full outstanding amount is not evidence of underpayment.
         w.tx { tx ->
             tx.sql.execUpdate(
                 "UPDATE ent_purchase SET shown = 1, outstanding_atomic = 1 WHERE purchase_id = ?1",
                 listOf(id),
             )
         }
-        assertEquals(listOf(PurchaseUiState.UNDERPAID), w.engine.openPurchases().map { it.state })
+        assertEquals(listOf(PurchaseUiState.PAYMENT_UNVERIFIED), w.engine.openPurchases().map { it.state })
 
-        // The terminal end of the flow: FINALIZED after the sign, with the id and pay-with intact.
         w.tx { tx ->
             tx.sql.execUpdate(
-                "UPDATE ent_purchase SET shown = 0, outstanding_atomic = NULL WHERE purchase_id = ?1",
-                listOf(id),
+                "UPDATE ent_purchase SET prev_state = ?1 WHERE purchase_id = ?2",
+                listOf(TorIssuerTransport.STATE_UNDERPAID, id),
+            )
+        }
+        assertEquals(listOf(PurchaseUiState.UNDERPAID), w.engine.openPurchases().map { it.state })
+
+        w.tx { tx ->
+            tx.sql.execUpdate(
+                "UPDATE ent_purchase SET shown = 0, outstanding_atomic = NULL, prev_state = ?1 WHERE purchase_id = ?2",
+                listOf(TorIssuerTransport.STATE_AWAITING_PAYMENT, id),
             )
         }
         val p = checkNotNull(w.purchase(id))
@@ -57,6 +64,30 @@ class OpenPurchasesTest {
         assertEquals(PurchaseUiState.FINALIZED, done.state)
         assertEquals(PayWith.XMR, done.payWith)
         assertTrue("the id crosses as a 16-byte local id", done.id.toByteArray().size == 16)
+    }
+
+    @Test
+    fun aFailedStatusReadKeepsTheFinancialStateAndMarksTheIssuerUnavailable(): Unit = World().use { w ->
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
+        w.quiet()
+        w.issuer.statusState = TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS
+        w.issuer.credited = org.ghost.entitlement.TestCrypto.PRICE
+        w.engine.checkNow(org.ghost.entitlement.api.PurchaseId(id))
+        val confirmed = w.engine.openPurchases().single()
+        assertEquals(PurchaseUiState.CONFIRMING, confirmed.state)
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.LIVE, confirmed.sync)
+
+        w.issuer.fail = "timeout"
+        w.engine.checkNow(org.ghost.entitlement.api.PurchaseId(id))
+        val cached = w.engine.openPurchases().single()
+        assertEquals("an infrastructure error is not a financial transition", PurchaseUiState.CONFIRMING, cached.state)
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.ISSUER_UNAVAILABLE, cached.sync)
+        assertEquals(confirmed.lastSyncedMinute, cached.lastSyncedMinute)
+
+        val restarted = w.newProcess().openPurchases().single()
+        assertEquals("restart keeps the financial fact, not a false live claim", PurchaseUiState.CONFIRMING, restarted.state)
+        assertEquals(org.ghost.entitlement.api.PurchaseSyncState.LOCAL_ONLY, restarted.sync)
+        assertEquals(null, restarted.lastSyncedMinute)
     }
 
     @Test

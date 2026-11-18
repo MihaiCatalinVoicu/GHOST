@@ -91,7 +91,7 @@ fun PinSetupScreen(
             Text(text = stringResource(R.string.onboarding_lock_mismatch), style = MaterialTheme.typography.bodyMedium)
         }
         Text(
-            text = "•".repeat(digits.size),
+            text = stringResource(R.string.lock_dot).repeat(digits.size),
             style = MaterialTheme.typography.headlineMedium,
         )
         PinPad(

@@ -12,7 +12,8 @@ interface Entitlement {
      * Phase 13 §3.6 (`openPurchases`): the purchase list for the UI — id, pay-with and state
      * only, the state set exactly as §3.6 fixes it (READY is the `paymentReady` predicate, never
      * the stored `invoiced` alone, so instructions cannot open before PAYMENT_READY). Local
-     * reads over stored rows; no amounts, addresses or times leave this module.
+     * reads over stored rows plus process-local sync freshness; no amounts or addresses leave this
+     * module, and the only time exposed is the last successful issuer response used by the UI.
      */
     fun openPurchases(): List<OpenPurchase>
 

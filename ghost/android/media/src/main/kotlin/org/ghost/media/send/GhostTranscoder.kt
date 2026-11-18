@@ -73,6 +73,12 @@ import java.util.concurrent.TimeUnit
  * on a private looper. The stall watchdog (R-M19) polls progress and cancels an export that has
  * not advanced for [MediaSendLimits.EXPORT_STALL_MS].
  */
+@androidx.annotation.OptIn(
+    markerClass = [
+        androidx.media3.common.util.UnstableApi::class,
+        androidx.media3.common.util.ExperimentalApi::class,
+    ],
+)
 class GhostTranscoder(
     private val context: Context,
     /** The bundled 1-s colour-grid clip (§8.3 point 5(d)); null where calibration cannot run. */
@@ -449,6 +455,7 @@ class GhostTranscoder(
  * and the first output frame decoded into the raw YUV planes. The comparison lives in
  * `GhostTranscoder.calibrate` ([ColourGrid]).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal object CalibrationExport {
     sealed class Result {
         class Ok(val frame: Yuv420.Frame) : Result()

@@ -89,7 +89,7 @@ fn write_doc(out: &Path, doc: &[u8]) -> Result<(), String> {
 
 /// `keygen --out <dir> --spec root:3,release:2,attest:1,apk:1,log:1,witness:2`
 /// Writes `<name>-<i>.hex` (the seed) and `<name>-<i>.pub` (the public key), 64 lowercase hex
-/// chars each. Randomness: `/dev/urandom`, the signer host's OS RNG (the tool runs on Linux).
+/// chars each. Randomness: the signer host's OS RNG through `getrandom` (Linux and Windows).
 pub fn keygen(out_dir: &Path, spec: &str) -> Outcome {
     let mut total = 0usize;
     for part in spec.split(',') {
@@ -104,9 +104,7 @@ pub fn keygen(out_dir: &Path, spec: &str) -> Outcome {
         }
         for i in 1..=count {
             let mut seed = [0u8; 32];
-            std::fs::File::open("/dev/urandom")
-                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut seed))
-                .map_err(|e| format!("/dev/urandom: {e}"))?;
+            getrandom::fill(&mut seed).map_err(|e| format!("host OS RNG: {e}"))?;
             let sk = SigningKey::from_bytes(&seed);
             std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {e}"))?;
             std::fs::write(out_dir.join(format!("{name}-{i}.hex")), hex::encode(seed))

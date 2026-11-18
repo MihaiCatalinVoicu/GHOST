@@ -57,7 +57,10 @@ run_shard() { # index
     return "$(cat "$WORK/.shard-$s.done")"
   fi
   # The report path is fixed by the harness; keep per-shard copies for the record.
+  # Gradle 9.7 reads the previous binary results even with --rerun. A cancelled run can leave
+  # those files truncated, so remove only generated test results, never this gate's open log.
   rm -f "$WORK/report.txt"
+  rm -rf "$ANDROID/entitlement/build/test-results/testDebugUnitTest"
   echo "entitlement-exit-gate: shard $s/$SHARDS (exhaustive, $SEEDS seeded worlds)"
   ( cd "$ANDROID" && ./gradlew --no-daemon :entitlement:testDebugUnitTest --rerun \
       -Dghost.entitlement.seeds="$SEEDS" -Dghost.entitlement.exhaustive=full \

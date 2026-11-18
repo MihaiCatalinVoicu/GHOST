@@ -108,12 +108,8 @@ case "${1:-}" in
     take /run/secrets/wallet_password wallet.password monero
     require_tmpfs "$MONERO_LOG"
     own monero /var/lib/monero-wallet "$MONERO_LOG"
-    run_as monero monero-wallet-rpc --stagenet \
-      --wallet-file /var/lib/monero-wallet/issuer-view --password-file "$RUN_DIR/wallet.password" \
-      --rpc-bind-ip 127.0.0.1 --rpc-bind-port 38083 --rpc-ssl disabled \
-      --daemon-address 127.0.0.1:38081 --daemon-login "$daemon_login" --daemon-ssl disabled --trusted-daemon \
-      --log-level 0 --log-file "$MONERO_LOG/wallet-rpc.log" --max-log-files 1 --max-log-file-size 10485760 \
-      > /dev/null 2>&1
+    export DAEMON_RPC_LOGIN="$daemon_login"
+    run_as monero wallet-rpc-supervisor.sh
     ;;
   issuer)
     flags=()

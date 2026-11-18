@@ -163,6 +163,10 @@ fn write(path: &Path, text: impl AsRef<[u8]>) {
     std::fs::write(path, text).unwrap();
 }
 
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn sha256(b: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     sha2::Sha256::digest(b).into()
@@ -274,18 +278,18 @@ file = "{escrow}"
 {extra}
 "#,
                 DAY_AFTER = DAY + 30,
-                apk = rel.join("app.apk").display(),
-                unsigned = rel.join("app-unsigned.apk").display(),
+                apk = toml_path(&rel.join("app.apk")),
+                unsigned = toml_path(&rel.join("app-unsigned.apk")),
                 salt = hex16(0x33),
                 commit = "ab".repeat(20),
-                es = rel.join("es.json").display(),
-                escrow = rel.join("escrow.tar.gz").display(),
+                es = toml_path(&rel.join("es.json")),
+                escrow = toml_path(&rel.join("escrow.tar.gz")),
                 extra = extra
                     .iter()
                     .map(|(k, f)| format!("[[release.artifacts]]
 kind = {k}
 file = \"{}\"
-", f.display()))
+", toml_path(f)))
                     .collect::<String>(),
             ),
         );

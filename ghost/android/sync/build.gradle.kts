@@ -64,5 +64,10 @@ tasks.withType<Test>().configureEach {
     maxHeapSize = "2g"
     // K/R counts, mutant results and timings of this run (the sync-exit-gate job summary).
     val harnessReport = layout.buildDirectory.dir("harness")
-    doFirst { harnessReport.get().asFile.deleteRecursively() }
+    // Preserve the outer gate runner's open log and per-shard evidence.
+    doFirst {
+        val directory = harnessReport.get().asFile
+        directory.mkdirs()
+        directory.resolve("report.txt").delete()
+    }
 }

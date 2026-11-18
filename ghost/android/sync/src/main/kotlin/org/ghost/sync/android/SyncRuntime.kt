@@ -4,6 +4,8 @@ import org.ghost.network.NetworkException
 import org.ghost.network.TorIssuerTransport
 import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.ConsumerTail
+import org.ghost.sync.api.DiagnosticStage
+import org.ghost.sync.api.SyncDiagnostic
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
@@ -351,6 +353,12 @@ internal class SyncRuntime(
     fun status(): SyncStatus =
         engine?.status() ?: SyncStatus(TransportStatus.OFF, privacyMode, emptySet(), SyncCounts.EMPTY)
 
+    @Volatile
+    private var diagnostic: SyncDiagnostic = SyncDiagnostic.EMPTY
+
+    /** Latest user issuer call, fixed stage and category only. */
+    fun diagnostics(): SyncDiagnostic = diagnostic
+
     /** Kind of the session running now, if any. */
     val activeKind: SessionKind? get() = running?.kind
 
@@ -380,6 +388,7 @@ internal class SyncRuntime(
 
     /** Runs [block] exactly once on its own thread with a USER_ISSUER_CALL session (see the class doc). */
     fun runUserIssuerCall(block: (ParticipantSession) -> Unit) {
+        diagnostic = SyncDiagnostic(DiagnosticStage.QUEUED, null)
         val call = UserCall(block, clock.monotonicMillis() + userCallMillis)
         post { startUserCall(call) }
     }
@@ -1047,21 +1056,57 @@ internal class SyncRuntime(
             { e?.clockTrusted() == true }, { e?.stores?.database?.inTransaction == true },
         )
         startCallbackThread {
+            var failure: String? = null
             try {
-                if (e != null && !lease.closed) {
-                    val readyBy = minOf(call.deadline, clock.monotonicMillis() + policy.bootstrapMillis)
+                if (e == null || lease.closed || session.closed) {
+                    failure = CLOSED_DIAGNOSTIC
+                    diagnostic = SyncDiagnostic(DiagnosticStage.CLOSED, failure)
+                } else {
+                    if (ensure) diagnostic = SyncDiagnostic(DiagnosticStage.BOOTSTRAP, null)
+                    var ready = true
                     if (ensure) {
-                        val state = transport.ensureReady(readyBy)
+                        val state = transport.ensureReady(readyBy(call))
                         if (!lease.closed) noteTransport(e, state)
+                        ready = state == TransportState.READY
+                        if (!ready) {
+                            failure = state.name
+                            diagnostic = SyncDiagnostic(
+                                if (state == TransportState.FAILED) DiagnosticStage.FAILED else DiagnosticStage.UNAVAILABLE,
+                                failure,
+                            )
+                        }
                     }
-                    lease.awaitReady(readyBy)
+                    if (ready && !lease.awaitReady(readyBy(call))) {
+                        failure = NOT_READY_DIAGNOSTIC
+                        diagnostic = SyncDiagnostic(DiagnosticStage.UNAVAILABLE, failure)
+                    }
+                    if (failure == null) diagnostic = SyncDiagnostic(DiagnosticStage.ISSUER_CALL, null)
                 }
-                call.block(session)
+                try {
+                    call.block(session)
+                } catch (e: NetworkException) {
+                    failure = e.category
+                    throw e
+                }
+                if (failure == null && session.closed) failure = CLOSED_DIAGNOSTIC
+                diagnostic = if (failure == null) {
+                    SyncDiagnostic(DiagnosticStage.IDLE, diagnostic.lastError)
+                } else {
+                    val stage = when {
+                        failure == CLOSED_DIAGNOSTIC -> DiagnosticStage.CLOSED
+                        diagnostic.stage == DiagnosticStage.UNAVAILABLE || diagnostic.stage == DiagnosticStage.FAILED -> diagnostic.stage
+                        else -> DiagnosticStage.FAILED
+                    }
+                    SyncDiagnostic(stage, failure)
+                }
             } finally {
                 post(onEnd)
             }
         }
     }
+
+    private fun readyBy(call: UserCall): Long =
+        minOf(call.deadline, clock.monotonicMillis() + policy.bootstrapMillis)
 
     private fun userCallEnded(u: UserRun, lease: TransportLease) {
         lease.close()
@@ -1120,5 +1165,7 @@ internal class SyncRuntime(
     private companion object {
         /** Longest wait of the quiet-run watchdog between two reads of the sync clock. */
         const val WATCHDOG_STEP_MILLIS = 1_000L
+        const val CLOSED_DIAGNOSTIC = "closed"
+        const val NOT_READY_DIAGNOSTIC = "not_ready"
     }
 }

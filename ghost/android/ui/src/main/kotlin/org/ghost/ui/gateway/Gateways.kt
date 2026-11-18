@@ -106,15 +106,26 @@ sealed interface PinSubmitResult {
 
 /** Access and payment (J2, §3.6 `openPurchases`/`invites`). */
 interface AccessGateway {
-    /** The purchase list — id, pay-with and state only; never an amount, address or time. */
+    /** Purchase id/state plus sync freshness and last successful issuer response; never amount/address. */
     suspend fun purchases(): List<PurchaseView>
 
     /** The invite index list (index, expiry day, state). */
     suspend fun invites(): List<InviteView>
 
-    /** The payment instructions of a READY/UNDERPAID purchase (traffic; §3.5, D35). */
+    /** The payment instructions of a READY/UNDERPAID purchase (local; §3.5, D35). */
     @UserAction
     suspend fun paymentInstructions(purchaseId: String): PaymentView?
+
+    /** The disclosures which still require an explicit acknowledgement before instructions exist. */
+    suspend fun requiredDisclosures(purchaseId: String): Set<PaymentDisclosure>
+
+    /** Records the user's acknowledgement of every required disclosure. */
+    @UserAction
+    suspend fun acknowledgeDisclosures(purchaseId: String, disclosures: Set<PaymentDisclosure>)
+
+    /** "Check now": one InvoiceStatus user call; it never signs (STANDARD mode only). */
+    @UserAction
+    suspend fun checkNow(purchaseId: String)
 
     @UserAction
     suspend fun paymentScreenShown(purchaseId: String)
@@ -135,14 +146,25 @@ interface AccessGateway {
     suspend fun revokeInvite(index: Int)
 }
 
-/** The purchase read model — §3.6's PurchaseView, no amount/address/time. */
-data class PurchaseView(val id: String, val payWith: String, val state: PurchaseState)
+/** DC-6…DC-10: the five explicit acknowledgements required before payment instructions. */
+enum class PaymentDisclosure { KYC_EXCHANGE, NO_REFUND, EXACT_AMOUNT, NO_LOCK_TIME, WINDOWS }
 
-/** §3.6's state set; READY is exactly the paymentReady predicate (CR-3, PM-U31). */
+/** Purchase state + freshness; lastSyncedMinute is epoch seconds, rounded down to a minute. */
+data class PurchaseView(
+    val id: String,
+    val payWith: String,
+    val state: PurchaseState,
+    val sync: PurchaseSyncState = PurchaseSyncState.LOCAL_ONLY,
+    val lastSyncedMinute: Long? = null,
+)
+
+/** §3.6's state set plus the honest local state after instructions were shown. */
 enum class PurchaseState {
-    PREPARED, INVOICE_PENDING, READY, UNDERPAID, CONFIRMING, FINALIZED,
+    PREPARED, INVOICE_PENDING, READY, PAYMENT_UNVERIFIED, UNDERPAID, CONFIRMING, FINALIZED,
     EXPIRED_UNPAID, EXPIRED_SEEN, LOST, CANCELLED,
 }
+
+enum class PurchaseSyncState { LIVE, STALE, ISSUER_UNAVAILABLE, LOCAL_ONLY }
 
 /** The invite read model. */
 data class InviteView(val index: Int, val expiryDay: Int?, val state: String)

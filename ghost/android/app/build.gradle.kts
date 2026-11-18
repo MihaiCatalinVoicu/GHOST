@@ -1,5 +1,26 @@
 import java.security.MessageDigest
 
+// Source provenance is deliberately narrow and host-independent: a commit, never a path or timestamp.
+// Release builds from one tag therefore stay byte-identical; local modifications set SOURCE_DIRTY.
+val sourceRepo = rootProject.projectDir.parentFile.parentFile
+fun gitOutput(vararg args: String): String? {
+    val output = providers.exec {
+        workingDir(sourceRepo)
+        commandLine(listOf("git") + args)
+        isIgnoreExitValue = true
+    }
+    return if (output.result.get().exitValue == 0) {
+        output.standardOutput.asText.get().trim()
+    } else {
+        null
+    }
+}
+val sourceCommit = gitOutput("rev-parse", "HEAD")
+    ?.takeIf { it.matches(Regex("[0-9a-f]{40}")) }
+    ?: "unknown"
+val sourceDirty = gitOutput("status", "--porcelain", "--untracked-files=no")
+    ?.isNotEmpty() == true
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -15,6 +36,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0-devpreview"
+        buildConfigField("String", "SOURCE_COMMIT", "\"$sourceCommit\"")
+        buildConfigField("Boolean", "SOURCE_DIRTY", sourceDirty.toString())
         // The Tor core (libghost_client_net.so) is built for these ABIs only (ADR-19). Other devices
         // get INSTALL_FAILED_NO_MATCHING_ABIS at install time instead of a crash at first use.
         ndk {
@@ -36,9 +59,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            // No VCS metadata in the APK (design faza14-distribution.md §6.3, D12; AGP >= 8.3
-            // embeds META-INF/version-control-info.textproto by default): the release bytes must
-            // not depend on the checkout's git state, or two honest environments would differ.
+            // No implicit VCS metadata (AGP's host-dependent version-control-info.textproto).
+            // SOURCE_COMMIT/SOURCE_DIRTY above are the explicit, stable provenance exception:
+            // the same release tag produces the same values on independent builders.
             vcsInfo {
                 include = false
             }
@@ -76,7 +99,7 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = false
+        buildConfig = true
     }
 
     testOptions {

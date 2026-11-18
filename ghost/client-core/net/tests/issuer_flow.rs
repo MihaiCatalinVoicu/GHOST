@@ -490,7 +490,7 @@ async fn an_invite_trial_ends_in_access_tokens_for_two_weeks() {
     let mut issuer = ModelIssuer::new();
     let invite = mint(Kind::Invite, INVITE_EPOCH, None, seed(2, 0x5A));
     let d = digest(s, Product::Trial, FIRST_WEEK);
-    let trial = issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d)
+    let trial = issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d, &[])
         .await
         .unwrap();
     assert_eq!(trial.result, RedeemInviteResult::Ok);
@@ -499,11 +499,11 @@ async fn an_invite_trial_ends_in_access_tokens_for_two_weeks() {
     assert_layout_tokens(s, &layout, &trial.tokens);
     assert_packed_tokens(&trial.pack(), 1, &trial.tokens);
     // Identical retry: identical tokens. Another request with the same invite: REPLAYED.
-    let again = issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d)
+    let again = issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d, &[])
         .await
         .unwrap();
     assert_eq!(again, trial);
-    let replayed = issuer_flow::redeem_invite(&mut issuer, s, &invite, &[0x24; 32], FIRST_WEEK, &d)
+    let replayed = issuer_flow::redeem_invite(&mut issuer, s, &invite, &[0x24; 32], FIRST_WEEK, &d, &[])
         .await
         .unwrap();
     assert_eq!(replayed.result, RedeemInviteResult::Replayed);
@@ -527,7 +527,7 @@ async fn an_invite_trial_ends_in_access_tokens_for_two_weeks() {
         ("another base week", s, &invite, FIRST_WEEK + 1, d),
     ] {
         refused(
-            issuer_flow::redeem_invite(&mut issuer, schedule, token, &SEED, week, &dig).await,
+            issuer_flow::redeem_invite(&mut issuer, schedule, token, &SEED, week, &dig, &[]).await,
             why,
         );
     }
@@ -550,7 +550,7 @@ async fn an_invite_trial_ends_in_access_tokens_for_two_weeks() {
     for (why, hook) in cases {
         issuer.tamper.redeem_invite = Some(hook);
         malformed(
-            issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d).await,
+            issuer_flow::redeem_invite(&mut issuer, s, &invite, &SEED, FIRST_WEEK, &d, &[]).await,
             why,
         );
     }

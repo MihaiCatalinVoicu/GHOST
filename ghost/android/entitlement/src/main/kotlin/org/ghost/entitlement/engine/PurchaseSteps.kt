@@ -74,6 +74,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val answer = try {
             issuer.requestInvoice(call.claimHash, call.credits, call.baseWeek)
         } catch (e: NetworkException) {
+            c.memory.paymentFailed(id)
             c.tx { tx -> requestFailed(tx, id, RetryPolicy.classify(e.category), now) }
             return@flight
         } catch (e: IllegalArgumentException) {
@@ -122,6 +123,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
     private fun applyInvoice(tx: SyncTransaction, id: ByteArray, call: RequestCall, answer: TorIssuerTransport.InvoiceAnswer, now: Long) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.PREPARED) return
+        c.memory.paymentSucceeded(id, now)
         when (answer.result) {
             TorIssuerTransport.INVOICE_OK -> {
                 // The native side checked amount and subaddress against the ES; checked again here (§7.8, EM8).
@@ -161,7 +163,13 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.PREPARED) return
         when (failure) {
-            Failure.TRANSIENT -> if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) failPrepared(tx, p, now)
+            Failure.TRANSIENT -> {
+                if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) {
+                    failPrepared(tx, p, now)
+                } else if (p.payWith == PurchaseStore.XMR) {
+                    c.purchases.setNextDue(tx, id, PurchaseStore.PREPARED, Time.ceilMinute(now))
+                }
+            }
             Failure.UNAUTHORIZED, Failure.REJECTED -> failPrepared(tx, p, now)
             Failure.MALFORMED -> malformed(tx, p, now)
         }
@@ -175,6 +183,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val answer = try {
             issuer.blindSign(call.invoiceId, call.claimKey, call.seed, call.product, call.baseWeek, call.layoutDigest, call.positions)
         } catch (e: NetworkException) {
+            c.memory.paymentFailed(id)
             c.tx { tx -> signFailed(tx, id, RetryPolicy.classify(e.category), now) }
             return@flight
         } catch (e: IllegalArgumentException) {
@@ -203,6 +212,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
     private fun applySign(tx: SyncTransaction, id: ByteArray, answer: TorIssuerTransport.SignAnswer, now: Long) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.INVOICED) return
+        c.memory.paymentSucceeded(id, now)
         when (answer.state) {
             TorIssuerTransport.STATE_SIGNED -> finalizePack(tx, p, answer.tokens, now)
             TorIssuerTransport.STATE_AWAITING_PAYMENT, TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS, TorIssuerTransport.STATE_UNDERPAID -> {
@@ -236,7 +246,14 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.INVOICED) return
         when (failure) {
-            Failure.TRANSIENT -> afterNonFinal(tx, p, now)
+            Failure.TRANSIENT -> {
+                if (p.attempt >= RetryPolicy.BLIND_SIGN_ATTEMPTS) {
+                    afterNonFinal(tx, p, now)
+                } else if (p.payWith == PurchaseStore.XMR) {
+                    // The next quiet run is still drawn independently; only this item's eligibility changes.
+                    c.purchases.setNextDue(tx, id, PurchaseStore.INVOICED, Time.ceilMinute(now))
+                }
+            }
             Failure.UNAUTHORIZED -> endInvoiced(tx, p, lostOrExpired(p), now)
             Failure.REJECTED -> endInvoiced(tx, p, PurchaseStore.FAILED, now)
             Failure.MALFORMED -> malformed(tx, p, now)
@@ -259,18 +276,20 @@ internal class PurchaseSteps(private val c: EngineContext) {
     // ------------------------------------------------------------------ InvoiceStatus
 
     /** The optional "check now" (§5.3 step 5): a status read; it never triggers `BlindSign`. */
-    fun invoiceStatus(issuer: IssuerPort, id: ByteArray) {
+    fun invoiceStatus(issuer: IssuerPort, id: ByteArray, now: Long) {
         val keys = c.tx { tx ->
             c.purchases.get(tx, id)?.takeIf { it.kind == PurchaseStore.PACK && it.state == PurchaseStore.INVOICED }?.let { it.invoiceId() to it.claimKey() }
         } ?: return
         val answer = try {
             issuer.invoiceStatus(keys.first, keys.second)
         } catch (e: NetworkException) {
+            c.memory.paymentFailed(id)
             return
         } catch (e: IllegalArgumentException) {
             return
         }
-        if (answer.state !in TorIssuerTransport.STATE_AWAITING_PAYMENT..TorIssuerTransport.STATE_EXPIRED) return
+        if (answer.state !in TorIssuerTransport.STATE_SIGNED..TorIssuerTransport.STATE_EXPIRED) return
+        c.memory.paymentSucceeded(id, now)
         c.tx { tx ->
             val p = c.purchases.get(tx, id)
             if (p != null && p.state == PurchaseStore.INVOICED) c.purchases.progress(tx, id, answer.state, outstanding(p, answer.creditedAtomic, answer.seenAtomic))

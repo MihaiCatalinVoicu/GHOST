@@ -378,6 +378,13 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
         val held = HashMap<String, String>()
         for ((c, _) in clients) c.jdbc.query("SELECT nullifier, state FROM ent_token") { held[Bytes.hex(it.blob(0))] = it.string(1) }
         for ((n, info) in records.issued) {
+            val purchase = info.invoice?.let(records.invoiced::get)
+            val signs = purchase?.let { records.writeAheads(it, PurchaseStore.INVOICED) } ?: 0
+            val requests = purchase?.let { records.writeAheads(it, PurchaseStore.PREPARED) } ?: 0
+            val plan = BLIND_SIGN_PLAN - (requests - 1).coerceIn(0, BLIND_SIGN_PLAN - 1)
+            // A native answer can precede a crash without a committing transaction. Once the whole
+            // plan is spent and the purchase is terminal, no token of that abandoned flow is owed.
+            if (purchase != null && records.ended[purchase] != null && records.ended[purchase] != PurchaseStore.FINALIZED && signs >= plan) continue
             val present = n in held
             when (info.kind) {
                 EntitlementCrypto.KIND_ACCESS -> {
@@ -387,7 +394,16 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
                     // pair's need is gone, a drop namespace retired, say); it is never fresh again (R8).
                     if (atRelay && held[n] == "fresh") violation("a token a relay recorded is fresh again (a reservation was released after the redemption)")
                     if (!present && !atRelay && n !in records.refused && !over) {
-                        violation("MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window")
+                        val purchase = info.invoice?.let(records.invoiced::get)
+                        val ended = purchase?.let(records.ended::get)
+                        val attempts = purchase?.let {
+                            "${records.writeAheads(it, PurchaseStore.PREPARED)} requests/${records.writeAheads(it, PurchaseStore.INVOICED)} signs"
+                        }
+                        violation(
+                            "MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window " +
+                                "(invoice=${info.invoice != null}, state=${held[n]}, atRelay=$atRelay, over=$over, eligible=${records.eligibleOf[n]}, " +
+                                "purchase=$ended, attempts=$attempts)",
+                        )
                     }
                 }
                 EntitlementCrypto.KIND_CREDIT -> {

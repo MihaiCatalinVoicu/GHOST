@@ -64,10 +64,19 @@ class GhostNotifierTest {
     fun theLockScreenOptionShowsTheSameConstantPrivately() {
         val (n, manager) = notifier(interactive = false, lockAllowed = true)
         n.onUnreadChanged(1)
-        Thread.sleep(150)
-        val posted = Shadows.shadowOf(manager).getNotification(NOTIFICATION_ID)!!
+        val posted = awaitNotification(manager)!!
         assertEquals(Notification.VISIBILITY_PRIVATE, posted.visibility)
         assertNotNull("the public version carries the same constant text", posted.publicVersion)
+    }
+
+    /** The notifier hands off to a single thread; do not make the test depend on a 150 ms scheduling guess. */
+    private fun awaitNotification(manager: NotificationManager): Notification? {
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            Shadows.shadowOf(manager).getNotification(NOTIFICATION_ID)?.let { return it }
+            Thread.sleep(25)
+        }
+        return Shadows.shadowOf(manager).getNotification(NOTIFICATION_ID)
     }
 
     companion object {

@@ -1029,6 +1029,7 @@ async fn main() {
                             invite_token: tok,
                             base_week: 2959,
                             blinded,
+                            drop_slots: vec![],
                         })
                         .await;
                 },

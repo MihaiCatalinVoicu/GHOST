@@ -81,18 +81,26 @@ data class InvitePreview(
 )
 
 /**
- * Phase 13 §3.6: the purchase read model for the J2 screens — id, pay-with and state ONLY:
- * never an amount, an address or a time. READY is exactly the `paymentReady` predicate (or
- * shown before and the deadline not passed); an invoiced purchase inside its U[1 h, 6 h] delay
- * is INVOICE_PENDING, never READY; UNDERPAID is a shown purchase with an outstanding amount
- * before its deadline.
+ * Phase 13 §3.6 plus the discovery freshness fields: id, pay-with, financial state, sync freshness
+ * and the last successful issuer response's epoch seconds (rounded down to a minute). Never an
+ * amount or address. UNDERPAID requires an actual issuer STATE_UNDERPAID, never merely a shown
+ * outstanding amount.
  */
 enum class PurchaseUiState {
-    PREPARED, INVOICE_PENDING, READY, UNDERPAID, CONFIRMING, FINALIZED,
+    PREPARED, INVOICE_PENDING, READY, PAYMENT_UNVERIFIED, UNDERPAID, CONFIRMING, FINALIZED,
     EXPIRED_UNPAID, EXPIRED_SEEN, LOST, CANCELLED,
 }
 
-data class OpenPurchase(val id: PurchaseId, val payWith: PayWith, val state: PurchaseUiState)
+/** Freshness of the issuer answer behind a purchase state; financial state and connectivity stay separate. */
+enum class PurchaseSyncState { LIVE, STALE, ISSUER_UNAVAILABLE, LOCAL_ONLY }
+
+data class OpenPurchase(
+    val id: PurchaseId,
+    val payWith: PayWith,
+    val state: PurchaseUiState,
+    val sync: PurchaseSyncState,
+    val lastSyncedMinute: Long?,
+)
 
 /** Phase 13 §3.6: the invite index list — index, expiry day and state only. */
 data class InviteIndex(val index: Int, val expiryDay: Long?, val state: String)

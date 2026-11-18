@@ -12,6 +12,11 @@ Fișierele din acest director:
 | `Dockerfile` | imaginea issuer-ului (ghost-issuer, Tor, monerod, monero-wallet-rpc, monero-wallet-cli din arhiva fixată în `monero-release.pin`, verificată cu `sha256sum -c` înainte de extragere) și ținta separată `ops` (ghost-issuer-ops pentru host) |
 | `docker-compose.stagenet.yml` | containerele `tor`, `monerod`, `wallet-rpc`, `issuer` (plus `ops`, pornit doar la cerere) |
 | `entrypoint.sh` | pornirea fiecărui rol: secretele trec din Docker secrets într-un tmpfs, procesul rulează neprivilegiat |
+| `wallet-rpc-supervisor.sh` | watchdog JSON-RPC al wallet-ului: după trei eșecuri consecutive termină containerul, pe care `restart: unless-stopped` îl pornește din nou; nu repornește Tor, monerod sau issuer-ul |
+| `test-wallet-rpc-supervisor.sh` | proba locală, fără Docker: trei eșecuri simulato opresc procesul copil și dau cod 1 |
+| `external-healthcheck.sh` | proba externă, read-only, printr-un client Tor nou: descriptor, introducere, rendezvous și gRPC; scrie atomic `data/external-health.json` |
+| `test-external-healthcheck.sh` | proba retry-ului și a statusului extern, fără rețea |
+| `wallet-rpc-log.sh`, `test-wallet-rpc-log.sh` | citirea logului fără liniile probelor benigne `get_address` + `address_index_outofbound`; filtrul strict nu ascunde alte erori și nu rescrie logul |
 | `torrc` | serviciul onion al issuer-ului (`HiddenServicePort 443 127.0.0.1:7444`) și portul SOCKS al lui monerod |
 | `config.stagenet.toml` | șablonul configurației issuer-ului, fără secrete și fără valori ale operatorului |
 | `monero-release.pin` | singurul loc cu versiunea, URL-ul și SHA-256 al arhivei Monero (runbook M1/M2) |
@@ -212,11 +217,14 @@ containerul lui.
 `$H/data/status.json`, rescris la fiecare 60 s, o linie, doar coduri fixe și numere agregate:
 
 ```json
-{"SCANNER":"SCANNER_OK","KEYS_READY_UNTIL_WEEK":2963,"ES_HORIZON_WEEKS":33,"POOL_SIZE":"POOL_OK","OPEN_INVOICES":0,"RECONCILIATION":"RECONCILIATION_OK","REORG_AFTER_ISSUE":0,"CONFIRMED_UNISSUED":0,"POOL_RECONCILED":0,"SIGN_FAULT":0,"KEYS_MISSING":0,"PAYOUT_BATCH_READY":false,"PAYOUT_BATCHES_OPEN":0,"PAYOUT_OLDEST_BATCH_WEEKS":0,"PAYOUT_ACKS_REFUSED":0,"REFRESH_REFUSED":0,"HALTED":false}
+{"STATUS_GENERATED_AT":1769000000,"LAST_RPC_SUCCESS_AT":1768999998,"RPC_ERRORS_CONSECUTIVE":0,"SCANNER":"SCANNER_OK","KEYS_READY_UNTIL_WEEK":2963,"ES_HORIZON_WEEKS":33,"POOL_SIZE":"POOL_OK","OPEN_INVOICES":0,"RECONCILIATION":"RECONCILIATION_OK","REORG_AFTER_ISSUE":0,"CONFIRMED_UNISSUED":0,"POOL_RECONCILED":0,"SIGN_FAULT":0,"KEYS_MISSING":0,"PAYOUT_BATCH_READY":false,"PAYOUT_BATCHES_OPEN":0,"PAYOUT_OLDEST_BATCH_WEEKS":0,"PAYOUT_ACKS_REFUSED":0,"REFRESH_REFUSED":0,"HALTED":false}
 ```
 
 | Câmp | Normal | Acțiune altfel |
 |---|---|---|
+| `STATUS_GENERATED_AT` | cel mult 120 s în urmă față de `date +%s` | statusul este stale: issuer-ul sau jobul de status nu progresează; niciun alt câmp verde din fișier nu mai este o dovadă live |
+| `LAST_RPC_SUCCESS_AT` | recent și avansează după fiecare tick reușit | wallet-rpc nu a dat niciun răspuns valid de la momentul indicat; `0` înseamnă niciunul în procesul curent |
+| `RPC_ERRORS_CONSECUTIVE` | 0 | erori RPC consecutive; după primul răspuns valid revine la 0 |
 | `SCANNER` | `SCANNER_OK` | `WALLET_UNREACHABLE`: containerul `wallet-rpc`; `WALLET_INCOMPLETE`: R5; `SCANNER_STALLED` sau `REORG_DEPTH`: resincronizare monerod, niciodată expirare forțată (R4) |
 | `KEYS_READY_UNTIL_WEEK` | ≥ săptămâna curentă + 4 | K3 |
 | `ES_HORIZON_WEEKS` | ≥ 8 | K1/K2 (alarmă de orizont) |
@@ -227,6 +235,37 @@ containerul lui.
 | `PAYOUT_ACKS_REFUSED` | 0 | fișierul de confirmare nu corespunde unui lot exportat |
 | `REFRESH_REFUSED` | 0 | reîmprospătări noi refuzate de la pornirea procesului fiindcă bugetul epocii lor de credit s-a epuizat (design §19.27): o populație onestă nu îl atinge, un lanț de reîmprospătări al unui deținător de credite da; R2 (contorul `credits_refreshed[c]` al epocii față de pachetele XMR ale epocilor c − 1, c și c + 1) și anunț dacă reîmprospătările oneste ale epocii sunt refuzate |
 | `HALTED` | `false` | `true`: jurnalul sau baza au eșuat; `$C restart issuer` reia jurnalul |
+
+### R6: repornirea stivei după restartul containerului Tor
+
+Tor deține namespace-ul de rețea; un restart al lui invalidează namespace-ul folosit de ceilalți.
+Nu se repornește doar Tor. Într-o fereastră de mentenanță, ordinea obligatorie este:
+
+```sh
+touch "$H/maintenance" && flock "$H/snapshot.lock" true
+$C up -d --force-recreate tor
+$C up -d --force-recreate monerod
+$C up -d --force-recreate wallet-rpc
+$C up -d --force-recreate issuer
+```
+
+Așteptat după fiecare comandă: containerul pornit este `running`, nu `restarting`. Apoi se verifică
+atât statusul local proaspăt, cât și calea reală a unui client extern. Ultima comandă are până la trei
+încercări, fiecare cu un client Tor nou, și nu creează nicio factură:
+
+```sh
+cat "$H/data/status.json"
+GHOST_ISSUER_HOST_DIR="$H" bash ghost/infra/issuer/external-healthcheck.sh
+cat "$H/data/external-health.json"
+```
+
+Așteptat: `STATUS_GENERATED_AT` recent, `SCANNER_OK`, `RPC_ERRORS_CONSECUTIVE:0`, apoi
+`EXTERNAL_ONION_GRPC:"REACHABLE"` și `EXTERNAL_ERRORS_CONSECUTIVE:0`. Orice alt rezultat oprește
+procedura și fereastra rămâne deschisă: procesele locale verde nu sunt suficiente. Numai după succes:
+
+```sh
+rm "$H/maintenance"
+```
 
 Codul de ieșire al unui issuer oprit:
 

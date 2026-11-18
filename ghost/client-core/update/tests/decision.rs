@@ -52,6 +52,11 @@ fn write(path: &Path, text: impl AsRef<[u8]>) {
     std::fs::write(path, text).unwrap();
 }
 
+/// A path inside a TOML basic string, including Windows backslashes.
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Builds a whole stagenet world: keys, `n_roots` roots (versions 1..=n_roots, same root
 /// keyset, so each verifies under its predecessor) and the chain.
 struct World {
@@ -197,12 +202,12 @@ es_file = "{es}"
 kind = 16
 file = "{escrow}"
 "#,
-                apk = apk.display(),
-                unsigned = unsigned.display(),
+                apk = toml_path(apk),
+                unsigned = toml_path(unsigned),
                 salt = hex16(0x33),
                 commit = "ab".repeat(20),
-                es = es.display(),
-                escrow = escrow.display(),
+                es = toml_path(es),
+                escrow = toml_path(escrow),
             ),
         );
         let m = self.dir.path().join(format!("m-{name}.ghrm"));
@@ -520,12 +525,12 @@ kind = 16
 file = "{escrow}"
 "#,
             DAY_AFTER = DAY + 30,
-            apk = rel.join("app.apk").display(),
-            unsigned = rel.join("app-unsigned.apk").display(),
+            apk = toml_path(&rel.join("app.apk")),
+            unsigned = toml_path(&rel.join("app-unsigned.apk")),
             salt = hex16(0x33),
             commit = "ab".repeat(20),
-            es = rel.join("es.json").display(),
-            escrow = rel.join("escrow.tar.gz").display(),
+            es = toml_path(&rel.join("es.json")),
+            escrow = toml_path(&rel.join("escrow.tar.gz")),
         ),
     );
     let m = w.dir.path().join("halt.ghrm");

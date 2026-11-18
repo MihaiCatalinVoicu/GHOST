@@ -143,6 +143,7 @@ internal object ErrorPolicy {
         "tor_bootstrap_timeout" to ErrorClass.NEW_TRANSPORT,
         "not_bootstrapped" to ErrorClass.NEEDS_BOOTSTRAP,
         "transport" to ErrorClass.RELAY_TRANSIENT,
+        "onion_service_not_found" to ErrorClass.NEW_TRANSPORT,
         "timeout" to ErrorClass.RELAY_TRANSIENT_AMBIGUOUS,
         "unauthorized" to ErrorClass.NEEDS_CAPABILITY,
         "quota" to ErrorClass.QUOTA,

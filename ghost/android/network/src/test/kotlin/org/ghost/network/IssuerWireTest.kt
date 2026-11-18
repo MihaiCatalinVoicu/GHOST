@@ -216,7 +216,7 @@ class IssuerWireTest {
         assertThrows(iae) { t.blindSign(flow, ByteArray(16), ByteArray(32), ByteArray(32), pack, 2957, ByteArray(32), 243, 120_001) }
         assertThrows(iae) { t.invoiceStatus(flow, ByteArray(16), ByteArray(33)) }
         assertThrows(iae) { t.redeemInvite(flow, ByteArray(353), ByteArray(32), 2957, ByteArray(32), 48) }
-        assertThrows(iae) { t.redeemInvite(flow, token, ByteArray(32), 2957, ByteArray(32), 48, 0) }
+        assertThrows(iae) { t.redeemInvite(flow, token, ByteArray(32), 2957, ByteArray(32), 48, deadlineMillis = 0) }
         assertThrows(iae) { t.claimPayout(flow, ByteArray(16), emptyList(), "4") }
         assertThrows(iae) { t.claimPayout(flow, ByteArray(17), List(10) { token }, "4") }
         assertThrows(iae) { t.claimPayout(flow, ByteArray(16), List(65) { token }, "4") }
