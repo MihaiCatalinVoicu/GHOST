@@ -183,3 +183,19 @@ class KeystoreStateKeyWrapper(requireUserAuthentication: Boolean) : KeyWrapper {
         internal val PURPOSE: ByteArray = "ghost/v1/dm/wrap/state-key".toByteArray(Charsets.US_ASCII)
     }
 }
+
+/** The single non-exportable wrapper for every channel's MLS state key (Phase 10 §10.4). */
+class KeystoreChannelStateKeyWrapper(requireUserAuthentication: Boolean) : KeyWrapper {
+    private val envelope = KeyEnvelope(PURPOSE, KeystoreSecretKey(ALIAS, requireUserAuthentication)::get)
+
+    override fun wrap(key: ByteArray): ByteArray = envelope.wrap(key)
+
+    override fun unwrap(wrapped: ByteArray): ByteArray = envelope.unwrap(wrapped)
+
+    override fun toString(): String = "KeystoreChannelStateKeyWrapper"
+
+    companion object {
+        const val ALIAS: String = "ghost.v1.channel-state-key"
+        internal val PURPOSE: ByteArray = "ghost/v1/channel/wrap/state-key".toByteArray(Charsets.US_ASCII)
+    }
+}

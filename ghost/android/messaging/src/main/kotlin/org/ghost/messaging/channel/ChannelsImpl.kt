@@ -18,6 +18,29 @@ import org.ghost.messaging.api.PostResult
  * the calls themselves are the engine's actor-posted surface, nothing more.
  */
 internal class ChannelsImpl(private val engine: ChannelEngine) : Channels {
+    override fun channels(): List<org.ghost.messaging.api.ChannelSummary> = engine.summaries()
+
+    override fun posts(channel: ChannelId, limit: Int): List<org.ghost.messaging.api.ChannelPostSummary> =
+        engine.posts(channel, limit)
+
+    override fun members(channel: ChannelId): List<org.ghost.messaging.api.ChannelMemberSummary> =
+        engine.members(channel)
+
+    override fun fingerprint(channel: ChannelId): org.ghost.messaging.api.ChannelFingerprint? =
+        engine.fingerprint(channel)
+
+    override fun remove(channel: ChannelId, member: ByteArray): ChannelActionResult = when (engine.remove(channel, member)) {
+        ChannelEngine.RemoveResult.REMOVED -> ChannelActionResult.DONE
+        ChannelEngine.RemoveResult.NOTHING -> ChannelActionResult.NOT_A_MEMBER
+        ChannelEngine.RemoveResult.UNAVAILABLE -> ChannelActionResult.UNAVAILABLE
+    }
+
+    override fun reveal(channel: ChannelId, member: ByteArray): ChannelActionResult = when (engine.reveal(channel, member)) {
+        org.ghost.messaging.channel.engine.ChannelRevealStep.RevealResult.REVEALED -> ChannelActionResult.DONE
+        org.ghost.messaging.channel.engine.ChannelRevealStep.RevealResult.NOTHING -> ChannelActionResult.NOT_A_MEMBER
+        org.ghost.messaging.channel.engine.ChannelRevealStep.RevealResult.UNAVAILABLE -> ChannelActionResult.UNAVAILABLE
+    }
+
     override fun create(
         name: ByteArray,
         timerCode: Int,

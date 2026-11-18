@@ -59,6 +59,9 @@ class PaymentModelTest {
         override suspend fun startPurchase(packId: String) = log.add("start:$packId").let { }
         override suspend fun requestInvoiceNow(purchaseId: String) = log.add("invoice:$purchaseId").let { }
         override suspend fun revokeInvite(index: Int) = log.add("revoke:$index").let { }
+        override suspend fun createInvite(expiryDay: Int): org.ghost.ui.protect.SensitiveText? = null
+        override suspend fun claimPayout(address: String) = false
+        override suspend fun cancelPurchase(purchaseId: String) = false
     }
 
     @Test

@@ -27,6 +27,10 @@ class ChannelCreateModel(
     var passphraseWritten: Boolean = false
         private set
 
+    /** The create result in the facade's fixed vocabulary; null before the call. */
+    var result: String? = null
+        private set
+
     private var passphraseIndices: IntArray? = null
 
     /**
@@ -60,7 +64,7 @@ class ChannelCreateModel(
      * stay only on paper.
      */
     suspend fun onCreate(name: String) {
-        channels.create(name, passphraseIndices)
+        result = channels.create(name, passphraseIndices)
         discardIndices()
         passphrase = null
         passphraseWritten = false

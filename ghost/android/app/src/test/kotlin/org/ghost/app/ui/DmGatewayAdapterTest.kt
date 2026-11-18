@@ -29,6 +29,7 @@ import org.ghost.ui.gateway.MessageState as UiMessageState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -40,10 +41,19 @@ class DmGatewayAdapterTest {
     private class FakeMessaging : Messaging {
         var summaries = emptyList<org.ghost.messaging.api.ConversationSummary>()
         var conversation = emptyList<MessageView>()
+        var contactRows = emptyList<ContactView>()
+        var ownCard: CardExport? = null
+        var addedCard: ByteArray? = null
+        var addedSource: CardSource? = null
         var timer: Timer? = null
         var sentBody: String? = null
         var displayed: List<MessageId>? = null
         var setTimerArg: Timer? = null
+        var safety: SafetyNumberView? = null
+        var pendingSafety: SafetyNumberView? = null
+        var scanned: ByteArray? = null
+        var acknowledged = false
+        val managed = ArrayList<String>()
 
         override fun conversationSummaries() = summaries
         override fun conversationTimer(contact: ContactId): Timer? = timer
@@ -63,31 +73,60 @@ class DmGatewayAdapterTest {
             return SendResult.QUEUED
         }
 
-        override fun contacts(): List<ContactView> = emptyList()
-        override fun myCard(): CardExport? = null
+        override fun contacts(): List<ContactView> = contactRows
+        override fun myCard(): CardExport? = ownCard
         override fun onActivated(): ActivationOutcome = error("not used")
         override fun onRestored(): ActivationOutcome = error("not used")
         override fun runOwnerMaintenance(): MaintenanceReport = error("not used")
-        override fun addContact(card: ByteArray, source: CardSource): AddContactResult = AddContactResult.ADDED
-        override fun addContact(card: ByteArray, source: CardSource, name: String?): AddContactResult = AddContactResult.ADDED
+        override fun addContact(card: ByteArray, source: CardSource): AddContactResult =
+            addContact(card, source, null)
+
+        override fun addContact(card: ByteArray, source: CardSource, name: String?): AddContactResult {
+            addedCard = card.copyOf()
+            addedSource = source
+            return AddContactResult.ADDED
+        }
         override fun rename(contact: ContactId, name: String?): Boolean = true
-        override fun acceptRequest(contact: ContactId): Boolean = error("not used")
-        override fun rejectRequest(contact: ContactId): Boolean = error("not used")
-        override fun blockRequest(contact: ContactId): Boolean = error("not used")
-        override fun block(contact: ContactId): Boolean = error("not used")
-        override fun unblock(contact: ContactId): Boolean = error("not used")
-        override fun deleteContact(contact: ContactId): Boolean = error("not used")
+        override fun acceptRequest(contact: ContactId): Boolean = true
+        override fun rejectRequest(contact: ContactId): Boolean = true
+        override fun blockRequest(contact: ContactId): Boolean = true
+        override fun block(contact: ContactId): Boolean {
+            managed += "block"
+            return true
+        }
+        override fun unblock(contact: ContactId): Boolean {
+            managed += "unblock"
+            return true
+        }
+        override fun deleteContact(contact: ContactId): Boolean {
+            managed += "delete"
+            return true
+        }
         override fun react(contact: ContactId, target: MessageId, grapheme: String?): SendResult = error("not used")
         override fun setNotificationPort(port: NotificationPort?) = Unit
         override fun retry(message: MessageId): SendResult = error("not used")
         override fun status(): MessagingStatus = MessagingStatus(emptyMap(), 0, emptyMap(), 0, 0)
         override fun setListener(listener: org.ghost.messaging.api.MessagingListener?) = Unit
         override fun setConversationOnScreen(contact: ContactId?) = Unit
-        override fun markVerified(contact: ContactId, scanned: ByteArray): org.ghost.messaging.api.VerifyResult = error("not used")
-        override fun markVerifiedManually(contact: ContactId): org.ghost.messaging.api.VerifyResult = error("not used")
-        override fun acknowledgeKeyChange(contact: ContactId): Boolean = error("not used")
-        override fun verifyKeyChange(contact: ContactId, scanned: ByteArray): org.ghost.messaging.api.VerifyResult = error("not used")
-        override fun resetSession(contact: ContactId): SendResult = error("not used")
+        override fun markVerified(contact: ContactId, scanned: ByteArray): org.ghost.messaging.api.VerifyResult {
+            this.scanned = scanned.copyOf()
+            return org.ghost.messaging.api.VerifyResult.VERIFIED
+        }
+        override fun markVerifiedManually(contact: ContactId): org.ghost.messaging.api.VerifyResult =
+            org.ghost.messaging.api.VerifyResult.VERIFIED
+
+        override fun acknowledgeKeyChange(contact: ContactId): Boolean {
+            acknowledged = true
+            return true
+        }
+        override fun verifyKeyChange(contact: ContactId, scanned: ByteArray): org.ghost.messaging.api.VerifyResult {
+            this.scanned = scanned.copyOf()
+            return org.ghost.messaging.api.VerifyResult.VERIFIED
+        }
+        override fun resetSession(contact: ContactId): SendResult {
+            managed += "reset"
+            return SendResult.QUEUED
+        }
         override fun reconnect(contacts: List<ContactId>): Int = error("not used")
         override fun issueRevocation(reason: org.ghost.messaging.api.RevocationReason): ByteArray? = null
         override fun notifyContactsOfRevocation(certificate: ByteArray): Int = 0
@@ -98,8 +137,8 @@ class DmGatewayAdapterTest {
         override fun retryMedia(message: MessageId): SendResult = error("not used")
         override fun mediaState(message: MessageId): MediaStateView? = null
         override fun mediaPreview(message: MessageId): MediaPreview? = null
-        override fun safetyNumber(contact: ContactId): SafetyNumberView? = null
-        override fun pendingSafetyNumber(contact: ContactId): SafetyNumberView? = null
+        override fun safetyNumber(contact: ContactId): SafetyNumberView? = safety
+        override fun pendingSafetyNumber(contact: ContactId): SafetyNumberView? = pendingSafety
     }
 
     private fun msg(id: Int, outgoing: Boolean, state: MessageState, text: String) = MessageView(
@@ -164,5 +203,61 @@ class DmGatewayAdapterTest {
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking { g.setTimer("01".repeat(16), 90) }
         }
+    }
+
+    @Test
+    fun contactLinksAliasesAndTheOwnerCardCrossTheAdapter(): Unit = runBlocking {
+        val fake = FakeMessaging()
+        val card = ByteArray(131) { 7 }
+        val link = "ghost://contact/" + org.ghost.identity.ZBase32.encode(card)
+        fake.ownCard = CardExport(card, link)
+        fake.contactRows = listOf(
+            ContactView(
+                id = ContactId(ByteArray(16) { 4 }),
+                trust = org.ghost.messaging.api.TrustState.VERIFIED,
+                establishment = org.ghost.messaging.api.Establishment.READY,
+                source = CardSource.QR_IN_PERSON,
+                resetNeeded = false,
+                name = "Alice",
+            ),
+        )
+        val g = DmGatewayAdapter({ fake })
+        g.addContact(link, "LINK", null)
+        org.junit.Assert.assertArrayEquals(card, fake.addedCard)
+        assertEquals(CardSource.LINK, fake.addedSource)
+        assertEquals(mapOf("04".repeat(16) to "Alice"), g.contactNames())
+        assertEquals(link, g.myCard()?.value)
+    }
+
+    @Test
+    fun requestsAndSafetyNumberDecisionsUseTheRealFacade(): Unit = runBlocking {
+        val fake = FakeMessaging()
+        val raw = ByteArray(65) { 9 }
+        fake.safety = SafetyNumberView("0".repeat(60), raw)
+        fake.pendingSafety = SafetyNumberView("1".repeat(60), raw)
+        val g = DmGatewayAdapter({ fake })
+        val id = "04".repeat(16)
+        val data = g.safetyNumber(id, pending = false)!!
+        assertEquals("0".repeat(60), data.digits)
+        assertTrue(data.qrPayload.value.startsWith("GHOST-SN-"))
+        assertTrue(g.verify(id, pending = false, data.qrPayload.value))
+        org.junit.Assert.assertArrayEquals(raw, fake.scanned)
+        assertTrue(g.acceptRequest(id))
+        assertTrue(g.rejectRequest(id))
+        assertTrue(g.blockRequest(id))
+        assertTrue(g.acknowledgeKeyChange(id))
+        assertTrue(fake.acknowledged)
+    }
+
+    @Test
+    fun contactManagementUsesTheFacadeResults(): Unit = runBlocking {
+        val fake = FakeMessaging()
+        val g = DmGatewayAdapter({ fake })
+        val id = "04".repeat(16)
+        assertTrue(g.block(id))
+        assertTrue(g.unblock(id))
+        assertTrue(g.resetSession(id))
+        assertTrue(g.deleteContact(id))
+        assertEquals(listOf("block", "unblock", "reset", "delete"), fake.managed)
     }
 }

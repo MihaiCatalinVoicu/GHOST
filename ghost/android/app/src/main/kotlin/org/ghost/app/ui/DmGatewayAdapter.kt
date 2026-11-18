@@ -30,7 +30,7 @@ class DmGatewayAdapter(
         require(s.length % 2 == 0) { "an id is hex" }
         ByteArray(s.length / 2) { s.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
     },
-) : DmGateway {
+) : DmGateway, org.ghost.ui.gateway.ContactGateway {
 
     override suspend fun conversationSummaries(): List<ConversationSummary> = onIo {
         messaging()?.conversationSummaries()?.map { s ->
@@ -55,6 +55,7 @@ class DmGatewayAdapter(
                     expireAtMinute = msg.expireAtMinute,
                     myReaction = msg.myReaction,
                     peerReaction = msg.peerReaction,
+                    mediaKind = m.mediaState(msg.id)?.kind?.code ?: 0,
                 )
             },
             // The conversation timer is the dm_conversation row's own code (§7.1).
@@ -68,6 +69,16 @@ class DmGatewayAdapter(
             ?.filter { it.trust == org.ghost.messaging.api.TrustState.REQUEST }
             ?.map { RequestView(contactId = hex(it.id.toByteArray()), receivedMinute = 0L) }
             ?: emptyList()
+    }
+
+    override suspend fun contactNames(): Map<String, String> = onIo {
+        messaging()?.contacts()?.mapNotNull { contact ->
+            contact.name?.takeIf { it.isNotBlank() }?.let { name -> hex(contact.id.toByteArray()) to name }
+        }?.toMap() ?: emptyMap()
+    }
+
+    override suspend fun myCard(): SensitiveText? = onIo {
+        messaging()?.myCard()?.link?.let(::SensitiveText)
     }
 
     @org.ghost.ui.gateway.UserAction
@@ -87,8 +98,7 @@ class DmGatewayAdapter(
 
     @org.ghost.ui.gateway.UserAction
     override suspend fun setConversationOnScreen(contactId: String?) = onIo {
-        // The "on screen" signal of §3.5: the UI layer keeps it in the session; no facade call
-        // exists for it (the actor's on-screen state is the conversation read itself).
+        messaging()?.setConversationOnScreen(contactId?.let { ContactId(unhex(it)) })
         Unit
     }
 
@@ -107,19 +117,108 @@ class DmGatewayAdapter(
     @org.ghost.ui.gateway.UserAction
     override suspend fun addContact(cardText: String, source: String, name: String?) = onIo {
         val m = messaging() ?: return@onIo
-        val card = unhex(cardText)
+        val trimmed = cardText.trim()
+        val card = if (trimmed.startsWith(CARD_LINK_PREFIX)) {
+            org.ghost.identity.ZBase32.decode(trimmed.removePrefix(CARD_LINK_PREFIX), CONTACT_CARD_BYTES)
+        } else {
+            unhex(trimmed)
+        }
         val src = when (source.uppercase()) {
             "QR_IN_PERSON" -> CardSource.QR_IN_PERSON
-            "LINK" -> CardSource.LINK
-            else -> CardSource.QR_IN_PERSON
+            else -> CardSource.LINK
         }
         m.addContact(card, src, name)
     }
 
     @org.ghost.ui.gateway.UserAction
-    override suspend fun rename(contactId: String, name: String?) = onIo {
-        messaging()?.rename(ContactId(unhex(contactId)), name)
-        Unit
+    override suspend fun rename(contactId: String, name: String?): Boolean = onIo {
+        messaging()?.rename(ContactId(unhex(contactId)), name) == true
+    }
+
+    override suspend fun trustState(contactId: String): String? = onIo {
+        val id = unhex(contactId)
+        messaging()?.contacts()?.firstOrNull { it.id.toByteArray().contentEquals(id) }?.trust?.name
+    }
+
+    override suspend fun safetyNumber(contactId: String, pending: Boolean): org.ghost.ui.gateway.SafetyNumberData? = onIo {
+        val m = messaging() ?: return@onIo null
+        val id = ContactId(unhex(contactId))
+        val view = if (pending) m.pendingSafetyNumber(id) else m.safetyNumber(id)
+        view?.let { number ->
+            val raw = number.scannable
+            val encoded = try {
+                java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
+            } finally {
+                raw.fill(0)
+            }
+            org.ghost.ui.gateway.SafetyNumberData(
+                digits = number.digits,
+                qrPayload = SensitiveText("GHOST-SN-" + encoded),
+            )
+        }
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun acceptRequest(contactId: String): Boolean = onIo {
+        messaging()?.acceptRequest(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun rejectRequest(contactId: String): Boolean = onIo {
+        messaging()?.rejectRequest(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun blockRequest(contactId: String): Boolean = onIo {
+        messaging()?.blockRequest(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun verify(contactId: String, pending: Boolean, scannedPayload: String): Boolean = onIo {
+        val m = messaging() ?: return@onIo false
+        val encoded = scannedPayload.trim().removePrefix("GHOST-SN-")
+        val scanned = try {
+            java.util.Base64.getUrlDecoder().decode(encoded)
+        } catch (e: IllegalArgumentException) {
+            return@onIo false
+        }
+        try {
+            val id = ContactId(unhex(contactId))
+            val result = if (pending) m.verifyKeyChange(id, scanned) else m.markVerified(id, scanned)
+            result == org.ghost.messaging.api.VerifyResult.VERIFIED
+        } finally {
+            scanned.fill(0)
+        }
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun verifyManually(contactId: String): Boolean = onIo {
+        messaging()?.markVerifiedManually(ContactId(unhex(contactId))) == org.ghost.messaging.api.VerifyResult.VERIFIED
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun acknowledgeKeyChange(contactId: String): Boolean = onIo {
+        messaging()?.acknowledgeKeyChange(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun block(contactId: String): Boolean = onIo {
+        messaging()?.block(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun unblock(contactId: String): Boolean = onIo {
+        messaging()?.unblock(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun deleteContact(contactId: String): Boolean = onIo {
+        messaging()?.deleteContact(ContactId(unhex(contactId))) == true
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun resetSession(contactId: String): Boolean = onIo {
+        messaging()?.resetSession(ContactId(unhex(contactId))) == org.ghost.messaging.api.SendResult.QUEUED
     }
 
     private fun stateOf(s: org.ghost.messaging.api.MessageState): MessageState = when (s) {
@@ -158,5 +257,7 @@ class DmGatewayAdapter(
 
     companion object {
         const val CONVERSATION_PAGE = 120
+        private const val CONTACT_CARD_BYTES = 131
+        private const val CARD_LINK_PREFIX = "ghost://contact/"
     }
 }

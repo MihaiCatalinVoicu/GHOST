@@ -307,6 +307,71 @@ class DeviceGateSuite {
         DeviceRunner.report("dm-device: SCN-D key change held and released; logcat holds no canary (${canaries.size} canaries)")
     }
 
+    /**
+     * The channel create path on the phone, not only in the host world: the shipped JNI library,
+     * the real channel Keystore wrapper, native context/channel/group creation, then the complete
+     * runtime transaction and its read models. Fixed test bytes only; no generated key is reported.
+     */
+    @Test
+    fun channelCreationUsesShippedCryptoAndKeystore() {
+        assertTrue(
+            "libghost_client_net did not load (${org.ghost.crypto.bridge.MlsNative.loadFailure()?.javaClass?.name ?: "none"})",
+            org.ghost.crypto.bridge.MlsNative.isAvailable(),
+        )
+        val stateKey = ByteArray(32) { (it * 3 + 1).toByte() }
+        val channelId = ByteArray(32) { (it * 5 + 2).toByte() }
+        val pseudonymSeed = ByteArray(32) { (it * 7 + 3).toByte() }
+        try {
+            val wrapper = org.ghost.messaging.android.KeystoreChannelStateKeyWrapper(false)
+            val unwrapped = wrapper.unwrap(wrapper.wrap(stateKey))
+            assertTrue("the channel state-key envelope does not round-trip", stateKey.contentEquals(unwrapped))
+            unwrapped.fill(0)
+
+            val opened = org.ghost.crypto.bridge.ChannelCrypto.open(stateKey)
+            assertEquals(org.ghost.crypto.bridge.MlsCode.OK, opened.code)
+            val crypto = (opened as org.ghost.crypto.bridge.MlsOutcome.Ok).value
+            try {
+                val channel = crypto.openChannel(channelId, pseudonymSeed)
+                assertEquals(org.ghost.crypto.bridge.MlsCode.OK, channel.code)
+                val pseudonym = (channel as org.ghost.crypto.bridge.MlsOutcome.Ok).value
+                val policy = org.ghost.crypto.bridge.ChannelPolicy(
+                    channelId = channelId,
+                    sizeClass = 0,
+                    timerCode = 4,
+                    timerVersion = 0,
+                    historyPolicy = 0,
+                    flags = 1,
+                    idleEvictDays = 63,
+                    pwVersion = 0,
+                    name = "device probe".toByteArray(),
+                    committers = listOf(pseudonym),
+                    funders = listOf(pseudonym),
+                )
+                assertEquals(
+                    org.ghost.crypto.bridge.MlsCode.OK,
+                    crypto.groupCreate(channelId, policy, 20_000).code,
+                )
+            } finally {
+                crypto.close()
+            }
+        } finally {
+            stateKey.fill(0)
+            channelId.fill(0)
+            pseudonymSeed.fill(0)
+        }
+
+        activate()
+        val channels = requireNotNull(world.alice.runtime.channels)
+        val created = channels.create("device channel".toByteArray(), 4, 0, false)
+        assertEquals(org.ghost.messaging.api.CreateResult.Status.CREATED, created.status)
+        val id = requireNotNull(created.channel)
+        assertEquals("device channel", channels.channels().single().name)
+        assertEquals(1, channels.members(id).size)
+        assertTrue(channels.members(id).single().mine)
+        assertEquals(8, requireNotNull(channels.fingerprint(id)).code.size)
+        DeviceRunner.report("channel-device: shipped native, Keystore and runtime create passed")
+    }
+
     private fun dumpsysAlarm(): String = shell("dumpsys alarm")
 
     private fun shell(command: String): String {

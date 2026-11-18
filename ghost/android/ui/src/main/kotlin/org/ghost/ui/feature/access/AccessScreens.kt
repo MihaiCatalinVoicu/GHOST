@@ -36,6 +36,8 @@ fun AccessScreen(
     onOpenPurchase: (String) -> Unit,
     onRevokeInvite: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    onInvites: (() -> Unit)? = null,
+    onPayout: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -45,6 +47,10 @@ fun AccessScreen(
         )
         Button(onClick = onBuyXmr) {
             Text(text = stringResource(R.string.access_buy_xmr))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onInvites != null) Button(onClick = onInvites) { Text(text = stringResource(R.string.access_manage_invites)) }
+            if (onPayout != null) Button(onClick = onPayout) { Text(text = stringResource(R.string.access_payout)) }
         }
         LazyColumn(modifier = Modifier.weight(1f)) {
             items(purchases, key = { it.id }) { p ->
@@ -96,6 +102,7 @@ fun PurchaseProgressScreen(
     onOpenInstructions: () -> Unit,
     onCheckNow: () -> Unit,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(
@@ -136,6 +143,9 @@ fun PurchaseProgressScreen(
             Button(onClick = onCheckNow) {
                 Text(text = stringResource(R.string.purchase_check_now))
             }
+        }
+        if (onCancel != null && purchase?.state in setOf(PurchaseState.PREPARED, PurchaseState.INVOICE_PENDING)) {
+            Button(onClick = onCancel) { Text(text = stringResource(R.string.purchase_cancel)) }
         }
     }
 }

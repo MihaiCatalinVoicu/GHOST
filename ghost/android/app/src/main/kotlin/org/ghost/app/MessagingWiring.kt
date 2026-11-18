@@ -208,6 +208,9 @@ internal class MessagingWiring(
     /** The facade of §13.2 over the open database, or null before the first database open. */
     val messaging: Messaging? get() = stack?.messaging
 
+    /** The channel facade over the same actor and database, or null before the stack opens. */
+    val channels: org.ghost.messaging.api.Channels? get() = stack?.channels
+
     /** What every context open asks on the actor, in the turn that would open it. */
     private fun contextWanted(): Boolean = !locked && !wiped
 

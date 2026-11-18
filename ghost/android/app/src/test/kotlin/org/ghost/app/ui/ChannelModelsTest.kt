@@ -35,21 +35,31 @@ class ChannelModelsTest {
         var postedBody: String? = null
 
         override suspend fun channels(): List<ChannelView> = rows.also { log.add("channels") }
-        override suspend fun create(name: String, passwordIndices: IntArray?) {
+        override suspend fun posts(channelId: String): List<org.ghost.ui.gateway.ChannelPostView> = emptyList()
+        override suspend fun members(channelId: String): List<org.ghost.ui.gateway.ChannelMemberView> = emptyList()
+        override suspend fun fingerprint(channelId: String): org.ghost.ui.gateway.ChannelFingerprintView? = null
+        override suspend fun removeMember(channelId: String, memberId: String) = true
+        override suspend fun reveal(channelId: String, memberId: String) = true
+        override suspend fun create(name: String, passwordIndices: IntArray?): String {
             log.add("create")
             createIndices = passwordIndices
+            return "CREATED"
         }
-        override suspend fun createInvite(channelId: String): SensitiveText {
+        var inviteIndices: IntArray? = null
+
+        override suspend fun createInvite(channelId: String, passwordIndices: IntArray?): SensitiveText {
             log.add("invite")
+            inviteIndices = passwordIndices
             return SensitiveText("ghost://channel/link")
         }
         override suspend fun inspectInvite(link: String): ChannelInvitePreview? {
             log.add("inspect")
             return preview
         }
-        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) {
+        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?): String {
             log.add("accept")
             createIndices = passwordIndices
+            return "PENDING"
         }
         override suspend fun post(channelId: String, body: SensitiveText) {
             log.add("post")
@@ -119,12 +129,25 @@ class ChannelModelsTest {
     @Test
     fun theInviteLinkIsHeldUntilDisplayed(): Unit = runBlocking {
         val channels = RecordingChannels()
-        val m = ChannelInviteModel(channels)
+        val m = ChannelInviteModel(channels, FixedIdentity())
         m.onCreateInvite("01".repeat(16))
         assertEquals(SensitiveText("ghost://channel/link"), m.issuedLink)
         assertEquals(listOf("invite"), channels.log)
         m.onLinkDisplayed()
         assertNull(m.issuedLink)
+    }
+
+    @Test
+    fun aPasswordInviteRetypesAndZeroesTheFiveWords(): Unit = runBlocking {
+        val channels = RecordingChannels()
+        val m = ChannelInviteModel(channels, FixedIdentity())
+        m.onLoad("01".repeat(16))
+        assertTrue(m.passwordProtected)
+        val indices = m.indicesForPassphrase(Bip39.wordlist.take(5))
+        m.onCreateInvite("01".repeat(16), indices)
+        assertEquals(SensitiveText("ghost://channel/link"), m.issuedLink)
+        assertTrue(indices.all { it == 0 })
+        assertTrue(channels.inviteIndices!!.all { it == 0 })
     }
 
     @Test
@@ -141,6 +164,16 @@ class ChannelModelsTest {
         m.onAccept("ghost://channel/link", indices)
         assertTrue(m.accepted)
         assertEquals(listOf("inspect", "accept"), channels.log)
+    }
+
+    @Test
+    fun textPostsUseTheProtocolKindNotTheDefaultInteger() {
+        fun post(kind: Int) = org.ghost.ui.gateway.ChannelPostView(
+            id = "01", body = SensitiveText("hello"), mine = true, minute = 0, state = "queued", kind = kind,
+        )
+        assertTrue(post(1).isText)
+        assertTrue(!post(0).isText)
+        assertTrue(!post(5).isText)
     }
 
     @Test

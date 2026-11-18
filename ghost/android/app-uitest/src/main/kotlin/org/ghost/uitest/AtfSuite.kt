@@ -31,10 +31,15 @@ class AtfSuite {
 
     private class FakeChannelGateway(private val rows: List<ChannelView>) : ChannelGateway {
         override suspend fun channels() = rows
-        override suspend fun create(name: String, passwordIndices: IntArray?) = Unit
-        override suspend fun createInvite(channelId: String) = SensitiveText("link")
+        override suspend fun posts(channelId: String) = emptyList<org.ghost.ui.gateway.ChannelPostView>()
+        override suspend fun members(channelId: String) = emptyList<org.ghost.ui.gateway.ChannelMemberView>()
+        override suspend fun fingerprint(channelId: String): org.ghost.ui.gateway.ChannelFingerprintView? = null
+        override suspend fun removeMember(channelId: String, memberId: String) = true
+        override suspend fun reveal(channelId: String, memberId: String) = true
+        override suspend fun create(name: String, passwordIndices: IntArray?) = "CREATED"
+        override suspend fun createInvite(channelId: String, passwordIndices: IntArray?) = SensitiveText("link")
         override suspend fun inspectInvite(link: String) = null
-        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) = Unit
+        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) = "PENDING"
         override suspend fun post(channelId: String, body: SensitiveText) = Unit
         override suspend fun leave(channelId: String) = Unit
         override suspend fun rejoin(channelId: String) = Unit

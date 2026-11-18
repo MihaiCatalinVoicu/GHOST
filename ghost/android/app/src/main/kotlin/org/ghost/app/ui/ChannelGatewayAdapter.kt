@@ -27,43 +27,100 @@ class ChannelGatewayAdapter(
     }
 
     override suspend fun channels(): List<ChannelView> = onIo {
-        // The J4 list's read model lands with Phase 10's coordination items (§3.6's ChannelView
-        // additions); until they exist, the list is empty rather than half-built.
-        emptyList()
+        facade()?.channels()?.map { channel ->
+            ChannelView(
+                id = hex(channel.channelId),
+                name = channel.name,
+                unread = 0,
+                passwordProtected = channel.passwordProtected,
+            )
+        } ?: emptyList()
     }
 
-    override suspend fun create(name: String, passwordIndices: IntArray?) = onIo {
-        val c = facade() ?: return@onIo
+    override suspend fun posts(channelId: String): List<org.ghost.ui.gateway.ChannelPostView> = onIo {
+        facade()?.posts(ChannelId(unhex(channelId)), 120)?.map { post ->
+            org.ghost.ui.gateway.ChannelPostView(
+                id = hex(post.opId),
+                body = SensitiveText(post.body),
+                mine = post.mine,
+                minute = post.authorMinute,
+                state = post.state,
+                kind = post.kind,
+            )
+        } ?: emptyList()
+    }
+
+    override suspend fun members(channelId: String): List<org.ghost.ui.gateway.ChannelMemberView> = onIo {
+        facade()?.members(ChannelId(unhex(channelId)))?.map { member ->
+            org.ghost.ui.gateway.ChannelMemberView(id = hex(member.pseudonym), committer = member.committer, mine = member.mine)
+        } ?: emptyList()
+    }
+
+    override suspend fun fingerprint(channelId: String): org.ghost.ui.gateway.ChannelFingerprintView? = onIo {
+        facade()?.fingerprint(ChannelId(unhex(channelId)))?.let { fingerprint ->
+            org.ghost.ui.gateway.ChannelFingerprintView(fingerprint.epoch, hex(fingerprint.code))
+        }
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun removeMember(channelId: String, memberId: String): Boolean = onIo {
+        facade()?.remove(ChannelId(unhex(channelId)), unhex(memberId)) == org.ghost.messaging.api.ChannelActionResult.DONE
+    }
+
+    @org.ghost.ui.gateway.UserAction
+    override suspend fun reveal(channelId: String, memberId: String): Boolean = onIo {
+        facade()?.reveal(ChannelId(unhex(channelId)), unhex(memberId)) == org.ghost.messaging.api.ChannelActionResult.DONE
+    }
+
+    override suspend fun create(name: String, passwordIndices: IntArray?): String = onIo {
+        val c = facade() ?: return@onIo "UNAVAILABLE"
         val password = passwordIndices?.let { expand(it) }
-        c.create(
-            name = name.toByteArray(Charsets.UTF_8),
-            timerCode = 0,
-            sizeClass = 0,
-            passwordRequired = password != null,
-        )
-        Unit
+        try {
+            c.create(
+                name = name.toByteArray(Charsets.UTF_8),
+                timerCode = 0,
+                sizeClass = 0,
+                passwordRequired = password != null,
+            ).status.name
+        } finally {
+            password?.fill('0')
+        }
     }
 
-    override suspend fun createInvite(channelId: String): SensitiveText = onIo {
+    override suspend fun createInvite(channelId: String, passwordIndices: IntArray?): SensitiveText = onIo {
         val c = facade() ?: throw IllegalStateException("channels unavailable")
         // §6.5: the sponsor chooses the expiry up to 7 days; the adapter fixes the normative cap.
-        val result = c.invite(ChannelId(unhex(channelId)), expiryDays = 7, password = null)
-        SensitiveText(result.link?.let { String(it, Charsets.US_ASCII) } ?: "")
+        val password = passwordIndices?.let { expand(it) }
+        try {
+            val result = c.invite(ChannelId(unhex(channelId)), expiryDays = 7, password = password)
+            SensitiveText(result.link?.let { String(it, Charsets.US_ASCII) } ?: "")
+        } finally {
+            password?.fill('0')
+        }
     }
 
     override suspend fun inspectInvite(link: String): ChannelInvitePreview? = onIo {
-        // §3.6's inspectInvite is the local parse of Phase 10's coordination items; the password
-        // requirement and expiry live in the link's sealed form, so the parse lands with them.
-        null
+        val invite = org.ghost.crypto.bridge.ChannelInvite.fromLink(link.trim()) ?: return@onIo null
+        try {
+            ChannelInvitePreview(
+                channelName = "",
+                passwordRequired = org.ghost.crypto.bridge.ChannelInvite.needsPassword(invite),
+                expiryDay = null,
+                alreadyMember = false,
+            )
+        } finally {
+            invite.fill(0)
+        }
     }
 
-    override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) = onIo {
-        val c = facade() ?: return@onIo
+    override suspend fun acceptInvite(link: String, passwordIndices: IntArray?): String = onIo {
+        val c = facade() ?: return@onIo "UNAVAILABLE"
         val password = passwordIndices?.let { expand(it) }
-        // The accept is posted; the journey asserts the refusal reasons (PENDING/INVALID/EXPIRED/
-        // PASSWORD_REQUIRED...) through the world, not through a return value here.
-        c.accept(link.toByteArray(Charsets.US_ASCII), password)
-        Unit
+        try {
+            c.accept(link.toByteArray(Charsets.US_ASCII), password).name
+        } finally {
+            password?.fill('0')
+        }
     }
 
     override suspend fun post(channelId: String, body: SensitiveText) = onIo {

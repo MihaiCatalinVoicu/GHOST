@@ -29,6 +29,7 @@ import org.ghost.ui.R
 import org.ghost.ui.gateway.PaymentDisclosure
 import org.ghost.ui.gateway.PaymentView
 import org.ghost.ui.protect.SensitiveTextView
+import org.ghost.ui.qr.QrImage
 
 /** J2 step 4: every disclosure has its own tick; acknowledgement stays disabled until all are read. */
 @Composable
@@ -102,6 +103,8 @@ fun PaymentInstructionsUnavailableScreen(
 fun PaymentInstructionsScreen(
     payment: PaymentView,
     modifier: Modifier = Modifier,
+    onCopyAddress: (() -> Unit)? = null,
+    onCopyAmount: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -124,6 +127,15 @@ fun PaymentInstructionsScreen(
             style = MaterialTheme.typography.labelLarge,
         )
         Text(text = payment.deadlineDay.toString(), style = MaterialTheme.typography.bodyLarge)
+        payment.qrUri?.let { uri -> QrImage(payload = uri) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onCopyAddress != null) {
+                Button(onClick = onCopyAddress) { Text(text = stringResource(R.string.payment_copy_address)) }
+            }
+            if (onCopyAmount != null) {
+                Button(onClick = onCopyAmount) { Text(text = stringResource(R.string.payment_copy_amount)) }
+            }
+        }
         Text(text = stringResource(R.string.payment_compare), style = MaterialTheme.typography.bodyMedium)
     }
 }

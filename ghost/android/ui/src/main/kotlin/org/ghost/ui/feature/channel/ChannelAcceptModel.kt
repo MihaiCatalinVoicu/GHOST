@@ -22,6 +22,10 @@ class ChannelAcceptModel(
     var accepted: Boolean = false
         private set
 
+    /** The facade's fixed result vocabulary, shown as a typed refusal when not PENDING. */
+    var result: String? = null
+        private set
+
     /** The BIP-39 list for the keyboard's suggestion chips (:ui holds no copy of its own, §3.2). */
     var wordList: List<String> = emptyList()
         private set
@@ -44,13 +48,17 @@ class ChannelAcceptModel(
     suspend fun indicesForPassphrase(words: List<String>): IntArray {
         val list = identity.wordList()
         return IntArray(words.size) { i ->
-            list.indexOf(words[i].trim().lowercase()).also { if (it < 0) error("not a list word: ${words[i]}") }
+            list.indexOf(words[i].trim().lowercase()).also { if (it < 0) error("not a list word") }
         }
     }
 
     /** Posts the join request; [passwordIndices] is null for an open channel. */
     suspend fun onAccept(link: String, passwordIndices: IntArray?) {
-        channels.acceptInvite(link, passwordIndices)
-        accepted = true
+        try {
+            result = channels.acceptInvite(link, passwordIndices)
+            accepted = result == "PENDING"
+        } finally {
+            passwordIndices?.fill(0)
+        }
     }
 }

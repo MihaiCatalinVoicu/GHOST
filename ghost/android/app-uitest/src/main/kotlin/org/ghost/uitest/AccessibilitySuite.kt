@@ -42,10 +42,15 @@ class AccessibilitySuite {
 
     private class FakeChannelGateway(private val rows: List<ChannelView>) : org.ghost.ui.gateway.ChannelGateway {
         override suspend fun channels() = rows
-        override suspend fun create(name: String, passwordIndices: IntArray?) = Unit
-        override suspend fun createInvite(channelId: String) = org.ghost.ui.protect.SensitiveText("link")
+        override suspend fun posts(channelId: String) = emptyList<org.ghost.ui.gateway.ChannelPostView>()
+        override suspend fun members(channelId: String) = emptyList<org.ghost.ui.gateway.ChannelMemberView>()
+        override suspend fun fingerprint(channelId: String): org.ghost.ui.gateway.ChannelFingerprintView? = null
+        override suspend fun removeMember(channelId: String, memberId: String) = true
+        override suspend fun reveal(channelId: String, memberId: String) = true
+        override suspend fun create(name: String, passwordIndices: IntArray?) = "CREATED"
+        override suspend fun createInvite(channelId: String, passwordIndices: IntArray?) = org.ghost.ui.protect.SensitiveText("link")
         override suspend fun inspectInvite(link: String) = null
-        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) = Unit
+        override suspend fun acceptInvite(link: String, passwordIndices: IntArray?) = "PENDING"
         override suspend fun post(channelId: String, body: org.ghost.ui.protect.SensitiveText) = Unit
         override suspend fun leave(channelId: String) = Unit
         override suspend fun rejoin(channelId: String) = Unit
@@ -68,10 +73,11 @@ class AccessibilitySuite {
                 )
             }
         }
-        compose.onNodeWithText("Channels").assertIsDisplayed()
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        compose.onNodeWithText(context.getString(org.ghost.ui.R.string.ch_list_title)).assertIsDisplayed()
         // The channel name appears twice - the list row and the detail's heading: both visible.
         compose.onAllNodesWithText("forum").assertCountEquals(2)
-        compose.onNodeWithText("No posts yet").assertExists()
+        compose.onNodeWithText(context.getString(org.ghost.ui.R.string.ch_detail_posts_empty)).assertExists()
     }
 
     @Test

@@ -25,6 +25,8 @@ class ContactAddModelTest {
         override suspend fun conversationSummaries(): List<ConversationSummary> = emptyList()
         override suspend fun conversation(contactId: String): ConversationView? = null
         override suspend fun requests(): List<RequestView> = emptyList()
+        override suspend fun contactNames(): Map<String, String> = emptyMap()
+        override suspend fun myCard(): SensitiveText? = null
         override suspend fun send(contactId: String, body: SensitiveText, replyTo: String?) = Unit
         override suspend fun markDisplayed(contactId: String, messageIds: List<String>) = Unit
         override suspend fun setConversationOnScreen(contactId: String?) = Unit
@@ -34,7 +36,7 @@ class ContactAddModelTest {
             added.add(Triple(cardText, source, name))
         }
 
-        override suspend fun rename(contactId: String, name: String?) = Unit
+        override suspend fun rename(contactId: String, name: String?) = true
     }
 
     @Test

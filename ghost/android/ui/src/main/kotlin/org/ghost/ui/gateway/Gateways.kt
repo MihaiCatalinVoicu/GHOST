@@ -144,6 +144,18 @@ interface AccessGateway {
     /** Revokes an invite (traffic). */
     @UserAction
     suspend fun revokeInvite(index: Int)
+
+    /** Creates a signed invite locally; redemption happens in a later quiet run. */
+    @UserAction
+    suspend fun createInvite(expiryDay: Int): SensitiveText?
+
+    /** Queues a payout to a fresh wallet subaddress; the claim is validated locally. */
+    @UserAction
+    suspend fun claimPayout(address: String): Boolean
+
+    /** Cancels only a purchase whose instructions were never shown. */
+    @UserAction
+    suspend fun cancelPurchase(purchaseId: String): Boolean
 }
 
 /** DC-6…DC-10: the five explicit acknowledgements required before payment instructions. */
@@ -170,13 +182,24 @@ enum class PurchaseSyncState { LIVE, STALE, ISSUER_UNAVAILABLE, LOCAL_ONLY }
 data class InviteView(val index: Int, val expiryDay: Int?, val state: String)
 
 /** The payment instructions read model (the subaddress and amount are SensitiveText). */
-data class PaymentView(val subaddress: SensitiveText, val amount: SensitiveText, val deadlineDay: Int)
+data class PaymentView(
+    val subaddress: SensitiveText,
+    val amount: SensitiveText,
+    val deadlineDay: Int,
+    val qrUri: SensitiveText? = null,
+)
 
 /** Direct messages (J3; §3.6's additions land with S4 — the facade shapes only). */
 interface DmGateway {
     suspend fun conversationSummaries(): List<ConversationSummary>
     suspend fun conversation(contactId: String): ConversationView?
     suspend fun requests(): List<RequestView>
+
+    /** Local aliases for the list and title; no message content crosses this read. */
+    suspend fun contactNames(): Map<String, String>
+
+    /** The owner's ghost://contact/ link for the in-person QR screen. */
+    suspend fun myCard(): SensitiveText?
 
     @UserAction
     suspend fun send(contactId: String, body: SensitiveText, replyTo: String?)
@@ -198,7 +221,7 @@ interface DmGateway {
     suspend fun addContact(cardText: String, source: String, name: String?)
 
     @UserAction
-    suspend fun rename(contactId: String, name: String?)
+    suspend fun rename(contactId: String, name: String?): Boolean
 }
 
 /** The conversation-list row: contact id, live unread count, newest minute — no text (T33). */
@@ -223,6 +246,8 @@ data class MessageView(
     val expireAtMinute: Long?,
     val myReaction: String?,
     val peerReaction: String?,
+    /** 0 for text/control rows; otherwise the media kind used by the viewer. */
+    val mediaKind: Int = 0,
 )
 
 /** The message states the UI distinguishes (§6.9 catalogue). */
@@ -231,20 +256,68 @@ enum class MessageState { SENDING, SENT, DELIVERED, READ, FAILED, HELD }
 /** The contact-request read model. */
 data class RequestView(val contactId: String, val receivedMinute: Long)
 
+/** Contact trust, requests and safety-number decisions; all operations stay on the UI IO adapter. */
+interface ContactGateway {
+    suspend fun trustState(contactId: String): String?
+    suspend fun safetyNumber(contactId: String, pending: Boolean): SafetyNumberData?
+
+    @UserAction
+    suspend fun acceptRequest(contactId: String): Boolean
+
+    @UserAction
+    suspend fun rejectRequest(contactId: String): Boolean
+
+    @UserAction
+    suspend fun blockRequest(contactId: String): Boolean
+
+    @UserAction
+    suspend fun verify(contactId: String, pending: Boolean, scannedPayload: String): Boolean
+
+    @UserAction
+    suspend fun verifyManually(contactId: String): Boolean
+
+    @UserAction
+    suspend fun acknowledgeKeyChange(contactId: String): Boolean
+
+    @UserAction
+    suspend fun block(contactId: String): Boolean
+
+    @UserAction
+    suspend fun unblock(contactId: String): Boolean
+
+    @UserAction
+    suspend fun deleteContact(contactId: String): Boolean
+
+    @UserAction
+    suspend fun resetSession(contactId: String): Boolean
+}
+
+/** The 60 digits and the versioned QR payload; neither is logged or persisted by the UI. */
+data class SafetyNumberData(val digits: String, val qrPayload: SensitiveText)
+
 /** Channels (J4; Phase 10's facade, S5). */
 interface ChannelGateway {
     suspend fun channels(): List<ChannelView>
+    suspend fun posts(channelId: String): List<ChannelPostView>
+    suspend fun members(channelId: String): List<ChannelMemberView>
+    suspend fun fingerprint(channelId: String): ChannelFingerprintView?
 
     @UserAction
-    suspend fun create(name: String, passwordIndices: IntArray?)
+    suspend fun removeMember(channelId: String, memberId: String): Boolean
 
     @UserAction
-    suspend fun createInvite(channelId: String): SensitiveText
+    suspend fun reveal(channelId: String, memberId: String): Boolean
+
+    @UserAction
+    suspend fun create(name: String, passwordIndices: IntArray?): String
+
+    @UserAction
+    suspend fun createInvite(channelId: String, passwordIndices: IntArray?): SensitiveText
 
     suspend fun inspectInvite(link: String): ChannelInvitePreview?
 
     @UserAction
-    suspend fun acceptInvite(link: String, passwordIndices: IntArray?)
+    suspend fun acceptInvite(link: String, passwordIndices: IntArray?): String
 
     @UserAction
     suspend fun post(channelId: String, body: SensitiveText)
@@ -258,6 +331,25 @@ interface ChannelGateway {
 
 /** The channel read model. */
 data class ChannelView(val id: String, val name: String, val unread: Int, val passwordProtected: Boolean)
+
+/** One protected channel post; no plaintext appears in logs or route state. */
+data class ChannelPostView(
+    val id: String,
+    val body: SensitiveText,
+    val mine: Boolean,
+    val minute: Long,
+    val state: String,
+    val kind: Int,
+) {
+    /** Phase 10's `ChannelContent.kind`: 1 is a text post; the other kinds are controls/media. */
+    val isText: Boolean get() = kind == 1
+}
+
+/** One pseudonymous roster member. */
+data class ChannelMemberView(val id: String, val committer: Boolean, val mine: Boolean = false)
+
+/** The epoch and the hexadecimal form of the exact 8-byte authenticator prefix. */
+data class ChannelFingerprintView(val epoch: Long, val code: String)
 
 /** The local channel-invite inspection (§3.6 Phase 10 coordination). */
 data class ChannelInvitePreview(

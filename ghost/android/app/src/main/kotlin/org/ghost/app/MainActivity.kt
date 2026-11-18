@@ -41,6 +41,7 @@ class MainActivity : SecureActivity() {
         app?.let { org.ghost.app.ui.SettingsStore { it.openDatabaseDirectly() } }
     }
 
+    @androidx.media3.common.util.UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LinkIntake.take(this)
@@ -52,9 +53,7 @@ class MainActivity : SecureActivity() {
                 configuration.screenHeightDp.toFloat(),
             )
             org.ghost.ui.shell.GhostRoot(
-                clipboardOwner = androidx.compose.runtime.remember {
-                    org.ghost.app.ui.AppClipboardOwner(this, org.ghost.app.ui.SettingsStore { app.openDatabaseDirectly() })
-                },
+                clipboardOwner = androidx.compose.runtime.remember { app.clipboardOwner },
             ) {
                 org.ghost.app.ui.AppNav(app, windowSizeClass)
             }
@@ -83,6 +82,7 @@ class MainActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        app?.clipboardOwner?.clearAtFocus()
         app?.presence?.onResumed()
     }
 

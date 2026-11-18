@@ -60,10 +60,12 @@ sealed interface Route {
     data object Accessibility : Route
     data object Backup : Route
     data object Wipe : Route
+    data object Diagnostic : Route
 
     /** Update (J6). */
     data object Update : Route
     data object About : Route
+    data object Limits : Route
     data object Licences : Route
     data object Crash : Route
 

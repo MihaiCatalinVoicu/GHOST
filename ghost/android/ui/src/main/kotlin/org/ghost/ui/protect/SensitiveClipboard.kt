@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.PersistableBundle
 import android.os.SystemClock
 import java.security.SecureRandom
@@ -20,10 +22,11 @@ import java.security.SecureRandom
  *
  * Each write labels the clip with 16 hex characters of 8 random bytes (the ownership token),
  * marks it sensitive (`IS_SENSITIVE`, the string key works below API 33), and persists the label
- * in `ui_settings.clip_label` through [LabelStore] so a later process can recognise its own clip
- * after a restart. The 30 000 ms clear runs while the app is alive; a timer that fires more than
- * 5 minutes late (the cached-app freezer suspended the process) does not clear unconditionally,
- * and the persisted label is checked at every process start and focus gain instead (Q10 (a)).
+ * in `ui_settings.clip_label` through [LabelStore] so a later process can recognise (and clear)
+ * its own clip after a restart (Q10 (a)). The 30 000 ms clear runs on the main looper while the
+ * app is alive; a timer that fires more than 5 minutes late (the cached-app freezer suspended the
+ * process) does not clear unconditionally, and the persisted label is checked at every activity
+ * resume instead (Q10 (a)).
  */
 class SensitiveClipboard(
     private val context: Context,
@@ -42,6 +45,9 @@ class SensitiveClipboard(
 
     private val manager: ClipboardManager
         get() = context.getSystemService(ClipboardManager::class.java)
+
+    private val handler by lazy { Handler(Looper.getMainLooper()) }
+    private var pendingClear: Runnable? = null
 
     /** The 30 s in-app clear window, kept as a named constant for the gate and the tests. */
     val clearDelayMs: Long = CLEAR_DELAY_MS
@@ -65,14 +71,16 @@ class SensitiveClipboard(
      * matches what we wrote (no paste toast on API 31+, no clobbering another app's clip);
      * without focus, unconditionally within the window (X-U3). Late (frozen) timers must not
      * reach this path with `hasFocus == false` and a stale due time — see [clearIfLate].
+     * An absent ownership label is never evidence that a foreign, unlabelled clip is ours.
      */
     fun clearIfOurs(hasFocus: Boolean) {
+        val expected = labelStore.readLabel() ?: return
         if (hasFocus) {
-            val ours = manager.primaryClipDescription?.label?.toString() == labelStore.readLabel()
+            val ours = manager.primaryClipDescription?.label?.toString() == expected
             if (ours) {
                 manager.clearPrimaryClip()
                 labelStore.clearLabel()
-            } else if (labelStore.readLabel() != null) {
+            } else {
                 // Another app replaced the clip: the stored label no longer names anything.
                 labelStore.clearLabel()
             }
@@ -94,6 +102,8 @@ class SensitiveClipboard(
 
     /** Clears unconditionally — the lock and the wipe paths (§4.4, §5.1, W6). */
     fun clearAtLockOrWipe() {
+        pendingClear?.let(handler::removeCallbacks)
+        pendingClear = null
         manager.clearPrimaryClip()
         labelStore.clearLabel()
     }
@@ -105,8 +115,17 @@ class SensitiveClipboard(
     }
 
     private fun scheduleClear() {
-        // The UI layer posts the 30 s clear on its main-thread handler; GhostRoot owns the timer
-        // and calls [clearIfLate] with the due time so a frozen process cannot clear late.
+        pendingClear?.let(handler::removeCallbacks)
+        val scheduledAt = SystemClock.elapsedRealtime()
+        lateinit var task: Runnable
+        task = Runnable {
+            if (pendingClear !== task) return@Runnable
+            pendingClear = null
+            // Ownership is checked even without focus: a newer foreign clip is never erased.
+            clearIfLate(scheduledAt, SystemClock.elapsedRealtime(), hasFocus = true)
+        }
+        pendingClear = task
+        handler.postDelayed(task, CLEAR_DELAY_MS)
     }
 
     companion object {

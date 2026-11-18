@@ -132,6 +132,19 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
                 stores = stores,
                 keys = keys,
                 contentKeys = KeystoreContentKeyWrapper(requireUserAuthentication = false),
+                channelPorts = org.ghost.messaging.port.ChannelPorts(
+                    seeds = org.ghost.messaging.port.ChannelSeeds { channelId ->
+                        val identity = root()
+                        try {
+                            identity.deriveChannelPseudonymSeed(channelId)
+                        } finally {
+                            identity.zeroize()
+                        }
+                    },
+                    stateKeys = org.ghost.messaging.android.KeystoreChannelStateKeyWrapper(
+                        requireUserAuthentication = false,
+                    ),
+                ),
                 esSlots = EsSlots { slots },
                 clock = clock,
                 random = SecureDmRandom,

@@ -62,6 +62,24 @@ class GhostApp : Application(), SyncHost {
     /** The IdentityManager for the UI composition root (§3.1: the app is the composition root). */
     internal val identityManager: IdentityManager get() = identity
 
+    /** The single process clipboard owner, shared by Compose and the W6 clear path. */
+    internal val clipboardOwner: org.ghost.app.ui.AppClipboardOwner by lazy {
+        org.ghost.app.ui.AppClipboardOwner(this, org.ghost.app.ui.SettingsStore { openDatabaseDirectly() })
+    }
+
+    /** The production W2–W7 controller; only the dedicated wipe thread ever invokes [WipeController.wipe]. */
+    internal val wipeController: org.ghost.app.ui.WipeController by lazy {
+        org.ghost.app.ui.WipeController(
+            files = org.ghost.app.ui.ContextFilesystem(dataDir),
+            stopStacks = ::onWipe,
+            deleteEnvelopes = { keys.destroy(); identity.wipe() },
+            deleteKeystoreAliases = org.ghost.app.ui.WipeAndroid::deleteAliases,
+            cancelNotifications = { org.ghost.app.ui.WipeAndroid.cancelNotifications(this) },
+            clearClipboard = { org.ghost.app.ui.WipeAndroid.clearClipboard(clipboardOwner) },
+            exitProcess = { android.os.Process.killProcess(android.os.Process.myPid()) },
+        )
+    }
+
     /**
      * The gateway set the UI's navigation reaches the engines through (§3.1, §3.2). Built lazily
      * on the first frame that needs it; the adapters themselves stay stateless.
@@ -69,10 +87,14 @@ class GhostApp : Application(), SyncHost {
     val uiGateways: org.ghost.app.ui.GatewaySet by lazy {
         org.ghost.app.ui.GatewaySetProvider.forDeps(
             org.ghost.app.ui.GatewayDeps(
+                appContext = this,
                 executor = { database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) },
                 identity = { identity },
                 entitlement = { entitlement },
                 messaging = { messaging },
+                channels = { channels },
+                updates = { updates },
+                wipeController = { wipeController },
                 createDatabaseKey = ::createDatabaseKey,
                 // Q21: genesis onboarding exists only in the bootstrap build — this repository
                 // builds the stagenet bootstrap; a distributed mainnet build turns this off.
@@ -99,7 +121,12 @@ class GhostApp : Application(), SyncHost {
             whenStoresOpen = syncController::runWhenStoresOpen,
             stackFor = ::dmStack,
             identity = ::storedIdentity,
-            primeSchedule = { entitlementWiring.acceptedSchedule() },
+            primeSchedule = {
+                // D19: the stores are already open on this thread. A fresh database needs the
+                // built-in directory before either ACTIVATE or a channel can resolve an ES slot.
+                bootstrapRelayDirectory()
+                entitlementWiring.acceptedSchedule()
+            },
             setAlarmHandler = { handler -> ExpiryAlarmReceiver.onAlarm = handler },
             cancelAlarm = { ExpiryAlarm(this).wakeIn(null) },
         )
@@ -107,6 +134,9 @@ class GhostApp : Application(), SyncHost {
 
     /** The DM facade of §13.2 for Phase 13; null before the first database open. */
     val messaging: Messaging? get() = messagingWiring.messaging
+
+    /** Phase 10's channel facade on the same actor, exposed to the Phase 13 gateway. */
+    val channels: org.ghost.messaging.api.Channels? get() = messagingWiring.channels
 
     private fun dmStack(stores: SyncStores): DmStack {
         // The database's own connection, read outside any transaction: the checkpoint must run
@@ -132,6 +162,12 @@ class GhostApp : Application(), SyncHost {
                 mediaPipeline = MediaWiring.pipelinePorts(this, noBackupFilesDir, org.ghost.messaging.port.NativeMediaReaders(dmKeys)),
                 keys = dmKeys,
                 contentKeys = KeystoreContentKeyWrapper(DatabaseAccess.AUTH_BOUND),
+                channelPorts = org.ghost.messaging.port.ChannelPorts(
+                    seeds = org.ghost.messaging.port.ChannelSeeds { channelId ->
+                        storedIdentity()?.deriveChannelPseudonymSeed(channelId)
+                    },
+                    stateKeys = org.ghost.messaging.android.KeystoreChannelStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
+                ),
                 esSlots = DirectoryEsSlots(stores.database) { entitlementWiring.acceptedScheduleIfKnown()?.slots },
                 clock = AndroidDmClock,
                 random = random,
@@ -214,8 +250,8 @@ class GhostApp : Application(), SyncHost {
      *  Runs after the database key exists and after the database has been opened elsewhere in
      *  the process (it must not be a concurrent first opener: two uncoordinated first opens
      *  race the helper's creation callback — measured on the emulator drill as
-     *  "table schema_meta already exists"). The gate instrumentation's onboarding command
-     *  calls this; the production wiring point is the §7.8 follow-up slice. */
+     *  "table schema_meta already exists"). The messaging wiring calls it before the first
+     *  schedule-dependent pass; the gate instrumentation's onboarding command exercises it too. */
     fun bootstrapRelayDirectory() {
         val sql = database.open(org.ghost.sync.android.DatabaseOpener.Purpose.FOREGROUND) ?: return
         var count = 0L
@@ -349,17 +385,18 @@ class GhostApp : Application(), SyncHost {
         // envelope. The resumption tail (W4-W6) runs silently before any wiring - W5's file
         // deletion and W6's notification/clipboard cleanups, never W3's envelopes (the key is
         // already gone; that was the crash point). [WipeController.needsResumption] is the
-        // predicate; at this stage no stacks run, so W4 is a no-op.
+        // predicate; at this stage no stacks run, but Keystore aliases still need the real W4 deletion.
         val resumption = org.ghost.app.ui.WipeController(
             files = org.ghost.app.ui.ContextFilesystem(dataDir),
             stopStacks = {},
             deleteEnvelopes = {},
-            deleteKeystoreAliases = {},
-            cancelNotifications = {},
-            clearClipboard = {},
+            deleteKeystoreAliases = org.ghost.app.ui.WipeAndroid::deleteAliases,
+            cancelNotifications = { org.ghost.app.ui.WipeAndroid.cancelNotifications(this) },
+            clearClipboard = { org.ghost.app.ui.WipeAndroid.clearClipboard(clipboardOwner) },
             exitProcess = {},
         )
         if (resumption.needsResumption()) {
+            org.ghost.app.ui.WipeAndroid.deleteAliases()
             resumption.deleteFiles()
             resumption.resumptionCleanups()
         }

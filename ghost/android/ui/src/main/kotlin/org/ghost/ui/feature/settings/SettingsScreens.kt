@@ -45,6 +45,8 @@ fun SettingsScreen(
     onHelp: () -> Unit,
     onWipe: () -> Unit,
     modifier: Modifier = Modifier,
+    onAccess: (() -> Unit)? = null,
+    onUpdate: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
@@ -52,9 +54,11 @@ fun SettingsScreen(
             style = MaterialTheme.typography.headlineSmall,
             modifier = Modifier.semantics { heading() },
         )
+        if (onAccess != null) SectionRow(R.string.access_title) { onAccess() }
         SectionRow(R.string.settings_privacy) { onPrivacy() }
         SectionRow(R.string.settings_security) { onSecurity() }
         SectionRow(R.string.settings_about) { onAbout() }
+        if (onUpdate != null) SectionRow(R.string.settings_update) { onUpdate() }
         SectionRow(R.string.settings_help) { onHelp() }
         SectionRow(R.string.settings_wipe) { onWipe() }
     }
@@ -88,7 +92,7 @@ fun SwitchRow(labelId: Int, checked: Boolean, modifier: Modifier = Modifier, onS
 @Composable
 fun PrivacyScreen(
     model: SettingsModel,
-    downloads: MediaDownloadsModel,
+    downloads: MediaDownloadsModel?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -121,7 +125,7 @@ fun PrivacyScreen(
             hidden = next
             scope.launch { model.onSetHideFromAllServices(next) }
         }
-        DownloadPauseRow(model = downloads)
+        if (downloads != null) DownloadPauseRow(model = downloads)
     }
 }
 
@@ -143,6 +147,9 @@ fun SecurityScreen(
     model: SecurityModel,
     onChangePin: () -> Unit,
     modifier: Modifier = Modifier,
+    onBackup: (() -> Unit)? = null,
+    onAccessibility: (() -> Unit)? = null,
+    onDiagnostic: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     var timeout by remember { mutableStateOf(model.timeoutSeconds) }
@@ -163,6 +170,9 @@ fun SecurityScreen(
             scope.launch { model.onSetBiometricEnabled(next) }
         }
         SectionRow(R.string.security_change_pin) { onChangePin() }
+        if (onBackup != null) SectionRow(R.string.security_backup) { onBackup() }
+        if (onAccessibility != null) SectionRow(R.string.security_accessibility) { onAccessibility() }
+        if (onDiagnostic != null) SectionRow(R.string.security_diagnostic) { onDiagnostic() }
     }
 }
 

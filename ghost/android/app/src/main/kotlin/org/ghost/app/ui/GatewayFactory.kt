@@ -25,14 +25,22 @@ interface GatewaySet {
     fun update(): UpdateGateway?
     fun access(): org.ghost.ui.gateway.AccessGateway
     fun dm(): org.ghost.ui.gateway.DmGateway
+    fun contacts(): org.ghost.ui.gateway.ContactGateway
+    fun channel(): org.ghost.ui.gateway.ChannelGateway
+    fun media(): org.ghost.ui.gateway.MediaGateway
+    fun wipe(): org.ghost.ui.gateway.WipeGateway
 }
 
 /** The seams the adapters need, provided by GhostApp. */
 class GatewayDeps(
+    val appContext: android.content.Context,
     val executor: () -> SqlExecutor?,
     val identity: () -> IdentityManager,
     val entitlement: () -> Entitlement?,
     val messaging: () -> org.ghost.messaging.api.Messaging?,
+    val channels: () -> org.ghost.messaging.api.Channels?,
+    val updates: () -> org.ghost.update.Updates?,
+    val wipeController: () -> WipeController,
     val createDatabaseKey: () -> ByteArray,
     val genesisPolicyOn: Boolean,
     val strongBox: Boolean,
@@ -54,18 +62,30 @@ class GatewayDeps(
     )
     val accessGateway: AccessGatewayAdapter = AccessGatewayAdapter(entitlement)
     val dmGateway: DmGatewayAdapter = DmGatewayAdapter(messaging)
+    val channelGateway: ChannelGatewayAdapter = ChannelGatewayAdapter(
+        facade = channels,
+        wordList = { org.ghost.identity.Bip39.wordlist },
+    )
+    val mediaGateway: MediaGatewayAdapter = MediaGatewayAdapter(appContext, messaging)
+    val updateGateway: UpdateGatewayAdapter = UpdateGatewayAdapter(updates)
+    val wipeGateway: WipeGatewayAdapter = WipeGatewayAdapter(
+        controller = wipeController(),
+        wipeThread = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ghost-wipe").apply { isDaemon = true }
+        },
+    )
 }
 
-/**
- * The real set: the release and debug halves construct exactly this and nothing else.
- * Phase A of the navigation slice (2026-11-15) exposes identity/lock/settings/access/dm; the
- * channel/media/wipe adapters stay unexposed until their facades wire into the composition root.
- */
+/** The real gateway surface shared by release, debug and the inert gate fixture wrapper. */
 class RealGatewaySet(private val deps: GatewayDeps) : GatewaySet {
     override fun lock(): LockGateway = deps.lock
     override fun identity(): IdentityGateway = deps.identityGateway
     override fun settings(): SettingsGateway = SettingsGatewayAdapter(deps.settingsStore)
-    override fun update(): UpdateGateway? = null
+    override fun update(): UpdateGateway? = deps.updateGateway
     override fun access(): org.ghost.ui.gateway.AccessGateway = deps.accessGateway
     override fun dm(): org.ghost.ui.gateway.DmGateway = deps.dmGateway
+    override fun contacts(): org.ghost.ui.gateway.ContactGateway = deps.dmGateway
+    override fun channel(): org.ghost.ui.gateway.ChannelGateway = deps.channelGateway
+    override fun media(): org.ghost.ui.gateway.MediaGateway = deps.mediaGateway
+    override fun wipe(): org.ghost.ui.gateway.WipeGateway = deps.wipeGateway
 }

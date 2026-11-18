@@ -12,3 +12,8 @@ who_issuer_sees	The "fără expeditor" is plan §4's own wording for the Monero 
 who_dm_peer_sees	The RO "siguranță" trips the "sigur" substring - the cell lists what a DM correspondent sees (the safety number is a process tool, F9 §8.4), not an effect GHOST promises; registered as a LIMIT row
 who_operator_goal	The "nu pot"/"cannot" is plan §4's own wording for the operator's design goal, printed under the GOAL column with its not-verified status; registered as a GOAL row
 about_stage	The "are blocked" names the structural screenshot block of the secure window (FLAG_SECURE), a built property of the stage sentence DC-27, not a security effect claim; reviewed against §8.5 rule 1
+dm_provenance_warning	The "sigur" substring names the safety-number comparison process instructed by the text, not an effect GHOST promises; reviewed against §8.5 rule 1
+help_phone	The "protejat" names the channel's password-protection state and local backup scope, not a security effect; reviewed against §8.5 rule 1
+dm_safety_title	The "sigur" substring is the safety-number screen's established label, not an effect sentence; reviewed against §8.5 rule 1
+dm_key_change_body	The "sigur" substring instructs the user to compare the changed safety number before accepting, not an effect GHOST promises; reviewed against §8.5 rule 1
+dm_safety_open	The "sigur" substring is the safety-number action's established label, not an effect sentence; reviewed against §8.5 rule 1

@@ -90,6 +90,78 @@ internal class ChannelEngine(
     /** The counters (counts only, T3). */
     val counters: ChannelCounters get() = env.counters
 
+    /** Local channel rows for the UI, decrypted on the actor and never sent to a relay. */
+    fun summaries(): List<org.ghost.messaging.api.ChannelSummary> = actor.call {
+        val content = env.keys.content() ?: return@call emptyList()
+        env.database.transaction { tx ->
+            env.stores.channels.channels(tx.sql).map { row ->
+                val plain = row.nameEnv?.let { envelope ->
+                    content.open(envelope, ChannelAd.name(row.channelId))
+                }
+                val name = plain?.let { bytes ->
+                    try {
+                        String(bytes, Charsets.UTF_8)
+                    } finally {
+                        bytes.fill(0)
+                    }
+                } ?: ""
+                org.ghost.messaging.api.ChannelSummary(row.channelId, name, row.pwRequired)
+            }
+        }
+    }
+
+    /** Newest local posts, decrypted under the same content key as the writes. */
+    fun posts(channel: ChannelId, limit: Int): List<org.ghost.messaging.api.ChannelPostSummary> = actor.call {
+        val content = env.keys.content() ?: return@call emptyList()
+        val id = channel.toByteArray()
+        val nowMinute = Math.floorDiv(env.now(), 60L)
+        env.database.transaction { tx ->
+            env.stores.posts.page(tx.sql, id, nowMinute, limit.coerceIn(1, 200)).mapNotNull { row ->
+                val plain = content.open(row.bodyEnv, ChannelAd.postBody(row.opId)) ?: return@mapNotNull null
+                val body = try {
+                    String(plain, Charsets.UTF_8)
+                } finally {
+                    plain.fill(0)
+                }
+                org.ghost.messaging.api.ChannelPostSummary(
+                    opId = row.opId,
+                    body = body,
+                    mine = row.direction == org.ghost.messaging.channel.store.Direction.OUT,
+                    authorMinute = row.authorMinute,
+                    state = row.state.sql,
+                    kind = row.kind,
+                )
+            }
+        }
+    }
+
+    /** The current roster for local reads; null while the native context is unavailable. */
+    private fun rosterForRead(channelId: ByteArray): org.ghost.crypto.bridge.ChannelCrypto.Roster? {
+        val opened = env.contexts.open(channelId) ?: return null
+        val day = DmTime.day(env.now())
+        val rows = env.database.transaction { tx -> MlsRows.of(env.stores.mls.rows(tx.sql, channelId, day)) }
+        return opened.crypto.roster(channelId, rows, day.toInt()).valueOrNull()
+    }
+
+    fun members(channel: ChannelId): List<org.ghost.messaging.api.ChannelMemberSummary> = actor.call {
+        val roster = rosterForRead(channel.toByteArray()) ?: return@call emptyList()
+        roster.members.map { member ->
+            org.ghost.messaging.api.ChannelMemberSummary(
+                pseudonym = member.pseudonym,
+                committer = roster.context.committers.any { it.contentEquals(member.pseudonym) },
+                mine = member.leaf == roster.ownLeaf,
+            )
+        }
+    }
+
+    fun fingerprint(channel: ChannelId): org.ghost.messaging.api.ChannelFingerprint? = actor.call {
+        val roster = rosterForRead(channel.toByteArray()) ?: return@call null
+        org.ghost.messaging.api.ChannelFingerprint(
+            epoch = roster.epoch,
+            code = roster.epochAuthenticator.copyOf(8),
+        )
+    }
+
     // ------------------------------------------------------------------------------------------- user actions
 
     /** `CH-CREATE` (§6.1). [name] is UTF-8, at most 48 bytes; [timerCode] 0 … 5; [sizeClass] 0 small, 1 large. */

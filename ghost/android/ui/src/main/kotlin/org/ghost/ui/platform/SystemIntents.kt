@@ -34,6 +34,12 @@ object SystemIntents {
             openDocument()
         }
 
+    /** The image/video picker for the DM composer; only content URIs return to the app. */
+    fun pickMedia(): Intent = openDocument().apply {
+        type = "*/*"
+        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+    }
+
     /** The picker intent for a photo or document; the UI reads the returned content itself. */
     fun openDocument(): Intent =
         Intent(Intent.ACTION_OPEN_DOCUMENT).apply {

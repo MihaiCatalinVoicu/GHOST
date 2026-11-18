@@ -46,6 +46,7 @@ class AccessGatewayAdapter(
             subaddress = org.ghost.ui.protect.SensitiveText(p.subaddress),
             amount = org.ghost.ui.protect.SensitiveText(formatAtomic(p.outstandingAtomic)),
             deadlineDay = Math.floorDiv(p.deadlineMinute, 1440).toInt(),
+            qrUri = p.uri?.let { org.ghost.ui.protect.SensitiveText(it) },
         )
     }
 
@@ -86,6 +87,18 @@ class AccessGatewayAdapter(
 
     override suspend fun revokeInvite(index: Int): Unit = onIo {
         entitlement()?.revokeInvite(index)
+    }
+
+    override suspend fun createInvite(expiryDay: Int): org.ghost.ui.protect.SensitiveText? = onIo {
+        entitlement()?.createInvite(expiryDay)?.let { org.ghost.ui.protect.SensitiveText(it) }
+    }
+
+    override suspend fun claimPayout(address: String): Boolean = onIo {
+        entitlement()?.claimPayout(address) != null
+    }
+
+    override suspend fun cancelPurchase(purchaseId: String): Boolean = onIo {
+        entitlement()?.cancel(PurchaseId(hex(purchaseId))) == true
     }
 
     private fun hex(s: String): ByteArray {

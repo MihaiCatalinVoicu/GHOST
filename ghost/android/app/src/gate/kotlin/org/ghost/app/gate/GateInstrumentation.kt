@@ -336,6 +336,125 @@ class GateInstrumentation : Instrumentation() {
                 }
                 out.putString("probe.after", app.gateProbe())
             }
+            "clipboard-probe" -> {
+                // Android refuses clipboard reads to a process without a focused window, so this
+                // probe opens the real activity first. No payload crosses the result.
+                app.startActivity(
+                    android.content.Intent(app, org.ghost.app.MainActivity::class.java)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                SystemClock.sleep(2_000L)
+                val text = "ghost://channel/gate-clipboard"
+                app.clipboardOwner.copy(
+                    org.ghost.ui.protect.SensitiveClipboard.CopyKind.CHANNEL_INVITE_LINK,
+                    org.ghost.ui.protect.SensitiveText(text),
+                )
+                val manager = app.getSystemService(android.content.ClipboardManager::class.java)
+                val present = manager.primaryClip?.getItemAt(0)?.text?.toString() == text
+                val sensitive = manager.primaryClipDescription?.extras?.getBoolean(
+                    android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                ) == true
+                out.putString("clipboard.before", "present=$present sensitive=$sensitive")
+                SystemClock.sleep(32_000L)
+                out.putString("clipboard.after", "cleared=${manager.primaryClip == null}")
+            }
+            "channel-probe" -> {
+                // Phase 13's real composition root, on the phone: distinguish the native library,
+                // the stored identity and the channel Keystore from the complete create transaction.
+                messaging(app)
+                val identity = try {
+                    app.identityManager.unlock()
+                } catch (e: RuntimeException) {
+                    null
+                }
+                val identityAvailable = identity != null
+                identity?.zeroize()
+                val keystoreAvailable = try {
+                    val key = ByteArray(32) { 0x47 }
+                    val wrapper = org.ghost.messaging.android.KeystoreChannelStateKeyWrapper(false)
+                    val opened = wrapper.unwrap(wrapper.wrap(key))
+                    val roundTrips = opened.contentEquals(key)
+                    key.fill(0)
+                    opened.fill(0)
+                    roundTrips
+                } catch (e: RuntimeException) {
+                    false
+                }
+                out.putString(
+                    "channel.prereq",
+                    "identity=$identityAvailable keystore=$keystoreAvailable facade=${app.channels != null}",
+                )
+                var contentLength = -1
+                var contentOpens = false
+                var stateLength = -1
+                var stateOpens = false
+                var contextCode = "NONE"
+                var openCode = "NONE"
+                var groupCode = "NONE"
+                var scheduleRows = -1
+                var activeRelays = -1
+                app.openDatabaseDirectly()?.let { sql ->
+                    sql.query("SELECT count(*) FROM ent_state") { row -> scheduleRows = row.long(0).toInt() }
+                    sql.query("SELECT count(*) FROM relay_directory WHERE state = 'active'") { row -> activeRelays = row.long(0).toInt() }
+                    sql.query("SELECT content_key_wrapped FROM dm_self WHERE id = 1") { row ->
+                        val wrapped = row.blob(0)
+                        contentLength = wrapped.size
+                        contentOpens = try {
+                            val key = org.ghost.messaging.android.KeystoreContentKeyWrapper(false).unwrap(wrapped)
+                            key.fill(0)
+                            true
+                        } catch (e: RuntimeException) {
+                            false
+                        }
+                    }
+                    sql.query("SELECT state_key_wrapped FROM mls_self WHERE id = 1") { row ->
+                        val wrapped = row.blob(0)
+                        stateLength = wrapped.size
+                        val stateKey = try {
+                            org.ghost.messaging.android.KeystoreChannelStateKeyWrapper(false).unwrap(wrapped)
+                        } catch (e: RuntimeException) {
+                            null
+                        }
+                        if (stateKey != null) {
+                            stateOpens = true
+                            val opened = org.ghost.crypto.bridge.ChannelCrypto.open(stateKey)
+                            contextCode = opened.code.name
+                            (opened as? org.ghost.crypto.bridge.MlsOutcome.Ok)?.value?.let { crypto ->
+                                try {
+                                    val id = ByteArray(32) { 0x19 }
+                                    val seed = ByteArray(32) { 0x29 }
+                                    val channel = crypto.openChannel(id, seed)
+                                    openCode = channel.code.name
+                                    (channel as? org.ghost.crypto.bridge.MlsOutcome.Ok)?.value?.let { p ->
+                                        val policy = org.ghost.crypto.bridge.ChannelPolicy(
+                                            id, 0, 0, 0, 0, 1, 63, 0, byteArrayOf(), listOf(p), listOf(p),
+                                        )
+                                        groupCode = crypto.groupCreate(id, policy, 20_000).code.name
+                                    }
+                                } finally {
+                                    crypto.close()
+                                }
+                            }
+                            stateKey.fill(0)
+                        }
+                    }
+                }
+                out.putString(
+                    "channel.stored",
+                    "content=$contentLength:$contentOpens state=$stateLength:$stateOpens " +
+                        "ctx=$contextCode open=$openCode group=$groupCode scheduleRows=$scheduleRows relays=$activeRelays",
+                )
+                val channels = checkNotNull(app.channels)
+                val password = arguments.getString("password") == "true"
+                val name = if (password) "gate password channel" else "gate channel"
+                val result = channels.create(name.toByteArray(), 0, 0, password)
+                out.putString("channel.create", result.status.name)
+                out.putInt("channel.count", channels.channels().size)
+                result.channel?.let { id ->
+                    out.putInt("channel.members", channels.members(id).size)
+                    out.putInt("channel.fingerprint", channels.fingerprint(id)?.code?.size ?: 0)
+                }
+            }
             "activate" -> {                // The drill's onboarding equivalent: creates the database key if the install is
                 // fresh (the update facade opens the database only once a key exists), then the
                 // identity + the K20 activation hook. Polls: the database opens on the sync

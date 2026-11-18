@@ -106,6 +106,17 @@ class MessagingRuntimeChannelsTest {
         val created = engine.create("salon".toByteArray(), 4, 0, false)
         assertEquals(CreateResult.Status.CREATED, created.status)
         val id = requireNotNull(created.channel)
+        val summary = requireNotNull(runtime.channels).channels().single()
+        assertEquals("salon", summary.name)
+        assertEquals(false, summary.passwordProtected)
+        assertEquals(ChannelWorld.hex(id.toByteArray()), ChannelWorld.hex(summary.channelId))
+        val members = requireNotNull(runtime.channels).members(id)
+        assertEquals(1, members.size)
+        assertEquals(true, members.single().committer)
+        assertEquals(true, members.single().mine)
+        val fingerprint = requireNotNull(runtime.channels).fingerprint(id)!!
+        assertEquals(0L, fingerprint.epoch)
+        assertEquals(8, fingerprint.code.size)
         assertEquals("CH-CREATE registered the channel's namespace", 1L, count("sync_namespace", "consumer = 'channel' AND listening = 1"))
         // A post the removal hold keeps pending (CO-13) …
         val c = id.toByteArray()

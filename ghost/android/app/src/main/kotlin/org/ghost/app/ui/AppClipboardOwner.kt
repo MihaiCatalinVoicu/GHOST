@@ -13,10 +13,9 @@ import org.ghost.ui.shell.ClipboardOwner
  * later process recognises (and clears) its own clip after a restart (Q10 (a)). GHOST never
  * reads foreign clips back (the getters stay empty).
  *
- * The closed [SensitiveClipboard.CopyKind] list names the only five copyable values (§4.4); this
- * navigation slice exposes none of the copy buttons yet, so a write can only come from a future
- * feature passing its kind explicitly — the generic Compose entry maps to the invite kind as the
- * single permitted default until a feature-specific door exists.
+ * The closed [SensitiveClipboard.CopyKind] list names the only five copyable values (§4.4).
+ * Feature buttons pass their kind explicitly; the generic Compose entry maps to the invite kind
+ * as the single permitted default.
  */
 internal class AppClipboardOwner(
     context: Context,
@@ -61,6 +60,16 @@ internal class AppClipboardOwner(
             override val nativeClipboard: android.content.ClipboardManager
                 get() = context.getSystemService(android.content.ClipboardManager::class.java)
         }
+
+    /** A feature-specific copy door; the kind selects the fixed label and sensitive payload. */
+    internal fun copy(kind: SensitiveClipboard.CopyKind, text: org.ghost.ui.protect.SensitiveText) =
+        text.copySensitiveTo(sensitive, kind)
+
+    /** At every activity resume, clear only the clip still carrying our persisted label. */
+    internal fun clearAtFocus() = sensitive.clearIfOurs(hasFocus = true)
+
+    /** W6 uses the same ownership token and clear path as the normal clipboard lifecycle. */
+    internal fun clearAtLockOrWipe() = sensitive.clearAtLockOrWipe()
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 

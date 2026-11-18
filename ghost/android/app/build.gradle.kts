@@ -362,6 +362,8 @@ dependencies {
     // `PickedVideo` and `NoBitmapsLoader` (the sender pipeline's `:app` half, slice S5): media3's
     // `MediaItem`/`BitmapLoader` types cross the module boundary; the pipeline itself is `:media`.
     implementation(libs.androidx.media3.common)
+    // The secure viewer drives ExoPlayer directly through GhostPlayer and a TextureView.
+    implementation(libs.androidx.media3.exoplayer)
 
     implementation(libs.androidx.core.ktx)
     implementation("androidx.window:window-core:1.5.0")

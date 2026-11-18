@@ -10,9 +10,8 @@ import org.ghost.ui.protect.SensitiveText
  * owns the two user actions that change membership: leave, and the rejoin (the design's
  * "Resincronizare") offered on `resync_needed` only.
  *
- * The posts themselves land with Phase 10's coordination items (§3.6) — the facade exposes no
- * post list yet, so the screen renders an honest empty state rather than a half-built one; that
- * is declared here, not hidden.
+ * The post list is the Phase 10 facade's local, decrypted read model. Opening or refreshing it
+ * performs no fetch; the app re-queries while the screen is visible so engine-pass outcomes render.
  */
 class ChannelModel(
     private val channels: ChannelGateway,
@@ -22,14 +21,20 @@ class ChannelModel(
     var channel: ChannelView? = null
         private set
 
-    /** Loads this channel's row from the list read. */
+    /** The newest local posts; opening the screen never triggers a fetch. */
+    var posts: List<org.ghost.ui.gateway.ChannelPostView> = emptyList()
+        private set
+
+    /** Loads this channel's row and its newest local posts. */
     suspend fun load() {
         channel = channels.channels().firstOrNull { it.id == channelId }
+        posts = channels.posts(channelId)
     }
 
     /** Posts [body] to the channel (traffic at the next passes). */
     suspend fun onPost(body: SensitiveText) {
         channels.post(channelId, body)
+        posts = channels.posts(channelId)
     }
 
     /** Leaves the channel (a committer resigns or transfers first — the engine enforces it). */
