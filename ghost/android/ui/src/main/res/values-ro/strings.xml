@@ -89,6 +89,7 @@
     <string name="dm_safety_prompt">Compară numărul de siguranță în persoană înainte să ai încredere în acest contact.</string>
     <string name="ch_list_title">Canale</string>
     <string name="ch_list_empty">Niciun canal încă</string>
+    <string name="ch_list_joining">Se intră în canal…</string>
     <string name="ch_list_create">Canal nou</string>
     <string name="ch_list_protected">🔒</string>
     <string name="ch_create_title">Creează canal</string>

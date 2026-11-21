@@ -305,6 +305,30 @@ class MediaReviewRegressionsTest {
     }
 
     @Test
+    fun aRejectedMediaWriteCredentialIsReinstalledByFeed() {
+        val box = Sandbox()
+        val world = box.open()
+        val contact = ByteArray(16) { 0x21 }
+        world.addContact(contact)
+        val objectId = commitOne(world, contact, tag = 0x47)
+        world.sql.exec(
+            "UPDATE relay_capability SET state = 'rejected' WHERE kind = 'write' " +
+                "AND namespace_id = (SELECT namespace_id FROM media_upload WHERE object_id = ?)",
+            listOf(objectId),
+        )
+        world.steps.feed()
+        assertEquals(
+            0L,
+            world.sql.queryLong(
+                "SELECT count(*) FROM relay_capability WHERE state = 'rejected' AND kind = 'write' " +
+                    "AND namespace_id = (SELECT namespace_id FROM media_upload WHERE object_id = ?)",
+                listOf(objectId),
+            ),
+        )
+        box.world.close()
+    }
+
+    @Test
     fun theDeadlinePassOnAnOffTimerObjectKeepsTheCountdownNull() {
         val box = Sandbox()
         val world = box.open()

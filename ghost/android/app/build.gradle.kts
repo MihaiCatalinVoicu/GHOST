@@ -85,6 +85,22 @@ android {
             matchingFallbacks += listOf("debug")
             signingConfig = signingConfigs.getByName("debug")
         }
+        // A second local test identity on the same phone, with its own package and data. It shares
+        // the gate-only probes, is debug-signed and is never a distributed artifact.
+        create("peer") {
+            initWith(getByName("gate"))
+            applicationIdSuffix = ".peer"
+            matchingFallbacks += listOf("debug")
+            signingConfig = signingConfigs.getByName("debug")
+        }
+        // Another clean local identity for two-app media drills; never distributed and never
+        // installed over an existing peer's data.
+        create("peer2") {
+            initWith(getByName("gate"))
+            applicationIdSuffix = ".peer2"
+            matchingFallbacks += listOf("debug")
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
 
     // The release pins the NDK the CI jobs install (Phase 9 design §21.13 point 2; slice S12): the
@@ -139,6 +155,17 @@ android {
             kotlin.srcDir("src/gate/digests/kotlin")
         }
         getByName("gate") {
+            kotlin.srcDir("src/gate/digests/kotlin")
+        }
+        getByName("peer") {
+            // `initWith` does not inherit source directories: the peer uses the same local probes.
+            manifest.srcFile("src/gate/AndroidManifest.xml")
+            kotlin.srcDir("src/gate/kotlin")
+            kotlin.srcDir("src/gate/digests/kotlin")
+        }
+        getByName("peer2") {
+            manifest.srcFile("src/gate/AndroidManifest.xml")
+            kotlin.srcDir("src/gate/kotlin")
             kotlin.srcDir("src/gate/digests/kotlin")
         }
         getByName("androidTest") {

@@ -3,6 +3,7 @@ package org.ghost.ui.feature.channel
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,8 +13,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,31 +63,63 @@ fun ChannelListScreen(
     Column(modifier = modifier.fillMaxSize().padding(24.dp)) {
         Text(
             text = stringResource(R.string.ch_list_title),
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.semantics { heading() },
         )
         if (items.isEmpty()) {
-            Text(text = stringResource(R.string.ch_list_empty), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = stringResource(R.string.ch_list_empty),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(vertical = 20.dp),
+            )
         }
-        LazyColumn(modifier = Modifier.weight(1f)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             items(items, key = { it.id }) { c ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { onOpen(c.id) }.padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable { onOpen(c.id) },
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = c.name, style = MaterialTheme.typography.titleMedium)
-                        if (c.passwordProtected) {
-                            Text(text = stringResource(R.string.ch_list_protected), style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = c.name.ifBlank { stringResource(R.string.ch_list_joining) },
+                                color = if (c.name.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            if (c.passwordProtected) {
+                                Text(
+                                    text = stringResource(R.string.ch_list_protected),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                            }
+                        }
+                        if (c.unread > 0) {
+                            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primary) {
+                                Text(
+                                    text = c.unread.toString(),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
                         }
                     }
-                    if (c.unread > 0) Text(text = c.unread.toString(), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = onCreate, labelId = R.string.ch_list_create)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onCreate) { Text(text = stringResource(R.string.ch_list_create)) }
             if (onJoin != null) TextButton(onClick = onJoin, labelId = R.string.ch_list_join)
         }
     }
@@ -352,25 +387,43 @@ fun ChannelScreen(
     Column(modifier = modifier.fillMaxSize().padding(24.dp)) {
         Text(
             text = channel.name,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.semantics { heading() },
         )
-        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             if (posts.isEmpty()) {
-                item { Text(text = stringResource(R.string.ch_detail_posts_empty), style = MaterialTheme.typography.bodyMedium) }
+                item {
+                    Text(
+                        text = stringResource(R.string.ch_detail_posts_empty),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
             }
             items(posts, key = { it.id }) { post ->
-                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    if (post.isText) {
-                        SensitiveTextView(text = post.body, style = MaterialTheme.typography.bodyLarge)
-                    } else {
-                        Text(text = stringResource(channelPostKindLabel(post.kind)), style = MaterialTheme.typography.bodyLarge)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                        if (post.isText) {
+                            SensitiveTextView(text = post.body, style = MaterialTheme.typography.bodyLarge)
+                        } else {
+                            Text(text = stringResource(channelPostKindLabel(post.kind)), style = MaterialTheme.typography.bodyLarge)
+                        }
+                        Text(
+                            text = formatChannelMinute(post.minute) + stringResource(R.string.dm_metadata_separator) +
+                                stringResource(channelPostStateLabel(post.state)),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                     }
-                    Text(
-                        text = formatChannelMinute(post.minute) + stringResource(R.string.dm_metadata_separator) +
-                            stringResource(channelPostStateLabel(post.state)),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
                 }
             }
         }
@@ -394,8 +447,10 @@ fun ChannelScreen(
                 Text(text = stringResource(R.string.ch_detail_send))
             }
         }
-        if (onInvite != null) TextButton(onClick = onInvite, labelId = R.string.ch_detail_invite)
-        if (onMembers != null) TextButton(onClick = onMembers, labelId = R.string.ch_members_open)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onInvite != null) TextButton(onClick = onInvite, labelId = R.string.ch_detail_invite)
+            if (onMembers != null) TextButton(onClick = onMembers, labelId = R.string.ch_members_open)
+        }
         HoldToConfirm(
             onConfirmed = { scope.launch { model.onLeave(); onLeft() } },
             holdLabelId = R.string.ch_detail_leave_hold,

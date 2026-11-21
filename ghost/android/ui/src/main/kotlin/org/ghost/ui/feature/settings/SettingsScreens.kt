@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,11 +50,11 @@ fun SettingsScreen(
     onAccess: (() -> Unit)? = null,
     onUpdate: (() -> Unit)? = null,
 ) {
-    Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = stringResource(R.string.settings_title),
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.semantics { heading() },
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.semantics { heading() }.padding(bottom = 12.dp),
         )
         if (onAccess != null) SectionRow(R.string.access_title) { onAccess() }
         SectionRow(R.string.settings_privacy) { onPrivacy() }
@@ -67,11 +69,17 @@ fun SettingsScreen(
 /** One settings entry: a label row that navigates. */
 @Composable
 fun SectionRow(labelId: Int, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Row(
-        modifier = modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
-        Text(text = stringResource(labelId), style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = stringResource(labelId), style = MaterialTheme.typography.titleMedium)
+        }
     }
 }
 

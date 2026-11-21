@@ -32,6 +32,10 @@ android {
             initWith(getByName("debug"))
             matchingFallbacks += listOf("debug")
         }
+        create("peer") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
+        }
     }
 
     compileOptions {
@@ -45,6 +49,8 @@ dependencies {
     // The S9 accessibility suite composes :ui's screens directly; :app's dependency on :ui is
     // an implementation one, so the test module names it too.
     implementation(project(":ui"))
+    implementation(project(":entitlement"))
+    implementation(project(":sync"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.junit)
     implementation("androidx.compose.foundation:foundation")

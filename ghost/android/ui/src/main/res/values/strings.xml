@@ -90,6 +90,7 @@
     <string name="dm_safety_prompt">Compare the safety number in person before trusting this contact.</string>
     <string name="ch_list_title">Channels</string>
     <string name="ch_list_empty">No channels yet</string>
+    <string name="ch_list_joining">Joining channel…</string>
     <string name="ch_list_create">New channel</string>
     <string name="ch_list_protected">🔒</string>
     <string name="ch_create_title">Create channel</string>

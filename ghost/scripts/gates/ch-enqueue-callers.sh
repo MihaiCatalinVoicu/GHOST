@@ -97,7 +97,7 @@ ChannelPassStep.kt|enqueue|CH-PASS (§6.2.3)
 ChannelSettleStep.kt|enqueue remove setListening|CH-SETTLE, the own winning commit'"'"'s Welcomes (§19.2); a removed member'"'"'s older drain ended at once (§6.5)
 ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 4) and a drained generation (§6.5)
 ChannelSwitchStep.kt|register put keep set remove setListening|CH-SWITCH (§6.5, §19.8; a switch ends an older drain at once)
-ChannelFunderStep.kt|register keep set|the funder renewal step (§7.5 item 7)
+ChannelFunderStep.kt|register keep set rearm put|the funder renewal step (§7.5 item 7), including reinstallation of relay-rejected READ/DEPOSIT credentials
 ChannelRejoinStep.kt|enqueue|CH-REJOIN (§6.7) and the CH-SWEEP re-send of an unanswered rejoin
 ChannelOutcomeStep.kt|enqueue|CH-OUTCOME (§7.5): the identical-bytes resend of an INDETERMINATE op, the mirror of the DM resend (slice S8, §19.45)
 '
@@ -108,7 +108,8 @@ ENGINE_DIR_GLOB='android/messaging/src/*/org/ghost/messaging/channel/engine/*'
 
 # The second rule's entry points and the files that may write them.
 CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|removeMember|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins|sweepDrains|sweepRequests|switchDue|renewDue|resync|sweepRejoins'
-CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelRevealStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt ChannelRejoinStep.kt'
+# The facade path may declare/call the same user-action name; the first rule still guards every port call.
+CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelRevealStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt ChannelSwitchStep.kt ChannelFunderStep.kt ChannelRejoinStep.kt ChannelsImpl.kt ChannelGatewayAdapter.kt AppNav.kt'
 
 # The third rule: `<the names that refer to a step>|<the files that may write them>`. A class's own file may always.
 CH_HOLDERS='
@@ -123,7 +124,7 @@ ChannelAcceptStep acceptStep|ChannelEngine.kt
 ChannelRejoinStep rejoinStep|ChannelEngine.kt ChannelsImpl.kt
 ChannelOutcomeStep channelOutcomeStep|ChannelEngine.kt
 ChannelInviteStep inviteStep|ChannelEngine.kt
-ChannelRevealStep revealStep|ChannelEngine.kt
+ChannelRevealStep revealStep|ChannelEngine.kt ChannelsImpl.kt
 ChannelEngine|MessagingRuntime.kt ChannelsImpl.kt
 ChannelPassSteps|ChannelEngine.kt DmActor.kt MessagingRuntime.kt
 '

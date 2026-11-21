@@ -98,14 +98,14 @@ object FrameProbe {
     internal fun firstVideoSample(stream: ByteArray): Pair<ByteArray, ByteArray>? {
         val top = boxes(stream, 0, stream.size)
         val moov = top.firstOrNull { it.type == "moov" } ?: return null
-        val avcC = videoAvcC(stream, moov) ?: return null
+        val video = videoAvcC(stream, moov) ?: return null
         val moof = top.firstOrNull { it.type == "moof" } ?: return null
         val mdat = top.firstOrNull { it.type == "mdat" && it.offset > moof.offset } ?: return null
-        val sample = firstVideoTrunSample(stream, moof) ?: return null
+        val sample = firstVideoTrunSample(stream, moof, video.trackId) ?: return null
         if (sample.offset < mdat.offset + 8 || sample.offset + sample.size > mdat.offset + mdat.size) {
             return null
         }
-        return Pair(avcC, stream.copyOfRange(sample.offset, sample.offset + sample.size))
+        return Pair(video.avcC, stream.copyOfRange(sample.offset, sample.offset + sample.size))
     }
 
     private class Box(val type: String, val offset: Int, val size: Int) {
@@ -134,8 +134,13 @@ object FrameProbe {
         return out
     }
 
-    private fun videoAvcC(b: ByteArray, moov: Box): ByteArray? {
+    private class VideoTrack(val trackId: Long, val avcC: ByteArray)
+
+    private fun videoAvcC(b: ByteArray, moov: Box): VideoTrack? {
         for (trak in boxes(b, moov.body, moov.offset + moov.size).filter { it.type == "trak" }) {
+            val tkhd = boxes(b, trak.body, trak.offset + trak.size).firstOrNull { it.type == "tkhd" }
+                ?: continue
+            val trackId = u32(b, tkhd.body + 12).toLong() and 0xffff_ffffL
             val mdia = boxes(b, trak.body, trak.offset + trak.size).firstOrNull { it.type == "mdia" }
                 ?: continue
             val hdlr = boxes(b, mdia.body, mdia.offset + mdia.size).firstOrNull { it.type == "hdlr" }
@@ -148,9 +153,11 @@ object FrameProbe {
             val stsd = boxes(b, stbl.body, stbl.offset + stbl.size).firstOrNull { it.type == "stsd" }
                 ?: continue
             for (entry in boxes(b, stsd.body + 8, stsd.offset + stsd.size)) {
-                val avcC = boxes(b, entry.body, entry.offset + entry.size).firstOrNull { it.type == "avcC" }
+                if (entry.type != "avc1") continue
+                // ISO/IEC 14496-12 VisualSampleEntry: 78 bytes after the box header, then avcC.
+                val avcC = boxes(b, entry.body + 78, entry.offset + entry.size).firstOrNull { it.type == "avcC" }
                     ?: continue
-                return b.copyOfRange(avcC.body, avcC.offset + avcC.size)
+                return VideoTrack(trackId, b.copyOfRange(avcC.body, avcC.offset + avcC.size))
             }
         }
         return null
@@ -158,13 +165,11 @@ object FrameProbe {
 
     private class SampleRef(val offset: Int, val size: Int)
 
-    private fun firstVideoTrunSample(b: ByteArray, moof: Box): SampleRef? {
+    private fun firstVideoTrunSample(b: ByteArray, moof: Box, videoTrackId: Long): SampleRef? {
         for (traf in boxes(b, moof.body, moof.offset + moof.size).filter { it.type == "traf" }) {
             val parts = boxes(b, traf.body, traf.offset + traf.size)
             val tfhd = parts.firstOrNull { it.type == "tfhd" } ?: continue
-            // The first video traf is the one whose trun has key-frame first-sample flags; the
-            // calibration clip's first fragment starts with a sync sample either way, so the
-            // first traf with a trun that has sizes is taken.
+            if ((u32(b, tfhd.body + 4).toLong() and 0xffff_ffffL) != videoTrackId) continue
             val trun = parts.firstOrNull { it.type == "trun" } ?: continue
             val flags = ((b[tfhd.body + 1].toInt() and 0xff) shl 16) or
                 ((b[tfhd.body + 2].toInt() and 0xff) shl 8) or (b[tfhd.body + 3].toInt() and 0xff)

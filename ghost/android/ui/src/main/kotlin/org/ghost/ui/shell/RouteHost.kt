@@ -2,6 +2,12 @@ package org.ghost.ui.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,7 +54,14 @@ fun RouteHost(
             }
         }
         Box(modifier = Modifier.weight(1f)) {
-            AnimatedContent(targetState = backStack.current, label = "route") { route ->
+            AnimatedContent(
+                targetState = backStack.current,
+                label = "route",
+                transitionSpec = {
+                    (fadeIn(tween(180)) + slideInHorizontally(tween(180)) { it / 12 }) togetherWith
+                        (fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
+                },
+            ) { route ->
                 screen(route)
             }
         }

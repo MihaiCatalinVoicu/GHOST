@@ -43,6 +43,21 @@ android {
         create("gate") {
             initWith(getByName("debug"))
         }
+        create("peer") {
+            initWith(getByName("gate"))
+        }
+        create("peer2") {
+            initWith(getByName("gate"))
+        }
+    }
+    sourceSets {
+        getByName("peer") {
+            // The local two-device variant consumes the same gate hook as `:app`'s peer build.
+            kotlin.srcDir("src/gate/kotlin")
+        }
+        getByName("peer2") {
+            kotlin.srcDir("src/gate/kotlin")
+        }
     }
 }
 

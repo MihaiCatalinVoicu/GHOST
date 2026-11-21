@@ -21,9 +21,14 @@ fun SensitiveTextView(
     modifier: Modifier = Modifier,
     style: TextStyle = TextStyle.Default,
 ) {
+    val resolvedStyle = if (style.color == androidx.compose.ui.graphics.Color.Unspecified) {
+        style.copy(color = androidx.compose.material3.LocalContentColor.current)
+    } else {
+        style
+    }
     BasicText(
         text = text.value,
         modifier = modifier.semantics { isSensitiveData = true },
-        style = style,
+        style = resolvedStyle,
     )
 }

@@ -140,7 +140,8 @@ ui/src/main/kotlin/org/ghost/ui/protect/SensitiveClipboard.kt|clip-data|3
 ui/src/main/kotlin/org/ghost/ui/platform/SystemIntents.kt|mediastore|1
 EOF
 
-mapfile -t files < <({ android_main_files; android_gate_files; } | sort -u)
+# com.android.test ships no artifact; its src/main contains instrumentation-only screenshot writers.
+mapfile -t files < <({ android_main_files; android_gate_files; } | awk '!/android\/app-uitest\//' | sort -u)
 [ "${#files[@]}" -gt 0 ] || fail "no Android production sources under $GHOST_ROOT/android"
 if [ ! -d "$GHOST_ROOT/android/media/src/main" ]; then
   fail "android/media/src/main is missing (vacuity: the gate must scan something)"

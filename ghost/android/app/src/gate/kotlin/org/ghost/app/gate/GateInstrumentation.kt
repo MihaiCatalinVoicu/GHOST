@@ -91,6 +91,12 @@ class GateInstrumentation : Instrumentation() {
         }
     }
 
+    /** The channel facade after the same cold-start barrier used by the DM probes. */
+    private fun channels(app: GhostApp): org.ghost.messaging.api.Channels {
+        messaging(app)
+        return checkNotNull(app.channels)
+    }
+
     private fun contact(): ContactId = ContactId(unhex(require(ARG_CONTACT)))
 
     private fun require(name: String): String =
@@ -270,13 +276,69 @@ class GateInstrumentation : Instrumentation() {
                 UpdateLoopback.set(app, if (endpoint == "off") null else endpoint)
                 out.putString("update.loopback", endpoint)
             }
+            "purchase-start" -> {
+                messaging(app)
+                val payWith = org.ghost.entitlement.api.PayWith.valueOf(arguments.getString("with") ?: "XMR")
+                val id = app.entitlement.startPurchase(payWith)
+                out.putString("purchase.start", if (id == null) "REFUSED" else "PREPARED")
+                id?.let { out.putString("purchase.id", OrderDigests.hex(it.toByteArray())) }
+            }
+            "purchase-check" -> {
+                messaging(app)
+                val id = org.ghost.entitlement.api.PurchaseId(unhex(require("purchase")))
+                app.syncController.onAppForeground()
+                try {
+                    app.entitlement.checkNow(id)
+                    val deadline = SystemClock.elapsedRealtime() + 240_000L
+                    while (SystemClock.elapsedRealtime() < deadline) {
+                        val purchase = app.entitlement.openPurchases().firstOrNull { it.id == id }
+                        if (purchase != null && purchase.sync != org.ghost.entitlement.api.PurchaseSyncState.LOCAL_ONLY) break
+                        val stage = app.syncController.diagnostics().stage
+                        if (stage == org.ghost.sync.api.DiagnosticStage.FAILED ||
+                            stage == org.ghost.sync.api.DiagnosticStage.UNAVAILABLE ||
+                            stage == org.ghost.sync.api.DiagnosticStage.CLOSED
+                        ) break
+                        SystemClock.sleep(POLL_MILLIS)
+                    }
+                } finally {
+                    app.syncController.onAppBackground()
+                }
+                app.syncController.awaitIdle(IDLE_WAIT_MILLIS)
+                out.putString("purchase.diagnostic", app.syncController.diagnostics().toString())
+                out.putString(
+                    "purchase.state",
+                    app.entitlement.openPurchases().firstOrNull { it.id == id }?.let { "${it.state}:${it.sync}" } ?: "MISSING",
+                )
+            }
+            "purchase-instructions" -> {
+                messaging(app)
+                val id = org.ghost.entitlement.api.PurchaseId(unhex(require("purchase")))
+                val disclosures = app.entitlement.requiredDisclosures(id)
+                app.entitlement.acknowledge(id, disclosures)
+                app.entitlement.paymentScreenShown(id)
+                try {
+                    val instructions = app.entitlement.paymentInstructions(id)
+                    if (instructions == null) {
+                        out.putString("payment.ready", "false")
+                    } else {
+                        out.putString("payment.ready", "true")
+                        out.putString("payment.address", instructions.subaddress)
+                        out.putLong("payment.amount", instructions.outstandingAtomic)
+                    }
+                } finally {
+                    app.entitlement.paymentScreenHidden(id)
+                }
+            }
             "purchase-status" -> {
                 // Read-only payment drill: fixed states only, never purchase ids, addresses or amounts.
                 val opened = java.util.concurrent.CountDownLatch(1)
                 app.syncController.runWhenStoresOpen {
+                    val wanted = arguments.getString("purchase")
                     out.putString(
                         "purchase.states",
-                        app.entitlement.openPurchases().joinToString(",") { it.state.name + ":" + it.sync.name },
+                        app.entitlement.openPurchases().filter {
+                            wanted == null || OrderDigests.hex(it.id.toByteArray()) == wanted
+                        }.joinToString(",") { it.state.name + ":" + it.sync.name },
                     )
                     val schedule = ArrayList<String>()
                     app.openDatabaseDirectly()?.query(
@@ -292,7 +354,8 @@ class GateInstrumentation : Instrumentation() {
                 out.putString("purchase.diagnostic", diagnostic.stage.name + ":" + (diagnostic.lastError ?: "none"))
             }
             "purchase-request" -> {
-                // The same user RequestInvoice path as the UI, followed by the still-live diagnostic.
+                // The same user RequestInvoice path as the UI, in an explicit foreground session.
+                app.syncController.onAppForeground()
                 val requested = java.util.concurrent.CountDownLatch(1)
                 app.syncController.runWhenStoresOpen {
                     val purchase = app.entitlement.openPurchases().firstOrNull {
@@ -303,6 +366,7 @@ class GateInstrumentation : Instrumentation() {
                     requested.countDown()
                 }
                 check(requested.await(WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "the database did not open" }
+                app.syncController.onAppBackground()
                 app.syncController.awaitIdle(UPDATE_IDLE_WAIT_MILLIS)
                 val read = java.util.concurrent.CountDownLatch(1)
                 app.syncController.runWhenStoresOpen {
@@ -357,6 +421,479 @@ class GateInstrumentation : Instrumentation() {
                 out.putString("clipboard.before", "present=$present sensitive=$sensitive")
                 SystemClock.sleep(32_000L)
                 out.putString("clipboard.after", "cleared=${manager.primaryClip == null}")
+            }
+            "channel-by-name" -> {
+                val channels = channels(app)
+                val view = channels.channels().lastOrNull { it.name == require("name") }
+                if (view == null) {
+                    out.putString("channel.id", "")
+                } else {
+                    out.putString("channel.id", OrderDigests.hex(view.channelId))
+                    out.putInt("channel.members", channels.members(org.ghost.messaging.api.ChannelId(view.channelId)).size)
+                    app.openDatabaseDirectly()?.query(
+                        "SELECT state FROM ch_channel WHERE channel_id = ?", listOf(view.channelId),
+                    ) { out.putString("channel.state", it.string(0)) }
+                }
+            }
+            "channel-create-invite" -> {
+                val channels = channels(app)
+                val created = channels.create(require("name").toByteArray(), 0, 0, false)
+                out.putString("channel.create", created.status.name)
+                val id = checkNotNull(created.channel)
+                val invited = channels.invite(id, 7, null)
+                out.putString("channel.inviteStatus", invited.status.name)
+                out.putString("channel.id", OrderDigests.hex(id.toByteArray()))
+                invited.link?.let {
+                    out.putString("channel.invite", String(it, Charsets.US_ASCII))
+                    it.fill(0)
+                }
+            }
+            "channel-invite-existing" -> {
+                val channels = channels(app)
+                val id = org.ghost.messaging.api.ChannelId(unhex(require("channel")))
+                val invited = channels.invite(id, 7, null)
+                out.putString("channel.inviteStatus", invited.status.name)
+                invited.link?.let {
+                    out.putString("channel.invite", String(it, Charsets.US_ASCII))
+                    it.fill(0)
+                }
+            }
+            "channel-accept" -> {
+                val bytes = require("invite").toByteArray(Charsets.US_ASCII)
+                val result = try {
+                    channels(app).accept(bytes, null)
+                } finally {
+                    bytes.fill(0)
+                }
+                out.putString("channel.accept", result.name)
+                val expected = unhex(require("channel"))
+                out.putString(
+                    "channel.known",
+                    channels(app).channels().any { it.channelId.contentEquals(expected) }.toString(),
+                )
+            }
+            "channel-post" -> {
+                val id = org.ghost.messaging.api.ChannelId(unhex(require("channel")))
+                val reply = arguments.getString("reply")?.let { org.ghost.messaging.api.PostId(unhex(it)) }
+                val result = channels(app).post(id, require("text").toByteArray(), reply)
+                out.putString("channel.post", result.name)
+            }
+            "channel-read" -> {
+                val channels = channels(app)
+                out.putString("channel.names", channels.channels().joinToString(",") { it.name })
+                val id = org.ghost.messaging.api.ChannelId(unhex(require("channel")))
+                out.putInt("channel.members", channels.members(id).size)
+                out.putString(
+                    "channel.posts",
+                    channels.posts(id, 120).joinToString(" | ") { "${it.kind}:${it.state}:${it.body}" },
+                )
+                out.putString(
+                    "channel.postIds",
+                    channels.posts(id, 120).joinToString(",") { OrderDigests.hex(it.opId) },
+                )
+                app.openDatabaseDirectly()?.let { sql ->
+                    sql.query("SELECT state FROM ch_channel WHERE channel_id = ?", listOf(id.toByteArray())) { row ->
+                        out.putString("channel.state", row.string(0))
+                    }
+                    sql.query("SELECT count(*) FROM ch_join_request WHERE channel_id = ?", listOf(id.toByteArray())) { row ->
+                        out.putInt("channel.joinRequests", row.long(0).toInt())
+                    }
+                    sql.query("SELECT count(*) FROM ch_join WHERE channel_id = ?", listOf(id.toByteArray())) { row ->
+                        out.putInt("channel.pendingJoin", row.long(0).toInt())
+                    }
+                    val capabilities = ArrayList<String>()
+                    sql.query(
+                        "SELECT g.generation, g.state, c.kind, c.state, count(*) FROM ch_generation g " +
+                            "JOIN relay_capability c ON c.namespace_id = g.namespace_id " +
+                            "WHERE g.channel_id = ? GROUP BY g.generation, g.state, c.kind, c.state ORDER BY g.generation, c.kind, c.state",
+                        listOf(id.toByteArray()),
+                    ) { row ->
+                        capabilities += "${row.long(0)}:${row.string(1)}:${row.string(2)}:${row.string(3)}=${row.long(4)}"
+                    }
+                    out.putString("channel.capabilities", capabilities.joinToString(","))
+                    sql.query(
+                        "SELECT next_pass_minute, next_selfupdate_day, last_own_commit_day FROM ch_schedule WHERE channel_id = ?",
+                        listOf(id.toByteArray()),
+                    ) { row ->
+                        out.putString("channel.schedule", "${if (row.isNull(0)) "none" else row.long(0)}:${row.long(1)}:${if (row.isNull(2)) "none" else row.long(2)}")
+                    }
+                    val allCapabilities = ArrayList<String>()
+                    sql.query("SELECT kind, state, count(*) FROM relay_capability GROUP BY kind, state") { row ->
+                        allCapabilities += "${row.string(0)}:${row.string(1)}=${row.long(2)}"
+                    }
+                    out.putString("channel.allCapabilities", allCapabilities.joinToString(","))
+                    sql.query("SELECT epoch, own, verified, first_seen_minute, rank FROM ch_candidate WHERE channel_id = ?", listOf(id.toByteArray())) { row ->
+                        out.putString("channel.candidates", "${row.long(0)}:${row.long(1)}:${row.long(2)}:${row.long(3)}:${row.long(4)}")
+                    }
+                    val channelOps = ArrayList<String>()
+                    sql.query(
+                        "SELECT o.outcome, count(*) FROM outbox_op o JOIN ch_generation g ON g.namespace_id = o.namespace_id " +
+                            "WHERE g.channel_id = ? GROUP BY o.outcome", listOf(id.toByteArray()),
+                    ) { row -> channelOps += "${row.string(0)}=${row.long(1)}" }
+                    out.putString("channel.operations", channelOps.joinToString(","))
+                    sql.query("SELECT namespace_id FROM ch_generation WHERE channel_id = ? AND state = 'current'", listOf(id.toByteArray())) { row ->
+                        val namespace = org.ghost.sync.api.NamespaceId(row.blob(0))
+                        out.putInt("channel.listingTails", app.syncController.stores?.inbox?.listingTails(namespace)?.size ?: -1)
+                    }
+                    sql.query("SELECT recorded_day, type FROM ch_join_request WHERE channel_id = ?", listOf(id.toByteArray())) { row ->
+                        out.putString("channel.requestState", "${row.long(0)}:${row.string(1)}")
+                    }
+                    val outbox = ArrayList<String>()
+                    sql.query("SELECT outcome, count(*) FROM outbox_op GROUP BY outcome") { row ->
+                        outbox += "${row.string(0)}=${row.long(0)}"
+                    }
+                    out.putString("channel.outbox", outbox.joinToString(","))
+                    val inbox = ArrayList<String>()
+                    sql.query("SELECT state, count(*) FROM inbox_blob GROUP BY state") { row ->
+                        inbox += "${row.string(0)}=${row.long(0)}"
+                    }
+                    out.putString("channel.inbox", inbox.joinToString(","))
+                    val deliveries = ArrayList<String>()
+                    sql.query("SELECT state, count(*) FROM outbox_delivery GROUP BY state") { row ->
+                        deliveries += "${row.string(0)}=${row.long(0)}"
+                    }
+                    out.putString("channel.deliveries", deliveries.joinToString(","))
+                    sql.query(
+                        "SELECT listening, count(*) FROM sync_namespace WHERE consumer = 'channel' GROUP BY listening",
+                    ) { row -> out.putString("channel.listening", "${row.long(0)}=${row.long(1)}") }
+                }
+                out.putString("channel.sync", app.syncController.diagnostics().let { "${it.stage}:${it.lastError ?: "none"}" })
+                out.putString("channel.syncStatus", app.syncController.status().toString())
+            }
+            "relay-probe" -> {
+                messaging(app)
+                val sql = checkNotNull(app.openDatabaseDirectly())
+                var relayText: String? = null
+                var namespace: ByteArray? = null
+                var period = -1L
+                var kind = ""
+                var verifier: ByteArray? = null
+                var requestId: ByteArray? = null
+                var registerCap: ByteArray? = null
+                sql.query(
+                    "SELECT r.onion_address, g.namespace_id, g.period_id, g.kind, g.verifier, g.request_id, c.token " +
+                        "FROM relay_key_registration g " +
+                        "JOIN relay_directory r ON r.relay_id = g.relay_id " +
+                        "JOIN relay_register_capability c ON c.relay_id = g.relay_id AND c.namespace_id = g.namespace_id " +
+                        "WHERE g.state = 'done' AND c.state = 'usable' AND EXISTS (" +
+                        "SELECT 1 FROM relay_capability x WHERE x.relay_id = g.relay_id " +
+                        "AND x.namespace_id = g.namespace_id AND x.state = 'rejected') LIMIT 1",
+                ) { row ->
+                    relayText = row.string(0)
+                    namespace = row.blob(1)
+                    period = row.long(2)
+                    kind = row.string(3)
+                    verifier = row.blob(4)
+                    requestId = row.blob(5)
+                    registerCap = row.blob(6)
+                }
+                if (relayText == null) {
+                    out.putString("relay.probe", "NO_WORK")
+                } else {
+                    val base = java.io.File(app.noBackupFilesDir, "tor-relay-probe")
+                    val transport = org.ghost.network.TorRelayTransport.create(
+                        java.io.File(base, "state"), java.io.File(base, "cache"),
+                    )
+                    try {
+                        transport.bootstrap()
+                        val keyKind = when (kind) {
+                            "read" -> org.ghost.network.TorRelayTransport.KeyKind.READ
+                            "deposit" -> org.ghost.network.TorRelayTransport.KeyKind.DEPOSIT
+                            else -> org.ghost.network.TorRelayTransport.KeyKind.FETCH
+                        }
+                        val answer = transport.registerKey(
+                            org.ghost.network.OnionAddress.parse(checkNotNull(relayText)),
+                            checkNotNull(namespace), checkNotNull(registerCap), period, keyKind,
+                            checkNotNull(verifier), checkNotNull(requestId),
+                        )
+                        out.putString("relay.register", answer.result.toString())
+                        if (answer.result == org.ghost.network.TorRelayTransport.REGISTER_OK) {
+                            var readCap: ByteArray? = null
+                            sql.query(
+                                "SELECT token FROM relay_capability WHERE relay_id = (" +
+                                    "SELECT relay_id FROM relay_directory WHERE onion_address = ?) " +
+                                    "AND namespace_id = ? AND kind = 'read' AND state = 'rejected' LIMIT 1",
+                                listOf(relayText, namespace),
+                            ) { readCap = it.blob(0) }
+                            if (readCap != null) {
+                                val page = transport.list(
+                                    org.ghost.network.OnionAddress.parse(checkNotNull(relayText)),
+                                    checkNotNull(namespace), checkNotNull(readCap), ByteArray(0), 1, 60_000,
+                                )
+                                out.putString("relay.list", "OK:${page.hashes.size}")
+                            }
+                        }
+                    } catch (e: org.ghost.network.NetworkException) {
+                        out.putString("relay.error", e.category)
+                    } finally {
+                        transport.close()
+                    }
+                }
+            }
+            "tor-probe" -> {
+                val base = java.io.File(app.noBackupFilesDir, arguments.getString("directory") ?: "tor-probe")
+                val transport = org.ghost.network.TorRelayTransport.create(
+                    java.io.File(base, "state"), java.io.File(base, "cache"),
+                )
+                try {
+                    transport.bootstrap()
+                    out.putString("tor.bootstrap", "READY")
+                } catch (e: org.ghost.network.NetworkException) {
+                    out.putString("tor.bootstrap", e.category)
+                } finally {
+                    transport.close()
+                }
+            }
+            "capability-needs" -> {
+                messaging(app)
+                val needs = checkNotNull(app.syncController.stores).capabilities.needed()
+                out.putString(
+                    "capability.needs",
+                    needs.groupingBy { Triple(it.source, it.kind, it.reason) }.eachCount().entries.joinToString(",") {
+                        "${it.key.first}:${it.key.second}:${it.key.third}=${it.value}"
+                    },
+                )
+            }
+            "access-status" -> {
+                messaging(app)
+                val status = app.entitlement.status()
+                out.putString(
+                    "access.status",
+                    "credits=${status.credits} invites=${status.invites} coverage=${status.coverageEndWeek} " +
+                        "fresh=${status.freshTokensPerWeek} flags=${status.flags}",
+                )
+                val nowSeconds = System.currentTimeMillis() / 1_000L
+                var eligible = 0L
+                var reserved = 0L
+                var earliest = -1L
+                var latest = -1L
+                app.openDatabaseDirectly()?.let { sql ->
+                    sql.query("SELECT count(*) FROM ent_token WHERE kind = 'access' AND state = 'fresh' AND eligible_minute <= ?", listOf(nowSeconds)) { eligible = it.long(0) }
+                    sql.query("SELECT count(*) FROM ent_token WHERE kind = 'access' AND state = 'reserved'") { reserved = it.long(0) }
+                    sql.query("SELECT min(eligible_minute), max(eligible_minute) FROM ent_token WHERE kind = 'access' AND state = 'fresh'") {
+                        earliest = it.long(0)
+                        latest = it.long(1)
+                    }
+                }
+                out.putString("access.liquidity", "eligible=$eligible reserved=$reserved earliest=$earliest latest=$latest now=$nowSeconds")
+            }
+            "access-invite" -> {
+                messaging(app)
+                val expiryDay = (System.currentTimeMillis() / 86_400_000L).toInt() + 14
+                out.putString("access.invite", app.entitlement.createInvite(expiryDay) ?: "NONE")
+            }
+            "access-invite-existing" -> {
+                messaging(app)
+                val sql = checkNotNull(app.openDatabaseDirectly())
+                var payload: ByteArray? = null
+                sql.query(
+                    "SELECT payload FROM ent_invite WHERE state = 'created' AND payload IS NOT NULL " +
+                        "ORDER BY invite_index ASC LIMIT 1",
+                ) { payload = it.blob(0) }
+                if (payload == null) {
+                    out.putString("access.invite", "NONE")
+                } else {
+                    val buffer = java.nio.ByteBuffer.wrap(payload)
+                    check(buffer.get().toInt() == org.ghost.identity.Invite.VERSION)
+                    val token = ByteArray(org.ghost.identity.Invite.TOKEN_BYTES).also(buffer::get)
+                    val nonce = ByteArray(org.ghost.identity.Invite.NONCE_BYTES).also(buffer::get)
+                    val expiry = buffer.int.toLong() and 0xffff_ffffL
+                    val namespace = ByteArray(org.ghost.identity.Invite.NAMESPACE_BYTES).also(buffer::get)
+                    val slots = List(org.ghost.identity.Invite.DROP_SLOTS) { buffer.get().toInt() and 0xff }
+                    val drop = ByteArray(32).also(buffer::get)
+                    val signing = ByteArray(32).also(buffer::get)
+                    val signature = ByteArray(64).also(buffer::get)
+                    out.putString(
+                        "access.invite",
+                        org.ghost.identity.Invite(token, nonce, expiry, namespace, slots, drop, signing, signature).encode(),
+                    )
+                    payload.fill(0)
+                }
+            }
+            "invite-onboard" -> {
+                app.ensureDatabaseKey()
+                app.syncController.onAppForeground()
+                try {
+                    val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
+                    while (app.syncController.stores == null) {
+                        check(SystemClock.elapsedRealtime() < deadline) { "the sync stores did not open" }
+                        SystemClock.sleep(POLL_MILLIS)
+                    }
+                    app.bootstrapRelayDirectory()
+                    out.putString("onboard.trial", app.entitlement.activate(require("invite")).name)
+                    SystemClock.sleep((arguments.getString("seconds") ?: "45").toLong() * MILLIS)
+                } finally {
+                    app.syncController.onAppBackground()
+                }
+                app.syncController.awaitIdle(IDLE_WAIT_MILLIS)
+                val pin = (arguments.getString("pin") ?: "24681357").toCharArray()
+                org.ghost.app.ui.GateLock.configureIfNeeded(app.uiGateways.lock(), pin)
+                pin.fill('0')
+                out.putString("onboard.identity", app.identityManager.hasIdentity().toString())
+                out.putString("onboard.activation", app.entitlement.activationState().name)
+                out.putString("onboard.sync", app.syncController.diagnostics().toString())
+            }
+            "onboard" -> {
+                // Fresh local test installs only: create the database and identity, bootstrap the
+                // directory, activate DM and set the test PIN through the real gateway.
+                app.ensureDatabaseKey()
+                if (!app.identityManager.hasIdentity()) {
+                    val created = app.identityManager.create(
+                        org.ghost.identity.IdentityManager.Activation.Genesis(policyAcknowledged = true),
+                    )
+                    created.root.zeroize()
+                }
+                app.bootstrapRelayDirectory()
+                val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
+                var activation: String? = null
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    activation = app.messagingWiring.activate(restored = false)?.name
+                    if (activation != null) break
+                    SystemClock.sleep(POLL_MILLIS)
+                }
+                val pin = (arguments.getString("pin") ?: "24681357").toCharArray()
+                require(pin.size in 8..16 && pin.all { it.isDigit() }) { "the test PIN needs 8-16 digits" }
+                org.ghost.app.ui.GateLock.configureIfNeeded(app.uiGateways.lock(), pin)
+                pin.fill('0')
+                out.putString("onboard.identity", app.identityManager.hasIdentity().toString())
+                out.putString("onboard.activate", activation ?: "UNAVAILABLE")
+            }
+            "media-send" -> {
+                val messaging = messaging(app)
+                val contact = contact()
+                val file = java.io.File(require("path"))
+                val uri = android.net.Uri.fromFile(file)
+                val source = if (require("kind") == "video") {
+                    val head = file.inputStream().use { input ->
+                        val bytes = ByteArray(64)
+                        val read = input.read(bytes)
+                        if (read < 0) ByteArray(0) else bytes.copyOf(read)
+                    }
+                    org.ghost.messaging.api.MediaSource.video(org.ghost.app.media.PickedVideo(app, uri), head)
+                } else {
+                    org.ghost.messaging.api.MediaSource.image(file.readBytes())
+                }
+                when (val result = messaging.sendMedia(contact, source, caption = null, viewOnce = false)) {
+                    is org.ghost.messaging.api.MediaSendResult.Refused -> {
+                        out.putString("media.result", result.result.name)
+                    }
+                    is org.ghost.messaging.api.MediaSendResult.Queued -> {
+                        val deadline = SystemClock.elapsedRealtime() + 180_000L
+                        var message: org.ghost.messaging.api.MessageId? = null
+                        var failure: String? = null
+                        while (message == null && failure == null && SystemClock.elapsedRealtime() < deadline) {
+                            when (val state = messaging.preparationState(result.preparation)) {
+                                is org.ghost.messaging.api.PreparationView.Committed -> message = state.message
+                                is org.ghost.messaging.api.PreparationView.Failed -> {
+                                    val cause = state.failure
+                                    failure = if (cause is org.ghost.media.send.PrepFailure.UnsupportedSource) {
+                                        "UnsupportedSource:${cause.detail}"
+                                    } else {
+                                        cause.javaClass.simpleName
+                                    }
+                                }
+                                else -> SystemClock.sleep(250L)
+                            }
+                        }
+                        if (message != null) {
+                            out.putString("media.result", "COMMITTED")
+                            out.putString("media.id", OrderDigests.hex(message.toByteArray()))
+                            out.putString("media.state", messaging.mediaState(message).toString())
+                            val handle = messaging.openMedia(message)
+                            out.putString("media.open", handle?.toString() ?: "UNAVAILABLE")
+                            handle?.close()
+                        } else {
+                            out.putString("media.result", failure ?: "PREPARATION_TIMEOUT")
+                        }
+                    }
+                }
+            }
+            "media-namespace" -> {
+                messaging(app)
+                val sql = checkNotNull(app.openDatabaseDirectly())
+                val expected = arguments.getString("namespace")?.let(::unhex)
+                var namespace: ByteArray? = null
+                if (arguments.getString("own") == "true") {
+                    sql.query("SELECT namespace_id FROM dm_own_namespace WHERE role = 'media'") { namespace = it.blob(0) }
+                } else {
+                    sql.query("SELECT namespace_id FROM media_upload ORDER BY object_id DESC LIMIT 1") { namespace = it.blob(0) }
+                }
+                out.putString("media.namespace", namespace?.let(OrderDigests::hex) ?: "NONE")
+                out.putString("media.matches", (namespace == null || expected == null || namespace.contentEquals(expected)).toString())
+                namespace?.let { ns ->
+                    val registrations = ArrayList<String>()
+                    sql.query(
+                        "SELECT kind, state, count(*) FROM relay_key_registration WHERE namespace_id = ? GROUP BY kind, state",
+                        listOf(ns),
+                    ) { registrations += "${it.string(0)}:${it.string(1)}=${it.long(2)}" }
+                    out.putString("media.registrations", registrations.joinToString(","))
+                }
+            }
+            "media-relay-probe" -> {
+                messaging(app)
+                val sql = checkNotNull(app.openDatabaseDirectly())
+                val namespace = unhex(require("namespace"))
+                val kind = arguments.getString("kind") ?: "read"
+                val probes = ArrayList<Triple<String, ByteArray, ByteArray>>()
+                sql.query(
+                    "SELECT d.onion_address, c.token FROM relay_capability c " +
+                        "JOIN relay_directory d ON d.relay_id = c.relay_id " +
+                        "WHERE c.namespace_id = ? AND c.kind = ? AND c.state = 'usable'",
+                    listOf(namespace, kind),
+                ) { probes += Triple(it.string(0), it.blob(1), namespace) }
+                val base = java.io.File(app.noBackupFilesDir, "tor-media-probe")
+                val transport = org.ghost.network.TorRelayTransport.create(java.io.File(base, "state"), java.io.File(base, "cache"))
+                try {
+                    transport.bootstrap()
+                    val results = ArrayList<String>()
+                    for ((relay, credential, ns) in probes) {
+                        var verifierMatches = -1L
+                        if (kind == "write" && credential.size == org.ghost.crypto.bridge.CredentialV3.CREDENTIAL_BYTES) {
+                            val verifier = org.ghost.crypto.bridge.CredentialV3.verifier(
+                                org.ghost.crypto.bridge.CredentialV3.Kind.DEPOSIT,
+                                credential[2].toInt() and 0xff, ns, credential.copyOfRange(35, 67),
+                            )
+                            sql.query(
+                                "SELECT count(*) FROM relay_key_registration WHERE relay_id = " +
+                                    "(SELECT relay_id FROM relay_directory WHERE onion_address = ?) " +
+                                    "AND namespace_id = ? AND kind = 'deposit' AND verifier = ?",
+                                listOf(relay, ns, verifier),
+                            ) { verifierMatches = it.long(0) }
+                            verifier.fill(0)
+                        }
+                        try {
+                            val address = org.ghost.network.OnionAddress.parse(relay)
+                            if (kind == "write") {
+                                val present = transport.check(address, ns, credential, listOf(ByteArray(32) { 0x5a }), 60_000)
+                                results += "OK:${present.size}"
+                            } else {
+                                val page = transport.list(address, ns, credential, ByteArray(0), 1, 60_000)
+                                results += "OK:${page.hashes.size}"
+                            }
+                        } catch (e: org.ghost.network.NetworkException) {
+                            results += "${e.category}:verifierMatches=$verifierMatches"
+                        }
+                    }
+                    out.putString("media.relay", results.joinToString(","))
+                } finally {
+                    transport.close()
+                }
+            }
+            "media-open" -> {
+                val messaging = messaging(app)
+                val contact = contact()
+                val message = org.ghost.messaging.api.MessageId(unhex(require("message")))
+                messaging.setConversationOnScreen(contact)
+                try {
+                    out.putString("media.state", messaging.mediaState(message).toString())
+                    val preview = messaging.mediaPreview(message)
+                    out.putString("media.preview", preview?.let { "${it.width}x${it.height}" } ?: "UNAVAILABLE")
+                    val handle = messaging.openMedia(message)
+                    out.putString("media.open", handle?.toString() ?: "UNAVAILABLE")
+                    handle?.close()
+                } finally {
+                    messaging.setConversationOnScreen(null)
+                }
             }
             "channel-probe" -> {
                 // Phase 13's real composition root, on the phone: distinguish the native library,
@@ -444,7 +981,7 @@ class GateInstrumentation : Instrumentation() {
                     "content=$contentLength:$contentOpens state=$stateLength:$stateOpens " +
                         "ctx=$contextCode open=$openCode group=$groupCode scheduleRows=$scheduleRows relays=$activeRelays",
                 )
-                val channels = checkNotNull(app.channels)
+                val channels = channels(app)
                 val password = arguments.getString("password") == "true"
                 val name = if (password) "gate password channel" else "gate channel"
                 val result = channels.create(name.toByteArray(), 0, 0, password)
@@ -497,18 +1034,39 @@ class GateInstrumentation : Instrumentation() {
                 val seconds = (arguments.getString("seconds") ?: DEFAULT_SESSION_SECONDS.toString()).toLong()
                 require(seconds in 1..MAX_SESSION_SECONDS) { "seconds out of range" }
                 arguments.getString("privacy")?.let { app.syncController.setPrivacyMode(PrivacyMode.valueOf(it)) }
+                if (arguments.getString("due") == "true" || arguments.getString("settle") == "true") {
+                    val channel = unhex(require("channel"))
+                    val now = System.currentTimeMillis() / 60_000L * 60L
+                    val sql = checkNotNull(app.openDatabaseDirectly())
+                    if (arguments.getString("due") == "true") {
+                        check(sql.execUpdate("UPDATE ch_schedule SET next_pass_minute = ? WHERE channel_id = ?", listOf(now, channel)) == 1)
+                    }
+                    if (arguments.getString("settle") == "true") {
+                        sql.execUpdate(
+                            "UPDATE ch_epoch SET anchor_minute = ? WHERE channel_id = ? AND state = 'open'",
+                            listOf(now - 20 * 60L, channel),
+                        )
+                    }
+                }
                 // What the app's ON_START does (`SyncWiring.onVisible`): a foreground relay session,
                 // whose relay session start is the DM time trigger (`MessagingWiring.sessionHooks`)
                 // and whose lanes deposit and fetch. Held for `seconds`, then ON_STOP.
                 app.syncController.onAppForeground()
                 try {
                     SystemClock.sleep(seconds * MILLIS)
+                    out.putString("sync.foreground", app.syncController.status().toString())
+                    val settled = java.util.concurrent.CountDownLatch(1)
+                    app.messagingWiring.onAlarm { settled.countDown() }
+                    check(settled.await(WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "the final channel pass did not finish" }
                 } finally {
                     app.syncController.onAppBackground()
                 }
                 app.syncController.awaitIdle(IDLE_WAIT_MILLIS)
                 val status = messaging.status()
                 out.putString("result", "PASSED")
+                out.putString("sync.status", app.syncController.status().toString())
+                out.putString("sync.diagnostic", app.syncController.diagnostics().toString())
+                out.putString("entitlement.counters", entitlementCounters(app))
                 out.putString("privacy", app.syncController.privacyMode.name)
                 for ((reason, n) in status.drops) out.putInt("drop.$reason", n)
             }
@@ -573,6 +1131,15 @@ class GateInstrumentation : Instrumentation() {
             out.putLong("ttl", ttl)
             blobs.asReversed().forEachIndexed { i, (_, blob) -> out.putString("blob.$i", OrderDigests.hex(blob)) }
         }
+    }
+
+    /** Reads only the existing fixed-name entitlement counters for the gate's live diagnosis. */
+    private fun entitlementCounters(app: GhostApp): String {
+        val memoryField = app.entitlement.javaClass.getDeclaredField("memory").apply { isAccessible = true }
+        val memory = memoryField.get(app.entitlement)
+        val countersField = memory.javaClass.getDeclaredField("counters").apply { isAccessible = true }
+        val counters = countersField.get(memory) as Map<*, *>
+        return counters.entries.joinToString(",") { "${it.key}=${it.value}" }
     }
 
     private fun unhex(text: String): ByteArray {

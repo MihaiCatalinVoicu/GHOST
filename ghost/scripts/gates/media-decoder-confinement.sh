@@ -23,6 +23,8 @@
 #     parse the container before any byte is re-encoded. G-M3's letter names the retriever
 #     for the sandbox alone; the review may demand the Media3-extractor rewrite (different
 #     rotation semantics across API levels is why S5 chose it).
+#     CalibrationFrameProbe.kt holds the retriever ×4 only for the internally generated colour-grid
+#     calibration stream; no picked or received byte reaches it. Its call site is CalibrationExport.
 # (2) CONFIGURATION RULE (S0-21): every Media3 instance GHOST builds is built with GHOST's
 #     factories — the default renderers/extractors/media-source factories and the bitmap
 #     loaders are refused everywhere in GHOST sources, and `ExoPlayer.Builder` is named only
@@ -71,6 +73,10 @@ for f in ${files[@]+"${files[@]}"}; do
         n=$(grep -cE "(^|[^A-Za-z0-9_])MediaMetadataRetriever($|[^A-Za-z0-9_])" "$f" || true)
         [ "$n" = "5" ] && continue
         ;;
+      CalibrationFrameProbe.kt:*MediaMetadataRetriever*)
+        n=$(grep -cE "(^|[^A-Za-z0-9_])MediaMetadataRetriever($|[^A-Za-z0-9_])" "$f" || true)
+        [ "$n" = "4" ] && continue
+        ;;
     esac
     fail "${f#"$GHOST_ROOT"/}: $hit (G-M3: a platform decoder API outside org.ghost.media.sandbox)"
   done < <(grep -nE "android\.(media|graphics|graphics\.drawable|provider)\.($BANNED_NAMES)($|[^A-Za-z0-9_])" "$f" 2>/dev/null || true)
@@ -83,6 +89,10 @@ for f in ${files[@]+"${files[@]}"}; do
       if [ "$base" = "PickedVideo.kt" ] && [ "$name" = "MediaMetadataRetriever" ]; then
         n=$(grep -cE "(^|[^A-Za-z0-9_])MediaMetadataRetriever($|[^A-Za-z0-9_])" "$f" || true)
         if [ "$n" = "5" ]; then continue; fi
+      fi
+      if [ "$base" = "CalibrationFrameProbe.kt" ] && [ "$name" = "MediaMetadataRetriever" ]; then
+        n=$(grep -cE "(^|[^A-Za-z0-9_])MediaMetadataRetriever($|[^A-Za-z0-9_])" "$f" || true)
+        if [ "$n" = "4" ]; then continue; fi
       fi
       while IFS= read -r hit; do
         [ -n "$hit" ] || continue

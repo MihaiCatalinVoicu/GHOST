@@ -197,7 +197,7 @@ internal class MediaSteps(
                                     CredentialV3.Kind.DEPOSIT,
                                     slot.slot,
                                     mediaNs,
-                                    fromCard.deposit,
+                                    fromCard.mediaDeposit,
                                 ),
                                 DmTime.ceilHour(now) + CREDENTIAL_LIFETIME_SECONDS,
                             )
@@ -330,13 +330,50 @@ internal class MediaSteps(
     /** §6.3 point 5 / §13.5 `MEDIA-FEED`'s body: feed every active upload, one transaction. */
     fun feed() {
         val nowE = expiry.nowSeconds()
+        val self = contexts.get()
         database.transaction { tx ->
             val active = objects.activeUploads(tx.sql, nowE, limit = FEED_BATCH)
+            if (self != null) healRejectedWriteCredentials(tx, self, active, nowE)
             for (objectId in active) {
                 when (val fed = feeder.feed(tx, objectId, nowE)) {
                     is MediaFeeder.Fed.Ok -> Unit
                     MediaFeeder.Fed.HashMismatch -> failObject(tx, objectId, nowE)
                 }
+            }
+        }
+    }
+
+    /** M_c has no relay registration or redemption: only its rejected card-derived token is re-put. */
+    private fun healRejectedWriteCredentials(
+        tx: org.ghost.sync.api.SyncTransaction,
+        self: SelfContext,
+        active: List<ByteArray>,
+        nowE: Long,
+    ) {
+        for (objectId in active) {
+            val item = objects.byId(tx.sql, objectId, nowE) ?: continue
+            val upload = objects.upload(tx.sql, objectId, nowE) ?: continue
+            val contact = contacts.contact(tx.sql, item.destId) ?: continue
+            val card = self.content.open(contact.cardEnv ?: continue, item.destId) ?: continue
+            try {
+                val namespace = NamespaceId(upload.namespaceId)
+                val set = relays.forNamespace(upload.namespaceId, DmTime.week(nowE)) ?: continue
+                for (slot in set) {
+                    val installed = sync.capabilities.installed(tx, slot.relay, namespace, CapabilityKind.WRITE)
+                    if (installed?.state != org.ghost.sync.api.InstalledCapability.State.REJECTED) continue
+                    val fromCard = material.fromCard(card, slot.slot) ?: continue
+                    try {
+                        sync.capabilities.put(
+                            tx, slot.relay, namespace, CapabilityKind.WRITE,
+                            CredentialV3.credential(CredentialV3.Kind.DEPOSIT, slot.slot, upload.namespaceId, fromCard.mediaDeposit),
+                            DmTime.ceilHour(nowE) + CREDENTIAL_LIFETIME_SECONDS,
+                        )
+                    } finally {
+                        fromCard.clearSecrets()
+                    }
+                }
+            } finally {
+                card.fill(0)
             }
         }
     }

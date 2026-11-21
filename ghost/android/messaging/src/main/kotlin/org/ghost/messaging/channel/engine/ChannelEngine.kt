@@ -278,6 +278,7 @@ internal class ChannelEngine(
         if (timeTriggered) {
             if (sessionStart) passStep.scheduleAtSessionStart()
             passStep.runScheduledPasses()
+            funderStep.healRejected()
             funderStep.renewDue()
             sweepStep.sweepJoins()
             rejoinStep.sweepRejoins()

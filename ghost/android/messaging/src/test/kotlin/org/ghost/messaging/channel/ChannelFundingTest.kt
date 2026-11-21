@@ -217,6 +217,44 @@ class ChannelFundingTest {
         assertTrue(bob.integrity().isEmpty())
     }
 
+    @Test
+    fun aRejectedChannelCredentialIsRearmedAndReinstalledAtATimePass() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val ns = generationNs(owner, id, 0)
+        owner.database.transaction { tx ->
+            tx.sql.exec("UPDATE relay_capability SET state = 'rejected' WHERE namespace_id = ? AND kind = 'read'", listOf(ns))
+        }
+        owner.timePass()
+        var state = ""
+        owner.database.transaction { tx ->
+            tx.sql.query("SELECT state FROM relay_capability WHERE namespace_id = ? AND kind = 'read' LIMIT 1", listOf(ns)) { state = it.string(0) }
+        }
+        assertEquals("usable", state)
+        assertTrue(owner.count("relay_key_registration", "namespace_id = ? AND state = 'pending'", ns) > 0)
+        assertTrue(owner.integrity().isEmpty())
+    }
+
+    @Test
+    fun aNonFunderReinstallsARejectedChannelCredentialWithoutArmingRegistrations() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val ns = generationNs(bob, id, 0)
+        bob.database.transaction { tx ->
+            tx.sql.exec("UPDATE relay_capability SET state = 'rejected' WHERE namespace_id = ? AND kind = 'write'", listOf(ns))
+        }
+        bob.timePass()
+        var state = ""
+        bob.database.transaction { tx ->
+            tx.sql.query("SELECT state FROM relay_capability WHERE namespace_id = ? AND kind = 'write' LIMIT 1", listOf(ns)) { state = it.string(0) }
+        }
+        assertEquals("usable", state)
+        assertEquals(0L, bob.count("relay_key_registration", "namespace_id = ? AND state = 'pending'", ns))
+        assertTrue(bob.integrity().isEmpty())
+    }
+
     // ----------------------------------------------------------------------------------------------- helpers
 
     /** The owner removes [carol] (a rotation), everyone settles; returns ns_1. */

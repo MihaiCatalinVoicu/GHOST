@@ -1,6 +1,7 @@
 package org.ghost.media.send
 
 import androidx.media3.common.C
+import androidx.media3.common.ColorInfo
 import androidx.media3.common.Format
 import androidx.media3.common.Metadata
 import androidx.media3.common.MimeTypes
@@ -49,6 +50,7 @@ class GhostMuxer(
     private val channel: SealingChannel,
     private val sourceDurationUs: Long,
     private val maxClass: Int,
+    private val colour: ColorInfo? = null,
 ) : Muxer {
 
     private val inner: FragmentedMp4Muxer = FragmentedMp4Muxer.Builder(channel).build()
@@ -89,7 +91,16 @@ class GhostMuxer(
         if (m != MimeTypes.VIDEO_H264 && m != MimeTypes.AUDIO_AAC) {
             throw MuxerException("GhostMuxer refuses track $m", IllegalArgumentException(m))
         }
-        val id = inner.addTrack(format)
+        val coloured = colour?.let { format.buildUpon().setColorInfo(it).build() } ?: format
+        val outputFormat = if (m == MimeTypes.VIDEO_H264 && colour != null) {
+            val target = if (colour.colorSpace == C.COLOR_SPACE_BT709) Triple(1, 1, 1) else Triple(5, 1, 6)
+            coloured.buildUpon().setInitializationData(
+                coloured.initializationData.map { SpsColourNormalizer.normalize(it, target) },
+            ).build()
+        } else {
+            coloured
+        }
+        val id = inner.addTrack(outputFormat)
         if (m == MimeTypes.VIDEO_H264) {
             if (format.rotationDegrees !in listOf(0, 90, 180, 270)) {
                 throw MuxerException(
@@ -99,7 +110,7 @@ class GhostMuxer(
             }
             videoRotation = format.rotationDegrees
             inner.addMetadataEntry(Mp4OrientationData(format.rotationDegrees))
-            for (csd in format.initializationData) {
+            for (csd in outputFormat.initializationData) {
                 // csd-0 is the avcC box in an H.264 format; keep the first.
                 if (avcC == null && csd.size > 8) avcC = csd.copyOf()
             }
@@ -198,8 +209,9 @@ class GhostMuxerFactory(
     private val channel: SealingChannel,
     private val sourceDurationUs: Long,
     private val maxClass: Int,
+    private val colour: ColorInfo? = null,
 ) : Muxer.Factory {
-    override fun create(path: String): Muxer = GhostMuxer(channel, sourceDurationUs, maxClass)
+    override fun create(path: String): Muxer = GhostMuxer(channel, sourceDurationUs, maxClass, colour)
 
     override fun getSupportedSampleMimeTypes(trackType: Int): ImmutableList<String> = when (trackType) {
         C.TRACK_TYPE_VIDEO -> ImmutableList.of(MimeTypes.VIDEO_H264)

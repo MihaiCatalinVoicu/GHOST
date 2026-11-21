@@ -32,9 +32,11 @@ class MediaPreparerTest {
     ) : ImageStripper {
         var objectCalls = 0
         var previewCalls = 0
+        var previewMaxBytes = 0
 
         override fun strip(source: ByteArray, preview: Boolean, maxBytes: Int): ImageStripper.StripResult {
             if (refuse) return ImageStripper.StripResult.Failed("refused")
+            if (preview) previewMaxBytes = maxBytes
             return if (preview) {
                 previewCalls++
                 ImageStripper.StripResult.Ok(previewJpeg, 320, 208)
@@ -141,6 +143,7 @@ class MediaPreparerTest {
             assertEquals(MediaCrypto.Kind.IMAGE, prepared.kind)
             assertEquals(1, stripper.objectCalls)
             assertEquals(1, stripper.previewCalls)
+            assertEquals(MediaPreparer.PREVIEW_MAX_BYTES, stripper.previewMaxBytes)
             // The sealer saw the canonical object bytes through the channel's box graph:
             // ftyp is not part of the image stream (images are not fMP4), so the received bytes
             // are exactly the canonical JPEG.

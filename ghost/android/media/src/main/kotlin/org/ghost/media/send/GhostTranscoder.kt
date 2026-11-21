@@ -171,8 +171,17 @@ class GhostTranscoder(
             ?: return Outcome.Failed(
                 PrepFailure.UnsupportedSource(PrepFailure.UnsupportedSource.Detail.COLOUR_UNVERIFIED),
             )
-        val muxer = GhostMuxer(channel, sourceDurationUs, maxClass)
-        val factory = GhostMuxerFactory(channel, sourceDurationUs, maxClass)
+        val outputColour = if (request == ColourRequest.BT_709) {
+            ColorInfo.SDR_BT709_LIMITED
+        } else {
+            ColorInfo.Builder()
+                .setColorSpace(C.COLOR_SPACE_BT601)
+                .setColorRange(C.COLOR_RANGE_LIMITED)
+                .setColorTransfer(C.COLOR_TRANSFER_SDR)
+                .build()
+        }
+        val muxer = GhostMuxer(channel, sourceDurationUs, maxClass, outputColour)
+        val factory = GhostMuxerFactory(channel, sourceDurationUs, maxClass, outputColour)
         val thread = HandlerThread("ghost-transcoder").apply { start() }
         val latch = CountDownLatch(1)
         var completed: ExportResult? = null
@@ -216,17 +225,25 @@ class GhostTranscoder(
             while (latch.count > 0L) {
                 Thread.sleep(2_000)
                 if (cancelled()) {
-                    transformer.cancel()
+                    Handler(thread.looper).post { transformer.cancel() }
                     latch.countDown()
                     break
                 }
-                if (transformer.getProgress(progress) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                val progressState = java.util.concurrent.atomic.AtomicInteger(Int.MIN_VALUE)
+                val answered = CountDownLatch(1)
+                Handler(thread.looper).post {
+                    progressState.set(transformer.getProgress(progress))
+                    answered.countDown()
+                }
+                val available = answered.await(500, TimeUnit.MILLISECONDS) &&
+                    progressState.get() == Transformer.PROGRESS_STATE_AVAILABLE
+                if (available) {
                     if (progress.progress != lastProgress) {
                         lastProgress = progress.progress
                         lastAdvanceMs = SystemClock.elapsedRealtime()
                     } else if (SystemClock.elapsedRealtime() - lastAdvanceMs > MediaSendLimits.EXPORT_STALL_MS) {
                         stalled[0] = true
-                        transformer.cancel()
+                        Handler(thread.looper).post { transformer.cancel() }
                         latch.countDown()
                         break
                     }
@@ -263,17 +280,16 @@ class GhostTranscoder(
                 PrepFailure.UnsupportedSource(PrepFailure.UnsupportedSource.Detail.NOT_ENCODED),
             )
         }
-        val input = muxer.previewInput() ?: return Outcome.Failed(
-            PrepFailure.UnsupportedSource(PrepFailure.UnsupportedSource.Detail.NOT_ENCODED),
-        )
         // The preview comes from the output (S0-19): the first sync sample decoded with the
         // output's `avcC`, converted with the output's colour label, turned by the output's
         // rotation. A decode failure means no preview (preview_len = 0), never a failed send.
-        val preview = PreviewBuilder.build(
-            input,
-            muxer.rotationDegrees(),
-            if (request == ColourRequest.BT_709) Yuv420.Matrix.BT_709 else Yuv420.Matrix.BT_601,
-        ) ?: ByteArray(0)
+        val preview = muxer.previewInput()?.let { input ->
+            PreviewBuilder.build(
+                input,
+                muxer.rotationDegrees(),
+                if (request == ColourRequest.BT_709) Yuv420.Matrix.BT_709 else Yuv420.Matrix.BT_601,
+            )
+        } ?: ByteArray(0)
         return Outcome.Ok(preview, result.width, result.height)
     }
 
@@ -490,8 +506,13 @@ internal object CalibrationExport {
                 open = false
             }
         }
-        val muxer = androidx.media3.muxer.FragmentedMp4Muxer.Builder(channel).build().apply {
-            addMetadataEntry(androidx.media3.container.Mp4TimestampData(0, 0))
+        val rawMuxer = androidx.media3.muxer.FragmentedMp4Muxer.Builder(channel).build()
+        val muxer = object : androidx.media3.muxer.Muxer {
+            override fun addTrack(format: androidx.media3.common.Format): Int = rawMuxer.addTrack(format)
+            override fun writeSampleData(trackId: Int, data: java.nio.ByteBuffer, info: androidx.media3.muxer.BufferInfo) =
+                rawMuxer.writeSampleData(trackId, data, info)
+            override fun addMetadataEntry(entry: androidx.media3.common.Metadata.Entry) = Unit
+            override fun close() = rawMuxer.close()
         }
         val memoryMuxer = object : androidx.media3.muxer.Muxer.Factory {
             override fun create(path: String): androidx.media3.muxer.Muxer = muxer
@@ -557,7 +578,7 @@ internal object CalibrationExport {
         val stream = out.toByteArray()
         val (avcC, sample) = FrameProbe.firstVideoSample(stream)
             ?: return Result.Failed(PrepFailure.UnsupportedSource(PrepFailure.UnsupportedSource.Detail.CONTAINER))
-        val frame = FrameProbe.decodeSample(avcC, sample)
+        val frame = FrameProbe.decodeSample(avcC, sample) ?: CalibrationFrameProbe.decode(stream)
             ?: return Result.Failed(PrepFailure.UnsupportedSource(PrepFailure.UnsupportedSource.Detail.CODEC))
         return Result.Ok(frame)
     }

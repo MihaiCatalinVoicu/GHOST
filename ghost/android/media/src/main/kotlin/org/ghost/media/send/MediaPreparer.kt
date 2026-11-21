@@ -209,7 +209,7 @@ class MediaPreparer(
 
     /** The 320-px preview through the same strip path (§6.2); a failure means no preview. */
     private fun imagePreview(source: ByteArray): ByteArray {
-        val strip = stripper.strip(source, preview = true, MediaSendLimits.IMAGE_MAX_CONTENT)
+        val strip = stripper.strip(source, preview = true, PREVIEW_MAX_BYTES)
         if (strip is ImageStripper.StripResult.Ok) {
             return canonicalizer.canonicalize(strip.jpeg) ?: ByteArray(0)
         }
@@ -236,6 +236,11 @@ class MediaPreparer(
             at = end
         }
         channel.close()
+    }
+
+    companion object {
+        /** The fixed preview field of the manifest (Phase 11 §3.5). */
+        const val PREVIEW_MAX_BYTES: Int = 32_768
     }
 }
 

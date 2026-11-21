@@ -1,7 +1,6 @@
 package org.ghost.app.ui
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.view.TextureView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -49,7 +48,8 @@ internal fun SecureMediaViewer(handle: MediaHandle, onBack: () -> Unit) {
 
 @Composable
 private fun ImageViewer(handle: MediaHandle, modifier: Modifier = Modifier) {
-    val bitmap = remember(handle) { decodeImage(handle) }
+    val context = LocalContext.current
+    val bitmap = remember(handle) { decodeImage(context, handle) }
     DisposableEffect(bitmap) {
         onDispose { if (bitmap != null && !bitmap.isRecycled) bitmap.recycle() }
     }
@@ -101,7 +101,7 @@ private fun VideoViewer(handle: MediaHandle, modifier: Modifier = Modifier) {
     }
 }
 
-private fun decodeImage(handle: MediaHandle): Bitmap? {
+private fun decodeImage(context: android.content.Context, handle: MediaHandle): Bitmap? {
     require(handle.contentLength in 1..Int.MAX_VALUE.toLong()) { "image is too large" }
     val bytes = ByteArray(handle.contentLength.toInt())
     return try {
@@ -117,7 +117,25 @@ private fun decodeImage(handle: MediaHandle): Bitmap? {
                 chunk.fill(0)
             }
         }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val decoded = org.ghost.media.sandbox.MediaSandbox(context).decodeImage(bytes, 2_048, 2_048)
+        try {
+            if (decoded !is org.ghost.media.sandbox.MediaSandbox.Result.Ok) return null
+            val count = decoded.width * decoded.height
+            if (decoded.width <= 0 || decoded.height <= 0 || decoded.bytes.size != count * 4) return null
+            val pixels = IntArray(count)
+            for (i in 0 until count) {
+                val at = i * 4
+                pixels[i] = (decoded.bytes[at + 3].toInt() and 0xff shl 24) or
+                    (decoded.bytes[at].toInt() and 0xff) or
+                    (decoded.bytes[at + 1].toInt() and 0xff shl 8) or
+                    (decoded.bytes[at + 2].toInt() and 0xff shl 16)
+            }
+            Bitmap.createBitmap(decoded.width, decoded.height, Bitmap.Config.ARGB_8888).apply {
+                setPixels(pixels, 0, decoded.width, 0, 0, decoded.width, decoded.height)
+            }
+        } finally {
+            if (decoded is org.ghost.media.sandbox.MediaSandbox.Result.Ok) decoded.bytes.fill(0)
+        }
     } finally {
         bytes.fill(0)
     }

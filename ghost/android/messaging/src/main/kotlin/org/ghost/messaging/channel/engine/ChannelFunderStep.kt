@@ -64,6 +64,59 @@ internal class ChannelFunderStep(
         return DmTime.weekStart(DmTime.week(now) + 1) - RENEWAL_WINDOW_SECONDS
     }
 
+    /**
+     * Heals relay-rejected local credentials on a time-triggered pass. The generation stays unchanged:
+     * the same verifier is re-registered where this member funds the namespace, and only rejected
+     * credentials are re-put. A non-funder re-puts after the funder's registration heals the relay.
+     */
+    fun healRejected(): Int {
+        val now = env.now()
+        val day = DmTime.day(now)
+        val week = DmTime.week(now)
+        val work = env.database.transaction { tx ->
+            val rows = mutableListOf<RejectedGeneration>()
+            tx.sql.query(
+                "SELECT g.channel_id, g.generation, g.namespace_id FROM ch_generation g " +
+                    "JOIN sync_namespace n ON n.namespace_id = g.namespace_id " +
+                    "WHERE g.state IN ('current', 'pending_switch') AND n.consumer = 'channel' " +
+                    "AND n.capability_source = 'local' AND EXISTS (" +
+                    "SELECT 1 FROM relay_capability c WHERE c.namespace_id = g.namespace_id AND c.state = 'rejected')",
+            ) { r -> rows += RejectedGeneration(r.blob(0), r.long(1), r.blob(2)) }
+            rows.toList()
+        }
+        var healed = 0
+        for (item in work) {
+            val opened = env.contexts.open(item.channelId) ?: continue
+            val generation = env.database.transaction { tx ->
+                stores.generations.live(tx.sql, item.channelId, day)
+                    .firstOrNull { it.generation == item.generation }
+            } ?: continue
+            val set = env.relaySet(item.namespaceId, week) ?: continue
+            val slots = ByteArray(set.size) { set[it].slot.toByte() }
+            val credentials = opened.crypto.generation(
+                item.channelId, generation.gEnv, item.generation.toInt(), generation.openEpoch, slots,
+            ).valueOrNull()?.slots ?: continue
+            env.database.transaction { tx ->
+                for (slot in set) {
+                    val credential = credentials.firstOrNull { it.slot == slot.slot } ?: continue
+                    val ns = NamespaceId(item.namespaceId)
+                    val rejected = sync.capabilities.installed(tx, slot.relay, ns, CapabilityKind.READ)?.state == InstalledCapability.State.REJECTED ||
+                        sync.capabilities.installed(tx, slot.relay, ns, CapabilityKind.WRITE)?.state == InstalledCapability.State.REJECTED
+                    if (!rejected) continue
+                    if (sync.funding.isFunded(tx, ns)) sync.registrations.rearm(tx, slot.relay, ns, week)
+                    if (sync.capabilities.installed(tx, slot.relay, ns, CapabilityKind.READ)?.state == InstalledCapability.State.REJECTED) {
+                        sync.capabilities.put(tx, slot.relay, ns, CapabilityKind.READ, credential.readCredential, null)
+                    }
+                    if (sync.capabilities.installed(tx, slot.relay, ns, CapabilityKind.WRITE)?.state == InstalledCapability.State.REJECTED) {
+                        sync.capabilities.put(tx, slot.relay, ns, CapabilityKind.WRITE, credential.depositCredential, null)
+                    }
+                    healed++
+                }
+            }
+        }
+        return healed
+    }
+
     /** Renews the registrations of every funded channel; returns how many channels it kept rows for. */
     fun renewDue(): Int {
         val now = env.now()
@@ -164,6 +217,12 @@ internal class ChannelFunderStep(
         }
         return periods.filter { it >= week - 1 }
     }
+
+    private class RejectedGeneration(
+        val channelId: ByteArray,
+        val generation: Long,
+        val namespaceId: ByteArray,
+    )
 
     /** What the pre-transaction read gathered. */
     private class RenewalView(
